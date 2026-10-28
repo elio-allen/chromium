@@ -2,16 +2,19 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-source_set("internal") {
+component("internal") {
   sources = [
     "bcp47_known_subtags.h",
     "bcp47_parser.h",
-    "immutable_string.cc",
+    "bcp47_subtags_reader.h",
     "immutable_string.h",
     "legacy_icu_converter.cc",
     "legacy_icu_converter.h",
   ]
-  defines = [ "BASE_I18N_IMPLEMENTATION" ]
+  defines = [
+    "BASE_I18N_IMPLEMENTATION",
+    "IS_I18N_INTERNAL_IMPL",
+  ]
   public_deps = [
     ":bcp47_languages_gen",
     ":bcp47_regions_gen",
@@ -32,6 +35,7 @@ action("canonical_language_tags_gen") {
   args = rebase_path(outputs, root_build_dir)
   visibility = [
     ":*",
+    "//base:*",
     "//base/i18n/*",
   ]
 }
@@ -41,6 +45,7 @@ source_set("canonical_language_tags") {
   sources = [ "$root_gen_dir/base/i18n/internal/canonical_language_tags.inc" ]
   visibility = [
     ":*",
+    "//base:*",
     "//base/i18n/*",
   ]
 }
@@ -77,8 +82,8 @@ source_set("unittests") {
     "immutable_string_unittest.cc",
   ]
   deps = [
+    ":internal",
     "//base",
-    "//base:i18n",
     "//base/test:test_support",
     "//testing/gtest",
   ]

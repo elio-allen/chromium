@@ -32,8 +32,10 @@
 #include "content/public/browser/web_contents.h"
 #include "services/network/public/cpp/constants.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/widget/tooltip_manager.h"
+#include "ui/views/widget/widget.h"
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
@@ -228,7 +230,7 @@ void BookmarkButton::OnMouseEntered(const ui::MouseEvent& event) {
   // Now we should register the callback function that will be used to
   // compute the preloading recall.
   if (auto* web_contents =
-          browser_->tab_strip_model()->GetActiveWebContents()) {
+          browser_->GetTabStripModel()->GetActiveWebContents()) {
     content::PreloadingData* preloading_data =
         content::PreloadingData::GetOrCreateForWebContents(web_contents);
     preloading_data->SetIsNavigationInDomainCallback(
@@ -357,7 +359,7 @@ void BookmarkButton::UpdateMaxTooltipWidth() {
 
 BookmarkBarPreloadPipelineManager*
 BookmarkButton::GetBookmarkBarPreloadPipelineManager() {
-  tabs::TabInterface* active_tab = browser_->tab_strip_model()->GetActiveTab();
+  tabs::TabInterface* active_tab = browser_->GetTabStripModel()->GetActiveTab();
   // TODO(crbug.com/413259638): active_tab is only expected to be null if the
   // tab_strip is being initialized or destroyed, but putting a CHECK had caused
   // crbug.com/448228076.

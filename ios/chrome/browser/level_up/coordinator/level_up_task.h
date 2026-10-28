@@ -27,8 +27,11 @@ class TaskInfo;
 // Icon symbol for this task.
 @property(nonatomic, assign, readonly) Symbol iconSymbol;
 
+// Whether the icon symbol should be rendered as multicolor.
+@property(nonatomic, assign, readonly) BOOL multicolorIcon;
+
 // The user task completion state.
-@property(nonatomic, assign, readonly) BOOL completed;
+@property(nonatomic, assign) BOOL completed;
 
 // The category grouping this task belongs to.
 @property(nonatomic, assign, readonly) LevelUpTaskCategory category;

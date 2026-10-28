@@ -4,16 +4,22 @@
 
 #include "components/skills/internal/enterprise_skills_provider.h"
 
+#include <iterator>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "base/memory/scoped_refptr.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
 #include "base/threading/platform_thread.h"
 #include "base/values.h"
+#include "components/policy/core/common/policy_logger.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/skills/public/skills_prefs.h"
@@ -21,6 +27,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
+#include "net/url_request/redirect_info.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
@@ -29,6 +36,11 @@
 namespace skills {
 
 namespace {
+
+constexpr char kLogPrefix[] = "[EnterprisePublishedSkills] ";
+constexpr char kBaseValidationError[] =
+    "Validation failed for skill with hash: ";
+constexpr char kDownloadFailedError[] = "Failed to download skill with hash: ";
 
 constexpr char kValidYamlFrontmatter[] =
     "---\n"
@@ -46,6 +58,21 @@ constexpr char kFetchYamlFrontmatter[] =
     "description: \"This is a test skill\"\n"
     "---\n"
     "Prompt content goes here.";
+
+bool HasPolicyLogMessage(std::string_view substring) {
+  base::test::TestFuture<base::ListValue> future;
+  policy::PolicyLogger::GetInstance()->GetAsList(future.GetCallback());
+  base::ListValue logs = future.Take();
+  for (const auto& log : logs) {
+    if (log.is_dict()) {
+      const std::string* message = log.GetDict().FindString("message");
+      if (message && message->find(substring) != std::string::npos) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 }  // namespace
 
@@ -66,8 +93,10 @@ TEST_F(EnterpriseSkillsProviderTest, ValidSkillIsParsed) {
   EXPECT_EQ(skill->id.length(), 36u);
   EXPECT_EQ(skill->name, "My Skill");
   EXPECT_EQ(skill->description, "Test description");
+  EXPECT_EQ(skill->curated_by, "your organization");
   EXPECT_EQ(skill->prompt, "Prompt goes here");
   EXPECT_EQ(skill->icon, "💼");
+  EXPECT_EQ(skill->category, "From your organization");
   EXPECT_EQ(skill->source, sync_pb::SkillSource::SKILL_SOURCE_ENTERPRISE);
 }
 
@@ -286,6 +315,7 @@ class EnterpriseSkillsProviderFetchTest : public testing::Test {
 };
 
 TEST_F(EnterpriseSkillsProviderFetchTest, FetchValidSkill) {
+  base::HistogramTester histogram_tester;
   std::string expected_hash =
       base::HexEncode(crypto::hash::Sha256(kFetchYamlFrontmatter));
 
@@ -303,6 +333,20 @@ TEST_F(EnterpriseSkillsProviderFetchTest, FetchValidSkill) {
   EXPECT_EQ("Prompt content goes here.", skills[0]->prompt);
   EXPECT_FALSE(skills[0]->id.empty());
   EXPECT_EQ(skills[0]->id.length(), 36u);
+  EXPECT_EQ(
+      "https://www.gstatic.com/chrome/skills/images/enterprise_briefcase.png",
+      skills[0]->image_url.spec());
+
+  histogram_tester.ExpectUniqueSample("Enterprise.Skills.FetchResult",
+                                      /*sample=*/true,
+                                      /*expected_bucket_count=*/1);
+  histogram_tester.ExpectTotalCount("Enterprise.Skills.FetchLatency", 1);
+  histogram_tester.ExpectUniqueSample("Enterprise.Skills.ValidationResult",
+                                      EnterpriseSkillValidationResult::kSuccess,
+                                      /*expected_bucket_count=*/1);
+  histogram_tester.ExpectUniqueSample("Enterprise.Skills.Count",
+                                      /*sample=*/1,
+                                      /*expected_bucket_count=*/1);
 }
 
 TEST_F(EnterpriseSkillsProviderFetchTest, ValidateResourceRequest) {
@@ -325,6 +369,8 @@ TEST_F(EnterpriseSkillsProviderFetchTest, ValidateResourceRequest) {
   EXPECT_EQ("GET", captured_request.method);
   EXPECT_EQ(network::mojom::CredentialsMode::kOmit,
             captured_request.credentials_mode);
+  EXPECT_EQ(network::mojom::RedirectMode::kError,
+            captured_request.redirect_mode);
 }
 
 TEST_F(EnterpriseSkillsProviderFetchTest, NetworkFailure) {
@@ -395,6 +441,53 @@ TEST_F(EnterpriseSkillsProviderFetchTest, MultipleSkills) {
 }
 
 TEST_F(EnterpriseSkillsProviderFetchTest,
+       MultipleSkillsAssignsRoundRobinImages) {
+  std::vector<std::pair<std::string, std::string>> policy_entries;
+  std::vector<std::string> contents;
+  for (int i = 0; i < 6; ++i) {
+    std::string url =
+        "https://example.com/skill" + base::NumberToString(i) + ".yaml";
+    std::string content = "---\nname: Skill " + base::NumberToString(i) +
+                          "\ndescription: D\n---\nP";
+    std::string hash = base::HexEncode(crypto::hash::Sha256(content));
+    policy_entries.emplace_back(url, hash);
+    contents.push_back(content);
+  }
+
+  base::RunLoop run_loop;
+  auto sub = provider_->RegisterSkillsChangedCallback(run_loop.QuitClosure());
+  SetPolicyPref(policy_entries);
+
+  for (int i = 0; i < 6; ++i) {
+    test_url_loader_factory_.AddResponse(policy_entries[i].first, contents[i]);
+  }
+  run_loop.Run();
+
+  const auto& skills = provider_->GetSkills();
+  ASSERT_EQ(6u, skills.size());
+  EXPECT_EQ(
+      "https://www.gstatic.com/chrome/skills/images/enterprise_briefcase.png",
+      skills[0]->image_url.spec());
+  EXPECT_EQ(
+      "https://www.gstatic.com/chrome/skills/images/"
+      "enterprise_building_blue.png",
+      skills[1]->image_url.spec());
+  EXPECT_EQ(
+      "https://www.gstatic.com/chrome/skills/images/"
+      "enterprise_building_yellow.png",
+      skills[2]->image_url.spec());
+  EXPECT_EQ(
+      "https://www.gstatic.com/chrome/skills/images/enterprise_folder.png",
+      skills[3]->image_url.spec());
+  EXPECT_EQ(
+      "https://www.gstatic.com/chrome/skills/images/enterprise_luggage.png",
+      skills[4]->image_url.spec());
+  EXPECT_EQ(
+      "https://www.gstatic.com/chrome/skills/images/enterprise_briefcase.png",
+      skills[5]->image_url.spec());
+}
+
+TEST_F(EnterpriseSkillsProviderFetchTest,
        PolicyChangeMidFlightCancelsPreviousFetches) {
   std::string content1 = "---\nname: Skill 1\ndescription: D1\n---\nP1";
   std::string content2 = "---\nname: Skill 2\ndescription: D2\n---\nP2";
@@ -434,6 +527,113 @@ TEST_F(EnterpriseSkillsProviderFetchTest,
   const auto& skills = provider_->GetSkills();
   ASSERT_EQ(1u, skills.size());
   EXPECT_EQ("Skill 2", skills[0]->name);
+}
+
+TEST_F(EnterpriseSkillsProviderFetchTest, HashMismatchLogsToPolicyLogger) {
+  policy::PolicyLogger::GetInstance()->ResetLoggerForTesting();
+  std::string wrong_hash =
+      "1111111111111111111111111111111111111111111111111111111111111111";
+
+  base::RunLoop run_loop;
+  auto sub = provider_->RegisterSkillsChangedCallback(run_loop.QuitClosure());
+
+  SetPolicyPref({{kTestUrl1, wrong_hash}});
+  test_url_loader_factory_.AddResponse(kTestUrl1, kFetchYamlFrontmatter);
+  run_loop.Run();
+
+  EXPECT_EQ(0u, provider_->GetSkills().size());
+  EXPECT_TRUE(
+      HasPolicyLogMessage(base::StrCat({kLogPrefix, "Hash mismatch."})));
+}
+
+TEST_F(EnterpriseSkillsProviderFetchTest, DownloadFailureLogsToPolicyLogger) {
+  policy::PolicyLogger::GetInstance()->ResetLoggerForTesting();
+  std::string expected_hash =
+      base::HexEncode(crypto::hash::Sha256(kFetchYamlFrontmatter));
+
+  base::RunLoop run_loop;
+  auto sub = provider_->RegisterSkillsChangedCallback(run_loop.QuitClosure());
+
+  SetPolicyPref({{kTestUrl1, expected_hash}});
+  test_url_loader_factory_.AddResponse(kTestUrl1, "", net::HTTP_NOT_FOUND);
+  run_loop.Run();
+
+  EXPECT_EQ(0u, provider_->GetSkills().size());
+  EXPECT_TRUE(
+      HasPolicyLogMessage(base::StrCat({kLogPrefix, kDownloadFailedError})));
+}
+
+TEST_F(EnterpriseSkillsProviderFetchTest, RedirectFailureFailsDownload) {
+  policy::PolicyLogger::GetInstance()->ResetLoggerForTesting();
+  std::string expected_hash =
+      base::HexEncode(crypto::hash::Sha256(kFetchYamlFrontmatter));
+
+  base::RunLoop run_loop;
+  auto sub = provider_->RegisterSkillsChangedCallback(run_loop.QuitClosure());
+
+  SetPolicyPref({{kTestUrl1, expected_hash}});
+
+  net::RedirectInfo redirect_info;
+  redirect_info.new_url = GURL("https://login.corp.google.com/auth");
+  redirect_info.status_code = net::HTTP_FOUND;
+  network::TestURLLoaderFactory::Redirects redirects;
+  redirects.emplace_back(redirect_info, network::mojom::URLResponseHead::New());
+
+  test_url_loader_factory_.AddResponse(
+      GURL(kTestUrl1), network::mojom::URLResponseHead::New(), "",
+      network::URLLoaderCompletionStatus(net::ERR_UNEXPECTED),
+      std::move(redirects));
+
+  run_loop.Run();
+  EXPECT_EQ(0u, provider_->GetSkills().size());
+  EXPECT_TRUE(HasPolicyLogMessage(
+      base::StrCat({kLogPrefix, kDownloadFailedError, expected_hash,
+                    " (Error: ERR_UNEXPECTED)"})));
+}
+
+TEST_F(EnterpriseSkillsProviderFetchTest,
+       FormatValidationFailureLogsToPolicyLogger) {
+  policy::PolicyLogger::GetInstance()->ResetLoggerForTesting();
+  std::string invalid_content = "invalid non-yaml frontmatter content";
+  std::string expected_hash =
+      base::HexEncode(crypto::hash::Sha256(invalid_content));
+
+  base::RunLoop run_loop;
+  auto sub = provider_->RegisterSkillsChangedCallback(run_loop.QuitClosure());
+
+  SetPolicyPref({{kTestUrl1, expected_hash}});
+  test_url_loader_factory_.AddResponse(kTestUrl1, invalid_content);
+  run_loop.Run();
+
+  EXPECT_EQ(0u, provider_->GetSkills().size());
+  EXPECT_TRUE(
+      HasPolicyLogMessage(base::StrCat({kLogPrefix, kBaseValidationError})));
+  EXPECT_TRUE(HasPolicyLogMessage("(Reason: Invalid format)"));
+}
+
+TEST_F(EnterpriseSkillsProviderFetchTest,
+       MetadataValidationFailureLogsToPolicyLogger) {
+  policy::PolicyLogger::GetInstance()->ResetLoggerForTesting();
+  std::string invalid_metadata_content =
+      "---\n"
+      "name: \"This skill name is definitely longer than 20 characters\"\n"
+      "description: \"Test description\"\n"
+      "---\n"
+      "Prompt goes here";
+  std::string expected_hash =
+      base::HexEncode(crypto::hash::Sha256(invalid_metadata_content));
+
+  base::RunLoop run_loop;
+  auto sub = provider_->RegisterSkillsChangedCallback(run_loop.QuitClosure());
+
+  SetPolicyPref({{kTestUrl1, expected_hash}});
+  test_url_loader_factory_.AddResponse(kTestUrl1, invalid_metadata_content);
+  run_loop.Run();
+
+  EXPECT_EQ(0u, provider_->GetSkills().size());
+  EXPECT_TRUE(
+      HasPolicyLogMessage(base::StrCat({kLogPrefix, kBaseValidationError})));
+  EXPECT_TRUE(HasPolicyLogMessage("(Reason: Invalid name length)"));
 }
 
 }  // namespace skills

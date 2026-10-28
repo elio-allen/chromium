@@ -69,7 +69,13 @@ if (enable_rust) {
     visibility = [ ":*" ]
   }
 
-  rust_static_library("unittests") {
+  source_set("cpp_unittests") {
+    testonly = true
+    sources = [ "rust_gtest_interop_unittest.cc" ]
+    deps = [ "//testing/gtest" ]
+  }
+
+  rust_static_library("rust_unittests") {
     testonly = true
     is_gtest_unittests = true
     crate_root = "rust_gtest_interop_unittest.rs"
@@ -77,18 +83,11 @@ if (enable_rust) {
     deps = [ "//testing/rust_gtest_interop" ]
   }
 
-  # TODO(https://crbug.com/532647976): Remove this test executable after
-  # decommissioning Rust FYI bots.
-  test("rust_gtest_interop_unittests") {
-    sources = [
-      "rust_gtest_interop_unittest.rs",
-      "rust_gtest_interop_unittest_main.cc",
-    ]
+  group("unittests") {
+    testonly = true
     deps = [
-      "//base",
-      "//base/test:test_support",
-      "//build:blink_buildflags",
-      "//testing/gtest",
+      ":cpp_unittests",
+      ":rust_unittests",
     ]
   }
 }

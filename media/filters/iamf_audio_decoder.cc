@@ -22,7 +22,6 @@
 #include "media/base/channel_layout.h"
 #include "media/base/decoder_buffer.h"
 #include "media/base/limits.h"
-#include "media/base/media_switches.h"
 #include "media/base/sample_format.h"
 #include "media/base/timestamp_constants.h"
 #include "third_party/iamf_tools/src/iamf/include/iamf_tools/iamf_decoder_factory.h"
@@ -288,8 +287,9 @@ DecoderStatus IamfAudioDecoder::DrainTemporalUnits() {
     }
 
     size_t bytes_written = 0;
+    base::span<uint8_t> output_data = result->interleaved_data();
     auto status = iamf_decoder_->GetOutputTemporalUnit(
-        result->channels()[0].data(), result->data_size(), bytes_written);
+        output_data.data(), output_data.size(), bytes_written);
 
     if (!status.ok()) {
       MEDIA_LOG(ERROR, media_log_)
@@ -456,13 +456,9 @@ ChannelLayoutConfig IamfAudioDecoder::ConvertIamfLayout(
     case OutputLayout::kItu2051_SoundSystemI_0_7_0:
       return ChannelLayoutConfig::FromLayout<CHANNEL_LAYOUT_7_1>();
     case OutputLayout::kItu2051_SoundSystemD_4_5_0:
-      return base::FeatureList::IsEnabled(kEnableHighChannelLayouts)
-                 ? ChannelLayoutConfig::FromLayout<CHANNEL_LAYOUT_5_1_4>()
-                 : ChannelLayoutConfig(CHANNEL_LAYOUT_DISCRETE, 10);
+      return ChannelLayoutConfig::FromLayout<CHANNEL_LAYOUT_5_1_4>();
     case OutputLayout::kItu2051_SoundSystemJ_4_7_0:
-      return base::FeatureList::IsEnabled(kEnableHighChannelLayouts)
-                 ? ChannelLayoutConfig::FromLayout<CHANNEL_LAYOUT_7_1_4>()
-                 : ChannelLayoutConfig(CHANNEL_LAYOUT_DISCRETE, 12);
+      return ChannelLayoutConfig::FromLayout<CHANNEL_LAYOUT_7_1_4>();
     default:
       if (media_log) {
         MEDIA_LOG(WARNING, media_log)

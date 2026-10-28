@@ -106,6 +106,7 @@ class MEDIA_EXPORT WASAPIAudioInputStream
   // that has no audio devices).
   // Note: This enum is used to record a histogram value and should not be
   // re-ordered.
+  // LINT.IfChange(StreamOpenResult)
   enum StreamOpenResult {
     OPEN_RESULT_OK = 0,
     OPEN_RESULT_CREATE_INSTANCE = 1,
@@ -124,18 +125,7 @@ class MEDIA_EXPORT WASAPIAudioInputStream
     OPEN_RESULT_OK_WITH_RESAMPLING = 14,
     OPEN_RESULT_MAX = OPEN_RESULT_OK_WITH_RESAMPLING
   };
-
-  // LINT.IfChange(WASAPIInputDeviceInUseRetryOutcome)
-  // These values are persisted to logs. Entries should not be renumbered and
-  // numeric values should never be reused.
-  enum class WASAPIInputDeviceInUseRetryOutcome {
-    kFailedNoRetry = 0,
-    kSucceededOnFirstRetry = 1,
-    kSucceededOnSecondRetry = 2,
-    kFailedAfterRetries = 3,
-    kMaxValue = kFailedAfterRetries
-  };
-  // LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:WASAPIInputDeviceInUseRetryOutcome)
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:AudioStreamOpenResult)
 
   using ActivateAudioInterfaceAsyncCallback =
       base::RepeatingCallback<HRESULT(LPCWSTR,

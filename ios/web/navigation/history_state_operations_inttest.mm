@@ -233,6 +233,30 @@ TEST_F(HistoryStateOperationsTest, NoOpReplaceDifferentOrigin) {
   WaitForNoOpText();
 }
 
+// Tests that calling window.history.pushState() with a cross-origin blob URL is
+// a no-op.
+TEST_F(HistoryStateOperationsTest, NoOpPushCrossOriginBlobUrl) {
+  std::string empty_state;
+  std::string empty_title;
+  GURL cross_origin_blob_url("blob:https://accounts.google.com/signin");
+  ASSERT_TRUE(IsOnLoadTextVisible());
+  SetStateParams(empty_state, empty_title, cross_origin_blob_url);
+  ASSERT_TRUE(web::test::TapWebViewElementWithId(web_state(), kPushStateId));
+  WaitForNoOpText();
+}
+
+// Tests that calling window.history.replaceState() with a cross-origin blob URL
+// is a no-op.
+TEST_F(HistoryStateOperationsTest, NoOpReplaceCrossOriginBlobUrl) {
+  std::string empty_state;
+  std::string empty_title;
+  GURL cross_origin_blob_url("blob:https://accounts.google.com/signin");
+  ASSERT_TRUE(IsOnLoadTextVisible());
+  SetStateParams(empty_state, empty_title, cross_origin_blob_url);
+  ASSERT_TRUE(web::test::TapWebViewElementWithId(web_state(), kReplaceStateId));
+  WaitForNoOpText();
+}
+
 // Tests that calling window.history.replaceState() with a new state object
 // replaces the state object for the current NavigationItem.
 TEST_F(HistoryStateOperationsTest, StateReplacement) {
@@ -280,19 +304,24 @@ TEST_F(HistoryStateOperationsTest, StateReplacement) {
 
 // Tests that the state object is reset to the correct value after reloading a
 // page whose state has been replaced.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_StateReplacementReload StateReplacementReload
-#else
-#define MAYBE_StateReplacementReload DISABLED_StateReplacementReload
-#endif
-// TODO(crbug.com/40519813): Enable this test on device.
-TEST_F(HistoryStateOperationsTest, MAYBE_StateReplacementReload) {
+TEST_F(HistoryStateOperationsTest, StateReplacementReload) {
   // Set up the state parameters and tap the replace state button.
   std::string new_state("STATE OBJECT");
   std::string empty_title;
   GURL empty_url;
   SetStateParams(new_state, empty_title, empty_url);
   ASSERT_TRUE(web::test::TapWebViewElementWithId(web_state(), kReplaceStateId));
+  // Wait for the state update to be reflected in the latest NavigationItem
+  // before reloading.
+  std::string serialized_state("\"STATE OBJECT\"");
+  ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      kWaitForStateUpdateTimeout, ^{
+        web::NavigationItemImpl* item =
+            static_cast<web::NavigationItemImpl*>(GetLastCommittedItem());
+        std::string item_state =
+            base::SysNSStringToUTF8(item->GetSerializedStateObject());
+        return item_state == serialized_state;
+      }));
   // Reload the page and check that the state object is present.
   EXPECT_TRUE(Reload());
   ASSERT_TRUE(IsOnLoadTextVisible());

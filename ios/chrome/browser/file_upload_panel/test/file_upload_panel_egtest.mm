@@ -32,6 +32,13 @@ namespace {
 // Identifier of the file input element.
 constexpr char kFileInputElementID[] = "fileInput";
 
+// Short timeout to check if the Cancel button is already visible in the file
+// picker. On iPad and larger form factors (such as iPhone Duo), the picker
+// displays the Cancel button directly upon opening. On standard iPhone, the
+// picker opens in a view where Cancel is only shown after navigating up the
+// directory hierarchy via Browse.
+constexpr base::TimeDelta kShortWaitForCancelButtonTimeout = base::Seconds(2);
+
 // Returns an HTML page with a file input element.
 std::string GetTestPageHtml(const std::string& input_element_attributes,
                             const std::string& page_title,
@@ -139,7 +146,6 @@ std::unique_ptr<net::test_server::HttpResponse> TestPageResponse(
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
-  config.features_enabled.push_back(kIOSChooseFromDrive);
   if ([self isRunningTest:@selector(testDriveInContextMenuWhenSignedOut)]) {
     config.features_enabled.push_back(kIOSChooseFromDriveSignedOut);
   }
@@ -175,7 +181,7 @@ std::unique_ptr<net::test_server::HttpResponse> TestPageResponse(
   XCUIElement* alert = [[springboardApp
       descendantsMatchingType:XCUIElementTypeAlert] firstMatch];
   if ([alert waitForExistenceWithTimeout:1]) {
-    XCUIElement* allowButton = alert.buttons[@"Allow"];
+    XCUIElement* allowButton = alert.buttons[@"Allow"].firstMatch;
     if (![allowButton exists]) {
       allowButton = [alert.buttons elementBoundByIndex:1];
     }
@@ -837,9 +843,13 @@ std::unique_ptr<net::test_server::HttpResponse> TestPageResponse(
 
 // Tests that cancelling the file picker logs the correct metric.
 - (void)testFilePickerCancel {
-  // The file upload panel is only available on iOS 18.4+.
-  if (!base::ios::IsRunningOnOrLater(18, 4, 0)) {
-    EARL_GREY_TEST_SKIPPED(@"Test is only available for iOS 18.4+, skipping.");
+  // The file upload panel is only available on iOS 18.4+, but is failing on
+  // iOS 18.5.
+  // TODO(crbug.com/544412706): Re-enable test on iOS 18.5+.
+  if (!base::ios::IsRunningOnOrLater(18, 6, 0)) {
+    EARL_GREY_TEST_SKIPPED(
+        @"Test is available for iOS 18.4+ but currently failing on iOS 18.5, "
+        @"skipping.");
   }
 
   GURL url = self.testServer->GetURL("/directory");
@@ -858,21 +868,27 @@ std::unique_ptr<net::test_server::HttpResponse> TestPageResponse(
                                   timeout:30],
                  @"File picker did not launch");
 
-  if ([ChromeEarlGrey isIPhoneIdiom]) {
+  XCUIElement* cancelButton = serviceApp.buttons[@"Cancel"].firstMatch;
+  if (![cancelButton
+          waitForExistenceWithTimeout:kShortWaitForCancelButtonTimeout
+                                          .InSecondsF()] &&
+      [ChromeEarlGrey isIPhoneIdiom]) {
     // Tapping Browse twice to navigate to the root, otherwise the Cancel button
     // will not be visible for the next step.
     XCUIElement* browseButton = serviceApp.buttons[@"Browse"].firstMatch;
-    [browseButton tap];
-    GREYAssertTrue(base::test::ios::WaitUntilConditionOrTimeout(
-                       base::test::ios::kWaitForActionTimeout,
-                       ^{
-                         return browseButton.isSelected;
-                       }),
-                   @"Browse button did not become selected.");
-    [browseButton tap];
+    if (browseButton.exists) {
+      [browseButton tap];
+      GREYAssertTrue(base::test::ios::WaitUntilConditionOrTimeout(
+                         base::test::ios::kWaitForActionTimeout,
+                         ^{
+                           return browseButton.isSelected;
+                         }),
+                     @"Browse button did not become selected.");
+      [browseButton tap];
+    }
   }
 
-  [self forceTap:serviceApp.buttons[@"Cancel"].firstMatch];
+  [self forceTap:cancelButton];
 
   // Check histograms.
   [self waitForSubmittedFileCount:0];

@@ -8,11 +8,11 @@
 #include "base/test/run_until.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
+#include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
@@ -21,15 +21,18 @@
 #include "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h"
 #include "chrome/browser/ui/views/tabs/common/root_tab_collection_node.h"
 #include "chrome/browser/ui/views/tabs/common/split_tab_view.h"
+#include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_view.h"
 #include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h"
 #include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
 #include "chrome/browser/ui/views/test/vertical_tabs_browser_test_mixin.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/views/controls/scroll_view.h"
+#include "ui/views/controls/separator.h"
 #include "ui/views/view.h"
 #include "ui/views/view_utils.h"
 
@@ -72,7 +75,7 @@ class TabCollectionNodeBrowserTest
 
   views::View* parent_view() { return root_node()->view()->parent(); }
 
-  TabStripModel* GetTabStripModel() { return browser()->tab_strip_model(); }
+  TabStripModel* GetTabStripModel() { return browser()->GetTabStripModel(); }
 
   // Appends a new unpinned tab to the end of the tab strip.
   content::WebContents* AppendTab() {
@@ -342,8 +345,10 @@ IN_PROC_BROWSER_TEST_P(TabCollectionNodeBrowserTest,
   ASSERT_EQ(root_node()->children().size(), 2u);
 
   // The root_node_view should have three children, the pinned and unpinned
-  // views and a separator.
-  ASSERT_EQ(root_node_view()->children().size(), 3u);
+  // views and a separator. In horizontal, it should also have the tab
+  // scroll button container.
+  ASSERT_EQ(root_node_view()->children().size(),
+            3u + (is_horizontal() ? 1u : 0u));
   const auto pinned_node_scroll_view = root_node_view()->children()[0];
   ASSERT_TRUE(
       views::IsViewClass<views::Separator>(root_node_view()->children()[1]));
@@ -377,8 +382,10 @@ IN_PROC_BROWSER_TEST_P(TabCollectionNodeBrowserTest, GetDirectChildren) {
   ASSERT_EQ(root_node()->children().size(), 2u);
 
   // The root_node_view should have three children, the pinned and unpinned
-  // views and a separator.
-  ASSERT_EQ(root_node_view()->children().size(), 3u);
+  // views and a separator. In horizontal, it should also have the tab
+  // scroll button container.
+  ASSERT_EQ(root_node_view()->children().size(),
+            3u + (is_horizontal() ? 1u : 0u));
   const auto pinned_node_scroll_view = root_node_view()->children()[0];
   ASSERT_TRUE(
       views::IsViewClass<views::Separator>(root_node_view()->children()[1]));
@@ -717,6 +724,31 @@ IN_PROC_BROWSER_TEST_P(TabCollectionNodeBrowserTest,
   ASSERT_TRUE(base::test::RunUntil([&]() {
     return pinned_view->drag_axes() == DraggedTabsContainer::DragAxes::kBoth;
   }));
+}
+
+IN_PROC_BROWSER_TEST_P(TabCollectionNodeBrowserTest,
+                       MoveSelectedTabsPastCollapsedGroupKeepsGroupCollapsed) {
+  AppendTab();
+  AppendTab();
+  AppendTab();
+  // Tabs 0 and 1 are ungrouped; Tabs 2 and 3 are in a collapsed group.
+  const tab_groups::TabGroupId group_id =
+      GetTabStripModel()->AddToNewGroup({2, 3});
+  const TabGroup* group =
+      GetTabStripModel()->group_model()->GetTabGroup(group_id);
+  ASSERT_NE(group, nullptr);
+  root_node()->GetController()->ToggleTabGroupCollapsedState(
+      group, ToggleTabGroupCollapsedStateOrigin::kMouse);
+  ASSERT_TRUE(root_node()->GetController()->IsGroupCollapsed(group_id));
+
+  // Select both ungrouped tabs [0, 1] and move them past the collapsed group.
+  GetTabStripModel()->ActivateTabAt(0);
+  GetTabStripModel()->ExtendSelectionTo(1);
+  ASSERT_TRUE(GetTabStripModel()->IsTabSelected(0));
+  ASSERT_TRUE(GetTabStripModel()->IsTabSelected(1));
+
+  GetTabStripModel()->MoveSelectedTabsTo(2, /*group=*/std::nullopt);
+  EXPECT_TRUE(root_node()->GetController()->IsGroupCollapsed(group_id));
 }
 
 INSTANTIATE_TEST_SUITE_P(

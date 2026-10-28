@@ -92,14 +92,16 @@ chromium-metrics-reviews@google.com.
 <!-- LINT.IfChange(SendTabToSelfAutoOpenOutcome) -->
 
 <enum name="SendTabToSelfAutoOpenOutcome">
-  <int value="0" label="Unopened immediately (no window or in background)"/>
+  <int value="0"
+      label="(Deprecated) Unopened immediately (no window or in background)"/>
   <int value="1" label="First tab opened in foreground (Desktop)"/>
   <int value="2" label="Tabs opened immediately in background"/>
   <int value="3" label="Tabs opened upon browser activation"/>
   <int value="4" label="Tab opened via notification click"/>
-  <int value="5" label="Opened in native app immediately"/>
-  <int value="6" label="Opened in native app upon browser activation"/>
-  <int value="7" label="Unopened upon browser activation"/>
+  <int value="5" label="(Deprecated) Opened in native app immediately"/>
+  <int value="6"
+      label="(Deprecated) Opened in native app upon browser activation"/>
+  <int value="7" label="(Deprecated) Unopened upon browser activation"/>
 </enum>
 
 <!-- LINT.ThenChange(/components/send_tab_to_self/metrics_util.h:AutoOpenOutcome) -->
@@ -166,6 +168,7 @@ chromium-metrics-reviews@google.com.
   <int value="5" label="Link generation error"/>
   <int value="6" label="Invalid selector"/>
   <int value="7" label="Renderer timeout"/>
+  <int value="8" label="Page not scrolled"/>
 </enum>
 
 <!-- LINT.ThenChange(/components/send_tab_to_self/metrics_util.h:ScrollPositionGenerationOutcome) -->
@@ -181,6 +184,7 @@ chromium-metrics-reviews@google.com.
   <int value="5" label="ChromeOS Birch"/>
   <int value="6" label="Tab or Browser Closed Without Activation"/>
   <int value="7" label="STTS Entry Expired Without Activation"/>
+  <int value="8" label="Mobile Message Banner"/>
 </enum>
 
 <!-- LINT.ThenChange(/components/send_tab_to_self/metrics_util.h:SendTabToSelfShareActivatedEntryPoint) -->

@@ -6,7 +6,7 @@
 
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
-#import "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#import "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #import "components/autofill/core/common/autofill_payments_features.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/autofill/authentication/test/authentication_egtest_util.h"
@@ -83,8 +83,7 @@
                           IDS_AUTOFILL_CARD_UNMASK_PROGRESS_DIALOG_TITLE)];
 }
 
-// TODO(crbug.com/444040307): Test is flaky.
-- (void)DISABLED_testDismissWithConfirmation_DisappearsAfterDelay {
+- (void)testDismissWithConfirmation_DisappearsAfterDelay {
   // Simulate flow to show dialog.
   [self simulateUserFlowToShowDialogLoadingState];
 

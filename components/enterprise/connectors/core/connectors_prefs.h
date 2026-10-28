@@ -80,9 +80,15 @@ inline constexpr const char kWatermarkStyleOutlineOpacityFieldName[] =
 inline constexpr const char kWatermarkStyleFontSizeFieldName[] = "font_size";
 inline constexpr const char kWatermarkStyleTimestampTimezoneFieldName[] =
     "timestamp_timezone";
-inline constexpr int kWatermarkStyleFillOpacityDefault = 4;
-inline constexpr int kWatermarkStyleOutlineOpacityDefault = 6;
-inline constexpr int kWatermarkStyleFontSizeDefault = 24;
+
+// Different tuned default values are set for mobiles and Desktops based on
+// their screen sizes, screen resolutions etc.
+inline constexpr int kWatermarkStyleFillOpacityDefault =
+    BUILDFLAG(IS_IOS) ? 10 : 4;
+inline constexpr int kWatermarkStyleOutlineOpacityDefault =
+    BUILDFLAG(IS_IOS) ? 15 : 6;
+inline constexpr int kWatermarkStyleFontSizeDefault =
+    BUILDFLAG(IS_IOS) ? 16 : 24;
 inline constexpr const char kWatermarkStyleTimestampTimezoneDefault[] =
     "user_device";
 
@@ -90,7 +96,6 @@ inline constexpr char kEnterpriseRealTimeUrlCheckScope[] =
     "safebrowsing.enterprise_real_time_url_check_scope";
 
 extern const char kLatestCrashReportCreationTime[];
-extern const char kLatestTelomereReportCreationTime[];
 
 void RegisterProfilePrefs(PrefRegistrySimple* registry);
 void RegisterLocalStatePrefs(PrefRegistrySimple* registry);

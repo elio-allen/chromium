@@ -15,6 +15,7 @@
 #include "content/browser/webid/identity_provider_info.h"
 #include "content/browser/webid/idp_network_request_manager.h"
 #include "content/common/content_export.h"
+#include "content/public/browser/webid/native_idp_fetcher.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -81,6 +82,7 @@ class CONTENT_EXPORT AccountsFetcher {
     bool should_delay_callback = false;
     bool is_mismatch = false;
     bool show_active_mode_modal_dialog = false;
+    bool use_native_app_ui = false;
     base::TimeTicks accounts_fetched_time;
     base::TimeTicks client_metadata_fetched_time;
   };
@@ -146,6 +148,12 @@ class CONTENT_EXPORT AccountsFetcher {
       FetchStatus status,
       IdpNetworkRequestManager::AccountsResponse accounts);
 
+  void OnNativeAccountsFetched(std::unique_ptr<IdentityProviderInfo> idp_info,
+                               std::optional<bool> old_idp_signin_status,
+                               FetchStatus status,
+                               base::TimeTicks accounts_fetched_time,
+                               NativeIdpFetcher::FetchResult result);
+
   void OnAccountsFetchSucceeded(
       std::unique_ptr<IdentityProviderInfo> idp_info,
       FetchStatus status,
@@ -209,6 +217,9 @@ class CONTENT_EXPORT AccountsFetcher {
   // pending_requests_. If pending_requests_ reaches 0, runs the callback_.
   void AddResult(Result&& result);
 
+  // Login dialog is only shown in Active Mode with 1 IDP.
+  bool ShouldImmediatelyShowLoginDialog() const;
+
   base::flat_map<
       GURL,
       std::pair<blink::mojom::FederatedRequestResult, RequestIdTokenStatus>>
@@ -219,7 +230,7 @@ class CONTENT_EXPORT AccountsFetcher {
   // Populated in OnAllConfigAndWellKnownFetched().
   base::flat_map<GURL, GURL> metrics_endpoints_;
 
-  // Owned by Request.
+  // Owned by RequestHandler.
   raw_ref<RenderFrameHost> render_frame_host_;
   raw_ptr<IdpNetworkRequestManager> network_manager_;
   raw_ptr<FederatedIdentityApiPermissionContextDelegate>

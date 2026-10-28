@@ -27,15 +27,21 @@ OsSettingsProviderGtk::~OsSettingsProviderGtk() = default;
 
 ui::NativeTheme::PreferredColorScheme
 OsSettingsProviderGtk::PreferredColorScheme() const {
+  // The xdg-desktop-portal color-scheme preference (pushed in via
+  // GtkUi::SetColorScheme) takes precedence when it expresses one.
+  if (prefer_dark_) {
+    return *prefer_dark_ ? ui::NativeTheme::PreferredColorScheme::kDark
+                         : ui::NativeTheme::PreferredColorScheme::kLight;
+  }
+
   // GTK has a dark mode setting called "gtk-application-prefer-dark-theme", but
   // this is really only used for themes that have a dark or light variant that
   // gets toggled based on this setting (eg. Adwaita).  Most dark themes do not
   // have a light variant and aren't affected by the setting.  Because of this,
   // experimentally check if the theme is dark by checking if the window
   // background color is dark.
-  return color_utils::IsDark(GetBgColor({}))
-             ? ui::NativeTheme::PreferredColorScheme::kDark
-             : ui::NativeTheme::PreferredColorScheme::kLight;
+  return IsGtkThemeDark() ? ui::NativeTheme::PreferredColorScheme::kDark
+                          : ui::NativeTheme::PreferredColorScheme::kLight;
 }
 
 ui::NativeTheme::PreferredContrast OsSettingsProviderGtk::PreferredContrast()
@@ -77,7 +83,14 @@ base::TimeDelta OsSettingsProviderGtk::CaretBlinkInterval() const {
 }
 
 std::optional<SkColor> OsSettingsProviderGtk::AccentColor() const {
-  return accent_color_;
+  // Prefer the desktop accent color (from the xdg-desktop-portal). Otherwise,
+  // use the GTK theme's own accent, so that the Material palettes generated
+  // from the accent color (focus rings, tab hover, ...) match the theme's
+  // highlights.
+  if (accent_color_) {
+    return accent_color_;
+  }
+  return SkColorSetA(GetThemeAccentColor(), SK_AlphaOPAQUE);
 }
 
 void OsSettingsProviderGtk::SetAccentColor(
@@ -86,6 +99,18 @@ void OsSettingsProviderGtk::SetAccentColor(
     return;
   }
   accent_color_ = accent_color;
+  NotifyOnSettingsChanged();
+}
+
+void OsSettingsProviderGtk::SetColorScheme(std::optional<bool> prefer_dark) {
+  if (prefer_dark_ == prefer_dark) {
+    return;
+  }
+  prefer_dark_ = prefer_dark;
+  NotifyOnSettingsChanged();
+}
+
+void OsSettingsProviderGtk::OnThemeChanged() {
   NotifyOnSettingsChanged();
 }
 

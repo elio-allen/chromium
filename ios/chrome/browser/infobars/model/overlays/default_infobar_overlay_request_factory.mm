@@ -29,7 +29,7 @@ std::unique_ptr<OverlayRequest> DefaultInfobarOverlayRequestFactory(
     case InfobarType::kInfobarTypeEnhancedSafeBrowsing:
     case InfobarType::kInfobarTypeCollaborationGroup:
     case InfobarType::kInfobarTypeCollaborationOutOfDate:
-    case InfobarType::kInfobarTypeFormsAiPrivateInference:
+    case InfobarType::kInfobarTypeContextualCue:
       return OverlayRequest::CreateWithConfig<
           DefaultInfobarOverlayRequestConfig>(infobar_ios, overlay_type);
 

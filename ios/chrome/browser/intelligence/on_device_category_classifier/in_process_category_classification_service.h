@@ -6,10 +6,11 @@
 #define IOS_CHROME_BROWSER_INTELLIGENCE_ON_DEVICE_CATEGORY_CLASSIFIER_IN_PROCESS_CATEGORY_CLASSIFICATION_SERVICE_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
-#import "base/containers/flat_map.h"
+#import "base/containers/lru_cache.h"
 #import "base/functional/callback.h"
 #import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
@@ -28,8 +29,6 @@
 #import "services/passage_embeddings/public/mojom/passage_embeddings.mojom.h"
 #import "url/gurl.h"
 
-class ProfileIOS;
-
 // In-process service that manages passage embedding generation and on-device
 // category classification.
 class InProcessCategoryClassificationService
@@ -40,9 +39,10 @@ class InProcessCategoryClassificationService
   using ClassificationCallback = base::OnceCallback<void(
       const std::vector<page_content_annotations::Category>&)>;
 
-  static InProcessCategoryClassificationService* GetForProfile(
-      ProfileIOS* profile);
-  static void EnsureFactoryBuilt();
+  struct CachedEmbeddings {
+    std::optional<passage_embeddings::Embedding> title_url_embedding;
+    std::vector<passage_embeddings::Embedding> passage_embeddings;
+  };
 
   explicit InProcessCategoryClassificationService(
       optimization_guide::OptimizationGuideModelProvider* model_provider);
@@ -53,12 +53,40 @@ class InProcessCategoryClassificationService
   InProcessCategoryClassificationService& operator=(
       const InProcessCategoryClassificationService&) = delete;
 
-  // Classifies the extracted page context using local models.
+  // KeyedService:
+  void Shutdown() override;
+
+  // Classifies the extracted page context using local models. Uses
+  // in-memory cache if embeddings are already available for the URL.
+  //
+  // On Desktop/content platforms, this equivalent pipeline is handled across
+  // `page_content_annotations::GenerateEmbeddingsCandidates`,
+  // `page_content_annotations::PageEmbeddingsService`, and
+  // `page_content_annotations::PageCategoryClassifierBridgeImpl` before
+  // invoking `page_content_annotations::OnDeviceCategoryClassifier`.
   virtual void ClassifyPageContext(const GURL& url,
                                    const std::string& title,
                                    const std::string& page_content,
                                    ukm::SourceId source_id,
                                    ClassificationCallback callback);
+
+  // Returns true if embeddings for `url` exist in the in-memory cache.
+  bool HasCachedEmbeddings(const GURL& url) const;
+
+  // Classifies `url` using in-memory cached embeddings. If `url` is invalid
+  // or not cached, `callback` is run with an empty result vector.
+  virtual void ClassifyWithCachedEmbeddings(const GURL& url,
+                                            ukm::SourceId source_id,
+                                            ClassificationCallback callback);
+
+  // Retrieves in-memory cached embeddings for `url`, if present.
+  std::optional<CachedEmbeddings> GetCachedEmbeddings(const GURL& url) const;
+
+  // Seeds the in-memory cache directly for testing.
+  void SetCachedEmbeddingsForTesting(const GURL& url,
+                                     CachedEmbeddings embeddings) {
+    in_memory_embeddings_cache_.Put(url, std::move(embeddings));
+  }
 
   // Resets the internal passage embedder for testing.
   void ResetPassageEmbedderForTesting() { embedder_wrapper_.Reset(); }
@@ -69,6 +97,9 @@ class InProcessCategoryClassificationService
                                          bool success) {
     OnPassageEmbedderLoaded(model_version, output_size, success);
   }
+
+  // Simulates embedder disconnect for testing.
+  void OnEmbedderDisconnectForTesting() { OnEmbedderDisconnect(); }
 
   // passage_embeddings::EmbedderMetadataProvider:
   void AddObserver(
@@ -112,6 +143,10 @@ class InProcessCategoryClassificationService
 
   raw_ptr<optimization_guide::OptimizationGuideModelProvider> model_provider_ =
       nullptr;
+
+  // In-memory LRU cache of embeddings keyed by URL.
+  base::LRUCache<GURL, CachedEmbeddings> in_memory_embeddings_cache_;
+
   std::unique_ptr<page_content_annotations::OnDeviceCategoryClassifier>
       category_classifier_;
 

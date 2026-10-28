@@ -30,7 +30,6 @@
 #include "chrome/browser/favicon/favicon_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/shortcuts/shortcut_icon_generator.h"
-#include "chrome/browser/ssl/chrome_security_state_tab_helper.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/web_applications/jobs/finalize_install_or_update_job.h"
 #include "chrome/browser/web_applications/model/display_override.h"
@@ -57,10 +56,11 @@
 #include "components/webapps/browser/installable/installable_evaluator.h"
 #include "components/webapps/browser/installable/installable_manager.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
+#include "content/public/browser/manifest_icon_downloader.h"
 #include "content/public/common/content_features.h"
 #include "mojo/public/cpp/bindings/struct_ptr.h"
+#include "net/base/mime_util.h"
 #include "net/http/http_util.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -85,31 +85,39 @@ constexpr int kMaxIcons = 20;
 constexpr SquareSizePx kMaxIconSize =
     webapps::InstallableEvaluator::kMaximumIconSizeInPx;
 
-// Append non-empty square icons from |icons_map| onto the |square_icons| list.
+SkBitmap EnsureSquareIcon(const SkBitmap& icon) {
+  CHECK(!icon.drawsNothing());
+  if (icon.width() == icon.height()) {
+    return icon;
+  }
+  return content::ManifestIconDownloader::PadIconToSquare(
+      icon, std::min(std::max(icon.width(), icon.height()), kMaxIconSize));
+}
+
 void AddSquareIconsFromMap(std::vector<SkBitmap>* square_icons,
                            const IconsMap& icons_map) {
-  for (const auto& url_icon : icons_map) {
-    for (const SkBitmap& icon : url_icon.second) {
-      if (!icon.empty() && icon.width() == icon.height())
-        square_icons->push_back(icon);
+  for (const auto& [url, bitmaps] : icons_map) {
+    for (const SkBitmap& icon : bitmaps) {
+      if (!icon.drawsNothing()) {
+        square_icons->push_back(EnsureSquareIcon(icon));
+      }
     }
   }
 }
 
-// Append non-empty square icons from |icons_map| onto the |square_icons| list,
-// if they are also in |manifest_icons|.
 void AddSquareIconsFromMapMatchingIconInfos(
     std::vector<SkBitmap>* square_icons,
     const std::vector<apps::IconInfo>& manifest_icons,
     const IconsMap& icons_map) {
-  for (const auto& url_icon : icons_map) {
-    for (const SkBitmap& icon : url_icon.second) {
-      if (!icon.empty() && icon.width() == icon.height()) {
-        for (const auto& info : manifest_icons) {
-          if (info.url == url_icon.first) {
-            square_icons->push_back(icon);
-          }
-        }
+  for (const auto& [url, bitmaps] : icons_map) {
+    if (!std::ranges::any_of(manifest_icons, [&](const apps::IconInfo& info) {
+          return info.url == url;
+        })) {
+      continue;
+    }
+    for (const SkBitmap& icon : bitmaps) {
+      if (!icon.drawsNothing()) {
+        square_icons->push_back(EnsureSquareIcon(icon));
       }
     }
   }
@@ -119,8 +127,8 @@ void AddSquareIconsFromMapMatchingIconInfos(
 void AddSquareIconsFromBitmaps(std::vector<SkBitmap>* square_icons,
                                const OrderedSizeToBitmap& bitmaps) {
   for (const auto& [size, icon] : bitmaps) {
-    DCHECK_EQ(size, icon.width());
-    DCHECK_EQ(size, icon.height());
+    CHECK_EQ(size, icon.width(), base::NotFatalUntil::M162);
+    CHECK_EQ(size, icon.height(), base::NotFatalUntil::M162);
     if (!icon.empty()) {
       square_icons->push_back(icon);
     }
@@ -193,26 +201,21 @@ void PopulateShortcutItemIcons(WebAppInstallInfo* web_app_info,
       for (const auto& icon :
            shortcut.GetShortcutIconInfosForPurpose(purpose)) {
         auto it = icons_map.find(icon.url);
-        // Resize bitmaps only if the icon size is non-zero. The alternative
-        // happens mostly for icons with a size of ANY passed in via the
-        // manifest, for which we do not need to resize since it is downloaded
-        // in all sizes..
         if (it != icons_map.end()) {
+          std::vector<SkBitmap> square_bitmaps;
+          for (const auto& bitmap : it->second) {
+            if (!bitmap.drawsNothing()) {
+              square_bitmaps.push_back(EnsureSquareIcon(bitmap));
+            }
+          }
           if (icon.square_size_px != 0) {
-            std::set<SquareSizePx> sizes_to_generate;
-            sizes_to_generate.emplace(icon.square_size_px);
+            std::set<SquareSizePx> sizes_to_generate = {icon.square_size_px};
             OrderedSizeToBitmap resized_bitmaps(
-                ConstrainBitmapsToSizes(it->second, sizes_to_generate));
-
-            // Don't overwrite as a shortcut item could have multiple icon urls.
+                ConstrainBitmapsToSizes(square_bitmaps, sizes_to_generate));
             bitmaps.insert(resized_bitmaps.begin(), resized_bitmaps.end());
           } else {
-            // For icons that do not need resizing, pass in the bitmaps as it
-            // is, barring ones that have no intrinsic size.
-            for (const auto& bitmap : it->second) {
-              if (!bitmap.empty()) {
-                bitmaps[bitmap.width()] = bitmap;
-              }
+            for (const auto& bitmap : square_bitmaps) {
+              bitmaps[bitmap.width()] = bitmap;
             }
           }
         }
@@ -243,7 +246,7 @@ void PopulateHomeTabIcons(WebAppInstallInfo* web_app_info,
   for (const auto& icon : home_tab.icons) {
     // An icon's purpose vector should never be empty (the manifest parser
     // should have added ANY if there was no purpose specified in the manifest).
-    DCHECK(!icon.purpose.empty());
+    CHECK(!icon.purpose.empty(), base::NotFatalUntil::M162);
 
     // Only store bitmaps for this URL if this is the first time we've seen it.
     bool bitmaps_already_saved_for_url =
@@ -255,19 +258,19 @@ void PopulateHomeTabIcons(WebAppInstallInfo* web_app_info,
     }
 
     for (const SkBitmap& bitmap : downloaded_bitmaps_for_url->second) {
-      // Filter out bitmaps that are empty, non-square or are too large.
-      if (bitmap.empty() || bitmap.width() != bitmap.height() ||
-          bitmap.width() > kMaxIconSize) {
+      if (bitmap.drawsNothing()) {
         continue;
       }
-
-      // Add the bitmap to 'other_icon_bitmaps'.
+      SkBitmap square_bitmap = EnsureSquareIcon(bitmap);
+      if (square_bitmap.width() > kMaxIconSize) {
+        continue;
+      }
       if (!bitmaps_already_saved_for_url) {
-        other_icon_bitmaps[icon.src].emplace_back(bitmap);
+        other_icon_bitmaps[icon.src].push_back(std::move(square_bitmap));
       }
     }
 
-    DCHECK(other_icon_bitmaps.size() <= kMaxIcons);
+    CHECK(other_icon_bitmaps.size() <= kMaxIcons, base::NotFatalUntil::M162);
   }
 }
 
@@ -317,7 +320,9 @@ void PopulateFileHandlerInfoFromManifest(
   apps::FileHandlers web_app_file_handlers;
 
   for (const auto& manifest_file_handler : manifest_file_handlers) {
-    DCHECK(manifest_file_handler);
+    if (!manifest_file_handler) {
+      continue;
+    }
     apps::FileHandler web_app_file_handler;
     web_app_file_handler.action = manifest_file_handler->action;
     web_app_file_handler.display_name = manifest_file_handler->name;
@@ -325,16 +330,30 @@ void PopulateFileHandlerInfoFromManifest(
         ToFileHandlerLaunchType(manifest_file_handler->launch_type);
 
     for (const auto& it : manifest_file_handler->accept) {
-      apps::FileHandler::AcceptEntry web_app_accept_entry;
-      web_app_accept_entry.mime_type = base::UTF16ToUTF8(it.first);
-      for (const auto& manifest_file_extension : it.second) {
-        web_app_accept_entry.file_extensions.insert(
-            base::UTF16ToUTF8(manifest_file_extension));
+      std::string mime_type = base::UTF16ToUTF8(it.first);
+      std::string top_level_mime_type;
+      if (!net::ParseMimeTypeWithoutParameter(mime_type, &top_level_mime_type,
+                                              nullptr) ||
+          !net::IsValidTopLevelMimeType(top_level_mime_type)) {
+        continue;
       }
-      web_app_file_handler.accept.push_back(std::move(web_app_accept_entry));
+      apps::FileHandler::AcceptEntry web_app_accept_entry;
+      web_app_accept_entry.mime_type = std::move(mime_type);
+      for (const auto& manifest_file_extension : it.second) {
+        std::string file_extension = base::UTF16ToUTF8(manifest_file_extension);
+        if (file_extension.length() <= 1 || file_extension[0] != '.') {
+          continue;
+        }
+        web_app_accept_entry.file_extensions.insert(std::move(file_extension));
+      }
+      if (!web_app_accept_entry.file_extensions.empty()) {
+        web_app_file_handler.accept.push_back(std::move(web_app_accept_entry));
+      }
     }
 
-    web_app_file_handlers.push_back(std::move(web_app_file_handler));
+    if (!web_app_file_handler.accept.empty()) {
+      web_app_file_handlers.push_back(std::move(web_app_file_handler));
+    }
   }
 
   web_app_info->file_handlers = std::move(web_app_file_handlers);
@@ -378,8 +397,9 @@ void PopulateProductIcons(WebAppInstallInfo* web_app_info,
         &square_icons_monochrome, manifest_icons_monochrome, *icons_map);
     // Fall back to using all icons from |icons_map| if none match
     // manifest_icons.
-    if (square_icons_any.empty())
+    if (square_icons_any.empty()) {
       AddSquareIconsFromMap(&square_icons_any, *icons_map);
+    }
   }
   AddSquareIconsFromBitmaps(&square_icons_any, web_app_info->icon_bitmaps.any);
 
@@ -467,8 +487,9 @@ void RecordDownloadedIconsHttpResultsCodeClass(
     std::string_view histogram_name,
     IconsDownloadedResult result,
     const DownloadedIconsHttpResults& icons_http_results) {
-  if (result != IconsDownloadedResult::kCompleted)
+  if (result != IconsDownloadedResult::kCompleted) {
     return;
+  }
 
   for (const auto& url_and_http_status_code : icons_http_results) {
     int http_status_code = url_and_http_status_code.second;
@@ -484,8 +505,9 @@ void RecordDownloadedIconsHttpResultsCodeClass(
 void RecordDownloadedIconHttpStatusCodes(
     std::string_view histogram_name,
     const DownloadedIconsHttpResults& icons_http_results) {
-  if (icons_http_results.empty())
+  if (icons_http_results.empty()) {
     return;
+  }
 
   // Do not use UMA_HISTOGRAM_... macros here, as it caches the Histogram
   // instance and thus only works if |histogram_name| is constant.
@@ -498,13 +520,15 @@ void RecordDownloadedIconHttpStatusCodes(
   // code only once.
   std::vector<int> http_status_codes;
   http_status_codes.reserve(icons_http_results.size());
-  for (const auto& url_and_http_status_code : icons_http_results)
+  for (const auto& url_and_http_status_code : icons_http_results) {
     http_status_codes.push_back(url_and_http_status_code.second);
+  }
 
   base::flat_set<int> unique_http_status_codes{std::move(http_status_codes)};
 
-  for (int http_status_code : unique_http_status_codes)
+  for (int http_status_code : unique_http_status_codes) {
     counter->Add(net::HttpUtil::MapStatusCodeForHistogram(http_status_code));
+  }
 }
 
 WebAppManagement::Type ConvertExternalInstallSourceToSource(
@@ -627,7 +651,6 @@ WebAppManagement::Type ConvertInstallSurfaceToWebAppSource(
 
 void CreateWebAppInstallTabHelpers(content::WebContents* web_contents) {
   webapps::InstallableManager::CreateForWebContents(web_contents);
-  ChromeSecurityStateTabHelper::CreateForWebContents(web_contents);
   favicon::CreateContentFaviconDriverForWebContents(web_contents);
   webapps::PreRedirectionURLObserver::CreateForWebContents(web_contents);
 }
@@ -639,7 +662,7 @@ void SetWebAppManifestFields(const WebAppInstallInfo& web_app_info,
   // WebApp.
   CHECK_EQ(web_app_info.manifest_id(), web_app.manifest_id());
 
-  DCHECK(!web_app_info.title.empty());
+  CHECK(!web_app_info.title.empty(), base::NotFatalUntil::M162);
   web_app.SetName(base::UTF16ToUTF8(web_app_info.title.value()));
 
   const GURL& start_url = web_app_info.start_url();
@@ -662,21 +685,25 @@ void SetWebAppManifestFields(const WebAppInstallInfo& web_app_info,
   web_app.SetDescription(base::UTF16ToUTF8(web_app_info.description.value()));
   web_app.SetLaunchQueryParams(web_app_info.launch_query_params);
 
-  DCHECK(!web_app_info.theme_color.has_value() ||
-         SkColorGetA(*web_app_info.theme_color) == SK_AlphaOPAQUE);
+  CHECK(!web_app_info.theme_color.has_value() ||
+            SkColorGetA(*web_app_info.theme_color) == SK_AlphaOPAQUE,
+        base::NotFatalUntil::M162);
   web_app.SetThemeColor(web_app_info.theme_color);
 
-  DCHECK(!web_app_info.dark_mode_theme_color.has_value() ||
-         SkColorGetA(*web_app_info.dark_mode_theme_color) == SK_AlphaOPAQUE);
+  CHECK(!web_app_info.dark_mode_theme_color.has_value() ||
+            SkColorGetA(*web_app_info.dark_mode_theme_color) == SK_AlphaOPAQUE,
+        base::NotFatalUntil::M162);
   web_app.SetDarkModeThemeColor(web_app_info.dark_mode_theme_color);
 
-  DCHECK(!web_app_info.background_color.has_value() ||
-         SkColorGetA(*web_app_info.background_color) == SK_AlphaOPAQUE);
+  CHECK(!web_app_info.background_color.has_value() ||
+            SkColorGetA(*web_app_info.background_color) == SK_AlphaOPAQUE,
+        base::NotFatalUntil::M162);
   web_app.SetBackgroundColor(web_app_info.background_color);
 
-  DCHECK(!web_app_info.dark_mode_background_color.has_value() ||
-         SkColorGetA(*web_app_info.dark_mode_background_color) ==
-             SK_AlphaOPAQUE);
+  CHECK(!web_app_info.dark_mode_background_color.has_value() ||
+            SkColorGetA(*web_app_info.dark_mode_background_color) ==
+                SK_AlphaOPAQUE,
+        base::NotFatalUntil::M162);
   web_app.SetDarkModeBackgroundColor(web_app_info.dark_mode_background_color);
 
   if (!skip_icons_on_download_failure) {
@@ -691,8 +718,9 @@ void SetWebAppManifestFields(const WebAppInstallInfo& web_app_info,
   web_app.SetProtocolHandlers(web_app_info.protocol_handlers);
   web_app.SetScopeExtensions(web_app_info.scope_extensions);
 
-  if (base::FeatureList::IsEnabled(features::kWebLockScreenApi))
+  if (base::FeatureList::IsEnabled(features::kWebLockScreenApi)) {
     web_app.SetLockScreenStartUrl(web_app_info.lock_screen_start_url);
+  }
 
   web_app.SetNoteTakingNewNoteUrl(web_app_info.note_taking_new_note_url);
 
@@ -707,9 +735,7 @@ void SetWebAppManifestFields(const WebAppInstallInfo& web_app_info,
         web_app_info.validated_scope_extensions.value());
   }
 
-  if (base::FeatureList::IsEnabled(blink::features::kWebAppMigrationApi)) {
-    web_app.SetUnvalidatedMigrationSources(web_app_info.migration_sources);
-  }
+  web_app.SetUnvalidatedMigrationSources(web_app_info.migration_sources);
 
   web_app.SetIsDiyApp(web_app_info.is_diy_app);
 
@@ -737,23 +763,27 @@ void SetWebAppProductIconFields(const WebAppInstallInfo& web_app_info,
 
 void ApplyParamsToWebAppInstallInfo(const WebAppInstallParams& install_params,
                                     WebAppInstallInfo& web_app_info) {
-  if (install_params.user_display_mode.has_value())
+  if (install_params.user_display_mode.has_value()) {
     web_app_info.user_display_mode = install_params.user_display_mode;
+  }
 
   // If `additional_search_terms` was a manifest property, it would be
   // sanitized while parsing the manifest. Since it's not, we sanitize it
   // here.
   for (const std::string& search_term :
        install_params.additional_search_terms) {
-    if (!search_term.empty())
+    if (!search_term.empty()) {
       web_app_info.additional_search_terms.push_back(search_term);
+    }
   }
 
-  if (install_params.launch_query_params)
+  if (install_params.launch_query_params) {
     web_app_info.launch_query_params = install_params.launch_query_params;
+  }
 
-  if (install_params.install_url.is_valid())
+  if (install_params.install_url.is_valid()) {
     web_app_info.install_url = install_params.install_url;
+  }
 }
 
 void ApplyParamsToFinalizeOptions(const WebAppInstallParams& install_params,

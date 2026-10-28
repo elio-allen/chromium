@@ -12,7 +12,10 @@ import './performance_intervention_button.js';
 import './pinned_toolbar_actions.js';
 import './extensions.js';
 import './app_menu_button.js';
+import './glic_button.js';
 import './avatar_button.js';
+import './media_button.js';
+import './overflow_button.js';
 import '/shared/icon_table.js';
 import '/shared/icon_from_table.js';
 import './icons.js';
@@ -20,135 +23,26 @@ import './icons.js';
 import {assert} from '//resources/js/assert.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import {MetricsReporterImpl} from '//resources/js/metrics_reporter/metrics_reporter.js';
-import {TrackedElementManager} from '//resources/js/tracked_element/tracked_element_manager.js';
 import {CrLitElement, nothing} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
+import type {IconUpdate} from '/shared/icon_handle.mojom-webui.js';
 import {IconTable} from '/shared/icon_table.js';
+import {HighlightTracker, setHasHelpBubble} from '/shared/toolbar_button.js';
+import type {OverflowMenuItem} from '/shared/toolbar_ui_api.mojom-webui.js';
+import {AppMenuIconType, AppMenuSeverity, AvatarToolbarButtonState, SplitTabActiveLocation} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
+import type {ToolbarState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 import {ColorChangeUpdater} from 'chrome://resources/cr_components/color_change_listener/colors_css_updater.js';
 import {HelpBubbleMixinLit} from 'chrome://resources/cr_components/help_bubble/help_bubble_mixin_lit.js';
 
 import {getCss} from './app.css.js';
 import {getHtml} from './app.html.js';
-import {BrowserProxyImpl, EventDispositionFlag, INVALID_NAVIGATION_CONTROLS_STATE_LISTENER_HANDLE} from './browser_proxy.js';
-import type {BrowserProxy, IconUpdate, NavigationControlsState, NavigationControlsStateListenerHandle} from './browser_proxy.js';
-import type {ResponsiveControl} from './responsive_control.js';
-import {setHasHelpBubble} from './toolbar_button.js';
-
-// clang-format off
-// Helper so tests can find what they needed when optimization is on.
-// Exporting from this file, the rollup file, ensures that we test the
-// same code that we ship in optimized builds.
-import type {IconFromTableElement} from '/shared/icon_from_table.js';
-import {
-  AppMenuIconType,
-  AppMenuSeverity,
-  AvatarToolbarButtonState,
-  ContentSettingImageType,
-  ContextMenuType,
-  FocusRequestTarget,
-  LhsChipIdentifier,
-  OmniboxTextColor,
-  PageActionId,
-  PageActionTrigger,
-  PermissionAction,
-  PermissionChipTheme,
-  PermissionPromptStyle,
-  SplitTabActiveLocation,
-} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
-import {IconType} from '/shared/icon_handle.mojom-webui.js';
-import type {OmniboxAction, LocationBarState, PageActionState, PermissionChipState, PermissionDashboardState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
-import {PermissionChipElement} from '/shared/permission_chip.js';
-import type {PermissionDashboardElement} from '/shared/permission_dashboard.js';
-
-import {INVALID_FOCUS_REQUEST_HANDLE} from './browser_proxy.js';
-import {AppMenuButtonElement} from './app_menu_button.js';
-import {ContentSettingIconElement} from './content_setting_icon.js';
-import {ContentSettingsIconsElement} from './content_settings_icons.js';
+import {BrowserProxyImpl, INVALID_TOOLBAR_STATE_LISTENER_HANDLE, ToolbarStateKey} from './browser_proxy.js';
+import type {BrowserProxy, InitialStateReader, ToolbarStateListenerHandle} from './browser_proxy.js';
 import type {ExtensionsElement} from './extensions.js';
-import {LocationBarElement} from './location_bar.js';
-import {LocationIconElement} from './location_icon.js';
-import {PageActionIconElement} from './page_action_icon.js';
-import {PageActionIconsElement} from './page_action_icons.js';
-import type {PinnedToolbarActionElement} from './pinned_toolbar_action.js';
-import type {PinnedToolbarActionsElement} from './pinned_toolbar_actions.js';
-import {PointerProxyImpl} from './pointer_proxy.js';
-import type {PointerProxy} from './pointer_proxy.js';
-import {ReadonlyOmniboxElement} from './readonly_omnibox.js';
-import {AnimationTracker, ToolbarActionContainerMixin} from './toolbar_action_container_mixin.js';
-import type {KeyedActionState, ToolbarActionContainerMixinInterface} from './toolbar_action_container_mixin.js';
-import {ToolbarActionMixin} from './toolbar_action_mixin.js';
-import type {ToolbarActionMixinInterface} from './toolbar_action_mixin.js';
-import {getClickSourceType, getContextMenuSourceType, PressHandler} from './toolbar_button.js';
-import {ToolbarChipButtonElement} from './toolbar_chip_button.js';
-import {CrLazyIconset} from './cr_lazy_iconset.js';
-
-import {IconsetMap} from '//resources/cr_elements/cr_icon/iconset_map.js';
-import {getTrustedHTML} from '//resources/js/static_types.js';
-
-// TODO(crbug.com/535392412): do not export these from app.ts, find a better place for them instead.
-export {
-  AnimationTracker,
-  AppMenuButtonElement,
-  AppMenuIconType,
-  AppMenuSeverity,
-  BrowserProxyImpl,
-  ContextMenuType,
-  ContentSettingIconElement,
-  ContentSettingImageType,
-  ContentSettingsIconsElement,
-  CrLazyIconset,
-  EventDispositionFlag,
-  FocusRequestTarget,
-  getClickSourceType,
-  getContextMenuSourceType,
-  getTrustedHTML,
-  getTypedBoolean,
-  getTypedInteger,
-  hasInitialStateKey,
-  IconTable,
-  IconType,
-  IconsetMap,
-  INVALID_FOCUS_REQUEST_HANDLE,
-  INVALID_NAVIGATION_CONTROLS_STATE_LISTENER_HANDLE,
-  LhsChipIdentifier,
-  LocationBarElement,
-  LocationIconElement,
-  OmniboxTextColor,
-  PageActionIconElement,
-  PageActionIconsElement,
-  PageActionId,
-  PageActionTrigger,
-  PermissionAction,
-  PermissionChipElement,
-  PermissionChipTheme,
-  PermissionPromptStyle,
-  PointerProxyImpl,
-  PressHandler,
-  ReadonlyOmniboxElement,
-  resetInitialStateForTesting,
-  ToolbarActionContainerMixin,
-  ToolbarActionMixin,
-  ToolbarChipButtonElement,
-  TrackedElementManager,
-};
-export type {
-  ExtensionsElement,
-  IconFromTableElement,
-  KeyedActionState,
-  LocationBarState,
-  OmniboxAction,
-  PageActionState,
-  PermissionChipState,
-  PermissionDashboardElement,
-  PermissionDashboardState,
-  PinnedToolbarActionElement,
-  PinnedToolbarActionsElement,
-  PointerProxy,
-  ToolbarActionContainerMixinInterface,
-  ToolbarActionMixinInterface,
-  ToolbarFlatStateSchema,
-};
-// clang-format on
+import {createDefaultLocationBarState} from './location_bar.js';
+import type {LocationBarElement} from './location_bar.js';
+import type {OverflowButtonElement} from './overflow_button.js';
+import type {ResponsiveControl} from './responsive_control.js';
 
 // LINT.IfChange(InitialWebUIRendererMilestones)
 const MARK_JS_RESOURCES_LOADED = 'JsResourcesLoaded';
@@ -163,109 +57,19 @@ const TRACKED_ELEMENTS: Array<{selector: string, id: string}> = [
   {selector: '#split-tabs', id: 'kToolbarSplitTabsToolbarButtonElementId'},
   {selector: '#location-bar', id: 'kLocationBarElementId'},
   {selector: '#home', id: 'kToolbarHomeButtonElementId'},
-  {selector: '#app-menu', id: 'kToolbarAppMenuButtonElementId'},
-  {selector: '#avatar', id: 'kToolbarAvatarButtonElementId'},
+  {selector: '#overflow', id: 'kToolbarOverflowButtonElementId'},
   {selector: '#battery-saver', id: 'kToolbarBatterySaverButtonElementId'},
   {
     selector: '#performance-intervention',
     id: 'kToolbarPerformanceInterventionButtonElementId',
   },
+  {selector: '#media', id: 'kToolbarMediaButtonElementId'},
+  {selector: '#glic-button', id: 'kGlicButtonElementId'},
+  {selector: '#avatar', id: 'kToolbarAvatarButtonElementId'},
+  {selector: '#app-menu', id: 'kToolbarAppMenuButtonElementId'},
 ];
 
 const AppElementBase = HelpBubbleMixinLit(CrLitElement);
-
-/**
- * Keys corresponding to initial toolbar state values provided by the browser.
- */
-enum ToolbarStateKey {
-  IS_NAVIGATION_LOADING = 'isNavigationLoading',
-  RELOAD_CAN_SHOW_MENU = 'reloadCanShowMenu',
-  BACK_BUTTON_ENABLED = 'backButtonEnabled',
-  FORWARD_BUTTON_ENABLED = 'forwardButtonEnabled',
-  HOME_BUTTON_SHOULD_BE_SHOWN = 'homeButtonShouldBeShown',
-  BATTERY_SAVER_BUTTON_VISIBLE = 'batterySaverButtonVisible',
-  LAYOUT_CONSTANTS_VERSION = 'layoutConstantsVersion',
-  TOUCH_UI = 'touchUi',
-  INITIAL_WEBUI_SURFACE_SYNC_ENABLED = 'initialWebUISurfaceSyncEnabled',
-  IS_FALLBACK_PREWARMING = 'isFallbackPrewarming',
-}
-
-/**
- * Schema mapping `ToolbarStateKey` entries to their respective value types in
- * the initial state dictionary.
- */
-interface ToolbarFlatStateSchema {
-  [ToolbarStateKey.IS_NAVIGATION_LOADING]: boolean;
-  [ToolbarStateKey.RELOAD_CAN_SHOW_MENU]: boolean;
-  [ToolbarStateKey.BACK_BUTTON_ENABLED]: boolean;
-  [ToolbarStateKey.FORWARD_BUTTON_ENABLED]: boolean;
-  [ToolbarStateKey.HOME_BUTTON_SHOULD_BE_SHOWN]: boolean;
-  [ToolbarStateKey.BATTERY_SAVER_BUTTON_VISIBLE]: boolean;
-  [ToolbarStateKey.LAYOUT_CONSTANTS_VERSION]: number;
-  [ToolbarStateKey.TOUCH_UI]: boolean;
-  [ToolbarStateKey.INITIAL_WEBUI_SURFACE_SYNC_ENABLED]: boolean;
-  [ToolbarStateKey.IS_FALLBACK_PREWARMING]: boolean;
-}
-
-let parsedInitialState: Record<string, unknown>|null = null;
-
-/**
- * Parses and returns the initial toolbar state dictionary from
- * `chrome.getVariableValue('initialState')`. Caches the parsed result after
- * the first call, returning an empty object if unparsable or absent.
- */
-function getInitialState(): Record<string, unknown> {
-  if (!parsedInitialState) {
-    const jsonString = chrome.getVariableValue('initialState');
-    if (jsonString) {
-      try {
-        parsedInitialState = JSON.parse(jsonString);
-      } catch {
-        parsedInitialState = {};
-      }
-    } else {
-      parsedInitialState = {};
-    }
-  }
-  return parsedInitialState!;
-}
-
-/**
- * Determines whether the specified `key` is present in the initial toolbar
- * state dictionary.
- */
-function hasInitialStateKey(key: ToolbarStateKey): boolean {
-  return key in getInitialState();
-}
-
-/**
- * Resets the cached initial toolbar state to `null` for testing purposes.
- */
-function resetInitialStateForTesting(): void {
-  parsedInitialState = null;
-}
-
-/**
- * Reads a boolean property for the given `key` from the initial state
- * dictionary. Returns `false` if the property is missing or not a boolean.
- */
-function getTypedBoolean<K extends keyof ToolbarFlatStateSchema>(key: K):
-    boolean {
-  const state = getInitialState();
-  const val = state[key];
-  return typeof val === 'boolean' ? val : false;
-}
-
-/**
- * Reads a numeric property for the given `key` from the initial state
- * dictionary. Returns `0` if the property is missing or not a number.
- */
-function getTypedInteger<K extends keyof ToolbarFlatStateSchema>(key: K):
-    number {
-  const state = getInitialState();
-  const val = state[key];
-  return typeof val === 'number' ? val : 0;
-}
 
 export class ToolbarAppElement extends AppElementBase {
   static get is() {
@@ -279,7 +83,7 @@ export class ToolbarAppElement extends AppElementBase {
   /**
    * Returns the Lit element template. To prevent premature paint holding
    * resolution (FCP) during startup, we return `nothing` until the initial
-   * navigation controls state has been received from the browser.
+   * toolbar state has been received from the browser.
    */
   override render() {
     if (!this.isInitialized_) {
@@ -296,15 +100,16 @@ export class ToolbarAppElement extends AppElementBase {
       isHomeButtonEnabled_: {type: Boolean},
       isBatterySaverButtonEnabled_: {type: Boolean},
       isLocationBarEnabled_: {type: Boolean},
-      navigationControlsState_: {type: Object},
+      toolbarState_: {type: Object},
       isBackForwardButtonEnabled_: {type: Boolean},
       isPinnedToolbarActionsEnabled_: {type: Boolean},
       isExtensionsContainerEnabled_: {type: Boolean},
+      isGlicButtonEnabled_: {type: Boolean},
       isAvatarButtonEnabled_: {type: Boolean},
       isPerformanceInterventionButtonEnabled_: {type: Boolean},
+      isMediaButtonEnabled_: {type: Boolean},
       isInitialized_: {type: Boolean},
-      isInitializedSyncForTesting_: {type: Boolean},
-      initialSyncBootSuccess_: {type: Boolean},
+      webUIToolbarFullyEnabled_: {type: Boolean},
     };
   }
 
@@ -326,37 +131,46 @@ export class ToolbarAppElement extends AppElementBase {
       loadTimeData.getBoolean('enablePinnedToolbarActions');
   protected accessor isExtensionsContainerEnabled_: boolean =
       loadTimeData.getBoolean('enableExtensionsContainer');
+  private browserProxy_: BrowserProxy = BrowserProxyImpl.getInstance();
+  private initialState_: InitialStateReader =
+      this.browserProxy_.getInitialState();
+  protected accessor isGlicButtonEnabled_: boolean =
+      loadTimeData.getBoolean('enableGlicButton') &&
+      this.initialState_.getBoolean(
+          ToolbarStateKey.IS_PROFILE_ELIGIBLE_FOR_GLIC);
   protected accessor isAvatarButtonEnabled_: boolean =
-      loadTimeData.getBoolean('enableAvatarButton');
+      loadTimeData.getBoolean('enableAvatarButton') &&
+      this.initialState_.getBoolean(
+          ToolbarStateKey.CAN_SHOW_AVATAR_FOR_PROFILE);
   protected accessor isPerformanceInterventionButtonEnabled_: boolean =
       loadTimeData.getBoolean('enablePerformanceInterventionButton');
+  protected accessor isMediaButtonEnabled_: boolean =
+      loadTimeData.getBoolean('enableMediaButton');
   /**
-   * Tracks whether the element has received its first navigation state
+   * Tracks whether the element has received its first toolbar state
    * update from the browser and completed its initial visual render.
    */
   protected accessor isInitialized_: boolean =
-      !getTypedBoolean(ToolbarStateKey.INITIAL_WEBUI_SURFACE_SYNC_ENABLED) ||
-      hasInitialStateKey(ToolbarStateKey.IS_NAVIGATION_LOADING);
-  // Test-only flag to verify that the toolbar was initialized synchronously.
-  protected accessor isInitializedSyncForTesting_: boolean =
-      hasInitialStateKey(ToolbarStateKey.IS_NAVIGATION_LOADING);
-  protected accessor initialSyncBootSuccess_: boolean =
-      hasInitialStateKey(ToolbarStateKey.IS_NAVIGATION_LOADING) &&
-      hasInitialStateKey(ToolbarStateKey.BACK_BUTTON_ENABLED) &&
-      hasInitialStateKey(ToolbarStateKey.FORWARD_BUTTON_ENABLED);
+      !this.initialState_.getBoolean(
+          ToolbarStateKey.INITIAL_WEBUI_SURFACE_SYNC_ENABLED) ||
+      this.initialState_.hasKey(ToolbarStateKey.IS_NAVIGATION_LOADING);
   private omniboxResizingPrioritizationEnabled_: boolean =
       loadTimeData.getBoolean('omniboxResizingPrioritizationEnabled');
-  private webUIToolbarFullyEnabled_: boolean =
+  private toolbarAppMenuLabelResizingEnabled_: boolean =
+      loadTimeData.getBoolean('toolbarAppMenuLabelResizingEnabled');
+  private toolbarGlicButtonResizingEnabled_: boolean =
+      loadTimeData.getBoolean('toolbarGlicButtonResizingEnabled');
+  protected accessor webUIToolbarFullyEnabled_: boolean =
       loadTimeData.getBoolean('webUIToolbarFullyEnabled');
-  protected accessor navigationControlsState_: NavigationControlsState = {
+  protected accessor toolbarState_: ToolbarState = {
     reloadControlState: {
       // While this will be overwritten anyways, this matches the default value
       // on some platforms.
       doubleClickInterval: {microseconds: BigInt(500 * 1000)},
 
-      canShowMenu: getTypedBoolean(ToolbarStateKey.RELOAD_CAN_SHOW_MENU),
+      canShowMenu: this.initialState_.getBoolean(ToolbarStateKey.RELOAD_CAN_SHOW_MENU),
       isNavigationLoading:
-          getTypedBoolean(ToolbarStateKey.IS_NAVIGATION_LOADING),
+          this.initialState_.getBoolean(ToolbarStateKey.IS_NAVIGATION_LOADING),
       isContextMenuVisible: false,
       stateToken: 0,
     },
@@ -365,28 +179,28 @@ export class ToolbarAppElement extends AppElementBase {
       location: SplitTabActiveLocation.kStart,
       shouldBeShown: false,
       isContextMenuVisible: false,
+      menuOpenToken: 0,
     },
     backForwardControlState: {
       backButtonState: {
-        enabled: getTypedBoolean(ToolbarStateKey.BACK_BUTTON_ENABLED),
+        enabled: this.initialState_.getBoolean(ToolbarStateKey.BACK_BUTTON_ENABLED),
         shouldBeShown: true,
         isContextMenuVisible: false,
       },
       forwardButtonState: {
-        enabled: getTypedBoolean(ToolbarStateKey.FORWARD_BUTTON_ENABLED),
+        enabled: this.initialState_.getBoolean(ToolbarStateKey.FORWARD_BUTTON_ENABLED),
         shouldBeShown: true,
         isContextMenuVisible: false,
       },
-      backButtonLeadingMargin: 0,
+      windowIsMaximizedOrFullscreen: false,
     },
     homeControlState: {
       shouldBeShown:
-          getTypedBoolean(ToolbarStateKey.HOME_BUTTON_SHOULD_BE_SHOWN),
+          this.initialState_.getBoolean(ToolbarStateKey.HOME_BUTTON_SHOULD_BE_SHOWN),
       isContextMenuVisible: false,
     },
     performanceInterventionControlState: {
       shouldBeShown: false,
-      isActive: true,
     },
     appMenuControlState: {
       iconType: AppMenuIconType.kNone,
@@ -395,49 +209,15 @@ export class ToolbarAppElement extends AppElementBase {
       accessibilityText: '',
       tooltip: '',
       isContextMenuVisible: false,
-      trailingMargin: 0,
+      windowIsMaximizedOrFullscreen: false,
     },
 
-    batterySaverButtonVisible:
-        getTypedBoolean(ToolbarStateKey.BATTERY_SAVER_BUTTON_VISIBLE),
-    locationBarState: {
-      omniboxViewState: {
-        browserVersion: 0,
-        uiVersion: 0,
-        formattedFullUrl: '',
-        textPieces: [],
-        placeholder: null,
-        inlineAutocompletion: '',
-        additionalText: '',
-        selection: null,
-        textIsUrl: false,
-        userInputInProgress: false,
-      },
-      locationBarFlags: {
-        userInputInProgress: false,
-        popupOpen: false,
-        forceAimButtonFocusRing: false,
-      },
-      selectedKeyword: null,
-      contentSettingImageStates: [],
-      lhsChipsState: {
-        securityChip: {
-          icon: {handleId: 0n},
-          securityLevel: 0,
-          text: '',
-          accessibilityState: {
-            label: '',
-            description: '',
-          },
-          isClickable: false,
-          isTextDangerous: false,
-          isVisible: true,
-        },
-        activityIndicators: [],
-        permissionDashboard: null,
-      },
-      pageActionStates: [],
+    batterySaverControlState: {
+      shouldBeShown:
+          this.initialState_.getBoolean(ToolbarStateKey.BATTERY_SAVER_BUTTON_VISIBLE),
+      preventOverflow: false,
     },
+    locationBarState: createDefaultLocationBarState(),
     avatarControlState: {
       state: AvatarToolbarButtonState.kNormal,
       icon: {handleId: 0n},
@@ -447,30 +227,65 @@ export class ToolbarAppElement extends AppElementBase {
       accessibilityDescription: '',
       enabled: true,
       hasLinearGradientRing: false,
+      preventOverflow: false,
+    },
+    overflowButtonControlState: {
+      isContextMenuVisible: false,
+    },
+    mediaControlState: {
+      enabled: true,
+      shouldBeShown: false,
+      isContextMenuVisible: false,
+      preventOverflow: false,
+    },
+    glicButtonState: {
+      open: false,
+      shouldShow: false,
+      isContextMenuVisible: false,
+      shouldMatchToolbarStyle: false,
+      useCustomThemeFallback: false,
+      nudgeLabel: null,
     },
     layoutConstantsVersion:
-        getTypedInteger(ToolbarStateKey.LAYOUT_CONSTANTS_VERSION),
-    touchUi: getTypedBoolean(ToolbarStateKey.TOUCH_UI),
+        this.initialState_.getInteger(ToolbarStateKey.LAYOUT_CONSTANTS_VERSION),
+    touchUi: this.initialState_.getBoolean(ToolbarStateKey.TOUCH_UI),
     pinnedToolbarActionsState: [],
     extensionsState: [],
+    controlsAppearInactive: false,
   };
-
-  private browserProxy_: BrowserProxy;
-  private navigationStateListenerHandle_:
-      NavigationControlsStateListenerHandle =
-          INVALID_NAVIGATION_CONTROLS_STATE_LISTENER_HANDLE;
+  private toolbarStateListenerHandle_: ToolbarStateListenerHandle =
+      INVALID_TOOLBAR_STATE_LISTENER_HANDLE;
   private iconTable_: IconTable;
   private isPageInitialized_: boolean = false;
   private hasReadState_ = false;
+  private hasReceivedToolbarState_ = false;
   private initializeSessionId_: number = 0;
   private resizeObserver_?: ResizeObserver;
+
+  // Indicates whether there's a pending call to layoutIfNeeded_() on the next
+  // animation frame, so another one will not be queued.
+  private pendingLayoutIfNeeded_: boolean = false;
+  // Indicates whether a layout needs to be done. If set, the next
+  // layoutIfNeeded_() call will always do a layout, unless
+  // layoutResponsiveControls() is called directly in the meantime. Any code
+  // that sets this to true should also schedule a layoutIfNeeded_() call.
+  private pendingLayout_: boolean = false;
+
   private dragOverListener_ = (e: DragEvent) => this.onDragOver_(e);
   private dropListener_ = (e: DragEvent) => this.onDrop_(e);
   private keyDownListener_ = (e: KeyboardEvent) => this.onKeyDown_(e);
   private windowResizeListener_:
+      () => void = () => this.scheduleLayoutIfNeeded_();
+  private requestLayoutListener_:
+      () => void = () => this.scheduleLayoutResponsiveControls_();
+  private layoutNowListener_:
       () => void = () => this.layoutResponsiveControls();
 
   private isRtl_: boolean = loadTimeData.getString('textdirection') === 'rtl';
+
+  get browserProxyForTesting(): BrowserProxy {
+    return this.browserProxy_;
+  }
 
   protected readonly initialBootSnapshot_: {
     backButtonEnabled: boolean,
@@ -481,22 +296,27 @@ export class ToolbarAppElement extends AppElementBase {
 
   constructor() {
     super();
+    const initialSyncBootSuccess =
+        this.initialState_.hasKey(ToolbarStateKey.IS_NAVIGATION_LOADING) &&
+        this.initialState_.hasKey(ToolbarStateKey.BACK_BUTTON_ENABLED) &&
+        this.initialState_.hasKey(ToolbarStateKey.FORWARD_BUTTON_ENABLED);
     this.initialBootSnapshot_ = Object.freeze({
-      backButtonEnabled: getTypedBoolean(ToolbarStateKey.BACK_BUTTON_ENABLED),
+      backButtonEnabled:
+          this.initialState_.getBoolean(ToolbarStateKey.BACK_BUTTON_ENABLED),
       forwardButtonEnabled:
-          getTypedBoolean(ToolbarStateKey.FORWARD_BUTTON_ENABLED),
+          this.initialState_.getBoolean(ToolbarStateKey.FORWARD_BUTTON_ENABLED),
       isNavigationLoading:
-          getTypedBoolean(ToolbarStateKey.IS_NAVIGATION_LOADING),
-      initializedSync: this.initialSyncBootSuccess_,
+          this.initialState_.getBoolean(ToolbarStateKey.IS_NAVIGATION_LOADING),
+      initializedSync: initialSyncBootSuccess,
     });
 
-    const initialWebUISurfaceSyncEnabled =
-        getTypedBoolean(ToolbarStateKey.INITIAL_WEBUI_SURFACE_SYNC_ENABLED);
+    const initialWebUISurfaceSyncEnabled = this.initialState_.getBoolean(
+        ToolbarStateKey.INITIAL_WEBUI_SURFACE_SYNC_ENABLED);
     const isFallbackPrewarming =
-        getTypedBoolean(ToolbarStateKey.IS_FALLBACK_PREWARMING);
+        this.initialState_.getBoolean(ToolbarStateKey.IS_FALLBACK_PREWARMING);
     if (initialWebUISurfaceSyncEnabled && !isFallbackPrewarming) {
       assert(
-          this.initialSyncBootSuccess_,
+          initialSyncBootSuccess,
           'Sync startup expected but critical keys are missing!');
     }
 
@@ -506,7 +326,6 @@ export class ToolbarAppElement extends AppElementBase {
       // custom context menu are responsible for triggering their own menus.
       e.preventDefault();
     });
-    this.browserProxy_ = BrowserProxyImpl.getInstance();
     this.iconTable_ = IconTable.getInstance();
     ColorChangeUpdater.forDocument().start();
     MetricsReporterImpl.getInstance().mark(MARK_JS_RESOURCES_LOADED);
@@ -530,9 +349,19 @@ export class ToolbarAppElement extends AppElementBase {
     this.addEventListener('dragover', this.dragOverListener_);
     this.addEventListener('drop', this.dropListener_);
     this.addEventListener('keydown', this.keyDownListener_);
+    this.addEventListener('request-layout', this.requestLayoutListener_);
+    this.addEventListener('layout-now', this.layoutNowListener_);
 
+    // This ResizeObserver performs a new layout, if needed, when toolbar-app is
+    // resized. This is too late in the process to avoid a visible re-layout,
+    // but serves to make sure if there's any path where we resize elements but
+    // fail to call one of the other methods that triggers a new layout, we'll
+    // still do a layout.
+    //
+    // Since this method does nothing if window size and the toolbar size match,
+    // this is a fairly low overhead call, if we don't need to do a new layout.
     this.resizeObserver_ =
-        new ResizeObserver(() => this.layoutResponsiveControls());
+        new ResizeObserver(() => this.scheduleLayoutIfNeeded_());
     this.resizeObserver_.observe(this);
     window.addEventListener('resize', this.windowResizeListener_);
 
@@ -547,18 +376,40 @@ export class ToolbarAppElement extends AppElementBase {
         '--split-tabs-indicator-spacing',
         `${loadTimeData.getInteger('splitTabsIndicatorSpacing')}px`);
 
-    this.navigationStateListenerHandle_ =
-        this.browserProxy_.addNavigationStateListener(
-            (iconUpdates: IconUpdate[], state: NavigationControlsState) => {
-              // This must be called before updating navigationControlsState_
+    this.toolbarStateListenerHandle_ =
+        this.browserProxy_.addToolbarStateListener(
+            (iconUpdates: IconUpdate[], state: ToolbarState) => {
+              // This must be called before updating toolbarState_
               // so the new icons are available for rendering of child widgets.
               this.iconTable_.applyUpdates(iconUpdates);
-              this.navigationControlsState_ = state;
+              this.toolbarState_ = state;
 
               if (!this.hasReadState_) {
                 this.hasReadState_ = true;
                 MetricsReporterImpl.getInstance().mark(
                     MARK_LOAD_TIME_DATA_READ);
+              }
+
+              const isFirstToolbarState = !this.hasReceivedToolbarState_;
+              if (isFirstToolbarState) {
+                this.hasReceivedToolbarState_ = true;
+                this.updateComplete.then(() => {
+                  const avatar =
+                      this.shadowRoot.querySelector<HTMLElement>('#avatar');
+                  if (avatar) {
+                    requestAnimationFrame(() => {
+                      avatar.classList.remove('initial-load');
+                    });
+                  }
+                  const extensions =
+                      this.shadowRoot.querySelector<ExtensionsElement>(
+                          '#extensions');
+                  if (extensions) {
+                    requestAnimationFrame(() => {
+                      extensions.markInitialStateRendered();
+                    });
+                  }
+                });
               }
 
               // Defer notifying the browser that the page is ready until after
@@ -571,6 +422,15 @@ export class ToolbarAppElement extends AppElementBase {
                   this.initializePage_(sessionId);
                 });
               }
+
+              // This message may result in microtasks that ultimately end up
+              // resizing the toolbar. Call scheduleLayoutIfNeeded_() to
+              // schedule a check if a new layout is needed to adjust the
+              // toolbar's size to correct for any newly shown/hidden controls
+              // that are not ResponsiveControls. The task will run right before
+              // the next render frame, after all microtasks that might affect
+              // layout have been executed.
+              this.scheduleLayoutIfNeeded_();
             });
 
     if (this.isInitialized_) {
@@ -591,9 +451,13 @@ export class ToolbarAppElement extends AppElementBase {
     for (const {selector, id} of TRACKED_ELEMENTS) {
       const el = this.shadowRoot.querySelector<HTMLElement>(selector);
       if (el) {
+        const tracker = (el as {highlightTracker?: unknown}).highlightTracker;
         this.registerHelpBubble(id, el, {
           onHighlightChanged: (highlighted: boolean) => {
             el.classList.toggle('anchor-highlight', highlighted);
+            if (tracker instanceof HighlightTracker) {
+              tracker.onHighlightChanged(highlighted);
+            }
           },
           onHelpBubbleShown: () => setHasHelpBubble(el, true),
           onHelpBubbleHidden: () => setHasHelpBubble(el, false),
@@ -612,7 +476,10 @@ export class ToolbarAppElement extends AppElementBase {
       '#pinnedToolbarActions',
       '#battery-saver',
       '#performance-intervention',
+      '#glic-button',
       '#avatar',
+      '#media',
+      '#overflow',
       '#app-menu',
     ];
     const promises =
@@ -637,16 +504,21 @@ export class ToolbarAppElement extends AppElementBase {
     this.removeEventListener('dragover', this.dragOverListener_);
     this.removeEventListener('drop', this.dropListener_);
     this.removeEventListener('keydown', this.keyDownListener_);
+    this.removeEventListener('request-layout', this.requestLayoutListener_);
+    this.removeEventListener('layout-now', this.layoutNowListener_);
 
     this.resizeObserver_?.disconnect();
     window.removeEventListener('resize', this.windowResizeListener_);
 
-    this.browserProxy_.removeNavigationStateListener(
-        this.navigationStateListenerHandle_);
+    this.browserProxy_.removeToolbarStateListener(
+        this.toolbarStateListenerHandle_);
 
+    this.initialState_ = this.browserProxy_.getInitialState();
     this.isInitialized_ =
-        !getTypedBoolean(ToolbarStateKey.INITIAL_WEBUI_SURFACE_SYNC_ENABLED) ||
-        hasInitialStateKey(ToolbarStateKey.IS_NAVIGATION_LOADING);
+        !this.initialState_.getBoolean(
+            ToolbarStateKey.INITIAL_WEBUI_SURFACE_SYNC_ENABLED) ||
+        this.initialState_.hasKey(ToolbarStateKey.IS_NAVIGATION_LOADING);
+    this.hasReceivedToolbarState_ = false;
     this.initializeSessionId_++;
 
     if (this.isPageInitialized_) {
@@ -711,8 +583,7 @@ export class ToolbarAppElement extends AppElementBase {
 
   private onKeyDown_(event: KeyboardEvent) {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' &&
-        // TODO(crbug.com/510825650): When app menu button enabled:
-        // (event.key !== 'End' || !this.isAppMenuButtonEnabled_) &&
+        (event.key !== 'End' || !this.isAppMenuButtonEnabled_) &&
         (event.key !== 'Home' || !this.isBackForwardButtonEnabled_)) {
       return;
     }
@@ -743,24 +614,29 @@ export class ToolbarAppElement extends AppElementBase {
 
     if (event.key === 'Home') {
       nextIndex = 0;
-      // TODO(crbug.com/510825650): When app menu button enabled:
-      // } else if (event.key === 'End') {
-      //   nextIndex = focusableElements.length - 1;
+    } else if (event.key === 'End') {
+      nextIndex = focusableElements.length - 1;
     } else if (shouldAdvance) {
       nextIndex = currentIndex + 1;
-      // Let parent handle this for now.
-      // TODO(crbug.com/510825650): Handle wrap around when app menu button is
-      // WebUI.
       if (nextIndex >= focusableElements.length) {
-        return;
+        // If full WebUI toolbar, handle wrap around.
+        if (this.isBackForwardButtonEnabled_ && this.isAppMenuButtonEnabled_) {
+          nextIndex = 0;
+        } else {
+          // Let parent handle this for now.
+          return;
+        }
       }
     } else if (shouldReverse) {
       nextIndex = currentIndex - 1;
-      // Let parent handle this for now.
-      // TODO(crbug.com/510825650): Handle wrap around when app menu button is
-      // WebUI.
       if (nextIndex < 0) {
-        return;
+        // If full WebUI toolbar, handle wrap around.
+        if (this.isBackForwardButtonEnabled_ && this.isAppMenuButtonEnabled_) {
+          nextIndex = focusableElements.length - 1;
+        } else {
+          // Let parent handle this for now.
+          return;
+        }
       }
     }
 
@@ -781,22 +657,128 @@ export class ToolbarAppElement extends AppElementBase {
 
   override updated(changedProperties: PropertyValues<this>) {
     super.updated(changedProperties);
-
-    // Check if a new layout is needed and if so, do it now. Checking only after
-    // all controls have been updated ensures that there's only one update if
-    // multiple controls are updated at once. ResizeObserver could theoretically
-    // trigger another notification, but since the entire toolbar should end up
-    // the same size after laying out all controls, there should hopefully only
-    // be a single call to layoutResponsiveControls().
-    let needsLayout = false;
-    for (const control of this.getResponsiveControls()) {
-      if (control.consumeNeedsLayout()) {
-        needsLayout = true;
-      }
+    const changedPrivateProperties =
+        changedProperties as Map<PropertyKey, unknown>;
+    if (changedPrivateProperties.has('toolbarState_')) {
+      this.toggleAttribute(
+          'controls-appear-inactive',
+          this.toolbarState_.controlsAppearInactive);
     }
-    if (needsLayout) {
+  }
+
+  /**
+   * Schedules a layoutIfNeeded_() on the next animation frame, if one isn't
+   * already scheduled. layoutIfNeeded_() will layout the ResponsiveControls if
+   * getAvailableWidth() is non-zero, meaning the window and toolbar have
+   * different widths so a new layout is needed, or if `pendingLayout_` is
+   * true.
+   *
+   * The scheduled task should be fast if no layout is actually needed.
+   *
+   * Called on window resize, toolbar-app resize, or when something happens that
+   * may result in resizing the toolbar-app. Also used by
+   * scheduleLayoutResponsiveControls_().
+   */
+  private scheduleLayoutIfNeeded_() {
+    if (!this.webUIToolbarFullyEnabled_ || this.pendingLayoutIfNeeded_) {
+      return;
+    }
+    this.pendingLayoutIfNeeded_ = true;
+    requestAnimationFrame(() => this.layoutIfNeeded_());
+  }
+
+  /**
+   * Schedules a layout of responsive controls before the next animation frame.
+   * Multiple calls are aggregated into a single layout, so this should
+   * typically be used rather than calling layoutResponsiveControls() directly.
+   *
+   * This should be called whenever any control's visibility state or size
+   * changes, and a new layout is definitely needed. ResponsiveControls
+   * themselves are responsible for bubbling up `request-layout` events to the
+   * app to trigger layouts when their preferred and/or minimize sizes may have
+   * changed, while non-responsive controls are monitored by watching the size
+   * of the toolbar-app element itself. If two or more non-ResponsiveControls
+   * change in size in such a way that the toolbar's size remains the same, no
+   * resize is triggered, which is fine, since that should have no effect on
+   * which ResponsiveControls should be displayed.
+   */
+  private scheduleLayoutResponsiveControls_() {
+    if (!this.webUIToolbarFullyEnabled_ || this.pendingLayout_) {
+      return;
+    }
+    this.pendingLayout_ = true;
+    this.scheduleLayoutIfNeeded_();
+  }
+
+  private layoutIfNeeded_() {
+    this.pendingLayoutIfNeeded_ = false;
+    if (!this.isConnected) {
+      this.pendingLayout_ = false;
+      return;
+    }
+
+    if (this.pendingLayout_ || this.getAvailableWidth() !== 0) {
+      // Note that this will set `pendingLayout_` to false.
       this.layoutResponsiveControls();
     }
+  }
+
+  /**
+   * Returns the amount of available width for the toolbar, in pixels, which is
+   * the difference between the window inner width and the current width of this
+   * element (`window.innerWidth - this.clientWidth`). This is intended to be
+   * used during layout, which attempts to size controls so that there's exactly
+   * 0 available width.
+   *
+   * Note that this value can be negative if the toolbar element's client width
+   * exceeds the window's inner width.
+   */
+  getAvailableWidth(): number {
+    return window.innerWidth - this.clientWidth;
+  }
+
+  /**
+   * Resizes / shows / hides responsive controls based on available space in the
+   * toolbar. Returns true if all controls were successfully laid out; returns
+   * false if `failOnOverflow` is true and any control overflowed.
+   *
+   * If true is returned, all available space on the window should be taken up
+   * by the toolbar and its controls. If false is returned, the method has
+   * exited early, and the toolbar may not be taking up all available space in
+   * the window - the expectation is that this method will be called again,
+   * after making the overflow button visible, without `failOnOverflow` set.
+   */
+  private runLayoutPass(
+      responsiveControls: ResponsiveControl[], locationBar: LocationBarElement,
+      failOnOverflow: boolean): boolean {
+    // Set all responsive elements that should be shown to their minimum width.
+    for (const control of responsiveControls) {
+      // Controls that should not be shown are hidden by other means than
+      // setting `overflow-display-none`, so they can be ignored entirely.
+      if (control.shouldBeShown()) {
+        control.setToMinWidth();
+      }
+    }
+
+    // Try expanding each element to preferred width in order of priority.
+    for (const control of responsiveControls) {
+      if (!control.shouldBeShown()) {
+        continue;
+      }
+
+      control.expandUpToPreferredWidth();
+
+      if (failOnOverflow && control.controlsToAddToOverflowMenu().length > 0) {
+        return false;
+      }
+    }
+
+    // Assign all remaining space to the location bar.
+    if (locationBar.shouldBeShown()) {
+      locationBar.setToMaxAvailableWidth();
+    }
+
+    return true;
   }
 
   /**
@@ -812,41 +794,68 @@ export class ToolbarAppElement extends AppElementBase {
    */
   getResponsiveControls(): Array<ResponsiveControl&HTMLElement> {
     const locationBar =
-        this.shadowRoot.querySelector<LocationBarElement>('#location-bar');
+        this.shadowRoot.querySelector<LocationBarElement>('#location-bar')!;
 
     const buttons = [
+      (this.toolbarAppMenuLabelResizingEnabled_ &&
+       this.toolbarState_.appMenuControlState.labelText) ?
+          this.shadowRoot.querySelector<ResponsiveControl&HTMLElement>(
+              '#app-menu') :
+          null,
+      this.shadowRoot.querySelector<ResponsiveControl&HTMLElement>('#avatar'),
       this.shadowRoot.querySelector<ResponsiveControl&HTMLElement>(
           '#split-tabs'),
+      this.toolbarGlicButtonResizingEnabled_ ?
+          this.shadowRoot.querySelector<ResponsiveControl&HTMLElement>(
+              '#glic-button') :
+          null,
       this.shadowRoot.querySelector<ResponsiveControl&HTMLElement>('#forward'),
       this.shadowRoot.querySelector<ResponsiveControl&HTMLElement>('#home'),
+      this.shadowRoot.querySelector<ResponsiveControl&HTMLElement>(
+          '#battery-saver'),
+      this.shadowRoot.querySelector<ResponsiveControl&HTMLElement>('#media'),
+    ];
+
+    const groupedControls = [
+      this.shadowRoot.querySelector<ResponsiveControl&HTMLElement>(
+          '#pinnedToolbarActions'),
+      this.shadowRoot.querySelector<ResponsiveControl&HTMLElement>(
+          '#extensions'),
     ];
 
     return (this.omniboxResizingPrioritizationEnabled_ ?
-                [locationBar, ...buttons] :
-                [...buttons, locationBar])
+                [locationBar, ...buttons, ...groupedControls] :
+                [...buttons, locationBar, ...groupedControls])
         .filter((el): el is ResponsiveControl&HTMLElement => el !== null);
+  }
+
+  /**
+   * Returns information on all controls that are currently hidden due to
+   * overflow and should therefore be displayed on the overflow menu.
+   */
+  getOverflowedMenuItems(): OverflowMenuItem[] {
+    const overflowControls: OverflowMenuItem[] = [];
+    for (const control of this.getResponsiveControls()) {
+      overflowControls.push(...control.controlsToAddToOverflowMenu());
+    }
+    return overflowControls;
   }
 
   /**
    * Resizes / shows / hides responsive controls based on available space in the
    * toolbar.
    *
-   * This should be called whenever:
-   * 1. The browser window/container size changes (monitored via
-   * `windowResizeListener_`).
-   * 2. Any control's visibility state or size changes (monitored via
-   * `resizeObserver_`).
-   *
-   * Note that for an overflowable button being pinned to be observable by
-   * `resizeObserver_`, unpinned buttons must not have `overflow-display-none`
-   * set, so that pinning them causes the toolbar to be resized, causing the
-   * `resizeObserver_` to invoke this method.
+   * This should generally only be called through
+   * `scheduleLayoutResponsiveControls_`, to avoid redundant calls, which can
+   * be fairly heavy weight.
    *
    * TODO(crbug.com/491791965): Investigate performance of this method. It does
    * force a lot of layouts, which may well be a performance issue. There are
    * ways to improve performance, at potentially significant complexity cost.
    */
   private layoutResponsiveControls() {
+    this.pendingLayout_ = false;
+
     // If `webUIToolbarFullyEnabled_` is false, the C++ FlexLayout class will
     // handle laying out controls.
     if (!this.webUIToolbarFullyEnabled_) {
@@ -854,50 +863,42 @@ export class ToolbarAppElement extends AppElementBase {
     }
 
     const responsiveControls = this.getResponsiveControls();
-
-    // Set all responsive elements that should be shown to their minimum width.
-    for (const control of responsiveControls) {
-      // Elements that should not be shown are hidden by other means than
-      // setting `overflow-display-none`, so that if at some point they should
-      // be shown, showing them will increase the size of the main app element,
-      // which will force layoutResponsiveControls() to be called again.
-      if (control.shouldBeShown()) {
-        control.setToMinWidth();
-      }
-    }
-
-    // Width available to all elements combined, including non-responsive ones.
-    const availableWidth = window.innerWidth;
-
-    // If all elements at their minimum sizes are, combined, larger than the
-    // available size, exit early, using sizes that are too large.
-    //
-    // TODO(crbug.com/491791965): Should we shrink the location bar to even less
-    // than min size here?
-    if (this.clientWidth >= availableWidth) {
-      return;
-    }
-
-    // Try expanding each element to preferred width in order of priority.
-    // If expanding causes the container to overflow, the element is responsible
-    // for shrinking itself back.
-    for (const control of responsiveControls) {
-      if (!control.shouldBeShown()) {
-        continue;
-      }
-
-      control.expandUpToPreferredWidth();
-    }
-
-    // Assign all remaining space to the location bar to fill the entire
-    // toolbar.
-    //
-    // TODO(crbug.com/491791965): Cache this, making sure we update the value
-    // if we ever re-create the control (can that happen?).
     const locationBar =
-        this.shadowRoot.querySelector<LocationBarElement>('#location-bar');
-    if (locationBar && locationBar.shouldBeShown()) {
-      locationBar.setToAvailableWidth();
+        this.shadowRoot.querySelector<LocationBarElement>('#location-bar')!;
+    const overflowButton =
+        this.shadowRoot.querySelector<OverflowButtonElement>('#overflow')!;
+
+    // If the overflow button was not shown before, set all controls to their
+    // preferred widths and see if the toolbar then fits in the window. If so,
+    // expand the location bar to take up any remaining width in the window, and
+    // we're done.
+    //
+    // This is an optimization to avoid performing extra layouts in the common
+    // case where all controls fit, since each expandUpToPreferredWidth() call
+    // in runLayoutPass() triggers a layout, which can be expensive.
+    if (overflowButton.hasAttribute('hidden')) {
+      for (const control of responsiveControls) {
+        if (control.shouldBeShown()) {
+          control.setToPreferredWidth();
+        }
+      }
+      if (this.getAvailableWidth() >= 0) {
+        if (locationBar.shouldBeShown()) {
+          locationBar.setToMaxAvailableWidth();
+        }
+        return;
+      }
+    }
+
+    // Hide the overflow button and attempt to lay out all buttons, failing on
+    // any overflow.
+    overflowButton.toggleAttribute('hidden', true);
+    if (!this.runLayoutPass(
+            responsiveControls, locationBar, /*failOnOverflow=*/ true)) {
+      // If any control overflowed, show overflow button and do another pass.
+      overflowButton.toggleAttribute('hidden', false);
+      this.runLayoutPass(
+          responsiveControls, locationBar, /*failOnOverflow=*/ false);
     }
   }
 
@@ -939,6 +940,7 @@ export class ToolbarAppElement extends AppElementBase {
       }
     }
   }
+
 }
 
 declare global {

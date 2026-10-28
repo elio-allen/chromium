@@ -4,6 +4,10 @@
 
 #include "chrome/browser/glic/service/metrics/metrics_types.h"
 
+#include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/web_contents.h"
+
 namespace glic {
 
 std::string GetDaisyChainSourceString(DaisyChainSource source) {
@@ -140,6 +144,22 @@ std::string GetInvocationSourceString(mojom::InvocationSource source) {
       return "ReshowInactive";
     case mojom::InvocationSource::kTabContextMenu:
       return "TabContextMenu";
+    case mojom::InvocationSource::kWebContinuity:
+      return "WebContinuity";
+    case mojom::InvocationSource::kHistoryPageChatLinkout:
+      return "HistoryPageChatLinkout";
+    case mojom::InvocationSource::kContextHubTopics:
+      return "ContextHubTopics";
+    case mojom::InvocationSource::kContextHubAutoTodos:
+      return "ContextHubAutoTodos";
+    case mojom::InvocationSource::kWebContentsContextMenuLink:
+      return "WebContentsContextMenuLink";
+    case mojom::InvocationSource::kWebContentsContextMenuPage:
+      return "WebContentsContextMenuPage";
+    case mojom::InvocationSource::kWebContentsContextMenuTextSelection:
+      return "WebContentsContextMenuTextSelection";
+    case mojom::InvocationSource::kActorTool:
+      return "ActorTool";
   }
 }
 
@@ -155,4 +175,16 @@ std::string_view GetEmbedderTypeString(EmbedderType type) {
       return "Unknown";
   }
 }
+
+ukm::SourceId GetUkmSourceIdForTab(tabs::TabInterface* tab) {
+  if (!tab) {
+    return ukm::NoURLSourceId();
+  }
+  content::WebContents* contents = tab->GetContents();
+  if (!contents || !contents->GetPrimaryMainFrame()) {
+    return ukm::NoURLSourceId();
+  }
+  return contents->GetPrimaryMainFrame()->GetPageUkmSourceId();
+}
+
 }  // namespace glic

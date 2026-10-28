@@ -32,10 +32,11 @@ class CORE_EXPORT GridLayoutAlgorithm
   using LayoutAlgorithm::Style;
 
   const LayoutResult* Layout();
-  MinMaxSizesResult ComputeMinMaxSizes(const MinMaxSizesFloatInput&);
+  MinMaxSizesResult ComputeMinMaxSizes(const MinMaxSizesInput&);
 
   LayoutUnit ComputeSubgridIntrinsicBlockSize(
-      const GridSizingSubtree& sizing_subtree) const;
+      const GridSizingSubtree& sizing_subtree,
+      SizingConstraint sizing_constraint) const;
   MinMaxSizes ComputeSubgridMinMaxSizes(
       const GridSizingSubtree& sizing_subtree) const;
 
@@ -105,7 +106,16 @@ class CORE_EXPORT GridLayoutAlgorithm
       const GridSizingSubtree& sizing_subtree,
       const SubgriddedItemData& opt_subgrid_data,
       const std::optional<GridTrackSizingDirection>& opt_track_direction,
-      SizingConstraint sizing_constraint) const;
+      SizingConstraint sizing_constraint,
+      bool is_measure_after_layout = false) const;
+
+  // Resolves deferred nested-subgrid baselines with a bottom-up pass, so that
+  // each grid sees finalized children when it's measured.
+  void ResolveBaselinesInStandaloneAxes(
+      const GridSizingSubtree& sizing_subtree,
+      GridSizingTree* sizing_tree,
+      SizingConstraint sizing_constraint,
+      bool is_measure_after_layout = false) const;
 
  private:
   friend class GridLayoutAlgorithmTest;
@@ -151,15 +161,8 @@ class CORE_EXPORT GridLayoutAlgorithm
                                 const GridSizingSubtree& sizing_subtree,
                                 GridTrackSizingDirection track_direction,
                                 SizingConstraint sizing_constraint,
-                                bool is_track_sizing,
-                                BaselineCollectionPhase phase) const;
-
-  // Resolves deferred nested-subgrid baselines with a bottom-up pass, so that
-  // each grid sees finalized children when it's measured.
-  void ResolveBaselinesInStandaloneAxes(
-      const GridSizingSubtree& sizing_subtree,
-      GridSizingTree* sizing_tree,
-      SizingConstraint sizing_constraint) const;
+                                BaselineCollectionPhase phase,
+                                bool is_measure_after_layout) const;
 
   // Helper that calls the method above for the entire grid sizing tree.
   void InitializeTrackSizes(GridSizingTree* sizing_tree,

@@ -163,7 +163,7 @@ class CORE_EXPORT HitTestResult {
 
   bool IsSelected(const HitTestLocation& location) const;
   String Title(TextDirection&) const;
-  const AtomicString& AltDisplayString() const;
+  String AltDisplayString() const;
   static Image* GetImage(const Node* node);
   Image* GetImage() const;
   gfx::Rect ImageRect() const;
@@ -221,7 +221,10 @@ class CORE_EXPORT HitTestResult {
   HTMLMediaElement* MediaElement() const;
   std::tuple<bool, ListBasedHitTestBehavior>
   AddNodeToListBasedTestResultInternal(Node* node,
-                                       const HitTestLocation& location);
+                                       const HitTestLocation& location,
+                                       const PhysicalRect* physical_rect,
+                                       const gfx::QuadF* quad,
+                                       const cc::Region* region);
   static const ImageResourceContent* GetImageContent(const Node* node);
 
   HitTestRequest hit_test_request_;

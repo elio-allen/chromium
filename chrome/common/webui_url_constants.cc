@@ -87,7 +87,6 @@ bool IsSystemWebUIHost(std::string_view host) {
       ash::kChromeUIAppInstallDialogHost,
       ash::kChromeUIBluetoothPairingHost,
       ash::kChromeUIBorealisCreditsHost,
-      ash::kChromeUIBorealisMOTDHost,
       kChromeUICertificateManagerHost,
       ash::kChromeUICloudUploadHost,
       ash::kChromeUICrostiniCreditsHost,
@@ -128,7 +127,6 @@ base::span<const base::cstring_view> ChromeURLHosts() {
 #endif
       kChromeUIAutofillInternalsHost,
       kChromeUIBluetoothInternalsHost,
-      kChromeUIChromeFindsInternalsHost,
       kChromeUIChromeURLsHost,
       kChromeUIComponentsHost,
       commerce::kChromeUICommerceInternalsHost,
@@ -138,6 +136,9 @@ base::span<const base::cstring_view> ChromeURLHosts() {
 #endif
       kChromeUICrashesHost,
       kChromeUICreditsHost,
+#if !BUILDFLAG(IS_ANDROID)
+      kChromeUICriticalActionsInternalsHost,
+#endif
       kChromeUICrossDeviceSigninQrBubbleHost,
       kChromeUIDeviceLogHost,
       kChromeUIDownloadInternalsHost,
@@ -159,7 +160,8 @@ base::span<const base::cstring_view> ChromeURLHosts() {
       kChromeUINetExportHost,
       kChromeUINetInternalsHost,
       kChromeUINewTabHost,
-      kChromeUIOmniboxHost,
+      kChromeUIOmniboxInternalsHost,
+      kChromeUIOmniboxInternalsAimEligibilityPage,
 #if !BUILDFLAG(IS_ANDROID)
       kChromeUIOnDeviceInternalsHost,
 #endif
@@ -178,9 +180,7 @@ base::span<const base::cstring_view> ChromeURLHosts() {
       kChromeUISiteEngagementHost,
       kChromeUISkillsHost,
       kChromeUISubresourceFilterInternalsHost,
-#if !BUILDFLAG(IS_ANDROID)
       kChromeUISuggestInternalsHost,
-#endif
       kChromeUINTPTilesInternalsHost,
       safe_browsing::kChromeUISafeBrowsingHost,
       kChromeUISyncInternalsHost,
@@ -236,6 +236,7 @@ base::span<const base::cstring_view> ChromeURLHosts() {
 #endif
 #endif
 #if BUILDFLAG(IS_ANDROID)
+      kChromeUIChromeFindsInternalsHost,
       kChromeUISnippetsInternalsHost,
       kChromeUIWebApksHost,
 #endif
@@ -327,6 +328,9 @@ base::span<const base::cstring_view> ChromeDebugURLs() {
        blink::kChromeUIMemoryExhaustURL,
        blink::kChromeUIMemoryPressureCriticalURL,
        blink::kChromeUIMemoryPressureModerateURL,
+       blink::kChromeUIBlinkOOMURL,
+       blink::kChromeUIBlinkWorkerOOMURL,
+       blink::kChromeUIV8OOMURL,
 #if BUILDFLAG(IS_WIN)
        blink::kChromeUIBrowserHeapCorruptionURL,
        blink::kChromeUICfgViolationCrashURL,

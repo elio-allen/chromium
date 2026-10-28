@@ -11,6 +11,7 @@
 #import "base/containers/span.h"
 
 class AimEligibilityService;
+class ExtensionService;
 class PrefService;
 class ProfileIOS;
 class ProfileOAuth2TokenServiceDelegate;
@@ -20,7 +21,9 @@ class SystemIdentityManager;
 class TabGroupService;
 class TrustedVaultClientBackend;
 @class UIImage;
+@class UIViewController;
 @class UIWindow;
+@protocol ChromeLensViewFinderController;
 @protocol ReauthenticationProtocol;
 
 namespace contextual_search {
@@ -51,6 +54,10 @@ namespace feature_engagement {
 class FeatureActivation;
 }  // namespace feature_engagement
 
+namespace gcm {
+class GCMProfileService;
+}  // namespace gcm
+
 namespace policy {
 class ConfigurationPolicyProvider;
 }  // namespace policy
@@ -59,6 +66,10 @@ namespace password_manager {
 class BulkLeakCheckServiceInterface;
 class RecipientsFetcher;
 }  // namespace password_manager
+
+namespace signin {
+class AccountPreviewDataService;
+}  // namespace signin
 
 namespace tab_groups {
 class TabGroupSyncService;
@@ -71,6 +82,9 @@ namespace tests_hook {
 // Returns true if Gemini eligibility check should be disabled as tests do
 // not have the required identity internal state to perform the verification.
 bool DisableGeminiEligibilityCheck();
+
+// Returns true if the passage embedder GPU execution should be enabled.
+bool EnablePassageEmbedderGpuExecution();
 
 // Returns true if app group access should be disabled as tests don't have the
 // required entitlements.
@@ -169,6 +183,15 @@ std::unique_ptr<tab_groups::TabGroupSyncService> CreateTabGroupSyncService(
 std::unique_ptr<commerce::ShoppingService> CreateShoppingService(
     ProfileIOS* profile);
 
+// Allows overriding the GCMProfileService factory. The real factory will be
+// used if this hook returns null.
+std::unique_ptr<gcm::GCMProfileService> CreateGCMProfileService(
+    ProfileIOS* profile);
+
+// Allows overriding the ExtensionService factory. The real factory will be
+// used if this hook returns null.
+std::unique_ptr<ExtensionService> CreateExtensionService(ProfileIOS* profile);
+
 // Allows additional test setup for the DataSharingService.
 void DataSharingServiceHooks(
     data_sharing::DataSharingService* data_sharing_service);
@@ -212,6 +235,11 @@ base::TimeDelta PasswordCheckMinimumDuration();
 // instance will be used if this hook returns a nullptr.
 std::unique_ptr<drive::DriveService> GetOverriddenDriveService();
 
+// Returns an `AccountPreviewDataService` instance that should be used in EG
+// tests. The real instance will be used if this hook returns a nullptr.
+std::unique_ptr<signin::AccountPreviewDataService>
+GetOverriddenAccountPreviewDataService();
+
 // Override the Feature Engagement Tracker used in tests with a demo version.
 feature_engagement::FeatureActivation FETDemoModeOverride();
 
@@ -251,6 +279,19 @@ void InjectFakeTabsInBrowser(Browser* browser);
 
 // Returns a fake reauthentication module to be used in tests.
 id<ReauthenticationProtocol> GetFakeReauthenticationModule();
+
+// Returns a fake Lens View Finder controller to be used in tests, or nil to
+// use the provider.
+UIViewController<ChromeLensViewFinderController>*
+GetOverriddenLensViewFinderController();
+
+// Returns true if application startup should pause at the background stage
+// (AppInitStage::kBrowserObjectsForBackgroundHandlers) and suppress scene
+// foregrounding to simulate a background launch.
+bool ShouldPauseStartupAtBackgroundStage();
+
+// Unpauses application startup if it was paused at the background stage.
+void UnpauseStartupAtBackgroundStage();
 
 }  // namespace tests_hook
 

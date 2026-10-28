@@ -30,7 +30,6 @@
 #include "chrome/browser/signin/chrome_signin_client_test_util.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -51,10 +50,6 @@
 #include "services/network/test/test_url_loader_factory.h"
 #include "services/network/test/test_utils.h"
 #include "url/gurl.h"
-
-#if BUILDFLAG(IS_CHROMEOS)
-#include "components/sync/base/features.h"
-#endif
 
 namespace glic {
 
@@ -79,13 +74,7 @@ class GlicUserStatusBrowserTest : public InProcessBrowserTest {
         {{features::kGlicRollout, {}},
          {features::kGlicUserStatusCheck,
           {{features::kGlicUserStatusRequestDelay.name, "200ms"},
-           {features::kGlicUserStatusRequestDelayJitter.name, "0"}}}
-#if BUILDFLAG(IS_CHROMEOS)
-         ,
-         { syncer::kReplaceSyncPromosWithSignInPromos,
-           {} }
-#endif
-        },
+           {features::kGlicUserStatusRequestDelayJitter.name, "0"}}}},
         {/* disabled_features */});
 
     RegisterGeminiSettingsPrefs(pref_service_.registry());
@@ -184,8 +173,8 @@ class GlicUserStatusBrowserTest : public InProcessBrowserTest {
   void SimulateSuccessfulFetchOfAccountInfo(const TestAccount* test_account,
                                             const AccountInfo* account_info) {
     identity_test_env_->SimulateSuccessfulFetchOfAccountInfo(
-        account_info->account_id, account_info->email, account_info->gaia,
-        test_account->host_domain,
+        account_info->GetAccountId(), account_info->GetEmail(),
+        account_info->GetGaiaId(), test_account->host_domain,
         base::StrCat({"full_name-", test_account->email}),
         base::StrCat({"given_name-", test_account->email}),
         base::StrCat({"local-", test_account->email}),
@@ -578,7 +567,7 @@ IN_PROC_BROWSER_TEST_F(
 
   // Revoke the refresh token. This should cause the managed status check to
   // fail, and no RPC will be sent.
-  identity_test_env_->RemoveRefreshTokenForAccount(account_info.account_id);
+  identity_test_env_->RemoveRefreshTokenForAccount(account_info.GetAccountId());
 
   // Verify no request is sent.
   {
@@ -591,11 +580,11 @@ IN_PROC_BROWSER_TEST_F(
 
   // Now, restore the refresh token and provide account info. This should allow
   // the fetcher to retry and succeed.
-  identity_test_env_->MakeAccountAvailable(account_info.email);
+  identity_test_env_->MakeAccountAvailable(account_info.GetEmail());
 
   // Re-apply capabilities, as they are lost when the token is restored.
   account_info = identity_manager_->FindExtendedAccountInfoByAccountId(
-      account_info.account_id);
+      account_info.GetAccountId());
   AccountCapabilitiesTestMutator refreshed_mutator(&account_info);
   SetGlicCapability(refreshed_mutator, true);
   identity_test_env_->UpdateAccountInfoForAccount(account_info);

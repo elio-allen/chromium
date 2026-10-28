@@ -12,6 +12,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/context_hub/features.h"
+#include "components/passage_embeddings/core/passage_embeddings_types.h"
 #include "sql/database.h"
 #include "sql/statement.h"
 #include "sql/transaction.h"
@@ -96,20 +97,59 @@ bool ContextHubDatabase::Init(const base::FilePath& db_path) {
   return transaction.Commit();
 }
 
-bool ContextHubDatabase::AddOrUpdateMemoryBankEntry(
+std::optional<int64_t> ContextHubDatabase::AddOrUpdateMemoryBankEntry(
     const MemoryBankEntry& entry) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!db_ || !db_->is_open()) {
-    return false;
+    return std::nullopt;
   }
 
   size_t max_entries = features::kMaxMemoryBankEntries.Get();
   // If adding a new entry and the max entries limit is reached, reject.
   if (entry.id == 0 && memory_bank_table_.GetEntryCount() >= max_entries) {
-    return false;
+    return std::nullopt;
   }
 
   return memory_bank_table_.AddOrUpdateEntry(entry);
+}
+
+bool ContextHubDatabase::UpdateMemoryBankEntryAnnotations(
+    int64_t id,
+    const std::vector<std::string>& tags,
+    const std::optional<std::string>& note,
+    const std::optional<std::string>& collection) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!db_ || !db_->is_open()) {
+    return false;
+  }
+  return memory_bank_table_.UpdateEntryAnnotations(id, tags, note, collection);
+}
+
+bool ContextHubDatabase::AddOrUpdateMemoryBankEmbeddings(
+    int64_t entry_id,
+    base::span<const passage_embeddings::Embedding> embeddings) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!db_ || !db_->is_open()) {
+    return false;
+  }
+  return memory_bank_table_.AddOrUpdateEmbeddings(entry_id, embeddings);
+}
+
+std::vector<int64_t>
+ContextHubDatabase::GetMemoryBankEntryIdsWithoutEmbeddings() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!db_ || !db_->is_open()) {
+    return {};
+  }
+  return memory_bank_table_.GetEntryIdsWithoutEmbeddings();
+}
+
+bool ContextHubDatabase::SetMemoryBankEmbeddingsVersion(int64_t version) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!db_ || !db_->is_open()) {
+    return false;
+  }
+  return memory_bank_table_.SetEmbeddingsVersion(version);
 }
 
 std::optional<MemoryBankEntry> ContextHubDatabase::GetMemoryBankEntry(
@@ -138,6 +178,22 @@ std::vector<MemoryBankEntry> ContextHubDatabase::GetAllMemoryBankEntries() {
   return memory_bank_table_.GetAllEntries();
 }
 
+std::vector<std::string> ContextHubDatabase::GetAllMemoryBankTags() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!db_ || !db_->is_open()) {
+    return {};
+  }
+  return memory_bank_table_.GetAllTags();
+}
+
+std::vector<std::string> ContextHubDatabase::GetAllMemoryBankCollections() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!db_ || !db_->is_open()) {
+    return {};
+  }
+  return memory_bank_table_.GetAllCollections();
+}
+
 bool ContextHubDatabase::DeleteMemoryBankEntries(
     base::span<const int64_t> ids) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -147,22 +203,41 @@ bool ContextHubDatabase::DeleteMemoryBankEntries(
   return memory_bank_table_.DeleteEntries(ids);
 }
 
-bool ContextHubDatabase::MigrateOldVersionsAsNeeded(int detected_user_version) {
+bool ContextHubDatabase::MigrateOldVersionsAsNeeded(
+    int detected_user_version) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (!db_ || !db_->is_open()) {
     return false;
   }
 
-  if (detected_user_version == 0) {
-    if (!memory_bank_table_.MigrateFromCleanStateToVersion1()) {
+  for (int next_version = detected_user_version + 1;
+       next_version <= kCurrentVersionNumber; ++next_version) {
+    if (!MigrateToVersion(next_version)) {
       return false;
     }
-    detected_user_version++;
   }
 
   return db_->Execute(base::StrCat(
       {"PRAGMA user_version=", base::NumberToString(kCurrentVersionNumber)}));
+}
+
+bool ContextHubDatabase::MigrateToVersion(int version) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  switch (version) {
+    case 1:
+      return memory_bank_table_.MigrateFromCleanStateToVersion1();
+    case 2:
+      return memory_bank_table_
+          .MigrateToVersion2AddNoteAndCollectionColumns();
+    case 3:
+      return memory_bank_table_.MigrateToVersion3AddImageUrlColumn();
+    case 4:
+      return memory_bank_table_.MigrateToVersion4AddEmbeddingsTables();
+    default:
+      return false;
+  }
 }
 
 }  // namespace context_hub

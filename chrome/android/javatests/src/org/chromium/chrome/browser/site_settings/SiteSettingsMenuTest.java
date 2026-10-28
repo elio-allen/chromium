@@ -56,7 +56,6 @@ import java.util.concurrent.TimeoutException;
 })
 @DisableFeatures({
     ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE,
-    ChromeFeatureList.SETTINGS_MULTI_COLUMN,
     ChromeFeatureList.ANDROID_ANIMATED_PROGRESS_BAR_IN_BROWSER
 })
 public class SiteSettingsMenuTest {
@@ -70,9 +69,6 @@ public class SiteSettingsMenuTest {
         "anti_abuse_things_to_consider_header",
         "anti_abuse_things_to_consider_section_one"
     };
-
-    private static final String[] CLEAR_BROWSING_DATA_LINK_WITH_CONTAINMENT =
-            new String[] {"clear_browsing_data_link"};
 
     private static final String[] NULL_ARRAY = new String[0];
 
@@ -152,7 +148,7 @@ public class SiteSettingsMenuTest {
     public void testOnlyExpectedPreferencesShown() {
         // If you add a category in the SiteSettings UI, please update this total AND add a test for
         // it below, named "testOnlyExpectedPreferences<Category>".
-        Assert.assertEquals(38, SiteSettingsCategory.Type.NUM_ENTRIES);
+        Assert.assertEquals(39, SiteSettingsCategory.Type.NUM_ENTRIES);
     }
 
     @Test
@@ -168,7 +164,8 @@ public class SiteSettingsMenuTest {
     @Feature({"Preferences"})
     public void testOnlyExpectedPreferencesAllSites() {
         SiteSettingsTestHelper.checkPreferencesForCategory(
-                SiteSettingsCategory.Type.ALL_SITES, CLEAR_BROWSING_DATA_LINK_WITH_CONTAINMENT);
+                SiteSettingsCategory.Type.ALL_SITES,
+                SiteSettingsTestHelper.CLEAR_BROWSING_DATA_LINK);
     }
 
     @Test
@@ -319,6 +316,16 @@ public class SiteSettingsMenuTest {
                 SiteSettingsCategory.Type.HAND_TRACKING,
                 SiteSettingsTestHelper.BINARY_RADIO_BUTTON,
                 SiteSettingsTestHelper.BINARY_RADIO_BUTTON);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Preferences"})
+    public void testOnlyExpectedPreferencesHidDevices() {
+        SiteSettingsTestHelper.testExpectedPreferences(
+                SiteSettingsCategory.Type.HID_DEVICES,
+                SiteSettingsTestHelper.BINARY_RADIO_BUTTON_AND_INFO_TEXT,
+                SiteSettingsTestHelper.BINARY_RADIO_BUTTON_AND_INFO_TEXT);
     }
 
     @Test

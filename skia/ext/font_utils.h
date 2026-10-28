@@ -6,19 +6,16 @@
 #define SKIA_EXT_FONT_UTILS_H_
 
 #include "third_party/skia/include/core/SkFontStyle.h"
+#include "third_party/skia/include/core/SkFourByteTag.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
 #include "third_party/skia/include/core/SkTypes.h"
 
-class SkData;
 class SkFont;
 class SkFontMgr;
+class SkStream;
 class SkTypeface;
 
 namespace skia {
-
-// OTS-transcodes/sanitizes the embedded font data stream.
-// Returns the pristine, normalized SkData on success, or nullptr on rejection.
-SK_API sk_sp<SkData> SanitizeTypefaceStream(sk_sp<const SkData> data);
 
 // Returns the platform specific SkFontMgr, which is a singleton.
 SK_API sk_sp<SkFontMgr> DefaultFontMgr();
@@ -36,6 +33,16 @@ SK_API sk_sp<SkTypeface> DefaultTypeface();
 // different on different platforms.
 SK_API sk_sp<SkTypeface> MakeTypefaceFromName(const char* name,
                                               SkFontStyle style);
+
+// Deserializes an SkFontDescriptor from the stream and instantiates the
+// typeface. If stream data is attached, Fontations is strictly used to
+// parse the font. Streamless descriptors (e.g. macOS hvgl fonts) resolve
+// via the platform's system font manager where supported.
+SK_API sk_sp<SkTypeface> MakeTypefaceWithFontations(SkStream* stream);
+
+// Returns the factory ID for the given typeface (e.g. 'fnta' for Fontations).
+// Exposed for testing because SkFontDescriptor.h is private to Skia.
+SK_API SkFourByteTag GetTypefaceFactoryIdForTesting(const SkTypeface* typeface);
 
 // Returns a font using DefaultTypeface()
 SK_API SkFont DefaultFont();

@@ -112,7 +112,7 @@ bool XrImageTransportBase::ResizeSharedBuffer(WebXrPresentationState* webxr,
   // The SharedImages created here will eventually be transferred to other
   // processes to have their contents read/written via WebGL for WebXR.
   gpu::SharedImageUsageSet shared_image_usage =
-      gpu::SHARED_IMAGE_USAGE_SCANOUT | gpu::SHARED_IMAGE_USAGE_DISPLAY_READ |
+      gpu::SHARED_IMAGE_USAGE_DISPLAY_READ |
       gpu::SHARED_IMAGE_USAGE_GLES2_READ | gpu::SHARED_IMAGE_USAGE_GLES2_WRITE;
 
   // If the XRSession is producing frames with WebGPU then the appropriate usage
@@ -203,7 +203,6 @@ WebXrSharedBuffer* XrImageTransportBase::TransferFrame(
   // it's only eligible for reuse after all reads from it are complete, meaning
   // that it's transitioned through "processing" and "rendering" states back
   // to "animating".
-  DCHECK(shared_buffer->sync_token.HasData());
   DVLOG(2) << ": SyncToken=" << shared_buffer->sync_token.ToDebugString();
 
   return shared_buffer;

@@ -4,83 +4,25 @@
 
 #import "ios/chrome/browser/intelligence/on_device_category_classifier/in_process_category_classification_service.h"
 
+#import <utility>
+
+#import "base/check.h"
+#import "base/check_op.h"
 #import "base/files/file.h"
 #import "base/functional/bind.h"
-#import "base/functional/callback.h"
-#import "base/no_destructor.h"
 #import "base/strings/strcat.h"
 #import "base/task/task_traits.h"
 #import "base/task/thread_pool.h"
+#import "components/keyed_service/core/service_access_type.h"
 #import "components/page_content_annotations/core/page_embeddings_common.h"
 #import "components/page_content_annotations/core/simple_page_content_verbalization.h"
 #import "components/passage_embeddings/core/passage_embeddings_features.h"
-#import "ios/chrome/browser/optimization_guide/model/optimization_guide_service.h"
-#import "ios/chrome/browser/optimization_guide/model/optimization_guide_service_factory.h"
-#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/shared/model/profile/profile_keyed_service_factory_ios.h"
 
 namespace {
 
-class InProcessCategoryClassificationServiceFactory
-    : public ProfileKeyedServiceFactoryIOS {
- public:
-  static InProcessCategoryClassificationService* GetForProfile(
-      ProfileIOS* profile) {
-    return GetInstance()
-        ->GetServiceForProfileAs<InProcessCategoryClassificationService>(
-            profile, /*create=*/true);
-  }
-
-  static InProcessCategoryClassificationServiceFactory* GetInstance() {
-    static base::NoDestructor<InProcessCategoryClassificationServiceFactory>
-        instance;
-    return instance.get();
-  }
-
- private:
-  friend class base::NoDestructor<
-      InProcessCategoryClassificationServiceFactory>;
-
-  InProcessCategoryClassificationServiceFactory()
-      : ProfileKeyedServiceFactoryIOS("InProcessCategoryClassificationService",
-                                      ProfileSelection::kOwnInstanceInIncognito,
-                                      ServiceCreation::kCreateWithProfile,
-                                      TestingCreation::kNoServiceForTests) {
-    DependsOn(OptimizationGuideServiceFactory::GetInstance());
-  }
-
-  std::unique_ptr<KeyedService> BuildServiceInstanceFor(
-      ProfileIOS* profile) const override {
-    if (profile->IsOffTheRecord()) {
-      return nullptr;
-    }
-    OptimizationGuideService* opt_guide =
-        OptimizationGuideServiceFactory::GetForProfile(profile);
-    if (!opt_guide) {
-      return nullptr;
-    }
-    return std::make_unique<InProcessCategoryClassificationService>(opt_guide);
-  }
-};
+constexpr size_t kDefaultCacheCapacity = 50;
 
 }  // namespace
-
-// static
-InProcessCategoryClassificationService*
-InProcessCategoryClassificationService::GetForProfile(ProfileIOS* profile) {
-  return InProcessCategoryClassificationServiceFactory::GetForProfile(profile);
-}
-
-// static
-void InProcessCategoryClassificationService::EnsureFactoryBuilt() {
-  InProcessCategoryClassificationServiceFactory::GetInstance();
-}
-
-void InProcessCategoryClassificationService::OnEmbedderDisconnect() {
-  embedder_wrapper_.Reset();
-  model_loader_.ResetMetadata();
-  request_tracker_.CancelAll();
-}
 
 InProcessCategoryClassificationService::InProcessCategoryClassificationService(
     optimization_guide::OptimizationGuideModelProvider* model_provider)
@@ -91,8 +33,7 @@ InProcessCategoryClassificationService::InProcessCategoryClassificationService(
       // Note: `base::Unretained(this)` is safe here because `this` owns both
       // `embedder_wrapper_` and `model_loader_`. Any background tasks initiated
       // by them use their own WeakPtrs, preventing callback invocation after
-      // destruction. We cannot use `weak_ptr_factory_.GetWeakPtr()` here as
-      // Chromium style requires WeakPtrFactory to be the last class member.
+      // destruction.
       embedder_wrapper_(
           background_task_runner_,
           base::BindRepeating(
@@ -106,7 +47,8 @@ InProcessCategoryClassificationService::InProcessCategoryClassificationService(
           base::BindRepeating(
               &InProcessCategoryClassificationService::OnEmbedderDisconnect,
               base::Unretained(this))),
-      model_provider_(model_provider) {
+      model_provider_(model_provider),
+      in_memory_embeddings_cache_(kDefaultCacheCapacity) {
   embedder_wrapper_.EnsurePassageEmbedder();
   category_classifier_ =
       std::make_unique<page_content_annotations::OnDeviceCategoryClassifier>(
@@ -125,63 +67,138 @@ InProcessCategoryClassificationService::
   }
 }
 
+void InProcessCategoryClassificationService::Shutdown() {
+  weak_ptr_factory_.InvalidateWeakPtrs();
+  if (category_classifier_) {
+    category_classifier_->RemoveObserver(this);
+    category_classifier_.reset();
+  }
+  model_loader_.Shutdown();
+  model_provider_ = nullptr;
+  embedder_wrapper_.Reset();
+  request_tracker_.CancelAll();
+  in_memory_embeddings_cache_.Clear();
+}
+
+bool InProcessCategoryClassificationService::HasCachedEmbeddings(
+    const GURL& url) const {
+  if (!url.is_valid()) {
+    return false;
+  }
+  return in_memory_embeddings_cache_.Peek(url) !=
+         in_memory_embeddings_cache_.end();
+}
+
+std::optional<InProcessCategoryClassificationService::CachedEmbeddings>
+InProcessCategoryClassificationService::GetCachedEmbeddings(
+    const GURL& url) const {
+  auto it = in_memory_embeddings_cache_.Peek(url);
+  if (it != in_memory_embeddings_cache_.end()) {
+    return it->second;
+  }
+  return std::nullopt;
+}
+
+void InProcessCategoryClassificationService::ClassifyWithCachedEmbeddings(
+    const GURL& url,
+    ukm::SourceId source_id,
+    ClassificationCallback callback) {
+  if (!url.is_valid()) {
+    std::move(callback).Run({});
+    return;
+  }
+
+  auto cached_it = in_memory_embeddings_cache_.Get(url);
+  if (cached_it == in_memory_embeddings_cache_.end()) {
+    std::move(callback).Run({});
+    return;
+  }
+
+  if (request_tracker_.AttachInFlight(url, std::move(callback))) {
+    return;
+  }
+
+  if (category_classifier_) {
+    category_classifier_->OnPageEmbeddingAvailable(
+        url, source_id, cached_it->second.title_url_embedding,
+        cached_it->second.passage_embeddings);
+  } else {
+    request_tracker_.CompleteUrl(url, {});
+  }
+}
+
 void InProcessCategoryClassificationService::ClassifyPageContext(
     const GURL& url,
     const std::string& title,
     const std::string& page_content,
     ukm::SourceId source_id,
     ClassificationCallback callback) {
-  if (page_content.empty()) {
+  // Desktop's EmbeddingsCandidateGenerator only creates a title/URL candidate
+  // when both title and URL are present. If a title/URL embedding is missing,
+  // OnDeviceCategoryClassifier skips classification and returns empty results.
+  if (!url.is_valid() || title.empty()) {
     std::move(callback).Run({});
     return;
   }
 
-  // Desktop's EmbeddingsCandidateGenerator only creates a title/URL candidate
-  // when both title and URL are present. If a title/URL embedding is missing,
-  // OnDeviceCategoryClassifier skips classification and returns empty results.
-  if (title.empty() || !url.is_valid()) {
-    std::move(callback).Run({});
+  // In-Memory Cache hit: Reuse existing embeddings without re-embedding.
+  if (HasCachedEmbeddings(url)) {
+    ClassifyWithCachedEmbeddings(url, source_id, std::move(callback));
     return;
   }
 
   if (!model_loader_.IsModelLoaded()) {
     request_tracker_.EnqueuePending(
-        {url, title, page_content, source_id, std::move(callback)});
+        ClassificationRequestTracker::PendingClassification{
+            .url = url,
+            .title = title,
+            .page_content = page_content,
+            .source_id = source_id,
+            .callback = std::move(callback),
+        });
     return;
   }
-
-  const size_t max_words_per_aggregate_passage =
-      passage_embeddings::kMaxWordsPerAggregatePassage.Get();
-  const size_t min_words_per_passage =
-      passage_embeddings::kMinWordsPerPassage.Get();
-
-  // Create candidate passages matching Desktop's GenerateEmbeddingsCandidates
-  // page_content_annotations/content/embeddings_candidate_generator.cc.
-  std::vector<std::string> content_passages =
-      page_content_annotations::CreatePassagesFromText(
-          page_content, max_words_per_aggregate_passage, min_words_per_passage);
-
-  std::vector<std::string> passages;
-  std::vector<page_content_annotations::EmbeddingPassageType> passage_types;
-  passages.reserve(content_passages.size() + 1);
-  passage_types.reserve(content_passages.size() + 1);
-
-  for (std::string& passage : content_passages) {
-    passages.push_back(std::move(passage));
-    passage_types.push_back(
-        page_content_annotations::EmbeddingPassageType::kPageContent);
-  }
-
-  passages.push_back(base::StrCat({title, " - ", url.spec()}));
-  passage_types.push_back(
-      page_content_annotations::EmbeddingPassageType::kTitleAndUrl);
 
   if (request_tracker_.AttachInFlight(url, std::move(callback))) {
     return;
   }
 
+  std::vector<std::string> string_passages;
+  std::vector<page_content_annotations::EmbeddingPassageType> passage_types;
+
+  // If no page content is provided, only create a title and URL embedding.
+  if (!page_content.empty()) {
+    const size_t max_words_per_aggregate_passage =
+        passage_embeddings::kMaxWordsPerAggregatePassage.Get();
+    const size_t min_words_per_passage =
+        passage_embeddings::kMinWordsPerPassage.Get();
+
+    // Create candidate passages matching Desktop's GenerateEmbeddingsCandidates
+    // in page_content_annotations/content/embeddings_candidate_generator.cc.
+    std::vector<std::string> content_passages =
+        page_content_annotations::CreatePassagesFromText(
+            page_content, max_words_per_aggregate_passage,
+            min_words_per_passage);
+
+    string_passages.reserve(content_passages.size() + 1);
+    passage_types.reserve(content_passages.size() + 1);
+
+    for (std::string& passage : content_passages) {
+      string_passages.push_back(std::move(passage));
+      passage_types.push_back(
+          page_content_annotations::EmbeddingPassageType::kPageContent);
+    }
+  } else {
+    string_passages.reserve(1);
+    passage_types.reserve(1);
+  }
+
+  string_passages.push_back(base::StrCat({title, " - ", url.spec()}));
+  passage_types.push_back(
+      page_content_annotations::EmbeddingPassageType::kTitleAndUrl);
+
   embedder_wrapper_.GenerateEmbeddings(
-      passages,
+      string_passages,
       base::BindOnce(&InProcessCategoryClassificationService::OnGotEmbeddings,
                      weak_ptr_factory_.GetWeakPtr(), url, source_id,
                      std::move(passage_types)));
@@ -216,6 +233,13 @@ void InProcessCategoryClassificationService::OnGotEmbeddings(
       passage_embeddings.emplace_back(std::move(results[i]->embeddings));
     }
   }
+
+  // Store in-memory cached embeddings.
+  in_memory_embeddings_cache_.Put(
+      url, CachedEmbeddings{
+               .title_url_embedding = title_url_embedding,
+               .passage_embeddings = passage_embeddings,
+           });
 
   category_classifier_->OnPageEmbeddingAvailable(url, source_id,
                                                  std::move(title_url_embedding),
@@ -252,8 +276,12 @@ void InProcessCategoryClassificationService::OnPassageEmbedderLoaded(
     // CancelAll drains all pending requests and in-flight callbacks, running
     // each callback with empty results so requests never hang on load failure.
     request_tracker_.CancelAll();
+    in_memory_embeddings_cache_.Clear();
     return;
   }
+
+  // Clear stale embeddings from any previous model version.
+  in_memory_embeddings_cache_.Clear();
 
   model_loader_.NotifyEmbedderMetadata(
       passage_embeddings::EmbedderMetadata(model_version, output_size));
@@ -264,6 +292,13 @@ void InProcessCategoryClassificationService::OnPassageEmbedderLoaded(
     ClassifyPageContext(req.url, req.title, req.page_content, req.source_id,
                         std::move(req.callback));
   }
+}
+
+void InProcessCategoryClassificationService::OnEmbedderDisconnect() {
+  embedder_wrapper_.Reset();
+  model_loader_.ResetMetadata();
+  request_tracker_.CancelAll();
+  in_memory_embeddings_cache_.Clear();
 }
 
 void InProcessCategoryClassificationService::AddObserver(

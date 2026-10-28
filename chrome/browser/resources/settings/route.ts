@@ -125,7 +125,7 @@ function addPrivacyChildRoutes(r: Partial<SettingsRoutes>) {
       r.SITE_SETTINGS.createChild('automaticFullScreen');
   if (loadTimeData.getBoolean('enableWebAppInstallation')) {
     r.SITE_SETTINGS_WEB_APP_INSTALLATION =
-        r.SITE_SETTINGS.createChild('webApplications');
+        r.SITE_SETTINGS.createChild('webAppInstallations');
   }
   if (loadTimeData.getBoolean('enableLocalNetworkAccessSetting')) {
     r.SITE_SETTINGS_LOCAL_NETWORK = r.SITE_SETTINGS.createChild('localNetwork');
@@ -154,6 +154,8 @@ function createRoutes(): SettingsRoutes {
   }
 
   const visibility = pageVisibility || {};
+  const isSettingsRefresh2026Enabled =
+      loadTimeData.getString('settingsRefresh2026') !== '';
 
   if (visibility.people !== false) {
     r.PEOPLE = r.BASIC.createSection(
@@ -192,6 +194,9 @@ function createRoutes(): SettingsRoutes {
         r.GEMINI_LOGIN = r.GEMINI.createChild('/ai/gemini/login');
       }
     }
+    if (loadTimeData.getBoolean('showGeicSettings')) {
+      r.GEMINI_ENTERPRISE = r.AI.createChild('/ai/geminienterprise');
+    }
     if (loadTimeData.getBoolean('showAiSuggestionsControl')) {
       r.AI_SUGGESTIONS = r.AI.createChild('/ai/suggestions');
     }
@@ -200,6 +205,9 @@ function createRoutes(): SettingsRoutes {
     }
     if (loadTimeData.getBoolean('showSkillsSettingPage')) {
       r.SKILLS = r.AI.createChild('/ai/skills');
+    }
+    if (loadTimeData.getBoolean('showDictationControl')) {
+      r.DICTATION = r.AI.createChild('/ai/dictation');
     }
   }
 
@@ -240,14 +248,14 @@ function createRoutes(): SettingsRoutes {
   }
 
   // <if expr="not is_chromeos">
-  if (visibility.defaultBrowser !== false) {
+  if (!isSettingsRefresh2026Enabled && visibility.defaultBrowser !== false) {
     r.DEFAULT_BROWSER = r.BASIC.createSection(
         '/defaultBrowser', 'defaultBrowser',
         loadTimeData.getString('defaultBrowser'));
   }
   // </if>
 
-  if (visibility.onStartup !== false) {
+  if (!isSettingsRefresh2026Enabled && visibility.onStartup !== false) {
     r.ON_STARTUP = r.BASIC.createSection(
         '/onStartup', 'onStartup', loadTimeData.getString('onStartup'));
   }
@@ -259,13 +267,12 @@ function createRoutes(): SettingsRoutes {
     r.LANGUAGES = r.ADVANCED.createSection(
         '/languages', 'languages',
         loadTimeData.getString('languagesPageTitle'));
-    r.SPELL_CHECK = r.LANGUAGES.createSection('/spellCheck', 'languages');
     // <if expr="not is_chromeos and not is_macosx">
-    r.EDIT_DICTIONARY = r.SPELL_CHECK.createChild('/editDictionary');
+    r.EDIT_DICTIONARY = r.LANGUAGES.createChild('/editDictionary');
     // </if>
   }
 
-  if (visibility.downloads !== false) {
+  if (!isSettingsRefresh2026Enabled && visibility.downloads !== false) {
     r.DOWNLOADS = r.ADVANCED.createSection(
         '/downloads', 'downloads',
         loadTimeData.getString('downloadsPageTitle'));
@@ -280,14 +287,26 @@ function createRoutes(): SettingsRoutes {
     // </if>
   }
 
+  if (isSettingsRefresh2026Enabled && visibility.general !== false) {
+    // TODO(b/574664004): Update "General" string.
+    r.GENERAL = r.ADVANCED.createSection('/general', 'general', 'General');
+    if (visibility.reset !== false) {
+      r.RESET_DIALOG = r.GENERAL.createChild('/resetProfileSettings');
+      r.RESET_DIALOG.isNavigableDialog = true;
+      r.TRIGGERED_RESET_DIALOG =
+          r.GENERAL.createChild('/triggeredResetProfileSettings');
+      r.TRIGGERED_RESET_DIALOG.isNavigableDialog = true;
+    }
+  }
+
   // <if expr="not is_chromeos">
-  if (visibility.system !== false) {
+  if (!isSettingsRefresh2026Enabled && visibility.system !== false) {
     r.SYSTEM = r.ADVANCED.createSection(
         '/system', 'system', loadTimeData.getString('systemPageTitle'));
   }
   // </if>
 
-  if (visibility.reset !== false) {
+  if (!isSettingsRefresh2026Enabled && visibility.reset !== false) {
     r.RESET = r.ADVANCED.createSection(
         '/reset', 'reset', loadTimeData.getString('resetPageTitle'));
     r.RESET_DIALOG = r.RESET.createChild('/resetProfileSettings');

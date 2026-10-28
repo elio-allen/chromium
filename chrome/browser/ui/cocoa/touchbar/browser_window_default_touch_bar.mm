@@ -20,12 +20,12 @@
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/ui/bookmarks/bookmark_tab_helper.h"
 #include "chrome/browser/ui/bookmarks/bookmark_tab_helper_observer.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #import "chrome/browser/ui/cocoa/touchbar/browser_window_touch_bar_controller.h"
 #include "chrome/browser/ui/fullscreen_util_mac.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/omnibox/browser/vector_icons.h"
@@ -125,10 +125,10 @@ class TouchBarNotificationBridge : public CommandObserver,
                                    public content::WebContentsObserver {
  public:
   TouchBarNotificationBridge(BrowserWindowDefaultTouchBar* owner,
-                             Browser* browser)
+                             BrowserWindowInterface* browser)
       : owner_(owner), browser_(browser), contents_(nullptr) {
     TabStripModel* const model = browser_->GetTabStripModel();
-    DCHECK(model);
+    CHECK(model, base::NotFatalUntil::M162);
     model->AddObserver(this);
     UpdateWebContents(model->GetActiveWebContents());
 
@@ -211,14 +211,15 @@ class TouchBarNotificationBridge : public CommandObserver,
   // BookmarkTabHelperObserver:
   void URLStarredChanged(content::WebContents* web_contents,
                          bool starred) override {
-    DCHECK(web_contents == contents_);
+    CHECK(web_contents == contents_, base::NotFatalUntil::M162);
     owner_.isStarred = starred;
   }
 
  protected:
   // CommandObserver:
   void EnabledStateChangedForCommand(int command, bool enabled) override {
-    DCHECK(command == IDC_BACK || command == IDC_FORWARD);
+    CHECK(command == IDC_BACK || command == IDC_FORWARD,
+          base::NotFatalUntil::M162);
     if (command == IDC_BACK) {
       owner_.canGoBack = enabled;
     } else if (command == IDC_FORWARD) {
@@ -241,12 +242,12 @@ class TouchBarNotificationBridge : public CommandObserver,
   }
 
   void DidStartLoading() override {
-    DCHECK(contents_ && contents_->IsLoading());
+    CHECK(contents_ && contents_->IsLoading(), base::NotFatalUntil::M162);
     owner_.isPageLoading = YES;
   }
 
   void DidStopLoading() override {
-    DCHECK(contents_ && !contents_->IsLoading());
+    CHECK(contents_ && !contents_->IsLoading(), base::NotFatalUntil::M162);
     owner_.isPageLoading = NO;
   }
 
@@ -254,8 +255,8 @@ class TouchBarNotificationBridge : public CommandObserver,
 
  private:
   BrowserWindowDefaultTouchBar* __weak owner_;
-  raw_ptr<Browser> browser_;                // Weak.
-  raw_ptr<content::WebContents> contents_;  // Weak.
+  raw_ptr<BrowserWindowInterface> browser_;  // Weak.
+  raw_ptr<content::WebContents> contents_;   // Weak.
 
   // Used to monitor the optional home button pref.
   BooleanPrefMember show_home_button_;
@@ -511,7 +512,7 @@ class TouchBarNotificationBridge : public CommandObserver,
   return touchBar;
 }
 
-- (void)setBrowser:(Browser*)browser {
+- (void)setBrowser:(BrowserWindowInterface*)browser {
   if (_browser == browser) {
     return;
   }

@@ -35,21 +35,47 @@ std::optional<ParseFailure> EvaluateNetworkResult(int net_error,
   return std::nullopt;
 }
 
-ThreatMetadata GetThreatMetadata(const V5::FullHash::FullHashDetail& detail) {
-  ThreatMetadata metadata;
+std::optional<SubresourceFilterType> MapThreatTypeToSubresourceFilterType(
+    V5::ThreatType threat_type) {
+  switch (threat_type) {
+    case V5::ThreatType::ABUSIVE_EXPERIENCE_VIOLATION:
+      return SubresourceFilterType::ABUSIVE;
+    case V5::ThreatType::BETTER_ADS_VIOLATION:
+      return SubresourceFilterType::BETTER_ADS;
+    default:
+      return std::nullopt;
+  }
+}
+
+void AddToSubresourceFilterMetadata(
+    ThreatMetadata* subresource_filter_metadata,
+    const V5::FullHash::FullHashDetail& detail) {
+  std::optional<SubresourceFilterType> filter_type =
+      MapThreatTypeToSubresourceFilterType(detail.threat_type());
+  if (!filter_type.has_value()) {
+    // Return early for threat types not related to subresource filter.
+    return;
+  }
+
   SubresourceFilterLevel level =
       std::ranges::contains(detail.attributes(), V5::ThreatAttribute::CANARY)
           ? SubresourceFilterLevel::WARN
           : SubresourceFilterLevel::ENFORCE;
-  if (detail.threat_type() == V5::ThreatType::ABUSIVE_EXPERIENCE_VIOLATION) {
-    metadata.subresource_filter_match[SubresourceFilterType::ABUSIVE] = level;
-  } else if (detail.threat_type() == V5::ThreatType::BETTER_ADS_VIOLATION) {
-    metadata.subresource_filter_match[SubresourceFilterType::BETTER_ADS] =
-        level;
+  // Try adding it to the map.
+  auto [match_it, was_inserted] =
+      subresource_filter_metadata->subresource_filter_match.insert(
+          {filter_type.value(), level});
+  // If it was already there, pick the higher severity level of the old and new
+  // entries.
+  if (!was_inserted) {
+    SubresourceFilterLevel& existing_level = match_it->second;
+    existing_level = std::max(existing_level, level);
   }
-  return metadata;
 }
 
+// Keep the severity values in sync with GetThreatSeverity() in
+// base_ui_manager.cc.
+// LINT.IfChange(ThreatTypeSeverity)
 int GetThreatSeverity(const V5::FullHash::FullHashDetail& detail) {
   bool is_canary =
       std::ranges::contains(detail.attributes(), V5::ThreatAttribute::CANARY);
@@ -57,9 +83,11 @@ int GetThreatSeverity(const V5::FullHash::FullHashDetail& detail) {
     // SUSPICIOUS threat type.
     return 7;
   }
-  // LINT.IfChange(ThreatTypeSeverity)
   switch (detail.threat_type()) {
     case V5::ThreatType::MALWARE:
+    // POTENTIALLY_HARMFUL_APPLICATION is used for mobile/iOS malware
+    // ("pha-4b").
+    case V5::ThreatType::POTENTIALLY_HARMFUL_APPLICATION:
     case V5::ThreatType::SOCIAL_ENGINEERING:
     case V5::ThreatType::MALICIOUS_BINARY:
       return 0;
@@ -77,15 +105,15 @@ int GetThreatSeverity(const V5::FullHash::FullHashDetail& detail) {
       return 15;
     case V5::ThreatType::SUBRESOURCE_FILTER:
     case V5::ThreatType::THREAT_TYPE_UNSPECIFIED:
-    case V5::ThreatType::POTENTIALLY_HARMFUL_APPLICATION:
       NOTREACHED();
-      // LINT.ThenChange(//components/safe_browsing/core/common/proto/safebrowsingv5.proto:ThreatType)
     default:
       // Using "default" because exhaustive switch statements are not
       // recommended for proto3 enums.
       NOTREACHED();
   }
 }
+// LINT.ThenChange(//components/safe_browsing/core/common/proto/safebrowsingv5.proto:ThreatType,
+// //components/safe_browsing/content/browser/base_ui_manager.cc:ThreatTypeSeverity)
 
 bool RemoveUnmatchedFullHashes(
     V5::SearchHashesResponse* response,
@@ -148,6 +176,9 @@ SBThreatType MapFullHashDetailToSbThreatType(
   // LINT.IfChange(ThreatTypeMap)
   switch (detail.threat_type()) {
     case V5::ThreatType::MALWARE:
+    // POTENTIALLY_HARMFUL_APPLICATION is used for mobile/iOS malware
+    // ("pha-4b").
+    case V5::ThreatType::POTENTIALLY_HARMFUL_APPLICATION:
       return SBThreatType::SB_THREAT_TYPE_URL_MALWARE;
     case V5::ThreatType::SOCIAL_ENGINEERING:
       return SBThreatType::SB_THREAT_TYPE_URL_PHISHING;
@@ -164,7 +195,6 @@ SBThreatType MapFullHashDetailToSbThreatType(
       return SBThreatType::SB_THREAT_TYPE_API_ABUSE;
     case V5::ThreatType::THREAT_TYPE_UNSPECIFIED:
     case V5::ThreatType::SUBRESOURCE_FILTER:
-    case V5::ThreatType::POTENTIALLY_HARMFUL_APPLICATION:
       NOTREACHED();
       // LINT.ThenChange(//components/safe_browsing/core/common/proto/safebrowsingv5.proto:ThreatType)
     default:
@@ -177,14 +207,18 @@ SBThreatType MapFullHashDetailToSbThreatType(
 ThreatResult DetermineMostSevereThreat(
     const std::vector<const V5::FullHash::FullHashDetail*>& filtered_details) {
   ThreatResult result;
+  ThreatMetadata subresource_filter_metadata;
   for (const auto* detail_ptr : filtered_details) {
     const auto& detail = *detail_ptr;
     int severity = GetThreatSeverity(detail);
     if (severity < result.threat_severity) {
       result.threat_severity = severity;
       result.threat_type = MapFullHashDetailToSbThreatType(detail);
-      result.metadata = GetThreatMetadata(detail);
     }
+    AddToSubresourceFilterMetadata(&subresource_filter_metadata, detail);
+  }
+  if (result.threat_type == SBThreatType::SB_THREAT_TYPE_SUBRESOURCE_FILTER) {
+    result.metadata = std::move(subresource_filter_metadata);
   }
   return result;
 }
@@ -197,9 +231,9 @@ std::string GetResourceUrl(V5::SearchHashesRequest* request) {
                         &request_base64);
 
   std::string url = base::StringPrintf(
-      "https://safebrowsing.googleapis.com/v5/hashes:search"
+      "%s/hashes:search"
       "?$req=%s&$ct=application/x-protobuf",
-      request_base64.c_str());
+      GetSbV5UrlPrefix(), request_base64.c_str());
   auto api_key = google_apis::GetAPIKey();
   if (!api_key.empty()) {
     base::StringAppendF(

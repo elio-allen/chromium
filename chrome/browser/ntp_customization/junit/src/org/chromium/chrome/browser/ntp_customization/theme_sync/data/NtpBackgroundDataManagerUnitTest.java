@@ -23,10 +23,10 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
 import org.chromium.chrome.browser.ntp_customization.R;
 import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorInfo.NtpThemeColorId;
@@ -39,10 +39,12 @@ import java.io.File;
 
 /** Tests for {@link NtpBackgroundDataManager}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class NtpBackgroundDataManagerUnitTest {
     private static final String TEST_COLLECTION_ID = "test_collection";
     private static final String OTHER_COLLECTION_ID = "other_collection";
+    private static final String UNUSED_FILE_HASH = "unusedFileHash";
+    private static final String HISTORY_FILE_HASH = "historyFileHash";
+    private static final String LOCAL_HISTORY_FILE_HASH = "LocalhistoryFileHash";
     private static final @PlatformType int REMOTE_PLATFORM_TYPE = PlatformType.IOS;
     private static final @ColorInt int TEST_PRIMARY_COLOR = Color.RED;
 
@@ -60,7 +62,9 @@ public class NtpBackgroundDataManagerUnitTest {
 
     @After
     public void tearDown() {
-        mManager.resetSharedPreferenceForTesting();
+        NtpBackgroundDataManager.resetSharedPreference();
+        NtpCustomizationUtils.deleteThemeImageFileDir(
+                NtpCustomizationUtils.NTP_THEME_COLLECTION_IMAGES_DIR);
     }
 
     @Test
@@ -705,5 +709,235 @@ public class NtpBackgroundDataManagerUnitTest {
         assertEquals(1, group.size());
         assertEquals(enrichedData, group.get(0));
         assertNotNull(((NtpBackgroundDataThemeCollection) group.get(0)).getBackgroundImageInfo());
+    }
+
+    @Test
+    public void testUpdateRemoteSyncDataToSharedPreference_EnrichesNullPrimaryColorInPlace() {
+        @PlatformType int platformType = PlatformType.DESKTOP;
+        // A remote entry arrives without a primary color.
+        NtpBackgroundDataThemeCollection data =
+                createDesktopThemeCollection(/* primaryColor= */ null);
+        mManager.saveRemoteSyncDataToSharedPreference(data);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        NtpBackgroundDataGroup group =
+                mManager.getBackgroundDataGroupFromSharedPreference(platformType);
+        assertEquals(1, group.size());
+        assertNull(((NtpBackgroundDataThemeCollection) group.get(0)).getPrimaryColor());
+
+        // Mutate the object in place the way NtpCustomizationUtils#saveBackgroundInfo does.
+        data.setPrimaryColor(TEST_PRIMARY_COLOR);
+
+        // Because equals() ignores primaryColor for theme collections, indexOf() still matches the
+        // stored entry and updates its color in place.
+        mManager.updateRemoteSyncDataToSharedPreference(data);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        group = mManager.getBackgroundDataGroupFromSharedPreference(platformType);
+        assertEquals(1, group.size());
+        assertEquals(
+                Integer.valueOf(TEST_PRIMARY_COLOR),
+                ((NtpBackgroundDataThemeCollection) group.get(0)).getPrimaryColor());
+    }
+
+    @Test
+    public void
+            testSaveRemoteSyncDataToSharedPreference_SameImageUpdatesColorAndPreservesNonNullColor() {
+        @PlatformType int platformType = PlatformType.DESKTOP;
+        NtpBackgroundDataThemeCollection blueVariant = createDesktopThemeCollection(Color.BLUE);
+        NtpBackgroundDataThemeCollection redVariant = createDesktopThemeCollection(Color.RED);
+        NtpBackgroundDataThemeCollection nullColorVariant =
+                createDesktopThemeCollection(/* primaryColor= */ null);
+
+        // 1. Save blue variant -> 1 entry with Color.BLUE.
+        mManager.saveRemoteSyncDataToSharedPreference(blueVariant);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        // 2. Save red variant of same image -> updates in place to Color.RED (last non-null wins).
+        mManager.saveRemoteSyncDataToSharedPreference(redVariant);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        NtpBackgroundDataGroup group =
+                mManager.getBackgroundDataGroupFromSharedPreference(platformType);
+        assertEquals(1, group.size());
+        assertEquals(
+                Integer.valueOf(Color.RED),
+                ((NtpBackgroundDataThemeCollection) group.get(0)).getPrimaryColor());
+
+        // 3. Save null-color variant of same image -> does NOT overwrite existing Color.RED.
+        mManager.saveRemoteSyncDataToSharedPreference(nullColorVariant);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        group = mManager.getBackgroundDataGroupFromSharedPreference(platformType);
+        assertEquals(1, group.size());
+        assertEquals(
+                Integer.valueOf(Color.RED),
+                ((NtpBackgroundDataThemeCollection) group.get(0)).getPrimaryColor());
+    }
+
+    private NtpBackgroundDataThemeCollection createDesktopThemeCollection(
+            @Nullable @ColorInt Integer primaryColor) {
+        CustomBackgroundInfo customBgInfo =
+                new CustomBackgroundInfo(
+                        JUnitTestGURLs.URL_1,
+                        TEST_COLLECTION_ID,
+                        /* isUploadedImage= */ false,
+                        /* isDailyRefreshEnabled= */ false);
+        return new NtpBackgroundDataThemeCollection(
+                PlatformType.DESKTOP,
+                customBgInfo,
+                /* backgroundImageInfo= */ null,
+                /* bitmap= */ null,
+                primaryColor,
+                /* fileIdHash= */ null);
+    }
+
+    @Test
+    public void testMaybeCleanUpUnusedSyncedImageData_unusedFile_deletesFile() {
+        Bitmap bitmap = Bitmap.createBitmap(10, 10, Bitmap.Config.ARGB_8888);
+        NtpBackgroundDataThemeCollection themeData =
+                createAndSaveThemeCollectionData(bitmap, UNUSED_FILE_HASH);
+        File savedFile = new File(themeData.getLastUploadImageFilePath());
+
+        // File is not present in history.
+        mManager.maybeCleanUpUnusedSyncedImageData(themeData);
+        RobolectricUtil.runAllBackgroundAndUi();
+        assertFalse(savedFile.exists());
+    }
+
+    @Test
+    public void testMaybeCleanUpUnusedSyncedImageData_inUseByHistory_preservesFile() {
+        Bitmap bitmap = Bitmap.createBitmap(10, 10, Bitmap.Config.ARGB_8888);
+        NtpBackgroundDataThemeCollection themeData =
+                createAndSaveThemeCollectionData(bitmap, HISTORY_FILE_HASH);
+        File savedFile = new File(themeData.getLastUploadImageFilePath());
+
+        // Save to local history.
+        mManager.saveUserSelectedBackgroundTypeToSharedPreference(themeData);
+
+        // Attempt to clean up.
+        mManager.maybeCleanUpUnusedSyncedImageData(themeData);
+        RobolectricUtil.runAllBackgroundAndUi();
+        assertTrue(savedFile.exists());
+    }
+
+    @Test
+    public void testMaybeCleanUpUnusedSyncedImageData_inUseByRemoteHistory_preservesFile() {
+        Bitmap bitmap = Bitmap.createBitmap(10, 10, Bitmap.Config.ARGB_8888);
+        NtpBackgroundDataThemeCollection themeData =
+                createAndSaveThemeCollectionData(bitmap, HISTORY_FILE_HASH);
+        File savedFile = new File(themeData.getLastUploadImageFilePath());
+
+        // Save to remote (desktop) history.
+        CustomBackgroundInfo desktopBgInfo =
+                new CustomBackgroundInfo(
+                        JUnitTestGURLs.URL_1,
+                        TEST_COLLECTION_ID,
+                        /* isUploadedImage= */ false,
+                        /* isDailyRefreshEnabled= */ false);
+        NtpBackgroundDataThemeCollection desktopThemeData =
+                new NtpBackgroundDataThemeCollection(
+                        PlatformType.DESKTOP,
+                        desktopBgInfo,
+                        /* backgroundImageInfo= */ null,
+                        bitmap,
+                        /* primaryColor= */ null,
+                        HISTORY_FILE_HASH);
+        mManager.saveRemoteSyncDataToSharedPreference(desktopThemeData);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        // Attempt to clean up.
+        mManager.maybeCleanUpUnusedSyncedImageData(themeData);
+        RobolectricUtil.runAllBackgroundAndUi();
+        assertTrue(savedFile.exists());
+    }
+
+    private NtpBackgroundDataThemeCollection createAndSaveThemeCollectionData(
+            Bitmap bitmap, String fileHash) {
+        CustomBackgroundInfo customBgInfo =
+                new CustomBackgroundInfo(
+                        JUnitTestGURLs.URL_1,
+                        TEST_COLLECTION_ID,
+                        /* isUploadedImage= */ false,
+                        /* isDailyRefreshEnabled= */ false);
+        NtpBackgroundDataThemeCollection themeData =
+                new NtpBackgroundDataThemeCollection(
+                        PlatformType.ANDROID,
+                        customBgInfo,
+                        /* backgroundImageInfo= */ null,
+                        bitmap,
+                        /* primaryColor= */ null,
+                        fileHash);
+
+        File savedFile = new File(themeData.getLastUploadImageFilePath());
+        NtpCustomizationUtils.saveBitmapImageToFile(bitmap, savedFile);
+        RobolectricUtil.runAllBackgroundAndUi();
+        assertTrue(savedFile.exists());
+        return themeData;
+    }
+
+    @Test
+    public void testRemoveAllNonAndroidPlatformData() {
+        Bitmap bitmap = Bitmap.createBitmap(10, 10, Bitmap.Config.ARGB_8888);
+        CustomBackgroundInfo customBgInfoLocallySelected =
+                new CustomBackgroundInfo(
+                        JUnitTestGURLs.URL_1,
+                        TEST_COLLECTION_ID,
+                        /* isUploadedImage= */ false,
+                        /* isDailyRefreshEnabled= */ false);
+        CustomBackgroundInfo customBgInfo =
+                new CustomBackgroundInfo(
+                        JUnitTestGURLs.URL_2,
+                        TEST_COLLECTION_ID,
+                        /* isUploadedImage= */ false,
+                        /* isDailyRefreshEnabled= */ false);
+
+        NtpBackgroundDataThemeCollection iosThemeData =
+                new NtpBackgroundDataThemeCollection(
+                        PlatformType.IOS,
+                        customBgInfoLocallySelected,
+                        /* backgroundImageInfo= */ null,
+                        bitmap,
+                        /* primaryColor= */ null,
+                        LOCAL_HISTORY_FILE_HASH);
+        NtpBackgroundDataThemeCollection desktopThemeData =
+                new NtpBackgroundDataThemeCollection(
+                        PlatformType.DESKTOP,
+                        customBgInfo,
+                        /* backgroundImageInfo= */ null,
+                        bitmap,
+                        /* primaryColor= */ null,
+                        HISTORY_FILE_HASH);
+
+        File localUsedFile = new File(iosThemeData.getLastUploadImageFilePath());
+        File remoteUsedOnlyFile = new File(desktopThemeData.getLastUploadImageFilePath());
+        NtpCustomizationUtils.saveBitmapImageToFile(bitmap, localUsedFile);
+        NtpCustomizationUtils.saveBitmapImageToFile(bitmap, remoteUsedOnlyFile);
+        RobolectricUtil.runAllBackgroundAndUi();
+        assertTrue(localUsedFile.exists());
+        assertTrue(remoteUsedOnlyFile.exists());
+
+        mManager.saveUserSelectedBackgroundTypeToSharedPreference(iosThemeData);
+        mManager.saveRemoteSyncDataToSharedPreference(iosThemeData);
+        mManager.saveRemoteSyncDataToSharedPreference(desktopThemeData);
+        RobolectricUtil.runAllBackgroundAndUi();
+        assertFalse(
+                mManager.getBackgroundDataGroupFromSharedPreference(PlatformType.IOS).isEmpty());
+        assertFalse(
+                mManager.getBackgroundDataGroupFromSharedPreference(PlatformType.DESKTOP)
+                        .isEmpty());
+
+        mManager.removeAllNonAndroidPlatformData();
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        assertTrue(mManager.getBackgroundDataGroupFromSharedPreference(PlatformType.IOS).isEmpty());
+        assertTrue(
+                mManager.getBackgroundDataGroupFromSharedPreference(PlatformType.DESKTOP)
+                        .isEmpty());
+        assertFalse(
+                mManager.getBackgroundDataGroupFromSharedPreference(PlatformType.ANDROID)
+                        .isEmpty());
+        assertTrue(localUsedFile.exists());
+        assertFalse(remoteUsedOnlyFile.exists());
     }
 }

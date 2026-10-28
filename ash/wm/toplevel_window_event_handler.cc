@@ -5,6 +5,7 @@
 #include "ash/wm/toplevel_window_event_handler.h"
 
 #include "ash/constants/ash_features.h"
+#include "ash/display/window_tree_host_manager.h"
 #include "ash/public/cpp/window_properties.h"
 #include "ash/shell.h"
 #include "ash/wm/multi_display/multi_display_metrics_controller.h"
@@ -226,6 +227,28 @@ void ToplevelWindowEventHandler::ScopedWindowResizer::OnWindowDestroying(
 }
 
 // -----------------------------------------------------------------------------
+// ToplevelWindowEventHandler::ScopedEventDispatch:
+
+class ToplevelWindowEventHandler::ScopedEventDispatch {
+ public:
+  explicit ScopedEventDispatch(ToplevelWindowEventHandler* handler)
+      : handler_(handler) {
+    ++handler_->event_dispatch_depth_;
+  }
+  ScopedEventDispatch(const ScopedEventDispatch&) = delete;
+  ScopedEventDispatch& operator=(const ScopedEventDispatch&) = delete;
+  ~ScopedEventDispatch() {
+    CHECK_GT(handler_->event_dispatch_depth_, 0);
+    if (--handler_->event_dispatch_depth_ == 0) {
+      handler_->resizer_pending_deletion_.reset();
+    }
+  }
+
+ private:
+  const raw_ptr<ToplevelWindowEventHandler> handler_;
+};
+
+// -----------------------------------------------------------------------------
 // ToplevelWindowEventHandler:
 
 ToplevelWindowEventHandler::ToplevelWindowEventHandler()
@@ -265,6 +288,7 @@ void ToplevelWindowEventHandler::OnKeyEvent(ui::KeyEvent* event) {
 }
 
 void ToplevelWindowEventHandler::OnMouseEvent(ui::MouseEvent* event) {
+  ScopedEventDispatch scoped_dispatch(this);
   UpdateGestureTarget(nullptr);
 
   if (event->handled())
@@ -305,6 +329,7 @@ void ToplevelWindowEventHandler::OnMouseEvent(ui::MouseEvent* event) {
 }
 
 void ToplevelWindowEventHandler::OnGestureEvent(ui::GestureEvent* event) {
+  ScopedEventDispatch scoped_dispatch(this);
   if (event->phase() != ui::EP_PRETARGET)
     return;
 
@@ -954,6 +979,9 @@ bool ToplevelWindowEventHandler::CompleteDrag(DragResult result) {
   }
 
   std::unique_ptr<ScopedWindowResizer> resizer(std::move(window_resizer_));
+  // Let any `WindowResizer::Drag()` still on the stack know that the drag is
+  // over, see `WindowResizer::IsDragCompleted()`.
+  resizer->resizer()->OnDragCompleted();
   switch (result) {
     case DragResult::SUCCESS:
       resizer->resizer()->CompleteDrag();
@@ -976,6 +1004,14 @@ bool ToplevelWindowEventHandler::CompleteDrag(DragResult result) {
   requires_reinitialization_ = false;
   if (end_closure_)
     std::move(end_closure_).Run(result);
+
+  if (event_dispatch_depth_ > 0) {
+    // The resizer may still be in use further up the stack (e.g.
+    // `WindowResizer::Drag()` changed the bounds, which resulted in a nested
+    // capture changed event). Defer deleting it until the outermost event
+    // dispatch returns. See crbug.com/568021906.
+    resizer_pending_deletion_ = std::move(resizer);
+  }
   return true;
 }
 
@@ -1108,7 +1144,14 @@ void ToplevelWindowEventHandler::HandleCaptureLost(ui::LocatedEvent* event) {
     // We complete the drag instead of reverting it, as reverting it will result
     // in a weird behavior when a dragged tab produces a modal dialog while the
     // drag is in progress. crbug.com/558201.
-    CompleteDrag(DragResult::SUCCESS);
+    // However, if the capture is lost because of display configuration change,
+    // we should revert the drag.
+    auto* manager = Shell::Get()->window_tree_host_manager();
+    if (manager->in_display_configuration_change()) {
+      CompleteDrag(DragResult::REVERT);
+    } else {
+      CompleteDrag(DragResult::SUCCESS);
+    }
   }
 }
 

@@ -15,30 +15,6 @@
 
 namespace bookmarks_api {
 
-namespace {
-
-const bookmarks::BookmarkNode* FindNodeById(
-    const bookmarks::BookmarkModel* model,
-    int64_t id) {
-  if (!model) {
-    return nullptr;
-  }
-  if (model->account_bookmark_bar_node() &&
-      model->account_bookmark_bar_node()->id() == id) {
-    return model->account_bookmark_bar_node();
-  }
-  if (model->account_other_node() && model->account_other_node()->id() == id) {
-    return model->account_other_node();
-  }
-  if (model->account_mobile_node() &&
-      model->account_mobile_node()->id() == id) {
-    return model->account_mobile_node();
-  }
-  return nullptr;
-}
-
-}  // namespace
-
 DefaultBookmarksView::DefaultBookmarksView(
     bookmarks::BookmarkModel* model,
     bookmarks::ManagedBookmarkService* managed_service)
@@ -46,7 +22,6 @@ DefaultBookmarksView::DefaultBookmarksView(
   CHECK(model_);
   CHECK(model_->loaded());
   model_observation_.Observe(model_);
-  RegisterAccountNodeOverrides();
   translator_.Init();
 }
 
@@ -82,23 +57,28 @@ std::vector<const bookmarks::BookmarkNode*> DefaultBookmarksView::GetChildren(
 
 std::optional<const bookmarks::BookmarkNode*>
 DefaultBookmarksView::FindNodeByUuid(const base::Uuid& uuid) const {
-  if (std::optional<int64_t> override_id =
-          uuid_mapper_.MaybeGetIdFromUuidOverride(uuid)) {
-    const bookmarks::BookmarkNode* found = FindNodeById(model_, *override_id);
-    if (found) {
-      return found;
-    }
+  std::optional<BookmarkIdTuple> tuple = uuid_mapper_.MaybeGetModelId(uuid);
+  if (!tuple) {
+    return std::nullopt;
   }
 
-  const bookmarks::BookmarkNode* node = model_->GetNodeByUuid(
-      uuid,
-      bookmarks::BookmarkModel::NodeTypeForUuidLookup::kLocalOrSyncableNodes);
-  if (!node) {
-    node = model_->GetNodeByUuid(
-        uuid, bookmarks::BookmarkModel::NodeTypeForUuidLookup::kAccountNodes);
+  // According to specs, we should attempt to lookup the account nodes first.
+  auto* account_node = model_->GetNodeByUuid(
+      tuple->uuid(),
+      bookmarks::BookmarkModel::NodeTypeForUuidLookup::kAccountNodes);
+  if (account_node && account_node->id() == tuple->id()) {
+    return account_node;
   }
-  return node ? std::optional<const bookmarks::BookmarkNode*>(node)
-              : std::nullopt;
+
+  // Then fallback to local nodes.
+  auto* local_node = model_->GetNodeByUuid(
+      tuple->uuid(),
+      bookmarks::BookmarkModel::NodeTypeForUuidLookup::kLocalOrSyncableNodes);
+  if (local_node && local_node->id() == tuple->id()) {
+    return local_node;
+  }
+
+  return std::nullopt;
 }
 
 bool DefaultBookmarksView::IsPermanentNode(
@@ -123,45 +103,23 @@ mojom::PermanentFolderType DefaultBookmarksView::GetPermanentFolderType(
   return mojom::PermanentFolderType::kUnknown;
 }
 
-// For signed-in profiles with account bookmark storage enabled, assign unique
-// UUID overrides to account permanent folders so they do not collide with local
-// permanent folder UUIDs. We infer signed-in status by checking if
-// account_bookmark_bar_node() exists.
-void DefaultBookmarksView::RegisterAccountNodeOverrides() {
-  if (!model_->account_bookmark_bar_node()) {
-    return;
-  }
-
-  if (!uuid_mapper_.HasOverrideFor(model_->account_bookmark_bar_node())) {
-    if (model_->account_bookmark_bar_node()) {
-      uuid_mapper_.SetUuidOverride(model_->account_bookmark_bar_node(),
-                                   base::Uuid::GenerateRandomV4());
-    }
-    if (model_->account_other_node()) {
-      uuid_mapper_.SetUuidOverride(model_->account_other_node(),
-                                   base::Uuid::GenerateRandomV4());
-    }
-    if (model_->account_mobile_node()) {
-      uuid_mapper_.SetUuidOverride(model_->account_mobile_node(),
-                                   base::Uuid::GenerateRandomV4());
-    }
-  }
-}
-
-base::Uuid DefaultBookmarksView::GetUuid(
-    const bookmarks::BookmarkNode* node) const {
-  if (!node) {
-    return base::Uuid();
-  }
-  return uuid_mapper_.GetUuidFor(node);
+base::Uuid DefaultBookmarksView::GetUuid(const bookmarks::BookmarkNode* node) {
+  CHECK(node);
+  const bool in_account_storage =
+      model_->GetNodeByUuid(
+          node->uuid(),
+          bookmarks::BookmarkModel::NodeTypeForUuidLookup::kAccountNodes) ==
+      node;
+  return uuid_mapper_.GetUuidFor(node, in_account_storage
+                                           ? BookmarkStorage::kAccount
+                                           : BookmarkStorage::kLocal);
 }
 
 bool DefaultBookmarksView::IsSynced(const bookmarks::BookmarkNode* node) const {
   return !model_->IsLocalOnlyNode(*node);
 }
 
-const BookmarkEventTranslator& DefaultBookmarksView::GetEventTranslator()
-    const {
+BookmarkEventTranslator& DefaultBookmarksView::GetEventTranslator() {
   return translator_;
 }
 
@@ -217,7 +175,6 @@ void DefaultBookmarksView::RemoveNodes(
 }
 
 void DefaultBookmarksView::BookmarkModelLoaded(bool ids_reassigned) {
-  RegisterAccountNodeOverrides();
   translator_.Init();
 }
 
@@ -242,10 +199,6 @@ void DefaultBookmarksView::BookmarkNodeAdded(
     const bookmarks::BookmarkNode* parent,
     size_t index,
     bool added_by_user) {
-  // If account permanent folders were created dynamically (e.g., user signed in
-  // or enabled bookmark sync during an active session), register their
-  // overrides.
-  RegisterAccountNodeOverrides();
   std::vector<mojom::BookmarksEventPtr> events;
   events.push_back(translator_.CreateAddedEvent(parent, index));
   Notify(std::move(events));
@@ -259,6 +212,7 @@ void DefaultBookmarksView::BookmarkNodeRemoved(
     const base::Location& location) {
   std::vector<mojom::BookmarksEventPtr> events;
   events.push_back(translator_.OnNodeRemoved(node));
+  uuid_mapper_.RemoveNode(node);
   Notify(std::move(events));
 }
 
@@ -282,6 +236,7 @@ void DefaultBookmarksView::BookmarkNodeChildrenReordered(
 void DefaultBookmarksView::BookmarkAllUserNodesRemoved(
     const std::set<GURL>& removed_urls,
     const base::Location& location) {
+  uuid_mapper_.ClearAllExcept(GetChildren(GetRootNode()));
   Notify(translator_.OnAllUserBookmarksRemoved());
 }
 

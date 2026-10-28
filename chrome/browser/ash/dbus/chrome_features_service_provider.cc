@@ -22,7 +22,6 @@
 #include "chrome/browser/ash/crostini/crostini_pref_names.h"
 #include "chrome/browser/ash/dbus/service_util.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
@@ -443,11 +442,11 @@ void ChromeFeaturesServiceProvider::IsPeripheralDataAccessEnabled(
                peripheral_data_access_enabled);
 }
 
+// TODO(b/356234634): Remove method as the flag is removed to always returns true.
 void ChromeFeaturesServiceProvider::IsDnsProxyEnabled(
     dbus::MethodCall* method_call,
     dbus::ExportedObject::ResponseSender response_sender) {
-  SendResponse(method_call, std::move(response_sender),
-               !base::FeatureList::IsEnabled(features::kDisableDnsProxy));
+  SendResponse(method_call, std::move(response_sender), true);
 }
 
 void ChromeFeaturesServiceProvider::IsRootNsDnsProxyEnabled(

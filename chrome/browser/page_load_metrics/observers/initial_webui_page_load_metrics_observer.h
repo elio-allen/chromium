@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_PAGE_LOAD_METRICS_OBSERVERS_INITIAL_WEBUI_PAGE_LOAD_METRICS_OBSERVER_H_
 
 #include <optional>
+#include <string_view>
 
 #include "base/time/time.h"
 #include "components/page_load_metrics/browser/page_load_metrics_observer.h"
@@ -15,9 +16,8 @@
 #include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
+class InitialWebUIMetricsDispatcher;
 class MetricsReporter;
-class WaapUIMetricsService;
-class InitialWebUIWindowMetricsManager;
 
 namespace content {
 class NavigationHandle;
@@ -98,14 +98,8 @@ class InitialWebUIPageLoadMetricsObserver
       base::TimeTicks page_end_time,
       ukm::builders::InitialWebUIPageLoad* builder);
 
-  // Returns the service for the current profile.
-  // The service is guaranteed to be non-null.
-  WaapUIMetricsService* service() const;
-
   MetricsReporter& GetMetricsReporter();
-
-  // Returns the MetricsManager for the current window.
-  InitialWebUIWindowMetricsManager* GetMetricsManager() const;
+  InitialWebUIMetricsDispatcher& GetMetricsDispatcher();
 
   // Initiates an asynchronous query chain to fetch WebUI frontend timing data
   // (marked in JS via user timing marks) and records them to UKM once all are

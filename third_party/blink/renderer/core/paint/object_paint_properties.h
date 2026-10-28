@@ -119,58 +119,61 @@ class CORE_EXPORT ObjectPaintProperties
     kPaintOffsetTranslation = kFirstTransform,
     kStickyTranslation = 1,
     kAnchorPositionScrollTranslation = 2,
+    kElementCanvasTransform = 3,
     // Transform nodes for CSS transform operations.
-    kFirstCSSTransform = 3,
+    kFirstCSSTransform = 4,
     kTranslate = kFirstCSSTransform,
-    kRotate = 4,
-    kScale = 5,
-    kOffset = 6,
-    kTransform = 7,
+    kRotate = 5,
+    kScale = 6,
+    kOffset = 7,
+    kTransform = 8,
     kLastCSSTransform = kTransform,
     // End of Transform nodes for CSS transform operations.
-    kContentTranslation = 8,
-    kPerspective = 9,
-    kReplacedContentTransform = 10,
-    kScrollTranslation = 11,
-    kUnboundedWrapperTransform = 12,
-    kUnboundedInnerTransform = 13,
+    kContentTranslation = 9,
+    kPerspective = 10,
+    kReplacedContentTransform = 11,
+    kScrollTranslation = 12,
+    kUnboundedWrapperTransform = 13,
+    kUnboundedInnerTransform = 14,
     kLastTransform = kUnboundedInnerTransform,
-    kTransformAlias = 14,
+    kTransformAlias = 15,
 
-    kScroll = 15,
+    kScroll = 16,
     kFirstScroll = kScroll,
     kLastScroll = kScroll,
 
     // Effects
-    kFirstEffect = 16,
+    kFirstEffect = 17,
     kElementCaptureEffect = kFirstEffect,
-    kViewTransitionScopeRootEffect = 17,
-    kViewTransitionEffect = 18,
-    kUnboundedWrapperEffect = 19,
-    kEffect = 20,
-    kFilter = 21,
-    kMask = 22,
-    kClipPathMask = 23,
-    kVerticalScrollbarEffect = 24,
-    kHorizontalScrollbarEffect = 25,
-    kScrollCornerEffect = 26,
+    kViewTransitionScopeRootEffect = 18,
+    kViewTransitionEffect = 19,
+    kUnboundedWrapperEffect = 20,
+    kEffect = 21,
+    kFilter = 22,
+    kMask = 23,
+    kClipPathMask = 24,
+    kVerticalScrollbarEffect = 25,
+    kHorizontalScrollbarEffect = 26,
+    kScrollCornerEffect = 27,
     kLastEffect = kScrollCornerEffect,
-    kEffectAlias = 27,
+    kEffectAlias = 28,
 
     // Clips
-    kFirstClip = 28,
-    kClipPathClip = kFirstClip,
-    kMaskClip = 29,
-    kCssClip = 30,
-    kOverflowControlsClip = 31,
-    kBackgroundClip = 32,
-    kPixelMovingFilterClipExpander = 33,
-    kInnerBorderRadiusClip = 34,
-    kOverflowClip = 35,
-    kCssClipFixedPosition = 36,
-    kInnerBorderShapeClip = 37,
-    kLastClip = kInnerBorderShapeClip,
-    kClipAlias = 38,
+    kFirstClip = 29,
+    kElementCanvasClip = kFirstClip,
+    kClipPathClip = 30,
+    kMaskClip = 31,
+    kCssClip = 32,
+    kOverflowControlsClip = 33,
+    kBackgroundClip = 34,
+    kPixelMovingFilterClipExpander = 35,
+    kInnerBorderRadiusClip = 36,
+    kOverflowClip = 37,
+    kCssClipFixedPosition = 38,
+    kInnerBorderShapeClip = 39,
+    kLineClampFloatClip = 40,
+    kLastClip = kLineClampFloatClip,
+    kClipAlias = 41,
 
     // Should be updated whenever a higher value NodeType is added.
     kNumFields = kClipAlias + 1,
@@ -199,6 +202,10 @@ class CORE_EXPORT ObjectPaintProperties
   // |
   // +-[ AnchorPositionScrollTranslation ]
   //  /    This applies the scrolling offset induced by CSS anchor positioning.
+  // |
+  // +-[ ElementCanvasTransform ]
+  //  /    This applies the transform mapping the element's border box to canvas
+  // |     coordinate space for HTML-in-Canvas children.
   // |
   // +-[ Translate ]
   //   |   The transform from CSS 'translate' (including the effects of
@@ -298,6 +305,7 @@ class CORE_EXPORT ObjectPaintProperties
   ADD_TRANSFORM(StickyTranslation, NodeId::kStickyTranslation)
   ADD_TRANSFORM(AnchorPositionScrollTranslation,
                 NodeId::kAnchorPositionScrollTranslation)
+  ADD_TRANSFORM(ElementCanvasTransform, NodeId::kElementCanvasTransform)
   ADD_TRANSFORM(Translate, NodeId::kTranslate)
   ADD_TRANSFORM(Rotate, NodeId::kRotate)
   ADD_TRANSFORM(Scale, NodeId::kScale)
@@ -378,7 +386,10 @@ class CORE_EXPORT ObjectPaintProperties
   // Clip node declarations.
   //
   // The hierarchy of the clip subtree created by a LayoutObject is as follows:
-  // [ ViewTransitionClip ]
+  // [ ElementCanvasClip ]
+  // |   Clip created for HTML-in-Canvas children. Evaluated in the coordinate
+  // |   space of ElementCanvasTransform.
+  // +-[ ViewTransitionClip ]
   // |   Clip created only when there is an active ViewTransition. This is used
   // |   to clip the element's painting to a subset close to the viewport.
   // |   See https://drafts.csswg.org/css-view-transitions-1/
@@ -403,6 +414,9 @@ class CORE_EXPORT ObjectPaintProperties
   //     +-[ OverflowControlsClip ]
   //     |   Clip created by overflow clip to clip overflow controls
   //     |   (scrollbars, resizer, scroll corner) that would overflow the box.
+  //     +-[ LineClampFloatClip ]
+  //       | Clip created for float elements inside a line-clamp container, so
+  //      /  they don't extend past the container's block-end content edge.
   //     +-[ BackgroundClip ]
   //     |   Clip created for CompositeBackgroundAttachmentFixed background
   //     |   according to CSS background-clip.
@@ -427,10 +441,12 @@ class CORE_EXPORT ObjectPaintProperties
   //       This serves as a parent to subtree clips on an element with paint
   //       containment. It is the deepest child of any clip tree on the contain:
   //       paint element.
+  ADD_CLIP(ElementCanvasClip, NodeId::kElementCanvasClip)
   ADD_CLIP(ClipPathClip, NodeId::kClipPathClip)
   ADD_CLIP(MaskClip, NodeId::kMaskClip)
   ADD_CLIP(CssClip, NodeId::kCssClip)
   ADD_CLIP(OverflowControlsClip, NodeId::kOverflowControlsClip)
+  ADD_CLIP(LineClampFloatClip, NodeId::kLineClampFloatClip)
   ADD_CLIP(BackgroundClip, NodeId::kBackgroundClip)
   ADD_CLIP(PixelMovingFilterClipExpander,
            NodeId::kPixelMovingFilterClipExpander)

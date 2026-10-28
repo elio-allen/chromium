@@ -47,13 +47,13 @@ class MockD3D12VideoEncoderWrapper : public D3D12VideoEncoderWrapper {
   MockD3D12VideoEncoderWrapper();
   ~MockD3D12VideoEncoderWrapper() override;
 
-  MOCK_METHOD(bool, Initialize, (uint32_t));
+  MOCK_METHOD(bool, Initialize, (uint32_t, uint64_t), (override));
   MOCK_METHOD(bool, Wait, (D3D12FenceAndValue));
   MOCK_METHOD2(
       Encode,
       EncoderStatus(const D3D12_VIDEO_ENCODER_ENCODEFRAME_INPUT_ARGUMENTS&,
                     const D3D12_VIDEO_ENCODER_RECONSTRUCTED_PICTURE&));
-  MOCK_METHOD(EncoderStatus::Or<ScopedD3D12ResourceMap>,
+  MOCK_METHOD((base::expected<ScopedD3D12ResourceMap, EncoderStatus>),
               GetEncoderOutputMetadata,
               (),
               (const override));

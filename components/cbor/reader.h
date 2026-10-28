@@ -10,6 +10,7 @@
 #include <optional>
 
 #include "base/containers/span.h"
+#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_span.h"
 #include "components/cbor/cbor_buildflags.h"
@@ -34,7 +35,7 @@
 //  - 3: UTF-8 strings.
 //  - 4: Definite-length arrays.
 //  - 5: Definite-length maps.
-//  - 7: Simple values or floating point values.
+//  - 7: Simple values.
 //
 //  * Note: For simplicity, this implementation represents both signed and
 //    unsigned integers with signed int64_t. This reduces the effective range
@@ -65,12 +66,15 @@
 
 namespace cbor {
 
+CBOR_EXPORT BASE_DECLARE_FEATURE(kUseRustCborParser);
+
 // TODO(crbug.com/535682335): Remove `#if BUILDFLAG(USE_CBOR_RUST)` macros and
 // unconditionally use rust types once Cronet supports Crubit dependencies.
 #if BUILDFLAG(USE_CBOR_RUST)
 namespace rust {
+struct MapKey;
 struct Value;
-}
+}  // namespace rust
 #endif
 
 class CBOR_EXPORT Reader {
@@ -78,6 +82,8 @@ class CBOR_EXPORT Reader {
   // TODO(crbug.com/536539387): Once Crubit fixes -Wnullability-completeness, we
   // can include cbor_rust.h in reader.h and assign the values of DecoderError
   // directly from the Rust Tag enum.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
   enum class DecoderError {
     // LINT.IfChange(DecoderError)
     CBOR_NO_ERROR = 0,
@@ -88,14 +94,16 @@ class CBOR_EXPORT Reader {
     TOO_MUCH_NESTING = 5,
     INVALID_UTF8 = 6,
     EXTRANEOUS_DATA = 7,
-    OUT_OF_ORDER_KEY = 8,
+    // 8 was OUT_OF_ORDER_KEY.
     NON_MINIMAL_CBOR_ENCODING = 9,
     UNSUPPORTED_SIMPLE_VALUE = 10,
     UNSUPPORTED_FLOATING_POINT_VALUE = 11,
     OUT_OF_RANGE_INTEGER_VALUE = 12,
-    DUPLICATE_KEY = 13,
+    // 13 was DUPLICATE_KEY.
     UNKNOWN_ERROR = 14,
-    // LINT.ThenChange(//components/cbor/rust/reader.rs:ErrorCode,//components/cbor/reader.cc:DecoderErrorAsserts)
+    OUT_OF_ORDER_OR_DUPLICATE_KEY = 15,
+    // LINT.ThenChange(//components/cbor/rust/reader.rs:Error,//components/cbor/reader.cc:DecoderErrorAsserts,//tools/metrics/histograms/metadata/cbor/enums.xml:CBORDecoderError)
+    kMaxValue = OUT_OF_ORDER_OR_DUPLICATE_KEY,
   };
 
   // CBOR nested depth sufficient for most use cases.
@@ -133,15 +141,10 @@ class CBOR_EXPORT Reader {
     // correctly.)
     bool allow_invalid_utf8 = false;
 
-    // Causes floating point in CBOR to be decoded. This is an option as
-    // several users of this library do not want to accept floats in CBOR. When
-    // this option is set to `false` any floating point values encountered
-    // during decoding will set raise the `UNSUPPORTED_FLOATING_POINT_VALUE`
-    // error.
-    bool allow_floating_point = false;
-
-    // Uses the rust parser instead of the C++ parser.
-    bool use_rust = false;
+    // Selects the CBOR parser to use. When unset, follows `kUseRustCborParser`
+    // and reports metrics to UMA. Setting this to true requires
+    // BUILDFLAG(USE_CBOR_RUST).
+    std::optional<bool> use_rust;
   };
 
   Reader(const Reader&) = delete;
@@ -200,16 +203,15 @@ class CBOR_EXPORT Reader {
 
   std::optional<DataItemHeader> DecodeDataItemHeader();
   std::optional<Value> DecodeCompleteDataItem(const Config& config,
-                                              int max_nesting_level);
+                                              int max_nesting_level,
+                                              bool is_key);
   std::optional<Value> DecodeValueToNegative(uint64_t value);
   std::optional<Value> DecodeValueToUnsigned(uint64_t value);
-  std::optional<Value> DecodeToSimpleValueOrFloat(const DataItemHeader& header,
-                                                  const Config& config);
-  std::optional<uint64_t> ReadVariadicLengthInteger(Value::Type type,
-                                                    uint8_t additional_info);
+  std::optional<Value> DecodeToSimpleValue(const DataItemHeader& header);
+  std::optional<uint64_t> ReadVariadicLengthInteger(uint8_t additional_info);
   std::optional<Value> ReadByteStringContent(const DataItemHeader& header);
   std::optional<Value> ReadStringContent(const DataItemHeader& header,
-                                         const Config& config);
+                                         bool allow_invalid_utf8);
   std::optional<Value> ReadArrayContent(const DataItemHeader& header,
                                         const Config& config,
                                         int max_nesting_level);
@@ -223,6 +225,8 @@ class CBOR_EXPORT Reader {
   DecoderError GetErrorCode() { return error_code_; }
 
 #if BUILDFLAG(USE_CBOR_RUST)
+  // Members of `Reader` to access the private `INVALID_UTF8` `Value` ctor.
+  static Value ConvertRustMapKeyToCpp(const cbor::rust::MapKey& rust_key);
   static Value ConvertRustValueToCpp(const cbor::rust::Value& rust_val);
 #endif
 

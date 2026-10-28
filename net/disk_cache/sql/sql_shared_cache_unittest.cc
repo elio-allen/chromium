@@ -15,17 +15,18 @@
 #include "base/run_loop.h"
 #include "base/task/thread_pool.h"
 #include "base/test/bind.h"
-#include "base/test/scoped_feature_list.h"
-#include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "net/base/features.h"
 #include "net/disk_cache/backend_cleanup_tracker.h"
+#include "net/disk_cache/sql/mock_shared_cache_client_remote.h"
 #include "net/disk_cache/sql/sql_persistent_store.h"
 #include "net/disk_cache/sql/sql_shared_cache_handle.h"
 #include "net/disk_cache/sql/sql_shared_cache_isolated_database.h"
 #include "net/disk_cache/sql/sql_shared_cache_manager.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_response_info.h"
+#include "net/test/test_with_task_environment.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace disk_cache {
@@ -61,11 +62,20 @@ net::HttpResponseInfo CreateTestHttpResponseInfo() {
 
 }  // namespace
 
-class SqlSharedCacheTest : public testing::TestWithParam<bool> {
+class SqlSharedCacheTest : public testing::TestWithParam<bool>,
+                           public net::WithTaskEnvironment {
  public:
   static std::string DescribeParams(
       const testing::TestParamInfo<ParamType>& info) {
     return info.param ? "WalEnabled" : "WalDisabled";
+  }
+
+  SqlSharedCacheTest() {
+    AddScopedFeatureList().InitWithFeaturesAndParameters(
+        {{net::features::kRendererAccessibleHttpCache,
+          {{net::features::kRendererAccessibleHttpCacheWalMode.name,
+            GetParam() ? "true" : "false"}}}},
+        {});
   }
 
   void SetUp() override {
@@ -73,19 +83,6 @@ class SqlSharedCacheTest : public testing::TestWithParam<bool> {
     cleanup_tracker_ = BackendCleanupTracker::TryCreate(temp_dir_.GetPath(),
                                                         base::DoNothing());
     CHECK(cleanup_tracker_);
-    if (GetParam()) {
-      feature_list_.InitWithFeaturesAndParameters(
-          {{net::features::kRendererAccessibleHttpCache,
-            {{net::features::kRendererAccessibleHttpCacheWalMode.name,
-              "true"}}}},
-          {});
-    } else {
-      feature_list_.InitWithFeaturesAndParameters(
-          {{net::features::kRendererAccessibleHttpCache,
-            {{net::features::kRendererAccessibleHttpCacheWalMode.name,
-              "false"}}}},
-          {});
-    }
     task_runners_.push_back(base::ThreadPool::CreateSequencedTaskRunner(
         {base::MayBlock(), base::TaskPriority::USER_BLOCKING,
          base::TaskShutdownBehavior::BLOCK_SHUTDOWN}));
@@ -242,8 +239,6 @@ class SqlSharedCacheTest : public testing::TestWithParam<bool> {
     EXPECT_EQ(open_result->shared_cache_resource_id->row_id, expected_row_id);
   }
 
-  base::test::ScopedFeatureList feature_list_;
-  base::test::TaskEnvironment task_environment_;
   base::ScopedTempDir temp_dir_;
   std::vector<scoped_refptr<base::SequencedTaskRunner>> task_runners_;
   SqlAsyncTaskManager async_task_manager_;
@@ -510,8 +505,7 @@ TEST_P(SqlSharedCacheTest,
 }
 
 TEST_P(SqlSharedCacheTest, CopyEntriesExceedingMaxCopySizeSkipped) {
-  base::test::ScopedFeatureList custom_feature_list;
-  custom_feature_list.InitAndEnableFeatureWithParameters(
+  AddScopedFeatureList().InitAndEnableFeatureWithParameters(
       net::features::kDiskCacheBackendExperiment,
       {{net::features::kSqlDiskCacheMaxSharedCacheCopyEntrySize.name, "100"}});
 
@@ -619,6 +613,189 @@ TEST_P(SqlSharedCacheTest, CopyEntriesParseResponseInfoMismatch) {
   VerifyIsolatedDatabaseEntryNotFound(*cache, kKey, SqlSharedCacheRowId(1));
 }
 
+TEST_P(SqlSharedCacheTest, RegisterClientEmptyCacheNotifiesInitialHashes) {
+  base::test::TestFuture<SqlPersistentStore::Error> store_init_future;
+  store_->Initialize(store_init_future.GetCallback());
+  async_task_manager_.RunUntilAllTasksCompleteForTest();
+  EXPECT_EQ(store_init_future.Get(), SqlPersistentStore::Error::kOk);
+
+  auto* manager = store_->shared_cache_manager_for_testing();
+  ASSERT_TRUE(manager);
+
+  net::NetworkIsolationKey nik(net::SchemefulSite(GURL("https://foo.test")),
+                               net::SchemefulSite(GURL("https://bar.test")));
+
+  // 1. Get cache without DB ID so isolated database is not yet initialized.
+  base::test::TestFuture<scoped_refptr<SqlSharedCacheHandle>> handle_future1;
+  manager->GetCacheByNik(nik, /*require_shared_cache_db_id=*/false,
+                         handle_future1.GetCallback());
+  async_task_manager_.RunUntilAllTasksCompleteForTest();
+  scoped_refptr<SqlSharedCacheHandle> handle1 = handle_future1.Take();
+  ASSERT_TRUE(handle1);
+  auto* cache = handle1->get();
+
+  // 2. Register client1 before database initialization.
+  auto client1 = std::make_unique<MockSharedCacheClientRemote>();
+  auto* client_ptr1 = client1.get();
+  cache->RegisterClient(std::move(client1));
+
+  client_ptr1->WaitUntilDisconnectHandlerSet();
+  EXPECT_FALSE(client_ptr1->initialize_called());
+  EXPECT_FALSE(client_ptr1->on_resources_added_called());
+
+  // 3. Trigger DB initialization on the empty cache.
+  base::test::TestFuture<scoped_refptr<SqlSharedCacheHandle>> handle_future2;
+  manager->GetCacheByNik(nik, /*require_shared_cache_db_id=*/true,
+                         handle_future2.GetCallback());
+  async_task_manager_.RunUntilAllTasksCompleteForTest();
+  scoped_refptr<SqlSharedCacheHandle> handle2 = handle_future2.Take();
+  ASSERT_TRUE(handle2);
+
+  // client1 should receive OnResourcesAdded with empty hashes upon DB load.
+  client_ptr1->WaitUntilInitialized();
+  client_ptr1->WaitUntilOnResourcesAdded(1);
+  EXPECT_EQ(client_ptr1->on_resources_added_call_count(), 1u);
+  EXPECT_TRUE(client_ptr1->new_hashes().empty());
+
+  // 4. Register client2 after database initialization is complete.
+  auto client2 = std::make_unique<MockSharedCacheClientRemote>();
+  auto* client_ptr2 = client2.get();
+  cache->RegisterClient(std::move(client2));
+
+  // client2 should immediately receive OnResourcesAdded with empty hashes from
+  // cached_hashes_.
+  client_ptr2->WaitUntilInitialized();
+  client_ptr2->WaitUntilOnResourcesAdded(1);
+  EXPECT_EQ(client_ptr2->on_resources_added_call_count(), 1u);
+  EXPECT_TRUE(client_ptr2->new_hashes().empty());
+
+  client_ptr1->RunDisconnectHandler();
+  client_ptr2->RunDisconnectHandler();
+}
+
+TEST_P(SqlSharedCacheTest, RegisterClientLoadHashesErrorNotifiesEmptyHashes) {
+  base::test::TestFuture<SqlPersistentStore::Error> store_init_future;
+  store_->Initialize(store_init_future.GetCallback());
+  async_task_manager_.RunUntilAllTasksCompleteForTest();
+  EXPECT_EQ(store_init_future.Get(), SqlPersistentStore::Error::kOk);
+
+  auto* manager = store_->shared_cache_manager_for_testing();
+  ASSERT_TRUE(manager);
+
+  net::NetworkIsolationKey nik(net::SchemefulSite(GURL("https://foo.test")),
+                               net::SchemefulSite(GURL("https://bar.test")));
+
+  // 1. Get cache without DB ID so isolated database is not yet initialized.
+  base::test::TestFuture<scoped_refptr<SqlSharedCacheHandle>> handle_future1;
+  manager->GetCacheByNik(nik, /*require_shared_cache_db_id=*/false,
+                         handle_future1.GetCallback());
+  async_task_manager_.RunUntilAllTasksCompleteForTest();
+  scoped_refptr<SqlSharedCacheHandle> handle1 = handle_future1.Take();
+  ASSERT_TRUE(handle1);
+  auto* cache = handle1->get();
+
+  // 2. Register client1 before database initialization.
+  auto client1 = std::make_unique<MockSharedCacheClientRemote>();
+  auto* client_ptr1 = client1.get();
+  cache->RegisterClient(std::move(client1));
+
+  client_ptr1->WaitUntilDisconnectHandlerSet();
+  EXPECT_FALSE(client_ptr1->initialize_called());
+  EXPECT_FALSE(client_ptr1->on_resources_added_called());
+
+  // 3. Simulate failure when loading hashes from the isolated database.
+  SqlSharedCacheIsolatedDatabase::SetGlobalSimulateDbFailureCallbackForTesting(
+      base::BindRepeating(
+          [](SqlSharedCacheIsolatedDatabase::OperationForTesting op) {
+            return op ==
+                   SqlSharedCacheIsolatedDatabase::OperationForTesting::kRead;
+          }));
+  base::ScopedClosureRunner reset_simulate_failure(
+      base::BindOnce(&SqlSharedCacheIsolatedDatabase::
+                         SetGlobalSimulateDbFailureCallbackForTesting,
+                     SqlSharedCacheIsolatedDatabase::SimFailedCallback()));
+
+  // 4. Trigger DB initialization on the cache.
+  base::test::TestFuture<scoped_refptr<SqlSharedCacheHandle>> handle_future2;
+  manager->GetCacheByNik(nik, /*require_shared_cache_db_id=*/true,
+                         handle_future2.GetCallback());
+  async_task_manager_.RunUntilAllTasksCompleteForTest();
+  scoped_refptr<SqlSharedCacheHandle> handle2 = handle_future2.Take();
+  ASSERT_TRUE(handle2);
+
+  // client1 should receive OnResourcesAdded with empty hashes even though
+  // loading hashes failed, allowing ShouldEarlyReturn to return true.
+  client_ptr1->WaitUntilInitialized();
+  client_ptr1->WaitUntilOnResourcesAdded(1);
+  EXPECT_EQ(client_ptr1->on_resources_added_call_count(), 1u);
+  EXPECT_TRUE(client_ptr1->new_hashes().empty());
+
+  // 5. Register client2 after database initialization is complete.
+  auto client2 = std::make_unique<MockSharedCacheClientRemote>();
+  auto* client_ptr2 = client2.get();
+  cache->RegisterClient(std::move(client2));
+
+  // client2 should immediately receive OnResourcesAdded with empty hashes from
+  // cached_hashes_.
+  client_ptr2->WaitUntilInitialized();
+  client_ptr2->WaitUntilOnResourcesAdded(1);
+  EXPECT_EQ(client_ptr2->on_resources_added_call_count(), 1u);
+  EXPECT_TRUE(client_ptr2->new_hashes().empty());
+
+  client_ptr1->RunDisconnectHandler();
+  client_ptr2->RunDisconnectHandler();
+}
+
+TEST_P(SqlSharedCacheTest,
+       CopyEntriesPartialFailureNotifiesOnlySuccessfulHashes) {
+  auto handle = CreateAndInitStoreAndCache();
+  auto* cache = handle->get();
+
+  auto client = std::make_unique<MockSharedCacheClientRemote>();
+  auto* client_ptr = client.get();
+  cache->RegisterClient(std::move(client));
+
+  client_ptr->WaitUntilInitialized();
+  client_ptr->WaitUntilOnResourcesAdded(1);
+  EXPECT_TRUE(client_ptr->new_hashes().empty());
+
+  const CacheEntryKey kKeyValid(
+      "credential_key/post_key/https://example.com/valid");
+  const CacheEntryKey kKeyInvalid(
+      "credential_key/post_key/https://example.com/invalid");
+  const std::string kData = "valid data";
+  auto response_info = CreateTestHttpResponseInfo();
+
+  PopulateStoreEntry(kKeyValid, response_info, kData);
+
+  base::queue<SqlPersistentStore::SharedCacheEligibleEntry> entries;
+  entries.push(CreateEligibleEntry(kKeyValid, GURL("https://example.com/valid"),
+                                   response_info));
+  // kKeyInvalid does not exist in store, so opening it will fail.
+  entries.push(CreateEligibleEntry(
+      kKeyInvalid, GURL("https://example.com/invalid"), response_info));
+
+  auto abort_flag =
+      base::MakeRefCounted<base::RefCountedData<std::atomic_bool>>(
+          std::in_place, false);
+  base::test::TestFuture<
+      base::queue<SqlPersistentStore::SharedCacheEligibleEntry>>
+      copy_future;
+  cache->CopyEntries(std::move(entries), abort_flag, copy_future.GetCallback());
+
+  client_ptr->WaitUntilOnResourcesAdded(2);
+  async_task_manager_.RunUntilAllTasksCompleteForTest();
+  auto unprocessed = copy_future.Take();
+  EXPECT_TRUE(unprocessed.empty());
+
+  EXPECT_EQ(client_ptr->on_resources_added_call_count(), 2u);
+  EXPECT_THAT(client_ptr->new_hashes(),
+              testing::ElementsAre(static_cast<uint32_t>(
+                  kKeyValid.resource_url_hash().value())));
+
+  client_ptr->RunDisconnectHandler();
+}
+
 TEST_P(SqlSharedCacheTest, CopyEntriesResponseTruncatedSkipped) {
   auto handle = CreateAndInitStoreAndCache();
   auto* cache = handle->get();
@@ -648,9 +825,76 @@ TEST_P(SqlSharedCacheTest, CopyEntriesResponseTruncatedSkipped) {
   VerifyIsolatedDatabaseEntryNotFound(*cache, kKey, SqlSharedCacheRowId(1));
 }
 
+TEST_P(SqlSharedCacheTest, CopyEntriesAlreadyInSharedCacheSkipped) {
+  auto handle = CreateAndInitStoreAndCache();
+  auto* cache = handle->get();
+
+  const CacheEntryKey kKey("credential_key/post_key/https://www.example.com/");
+  const std::string kData = "example data";
+  auto response_info = CreateTestHttpResponseInfo();
+
+  PopulateStoreEntry(kKey, response_info, kData);
+
+  // Initial copy: should succeed and populate the isolated database.
+  {
+    base::queue<SqlPersistentStore::SharedCacheEligibleEntry> entries;
+    entries.push(CreateEligibleEntry(kKey, GURL("https://www.example.com/"),
+                                     response_info));
+
+    auto abort_flag =
+        base::MakeRefCounted<base::RefCountedData<std::atomic_bool>>(
+            std::in_place, false);
+    base::test::TestFuture<
+        base::queue<SqlPersistentStore::SharedCacheEligibleEntry>>
+        copy_future;
+    cache->CopyEntries(std::move(entries), abort_flag,
+                       copy_future.GetCallback());
+
+    async_task_manager_.RunUntilAllTasksCompleteForTest();
+    auto unprocessed = copy_future.Take();
+    EXPECT_TRUE(unprocessed.empty());
+
+    VerifyIsolatedDatabaseEntryData(*cache, kKey, SqlSharedCacheRowId(1),
+                                    kData);
+    VerifyStoreEntrySharedCacheResourceId(kKey, *cache->shared_cache_db_id(),
+                                          SqlSharedCacheRowId(1));
+  }
+
+  // Second copy: the entry is already in the shared cache
+  // (shared_cache_resource_id is set). It should be skipped and not re-inserted
+  // with a zero-filled body.
+  {
+    base::queue<SqlPersistentStore::SharedCacheEligibleEntry> entries;
+    entries.push(CreateEligibleEntry(kKey, GURL("https://www.example.com/"),
+                                     response_info));
+
+    auto abort_flag =
+        base::MakeRefCounted<base::RefCountedData<std::atomic_bool>>(
+            std::in_place, false);
+    base::test::TestFuture<
+        base::queue<SqlPersistentStore::SharedCacheEligibleEntry>>
+        copy_future;
+    cache->CopyEntries(std::move(entries), abort_flag,
+                       copy_future.GetCallback());
+
+    async_task_manager_.RunUntilAllTasksCompleteForTest();
+    auto unprocessed = copy_future.Take();
+    EXPECT_TRUE(unprocessed.empty());
+
+    // A second entry must not have been created in the isolated database.
+    VerifyIsolatedDatabaseEntryNotFound(*cache, kKey, SqlSharedCacheRowId(2));
+
+    // The original entry data must remain intact and not overwritten with
+    // zeros.
+    VerifyIsolatedDatabaseEntryData(*cache, kKey, SqlSharedCacheRowId(1),
+                                    kData);
+    VerifyStoreEntrySharedCacheResourceId(kKey, *cache->shared_cache_db_id(),
+                                          SqlSharedCacheRowId(1));
+  }
+}
+
 TEST_P(SqlSharedCacheTest, CopyEntriesReadSuccessAndFailure) {
-  base::test::ScopedFeatureList custom_feature_list;
-  custom_feature_list.InitAndEnableFeatureWithParameters(
+  AddScopedFeatureList().InitAndEnableFeatureWithParameters(
       net::features::kDiskCacheBackendExperiment,
       {{net::features::kSqlDiskCacheMaxSharedCacheCopyEntrySize.name, "100"}});
 
@@ -700,8 +944,7 @@ TEST_P(SqlSharedCacheTest, CopyEntriesReadSuccessAndFailure) {
 }
 
 TEST_P(SqlSharedCacheTest, CopyEntriesExceedingReadBufferSize) {
-  base::test::ScopedFeatureList custom_feature_list;
-  custom_feature_list.InitAndEnableFeatureWithParameters(
+  AddScopedFeatureList().InitAndEnableFeatureWithParameters(
       net::features::kDiskCacheBackendExperiment,
       {{net::features::kSqlDiskCacheSharedCacheReadBufferSize.name, "50"}});
 
@@ -763,8 +1006,7 @@ TEST_P(SqlSharedCacheTest, CopyEntriesAborted) {
 }
 
 TEST_P(SqlSharedCacheTest, CopyEntriesWriteBodyFailureCleansUpPartialEntry) {
-  base::test::ScopedFeatureList custom_feature_list;
-  custom_feature_list.InitAndEnableFeatureWithParameters(
+  AddScopedFeatureList().InitAndEnableFeatureWithParameters(
       net::features::kDiskCacheBackendExperiment,
       {{net::features::kSqlDiskCacheSharedCacheReadBufferSize.name, "50"}});
 

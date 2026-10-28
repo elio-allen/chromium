@@ -13,5 +13,18 @@ BASE_FEATURE(kPersonalContext, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kPersonalContextLogNonEligibilityUma,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kPersonalContextHandleEncryptedPayloads,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPersonalContextRequireSettingsToggleForEncryption,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Controls whether Driver's license entities are supported in Ambient Autofill.
+BASE_FEATURE(kAutofillAmbientAutofillDriversLicense,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Controls whether Passport entities are supported in Ambient Autofill.
+BASE_FEATURE(kAutofillAmbientAutofillPassport,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace personal_context::features

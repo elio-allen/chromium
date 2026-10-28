@@ -16,7 +16,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/bookmarks/url_and_id.h"
-#include "chrome/browser/page_load_metrics/chrome_initiator_location.h"
 #include "chrome/browser/prefs/incognito_mode_prefs.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/renderer_host/chrome_navigation_ui_data.h"
@@ -25,19 +24,19 @@
 #include "chrome/browser/ui/bookmarks/bookmark_stats.h"
 #include "chrome/browser/ui/bookmarks/bookmark_stats_tab_helper.h"
 #include "chrome/browser/ui/bookmarks/bookmark_utils.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/browser/ui/incognito_allowed_url.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/simple_message_box.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_menu_utils.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
@@ -54,8 +53,10 @@
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/base_window.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/dialog_model.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
@@ -91,19 +92,18 @@ using OpenedWebContentsSet = base::flat_set<const content::WebContents*>;
 // `initial_disposition` as a starting point. Returns a reference set of the
 // WebContents created; see OpenedWebContentsSet.
 OpenedWebContentsSet OpenAllHelper(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     std::vector<UrlAndId> bookmark_urls,
     WindowOpenDisposition initial_disposition,
-    page_load_metrics::NavigationHandleUserData::InitiatorLocation
-        navigation_type,
+    std::optional<page_load_metrics::NavigationInitiator> navigation_initiator,
     std::optional<BookmarkLaunchAction> launch_action) {
   OpenedWebContentsSet::container_type opened_tabs;
   WindowOpenDisposition disposition = initial_disposition;
   // We keep track of (potentially) two browsers in addition to the original
   // browser. This allows us to open the URLs in the correct
   // browser depending on the URL type and `initial_disposition`.
-  Browser* regular_browser = nullptr;
-  Browser* incognito_browser = nullptr;
+  BrowserWindowInterface* regular_browser = nullptr;
+  BrowserWindowInterface* incognito_browser = nullptr;
   bookmarks::BookmarkNavigationWrapper nav_wrapper;
   Profile* profile = nullptr;
   if (browser) {
@@ -112,16 +112,16 @@ OpenedWebContentsSet OpenAllHelper(
   bool opening_urls_in_incognito = false;
   if (profile) {
     opening_urls_in_incognito =
-        profile->IsIncognitoProfile() ||
-        initial_disposition == WindowOpenDisposition::OFF_THE_RECORD;
+        profile->IsPrimaryOTRProfileWithRegularParent() ||
+        initial_disposition == WindowOpenDisposition::kOffTheRecord;
   } else {
     opening_urls_in_incognito =
-        initial_disposition == WindowOpenDisposition::OFF_THE_RECORD;
+        initial_disposition == WindowOpenDisposition::kOffTheRecord;
   }
 
   for (const auto& bookmark_url : bookmark_urls) {
     // Javascript URLs should not open in a new tab. See crbug.com/528757894.
-    if (disposition != WindowOpenDisposition::CURRENT_TAB &&
+    if (disposition != WindowOpenDisposition::kCurrentTab &&
         bookmark_url.url.SchemeIs(url::kJavaScriptScheme)) {
       continue;
     }
@@ -133,7 +133,7 @@ OpenedWebContentsSet OpenAllHelper(
     // `incognito_browser` nor `regular_browser` is set we use the original
     // browser, but `NavigateTo` can create a new browser
     // depending on the disposition and URL type.
-    Browser* browser_to_use = browser;
+    BrowserWindowInterface* browser_to_use = browser;
     if (opening_urls_in_incognito && url_allowed_in_incognito) {
       if (incognito_browser) {
         browser_to_use = incognito_browser;
@@ -152,11 +152,9 @@ OpenedWebContentsSet OpenAllHelper(
     params.browser = browser_to_use;
     base::WeakPtr<content::NavigationHandle> handle =
         nav_wrapper.NavigateTo(&params);
-    if (handle) {
-      page_load_metrics::NavigationHandleUserData::CreateForNavigationHandle(
-          *handle, navigation_type,
-          StringifyChromeInitiatorLocation(
-              GetChromeInitiatorLocation(navigation_type)));
+    if (handle && navigation_initiator.has_value()) {
+      page_load_metrics::NavigationInitiatorHolder::CreateForNavigationHandle(
+          *handle, *navigation_initiator);
     }
     content::WebContents* opened_tab =
         handle ? handle->GetWebContents() : nullptr;
@@ -179,8 +177,8 @@ OpenedWebContentsSet OpenAllHelper(
     }
 
     bool opening_in_new_window =
-        disposition == WindowOpenDisposition::NEW_WINDOW ||
-        disposition == WindowOpenDisposition::OFF_THE_RECORD;
+        disposition == WindowOpenDisposition::kNewWindow ||
+        disposition == WindowOpenDisposition::kOffTheRecord;
     // If we are opening URLs in a new window we set the disposition to
     // `NEW_BACKGROUND_TAB` so that the rest of the URLs open in a new tab
     // instead of a new window.
@@ -191,7 +189,7 @@ OpenedWebContentsSet OpenAllHelper(
     // See crbug.com/40855833.
     if (opening_in_new_window) {
       if (!opening_urls_in_incognito || url_allowed_in_incognito) {
-        disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+        disposition = WindowOpenDisposition::kNewBackgroundTab;
       }
     }
 
@@ -199,21 +197,17 @@ OpenedWebContentsSet OpenAllHelper(
     // the disposition and the URL type.
     Profile* new_tab_profile =
         Profile::FromBrowserContext(opened_tab->GetBrowserContext());
-    if (new_tab_profile->IsIncognitoProfile()) {
+    if (new_tab_profile->IsPrimaryOTRProfileWithRegularParent()) {
       if (!incognito_browser) {
-        auto* tab_browser =
+        incognito_browser =
             ProfileBrowserCollection::GetForProfile(new_tab_profile)
                 ->FindBrowserWithTab(opened_tab);
-        incognito_browser =
-            tab_browser ? tab_browser->GetBrowserForMigrationOnly() : nullptr;
       }
     } else {
       if (!regular_browser) {
-        auto* tab_browser =
+        regular_browser =
             ProfileBrowserCollection::GetForProfile(new_tab_profile)
                 ->FindBrowserWithTab(opened_tab);
-        regular_browser =
-            tab_browser ? tab_browser->GetBrowserForMigrationOnly() : nullptr;
       }
     }
 
@@ -294,18 +288,18 @@ void GetURLsAndFoldersForOpenTabs(
 
 
 // Open a folder of bookmarks as tabs.
-void DoOpen(Browser* browser,
-            std::vector<UrlAndId> url_and_ids_to_open,
-            WindowOpenDisposition initial_disposition,
-            std::optional<base::Uuid> bookmark_folder_node_id,
-            std::optional<std::u16string> folder_title,
-            bool add_to_split,
-            page_load_metrics::NavigationHandleUserData::InitiatorLocation
-                navigation_type,
-            std::optional<BookmarkLaunchAction> launch_action) {
+void DoOpen(
+    BrowserWindowInterface* browser,
+    std::vector<UrlAndId> url_and_ids_to_open,
+    WindowOpenDisposition initial_disposition,
+    std::optional<base::Uuid> bookmark_folder_node_id,
+    std::optional<std::u16string> folder_title,
+    bool add_to_split,
+    std::optional<page_load_metrics::NavigationInitiator> navigation_initiator,
+    std::optional<BookmarkLaunchAction> launch_action) {
   const auto opened_web_contents = OpenAllHelper(
       browser, std::move(url_and_ids_to_open), initial_disposition,
-      navigation_type, std::move(launch_action));
+      navigation_initiator, std::move(launch_action));
   if (add_to_split && opened_web_contents.size() == 1) {
     TabStripModel* model = browser->tab_strip_model();
     auto* const single_web_contents = *(opened_web_contents.begin());
@@ -359,14 +353,13 @@ void DoOpen(Browser* browser,
 }
 
 void DoOpenPromptConfirm(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     std::vector<UrlAndId> url_and_ids_to_open,
     WindowOpenDisposition initial_disposition,
     std::optional<base::Uuid> bookmark_folder_node_id,
     std::optional<std::u16string> folder_title,
     bool add_to_split,
-    page_load_metrics::NavigationHandleUserData::InitiatorLocation
-        navigation_type,
+    std::optional<page_load_metrics::NavigationInitiator> navigation_initiator,
     std::optional<BookmarkLaunchAction> launch_action,
     chrome::MessageBoxResult result) {
   if (result != chrome::MESSAGE_BOX_RESULT_YES) {
@@ -374,22 +367,21 @@ void DoOpenPromptConfirm(
   }
 
   DoOpen(browser, std::move(url_and_ids_to_open), initial_disposition,
-         bookmark_folder_node_id, folder_title, add_to_split, navigation_type,
-         launch_action);
+         bookmark_folder_node_id, folder_title, add_to_split,
+         navigation_initiator, launch_action);
 }
 }  // namespace
 
 void OpenAllIfAllowed(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     const std::vector<
         raw_ptr<const bookmarks::BookmarkNode, VectorExperimental>>& nodes,
     WindowOpenDisposition initial_disposition,
     bookmarks::OpenAllBookmarksContext context,
-    page_load_metrics::NavigationHandleUserData::InitiatorLocation
-        navigation_type,
+    std::optional<page_load_metrics::NavigationInitiator> navigation_initiator,
     std::optional<BookmarkLaunchAction> launch_action) {
   std::vector<UrlAndId> url_and_ids = GetURLsToOpen(
-      nodes, initial_disposition == WindowOpenDisposition::OFF_THE_RECORD);
+      nodes, initial_disposition == WindowOpenDisposition::kOffTheRecord);
 
   std::optional<base::Uuid> bookmark_folder_node_id;
   if (nodes.size() == 1 && nodes[0]->is_folder()) {
@@ -406,7 +398,7 @@ void OpenAllIfAllowed(
             ? std::optional<std::u16string>(nodes[0]->GetTitledUrlNodeTitle())
             : std::nullopt,
         context == bookmarks::OpenAllBookmarksContext::kInSplit,
-        navigation_type, std::move(launch_action),
+        navigation_initiator, std::move(launch_action),
         chrome::MESSAGE_BOX_RESULT_YES);
     return;
   }
@@ -427,7 +419,7 @@ void OpenAllIfAllowed(
               ? std::optional<std::u16string>(nodes[0]->GetTitledUrlNodeTitle())
               : std::nullopt,
           context == bookmarks::OpenAllBookmarksContext::kInSplit,
-          navigation_type, std::nullopt));
+          navigation_initiator, std::nullopt));
 }
 
 int OpenCount(const std::vector<raw_ptr<const bookmarks::BookmarkNode,
@@ -448,7 +440,8 @@ int OpenCount(const BookmarkNode* node,
 
 bool ConfirmDeleteBookmarkNode(gfx::NativeWindow window,
                                const BookmarkNode* node) {
-  DCHECK(node && node->is_folder() && !node->children().empty());
+  CHECK(node && node->is_folder() && !node->children().empty(),
+        base::NotFatalUntil::M162);
   return chrome::ShowQuestionMessageBoxSync(
              window, l10n_util::GetStringUTF16(IDS_PRODUCT_NAME),
              l10n_util::GetPluralStringFUTF16(
@@ -459,14 +452,14 @@ bool ConfirmDeleteBookmarkNode(gfx::NativeWindow window,
 void ShowBookmarkAllTabsDialog(BrowserWindowInterface* browser) {
   Profile* profile = browser->GetProfile();
   BookmarkModel* model = BookmarkModelFactory::GetForBrowserContext(profile);
-  DCHECK(model && model->loaded());
+  CHECK(model && model->loaded(), base::NotFatalUntil::M162);
 
   const BookmarkNode* parent = GetParentForNewNodes(model);
   BookmarkEditor::EditDetails details =
       BookmarkEditor::EditDetails::AddFolder(parent, parent->children().size());
 
   GetURLsAndFoldersForOpenTabs(browser, &(details.bookmark_data.children));
-  DCHECK(!details.bookmark_data.children.empty());
+  CHECK(!details.bookmark_data.children.empty(), base::NotFatalUntil::M162);
   BookmarkEditor::Show(browser->GetWindow()->GetNativeWindow(), profile,
                        details, BookmarkEditor::SHOW_TREE,
                        base::BindOnce(
@@ -495,7 +488,7 @@ bool IsOpenInIncognitoAllowed(
         raw_ptr<const bookmarks::BookmarkNode, VectorExperimental>>& selection,
     Profile* profile) {
   policy::IncognitoModeAvailability incognito_avail =
-      IncognitoModePrefs::GetAvailability(profile->GetPrefs());
+      IncognitoModePrefs::GetAvailability(profile);
   return HasBookmarkURLsAllowedInIncognitoMode(selection) &&
          !profile->IsOffTheRecord() &&
          incognito_avail != policy::IncognitoModeAvailability::kDisabled;

@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_ui.h"
 
+#include <array>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -11,13 +12,20 @@
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/json/json_writer.h"
+#include "base/no_destructor.h"
 #include "base/strings/strcat.h"
 #include "base/values.h"
+#include "chrome/browser/contextual_search/contextual_search_service_factory.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
+#include "chrome/browser/glic/resources/grit/glic_browser_resources.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/content_settings/content_setting_image_model.h"
 #include "chrome/browser/ui/extensions/extensions_container.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
+#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/page_action/page_action_properties_provider.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/ui/views/permissions/chip/permission_chip_view.h"
@@ -25,12 +33,14 @@
 #include "chrome/browser/ui/webui/favicon_source.h"
 #include "chrome/browser/ui/webui/metrics_handler.h"
 #include "chrome/browser/ui/webui/metrics_reporter/metrics_reporter_service.h"
+#include "chrome/browser/ui/webui/searchbox/webui_omnibox_handler.h"
 #include "chrome/browser/ui/webui/theme_colors_source_manager.h"
 #include "chrome/browser/ui/webui/theme_colors_source_manager_factory.h"
 #include "chrome/browser/ui/webui/theme_source.h"
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_user_profile.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "chrome/browser/ui/webui/webui_toolbar/adapters/browser_controls_adapter_impl.h"
-#include "chrome/browser/ui/webui/webui_toolbar/adapters/navigation_controls_state_fetcher_impl.h"
+#include "chrome/browser/ui/webui/webui_toolbar/adapters/toolbar_state_fetcher_impl.h"
 #include "chrome/browser/ui/webui/webui_toolbar/browser_controls_service.h"
 #include "chrome/browser/ui/webui/webui_toolbar/toolbar_ui_service.h"
 #include "chrome/browser/ui/webui/webui_toolbar/utils/split_tabs_utils.h"
@@ -39,6 +49,7 @@
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_layout_css_helper.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/webui_url_constants.h"
+#include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/webui_toolbar_resources.h"
 #include "chrome/grit/webui_toolbar_resources_map.h"
@@ -47,6 +58,8 @@
 #include "components/browser_apis/browser_controls/browser_controls_api.mojom.h"
 #include "components/browser_apis/ui_controllers/toolbar/toolbar_ui_api.mojom.h"
 #include "components/browser_apis/ui_controllers/toolbar/toolbar_ui_api_data_model.mojom.h"
+#include "components/contextual_search/contextual_search_service.h"
+#include "components/contextual_search/contextual_search_session_handle.h"
 #include "components/favicon_base/favicon_url_parser.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/user_education/webui/help_bubble_handler.h"
@@ -89,11 +102,13 @@ constexpr char kTouchUi[] = "touchUi";
 constexpr char kInitialWebUISurfaceSyncEnabled[] =
     "initialWebUISurfaceSyncEnabled";
 constexpr char kIsFallbackPrewarming[] = "isFallbackPrewarming";
+constexpr char kIsProfileEligibleForGlic[] = "isProfileEligibleForGlic";
+constexpr char kCanShowAvatarForProfile[] = "canShowAvatarForProfile";
 
-// Retrieves the current navigation controls state from the provider's fetcher
+// Retrieves the current toolbar state from the provider's fetcher
 // and populates a nested dictionary `initialState`.
 //
-// This method extracts only the critical subset of `NavigationControlsState`
+// This method extracts only the critical subset of `ToolbarState`
 // required for the initial paint of the toolbar on startup. This critical
 // subset includes reload, back, forward, and home button states, touch UI mode,
 // battery saver visibility, and layout constants version. These fields are
@@ -115,10 +130,9 @@ void PopulateInitialState(base::DictValue& dict,
   dict.Set(
       kInitialWebUISurfaceSyncEnabled,
       base::FeatureList::IsEnabled(blink::features::kInitialWebUISurfaceSync));
-  toolbar_ui_api::mojom::NavigationControlsStatePtr state;
-  if (provider && provider->GetNavigationControlsStateFetcher()) {
-    state = provider->GetNavigationControlsStateFetcher()
-                ->GetNavigationControlsState();
+  toolbar_ui_api::mojom::ToolbarStatePtr state;
+  if (provider && provider->GetToolbarStateFetcher()) {
+    state = provider->GetToolbarStateFetcher()->GetToolbarState();
   }
   if (!state) {
     dict.Set(kIsNavigationLoading, false);
@@ -158,9 +172,25 @@ void PopulateInitialState(base::DictValue& dict,
   } else {
     dict.Set(kHomeButtonShouldBeShown, false);
   }
-  dict.Set(kBatterySaverButtonVisible, state->battery_saver_button_visible);
+  if (state->battery_saver_control_state) {
+    dict.Set(kBatterySaverButtonVisible,
+             state->battery_saver_control_state->should_be_shown);
+  } else {
+    dict.Set(kBatterySaverButtonVisible, false);
+  }
   dict.Set(kLayoutConstantsVersion, state->layout_constants_version);
   dict.Set(kTouchUi, state->touch_ui);
+}
+
+// Adds the URL data sources of the toolbar to `profile`, the profile of the
+// WebUI. In TopChromeWebUIProfile, it is shared by the windows of all profiles.
+void AddURLDataSources(Profile* profile) {
+  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
+  if (features::IsWebUILocationBarEnabled()) {
+    content::URLDataSource::Add(
+        profile, std::make_unique<FaviconSource>(
+                     profile, chrome::FaviconUrlFormat::kFavicon2));
+  }
 }
 
 }  // namespace
@@ -182,8 +212,7 @@ WebUIToolbarUI::WebUIToolbarUI(content::WebUI* web_ui)
       web_ui->GetWebContents()->GetBrowserContext(),
       chrome::kChromeUIWebUIToolbarHost);
 
-  Profile* profile = Profile::FromWebUI(web_ui);
-  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
+  AddURLDataSources(Profile::FromWebUI(web_ui));
 
   static constexpr webui::LocalizedString kStrings[] = {
       // go/keep-sorted start
@@ -191,10 +220,18 @@ WebUIToolbarUI::WebUIToolbarUI(content::WebUI* web_ui)
       {"backButtonTooltip", IDS_TOOLTIP_BACK},
       {"batterySaverButtonAccName", IDS_BATTERY_SAVER_BUTTON_ACCNAME},
       {"batterySaverButtonTooltip", IDS_BATTERY_SAVER_BUTTON_TOOLTIP},
+      {"clearButtonTooltip", IDS_OMNIBOX_CLEAR_ALL},
       {"forwardButtonAccName", IDS_ACCNAME_FORWARD},
       {"forwardButtonTooltip", IDS_TOOLTIP_FORWARD},
+      {"glicButtonAccName", IDS_GLIC_BUTTON_ENTRYPOINT_LABEL},
+      {"glicButtonLabel", IDS_GLIC_BUTTON_ENTRYPOINT_ASK_GEMINI_LABEL},
+      {"glicButtonTooltip", IDS_GLIC_TAB_STRIP_BUTTON_TOOLTIP},
+      {"glicButtonTooltipClose", IDS_GLIC_TAB_STRIP_BUTTON_TOOLTIP_CLOSE},
       {"homeButtonAccName", IDS_ACCNAME_HOME},
       {"homeButtonTooltip", IDS_TOOLTIP_HOME},
+      {"locationAccName", IDS_ACCNAME_LOCATION},
+      {"mediaButtonTooltip", IDS_GLOBAL_MEDIA_CONTROLS_ICON_TOOLTIP_TEXT},
+      {"overflowButtonTooltip", IDS_TOOLTIP_OVERFLOW_BUTTON},
       {"performanceInterventionButtonAccName",
        IDS_PERFORMANCE_INTERVENTION_BUTTON_ACCNAME},
       {"performanceInterventionButtonTooltip",
@@ -213,6 +250,8 @@ WebUIToolbarUI::WebUIToolbarUI(content::WebUI* web_ui)
   WebUIToolbarLayoutCssHelper::SetAsRequestFilter(source);
 
   source->AddBoolean("roundedIconsEnabled", features::IsRoundedIconsEnabled());
+  source->AddBoolean("enableBookmarkGlowUp",
+                     features::IsToolbarGlowUpBookmarkEnabled());
   source->AddBoolean("enableReloadButton",
                      features::IsWebUIReloadButtonEnabled());
   source->AddBoolean("enableHomeButton", features::IsWebUIHomeButtonEnabled());
@@ -222,49 +261,71 @@ WebUIToolbarUI::WebUIToolbarUI(content::WebUI* web_ui)
                      features::IsWebUILocationBarEnabled());
   source->AddBoolean("enableBackForwardButtons",
                      features::IsWebUIBackForwardButtonEnabled());
+  source->AddBoolean("enableReloadGlowUp",
+                     features::IsToolbarGlowUpReloadEnabled());
+  source->AddBoolean("enableGlowUp", features::IsToolbarGlowUpEnabled());
+  source->AddBoolean("enableBackForwardGlowUp",
+                     features::IsToolbarGlowUpBackForwardEnabled());
   source->AddBoolean("enablePinnedToolbarActions",
                      features::IsWebUIPinnedToolbarActionsEnabled());
   source->AddBoolean("enableAppMenuButton",
                      features::IsWebUIAppMenuButtonEnabled());
-  source->AddBoolean(
-      "enableAvatarButton",
-      features::IsWebUIAvatarButtonEnabled() &&
-          AvatarToolbarButtonInterface::CanShowForProfile(profile));
+
+  // Whether the Glic and avatar buttons are shown also depends on the profile
+  // of the window, which is set in the initial state of each frame in
+  // WebUIRenderFrameCreated().
+  source->AddBoolean("enableGlicButton", features::IsWebUIGlicButtonEnabled());
+  source->AddBoolean("enableAvatarButton",
+                     features::IsWebUIAvatarButtonEnabled());
+  source->AddBoolean("enableMediaButton",
+                     features::IsWebUIMediaButtonEnabled());
   source->AddBoolean("enableExtensionsContainer",
                      features::IsWebUIExtensionsContainerEnabled());
   source->AddBoolean("enablePerformanceInterventionButton",
                      features::IsWebUIPerformanceInterventionButtonEnabled());
+  source->AddBoolean("enablePageActionsElevatedToolbar",
+                     features::IsPageActionsElevatedToolbarEnabled());
+
+  if (features::IsWebUILocationBarEnabled()) {
+    // Omnibox config:
+    // Don't add the values that depend on the profile: the toolbar doesn't read
+    // them, and in TopChromeWebUIProfile, this data source is shared by the
+    // windows of all profiles.
+    source->AddLocalizedStrings(
+        SearchboxHandler::GetProfileIndependentWebUIDataSourceDict({}));
+    // Set after the searchbox values above, which have the defaults for other
+    // searchboxes.
+    source->AddBoolean("isTopChromeSearchbox", true);
+    // Don't report the searchbox paint metrics: the toolbar doesn't set their
+    // names, e.g. charTypedToPaintMetricName, and has no dropdown, which
+    // reports them.
+    source->AddBoolean("reportMetrics", false);
+  }
+
   source->AddBoolean(
       "initialWebUISurfaceSyncEnabled",
       base::FeatureList::IsEnabled(blink::features::kInitialWebUISurfaceSync));
   source->AddBoolean(
       "omniboxResizingPrioritizationEnabled",
       base::FeatureList::IsEnabled(features::kOmniboxResizingPrioritization));
+  source->AddBoolean(
+      "toolbarAppMenuLabelResizingEnabled",
+      base::FeatureList::IsEnabled(features::kToolbarAppMenuLabelResizing));
+  source->AddBoolean(
+      "toolbarGlicButtonResizingEnabled",
+      base::FeatureList::IsEnabled(features::kToolbarGlicButtonResizing));
   source->AddBoolean("webUIToolbarFullyEnabled",
                      features::IsWebUIToolbarFullyEnabled());
 
-  BrowserWindowInterface* browser =
-      webui::GetBrowserWindowInterface(web_ui->GetWebContents());
-  webui_toolbar::PopulateSplitTabsDataSource(source, browser);
+  webui_toolbar::PopulateSplitTabsDataSource(source);
 
   source->AddResourcePaths(kWebuiToolbarSharedResources);
+  // Referenced by `chrome/browser/resources/webui_toolbar/glic_button.html.ts`.
+  source->AddResourcePath("images/glic_button_alt_icon.png",
+                          IDR_GLIC_BUTTON_ALT_ICON);
 
   // Handles chrome.send() calls that records non-timestamp histograms.
   web_ui->AddMessageHandler(std::make_unique<MetricsHandler>());
-
-  if (browser) {
-    auto context = BrowserElements::From(browser)->GetContext();
-    ui::TrackedElementHandlerDocumentSingleton::Register(
-        this, GetKnownElementIdentifiers(),
-        context ? base::BindRepeating([](ui::ElementContext c) { return c; },
-                                      context)
-                : base::RepeatingCallback<ui::ElementContext()>());
-  }
-
-  Profile* profile_ptr = Profile::FromWebUI(web_ui);
-  content::URLDataSource::Add(
-      profile_ptr, std::make_unique<FaviconSource>(
-                       profile_ptr, chrome::FaviconUrlFormat::kFavicon2));
 }
 
 WEB_UI_CONTROLLER_TYPE_IMPL(WebUIToolbarUI)
@@ -277,9 +338,7 @@ WebUIToolbarConfig::WebUIToolbarConfig()
 
 bool WebUIToolbarConfig::IsWebUIEnabled(
     content::BrowserContext* browser_context) {
-  return features::IsWebUIToolbarEnabled() ||
-         base::FeatureList::IsEnabled(
-             features::kWebUIToolbarProcessOverheadExperiment);
+  return features::IsWebUIToolbarEnabled();
 }
 
 bool WebUIToolbarConfig::ShouldKeepVisibleUntilFirstVisuallyNonEmptyPaint() {
@@ -309,10 +368,16 @@ void WebUIToolbarUI::BindInterface(
   help_bubble_service_.Bind(std::move(receiver));
 }
 
-void WebUIToolbarUI::OnNavigationControlsStateChanged(
-    const toolbar_ui_api::mojom::NavigationControlsState& state) {
+void WebUIToolbarUI::BindInterface(
+    mojo::PendingReceiver<searchbox::mojom::PageHandlerFactory> receiver) {
+  searchbox_page_factory_receiver_.reset();
+  searchbox_page_factory_receiver_.Bind(std::move(receiver));
+}
+
+void WebUIToolbarUI::OnToolbarStateChanged(
+    const toolbar_ui_api::mojom::ToolbarState& state) {
   if (toolbar_ui_service_) {
-    toolbar_ui_service_->OnNavigationControlsStateChanged(state);
+    toolbar_ui_service_->OnToolbarStateChanged(state);
   }
 }
 
@@ -320,6 +385,18 @@ void WebUIToolbarUI::OnFocusRequested(
     toolbar_ui_api::mojom::FocusRequestTarget target) {
   if (toolbar_ui_service_) {
     toolbar_ui_service_->OnFocusRequested(target);
+  }
+}
+
+void WebUIToolbarUI::ShowSplitTabsContextMenu() {
+  if (toolbar_ui_service_) {
+    toolbar_ui_service_->ShowSplitTabsContextMenu();
+  }
+}
+
+void WebUIToolbarUI::FlushToolbarUIObserversForTesting() {
+  if (toolbar_ui_service_) {
+    toolbar_ui_service_->FlushObserversForTesting();  // IN-TEST
   }
 }
 
@@ -333,8 +410,40 @@ void WebUIToolbarUI::Init(DependencyProvider* dependency_provider) {
     return;
   }
 
+  is_initialized_ = true;
+
+  BrowserWindowInterface* browser =
+      webui::GetBrowserWindowInterface(web_ui()->GetWebContents());
+  CHECK(browser);
+  // `base::Unretained(browser)` is safe because by the time this is called
+  // `browser` owns the WebContents hosting this WebUI and is guaranteed to
+  // outlive the `WebContentsUserData` holding this callback.
+  ui::TrackedElementHandlerDocumentSingleton::Register(
+      this, GetKnownElementIdentifiers(),
+      base::BindRepeating(
+          [](BrowserWindowInterface* bwi) {
+            return BrowserElements::From(bwi)->GetContext();
+          },
+          base::Unretained(browser)));
+
   InitBrowserControlsService(*dependency_provider);
   InitToolbarUIService(*dependency_provider);
+
+  omnibox_controller_ = dependency_provider->GetOmniboxController();
+  // The omnibox controller must be ready before Init() whenever the WebUI
+  // location bar is enabled, otherwise the searchbox handler is never bound.
+  // TODO(crbug.com/563226016): Convert to CHECK once no dumps are reported.
+  DUMP_WILL_BE_CHECK(omnibox_controller_ ||
+                     !features::IsWebUILocationBarEnabled());
+  if (delayed_searchbox_receiver_.is_valid()) {
+    CreatePageHandler(std::move(delayed_searchbox_page_),
+                      std::move(delayed_searchbox_receiver_));
+  }
+}
+
+void WebUIToolbarUI::DependenciesDestroying() {
+  omnibox_controller_ = nullptr;
+  omnibox_handler_.reset();
 }
 
 void WebUIToolbarUI::InitBrowserControlsService(
@@ -371,7 +480,7 @@ void WebUIToolbarUI::InitToolbarUIService(
 
   toolbar_ui_service_ = std::make_unique<toolbar_ui_api::ToolbarUIService>(
       std::move(toolbar_channel_service_end_),
-      dependency_provider.GetNavigationControlsStateFetcher(),
+      dependency_provider.GetToolbarStateFetcher(),
       dependency_provider.GetIconTableFetcher(),
       metrics_service->metrics_reporter(),
       dependency_provider.GetToolbarUIServiceDelegate());
@@ -408,6 +517,16 @@ void WebUIToolbarUI::WebUIRenderFrameCreated(content::RenderFrameHost* rfh) {
     PopulateInitialState(values, nullptr);
     values.Set(kIsFallbackPrewarming, true);
   }
+  // These depend on the profile of the window, so they are set for each frame
+  // instead of in the WebUIDataSource, which is shared by the toolbars in the
+  // same BrowserContext. With features::kTopChromeWebUISharedRenderer, those
+  // toolbars can be for windows of different profiles.
+  Profile* user_profile = webui::GetUserProfile(web_ui()->GetWebContents());
+  values.Set(kIsProfileEligibleForGlic,
+             glic::GlicEnabling::IsProfileEligible(user_profile));
+  values.Set(kCanShowAvatarForProfile,
+             AvatarToolbarButtonInterface::CanShowForProfile(user_profile));
+
   std::string json_string;
   base::JSONWriter::Write(values, &json_string);
   rfh->SetWebUIProperty("initialState", json_string);
@@ -438,45 +557,126 @@ void WebUIToolbarUI::PopulateLocalResourceLoaderConfig(
   theme_colors_manager->PopulateLocalResourceLoaderConfig(
       config, requesting_origin, web_ui()->GetWebContents());
 
-  WebUIToolbarLayoutCssHelper::PopulateLocalResourceLoaderConfig(config);
+  WebUIToolbarLayoutCssHelper::PopulateLocalResourceLoaderConfig(
+      config, requesting_origin);
 }
 
 void WebUIToolbarUI::CreateHelpBubbleHandler(
     mojo::PendingRemote<help_bubble::mojom::HelpBubbleClient> client,
     mojo::PendingReceiver<help_bubble::mojom::HelpBubbleHandler> handler) {
-  help_bubble_handler_ = std::make_unique<user_education::HelpBubbleHandler>(
-      std::move(handler), std::move(client),
-      ui::TrackedElementHandlerDocumentSingleton::GetOrCreate(
-          web_ui()->GetRenderFrameHost()));
+  ui::TrackedElementHandlerDocumentSingleton::GetOrCreateAsync(
+      web_ui()->GetRenderFrameHost(),
+      base::BindOnce(&WebUIToolbarUI::FinishCreateHelpBubbleHandler,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(client),
+                     std::move(handler)));
 }
 
-const std::vector<ui::ElementIdentifier>
+void WebUIToolbarUI::FinishCreateHelpBubbleHandler(
+    mojo::PendingRemote<help_bubble::mojom::HelpBubbleClient> client,
+    mojo::PendingReceiver<help_bubble::mojom::HelpBubbleHandler> handler,
+    base::WeakPtr<ui::TrackedElementHandler> tracked_element_handler) {
+  help_bubble_handler_ = std::make_unique<user_education::HelpBubbleHandler>(
+      std::move(handler), std::move(client),
+      std::move(tracked_element_handler));
+}
+
+void WebUIToolbarUI::CreatePageHandler(
+    mojo::PendingRemote<searchbox::mojom::Page> page,
+    mojo::PendingReceiver<searchbox::mojom::PageHandler> receiver) {
+  if (!is_initialized_) {
+    // Init() hasn't been called yet, save the params so it can call us again.
+    delayed_searchbox_page_ = std::move(page);
+    delayed_searchbox_receiver_ = std::move(receiver);
+    return;
+  }
+  if (!omnibox_controller_) {
+    return;
+  }
+
+  MetricsReporterService* metrics_reporter_service =
+      MetricsReporterService::GetFromWebContents(web_ui()->GetWebContents());
+  omnibox_handler_ = std::make_unique<WebuiOmniboxHandler>(
+      std::move(receiver), std::move(page),
+      metrics_reporter_service->metrics_reporter(), omnibox_controller_,
+      Profile::FromWebUI(web_ui()), web_ui()->GetWebContents(),
+      base::BindRepeating(&WebUIToolbarUI::GetOrCreateContextualSessionHandle,
+                          base::Unretained(this)));
+}
+
+contextual_search::ContextualSearchSessionHandle*
+WebUIToolbarUI::GetOrCreateContextualSessionHandle() {
+  if (!session_handle_) {
+    auto* service = ContextualSearchServiceFactory::GetForProfile(
+        Profile::FromWebUI(web_ui()));
+    if (service) {
+      // TODO(http://crbug.com/529689765): This is based on what webui_browser
+      // does, and that in turn has a bunch of TODOs on its own.
+      session_handle_ = service->CreateSession(
+          omnibox::CreateQueryControllerConfigParams(),
+          contextual_search::ContextualSearchSource::kOmnibox,
+          lens::LensOverlayInvocationSource::kOmniboxContextualQuery);
+      session_handle_->CheckSearchContentSharingSettings(
+          Profile::FromWebUI(web_ui())->GetPrefs());
+    }
+  }
+  return session_handle_.get();
+}
+
+// static
+base::span<const ui::ElementIdentifier>
 WebUIToolbarUI::GetKnownElementIdentifiers() {
-  static const base::NoDestructor<std::vector<ui::ElementIdentifier>> ids(
-      {kLocationBarElementId,
-       kLocationIconElementId,
-       kOmniboxElementId,
-       kReloadButtonElementId,
-       kToolbarSplitTabsToolbarButtonElementId,
-       kToolbarHomeButtonElementId,
-       kToolbarBackButtonElementId,
-       kToolbarForwardButtonElementId,
-       kSharedTabGroupFeedbackElementId,
-       kToolbarAppMenuButtonElementId,
-       kSharedTabGroupCommentsActionElementId,
-       kPinnedToolbarActionShowSidePanelLensOverlayResultsElementId,
-       kPinnedToolbarActionShowSidePanelBookmarksElementId,
-       kPinnedToolbarActionShowSidePanelContextualTasksElementId,
-       kPinnedToolbarActionSendTabToSelfElementId,
-       kToolbarAvatarButtonElementId,
-       kToolbarPerformanceInterventionButtonElementId,
-       PermissionChipView::kPermissionRequestChipElementId,
-       PermissionChipView::kIndicatorChipElementId,
-       kToolbarBatterySaverButtonElementId,
-       kExtensionsMenuButtonElementId,
-       kToolbarActionViewElementId});
-  auto pinned_ids = webui_toolbar::GetPinnedToolbarActionElementIds();
-  pinned_ids.reserve(pinned_ids.size() + ids->size());
-  pinned_ids.insert(pinned_ids.end(), ids->begin(), ids->end());
-  return pinned_ids;
+  static const base::NoDestructor<std::vector<ui::ElementIdentifier>>
+      kKnownElementIdentifiers([] {
+        constexpr auto kIds = std::to_array<ui::ElementIdentifier>({
+            kLocationBarElementId,
+            kLocationIconElementId,
+            kOmniboxElementId,
+            kReloadButtonElementId,
+            kToolbarSplitTabsToolbarButtonElementId,
+            kToolbarHomeButtonElementId,
+            kToolbarBackButtonElementId,
+            kToolbarForwardButtonElementId,
+            kToolbarOverflowButtonElementId,
+            kSharedTabGroupFeedbackElementId,
+            kToolbarAppMenuButtonElementId,
+            kSharedTabGroupCommentsActionElementId,
+            kPinnedToolbarActionShowSidePanelLensOverlayResultsElementId,
+            kPinnedToolbarActionShowSidePanelBookmarksElementId,
+            kPinnedToolbarActionShowSidePanelContextualTasksElementId,
+            kPinnedToolbarActionSendTabToSelfElementId,
+            kPinnedToolbarActionTtcElementId,
+            kToolbarAvatarButtonElementId,
+            kGlicButtonElementId,
+            kToolbarPerformanceInterventionButtonElementId,
+            PermissionChipView::kPermissionRequestChipElementId,
+            PermissionChipView::kIndicatorChipElementId,
+            kToolbarBatterySaverButtonElementId,
+            kExtensionsMenuButtonElementId,
+            kToolbarActionViewElementId,
+            kExtensionsPinnedByDefaultElementId,
+            kToolbarMediaButtonElementId,
+        });
+        base::span<const ui::ElementIdentifier>
+            pinned_toolbar_action_identifiers =
+                webui_toolbar::GetPinnedToolbarActionElementIds();
+        base::span<const ui::ElementIdentifier> content_setting_identifiers =
+            ContentSettingImageModel::GetAllElementIdentifiers();
+        base::span<const ui::ElementIdentifier> page_action_identifiers =
+            page_actions::PageActionPropertiesProvider::
+                GetAllElementIdentifiers();
+
+        std::vector<ui::ElementIdentifier> result;
+        result.reserve(pinned_toolbar_action_identifiers.size() + kIds.size() +
+                       content_setting_identifiers.size() +
+                       page_action_identifiers.size());
+        result.insert(result.end(), pinned_toolbar_action_identifiers.begin(),
+                      pinned_toolbar_action_identifiers.end());
+        result.insert(result.end(), kIds.begin(), kIds.end());
+        result.insert(result.end(), content_setting_identifiers.begin(),
+                      content_setting_identifiers.end());
+        result.insert(result.end(), page_action_identifiers.begin(),
+                      page_action_identifiers.end());
+        return result;
+      }());
+  return *kKnownElementIdentifiers;
 }

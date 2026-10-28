@@ -9,6 +9,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -19,6 +20,7 @@ import android.view.ContextThemeWrapper;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.TextView;
 
 import androidx.constraintlayout.helper.widget.Flow;
@@ -32,13 +34,16 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.shadows.ShadowChoreographer;
 import org.robolectric.shadows.ShadowLooper;
+import org.robolectric.shadows.ShadowSystemClock;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.FlyoutProperties;
 import org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.HomeProperties;
+import org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.IllustrationCardItemProperties;
 import org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.ScreenId;
 import org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.SuggestionItemProperties;
 import org.chromium.chrome.browser.ui.autofill.internal.R;
@@ -51,9 +56,12 @@ import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
+import org.chromium.ui.widget.LoadingView;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /** Unit tests for {@link AtMemoryBottomSheetView}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -95,7 +103,7 @@ public class AtMemoryBottomSheetViewTest {
     }
 
     @Test
-    public void testSearchTextIsClearedWhenVisible() {
+    public void testSearchTextIsNotClearedWhenVisible() {
         View contentView = mView.getContentView();
         EditText searchView = contentView.findViewById(R.id.search_query_input);
         assertNotNull(searchView);
@@ -108,7 +116,22 @@ public class AtMemoryBottomSheetViewTest {
         PropertyModelChangeProcessor.create(
                 model, mView, AtMemoryBottomSheetViewBinder::bindAtMemoryBottomSheetView);
 
-        assertEquals("", searchView.getText().toString());
+        assertEquals("some text", searchView.getText().toString());
+    }
+
+    @Test
+    public void testSetSearchBarInitialValueSetsText() {
+        PropertyModel model =
+                new PropertyModel.Builder(HomeProperties.ALL_KEYS)
+                        .with(HomeProperties.SEARCH_BAR_INITIAL_VALUE, "initial text")
+                        .build();
+        PropertyModelChangeProcessor.create(
+                model, mView.getHomeView(), AtMemoryBottomSheetViewBinder::bindAtMemoryHomeView);
+
+        View contentView = mView.getContentView();
+        EditText searchView = contentView.findViewById(R.id.search_query_input);
+        assertNotNull(searchView);
+        assertEquals("initial text", searchView.getText().toString());
     }
 
     @Test
@@ -197,6 +220,9 @@ public class AtMemoryBottomSheetViewTest {
 
         View noticeOkButton = noticeView.findViewById(R.id.notice_ok_button);
         assertNotNull(noticeOkButton);
+        assertEquals(
+                mContext.getString(R.string.at_memory_notice_ok_button_a11y_label),
+                noticeOkButton.getContentDescription());
         noticeOkButton.performClick();
         verify(okClicked).run();
     }
@@ -404,12 +430,13 @@ public class AtMemoryBottomSheetViewTest {
     }
 
     @Test
-    public void testSuggestionWithDeactivatedStyle() {
+    public void testLoadingSuggestionWithDeactivatedStyle() {
         ModelList modelList = new ModelList();
         PropertyModel suggestionModel =
                 new PropertyModel.Builder(SuggestionItemProperties.ALL_KEYS)
                         .with(SuggestionItemProperties.TITLE, "Couldn't find this info")
                         .with(SuggestionItemProperties.APPLY_DEACTIVATED_STYLE, true)
+                        .with(SuggestionItemProperties.IS_LOADING, true)
                         .build();
 
         modelList.add(new ListItem(HomeProperties.ItemType.SUGGESTION, suggestionModel));
@@ -424,6 +451,286 @@ public class AtMemoryBottomSheetViewTest {
                 (AtMemoryBottomSheetSuggestionView) recyclerView.getChildAt(0);
 
         assertFalse(suggestionView.isEnabled());
+
+        ImageView icon = suggestionView.findViewById(R.id.icon_view);
+        LoadingView loadingView = suggestionView.findViewById(R.id.suggestion_loading_view);
+
+        assertEquals(View.GONE, icon.getVisibility());
+        assertEquals(View.VISIBLE, loadingView.getVisibility());
+    }
+
+    @Test
+    public void testBackPressSupplierUpdatesOnScreenChange() {
+        assertFalse(mView.getBackPressStateChangedSupplier().get());
+
+        mView.setCurrentScreen(ScreenId.FLYOUT_SCREEN);
+        assertTrue(mView.getBackPressStateChangedSupplier().get());
+
+        mView.setCurrentScreen(ScreenId.HOME_SCREEN);
+        assertFalse(mView.getBackPressStateChangedSupplier().get());
+    }
+
+    @Test
+    public void testOnBackPressed_FlyoutScreen() {
+        PropertyModel model =
+                new PropertyModel.Builder(FlyoutProperties.ALL_KEYS)
+                        .with(FlyoutProperties.ON_BACK_CLICKED, mMockBackClickListener)
+                        .build();
+        PropertyModelChangeProcessor.create(
+                model,
+                mView.getFlyoutView(),
+                AtMemoryBottomSheetViewBinder::bindAtMemoryFlyoutView);
+
+        mView.setCurrentScreen(ScreenId.FLYOUT_SCREEN);
+
+        assertTrue(mView.onBackPressed());
+        verify(mMockBackClickListener).run();
+    }
+
+    @Test
+    public void testOnBackPressed_HomeScreen() {
+        PropertyModel model =
+                new PropertyModel.Builder(FlyoutProperties.ALL_KEYS)
+                        .with(FlyoutProperties.ON_BACK_CLICKED, mMockBackClickListener)
+                        .build();
+        PropertyModelChangeProcessor.create(
+                model,
+                mView.getFlyoutView(),
+                AtMemoryBottomSheetViewBinder::bindAtMemoryFlyoutView);
+
+        mView.setCurrentScreen(ScreenId.HOME_SCREEN);
+
+        assertFalse(mView.onBackPressed());
+        verify(mMockBackClickListener, never()).run();
+    }
+
+    @Test
+    public void testFlyoutViewOnBackPressed() {
+        AtMemoryFlyoutView flyoutView = mView.getFlyoutView();
+        flyoutView.setBackClickListener(mMockBackClickListener);
+
+        flyoutView.onBackPressed();
+        verify(mMockBackClickListener).run();
+    }
+
+    @Test
+    public void testFlyoutViewOnBackPressed_NullListenerDoesNotCrash() {
+        AtMemoryFlyoutView flyoutView = mView.getFlyoutView();
+        flyoutView.onBackPressed();
+    }
+
+    @Test
+    public void testBottomSheetContentBackPressDelegation() {
+        AtMemoryBottomSheetContent content =
+                new AtMemoryBottomSheetContent(mView, mBottomSheetController);
+
+        mView.setCurrentScreen(ScreenId.FLYOUT_SCREEN);
+        assertTrue(content.getBackPressStateChangedSupplier().get());
+
+        PropertyModel model =
+                new PropertyModel.Builder(FlyoutProperties.ALL_KEYS)
+                        .with(FlyoutProperties.ON_BACK_CLICKED, mMockBackClickListener)
+                        .build();
+        PropertyModelChangeProcessor.create(
+                model,
+                mView.getFlyoutView(),
+                AtMemoryBottomSheetViewBinder::bindAtMemoryFlyoutView);
+
+        content.onBackPressed();
+        verify(mMockBackClickListener).run();
+
+        assertTrue(content.handleBackPress());
+    }
+
+    @Test
+    public void testFlyoutContentDescriptionBinding() {
+        ModelList modelList = new ModelList();
+        PropertyModel suggestionModel =
+                new PropertyModel.Builder(SuggestionItemProperties.ALL_KEYS)
+                        .with(SuggestionItemProperties.TITLE, "KLM204")
+                        .with(SuggestionItemProperties.IS_FLYOUT_VISIBLE, true)
+                        .with(
+                                SuggestionItemProperties.FLYOUT_CONTENT_DESCRIPTION,
+                                "Show more for Flight KLM204")
+                        .build();
+
+        modelList.add(new ListItem(HomeProperties.ItemType.SUGGESTION, suggestionModel));
+        AtMemoryHomeView homeView = mView.getHomeView();
+        homeView.setUpSheetItems(modelList);
+
+        ShadowLooper.idleMainLooper();
+
+        RecyclerView recyclerView = homeView.findViewById(R.id.suggestions_view);
+        recyclerView.layout(0, 0, 100, 1000);
+        AtMemoryBottomSheetSuggestionView suggestionView =
+                (AtMemoryBottomSheetSuggestionView) recyclerView.getChildAt(0);
+
+        View arrowView = suggestionView.findViewById(R.id.arrow_view);
+        assertEquals("Show more for Flight KLM204", arrowView.getContentDescription());
+    }
+
+    @Test
+    public void testIllustrationCardTitleRotation() {
+        ModelList modelList = new ModelList();
+        PropertyModel model =
+                new PropertyModel.Builder(IllustrationCardItemProperties.ALL_KEYS)
+                        .with(IllustrationCardItemProperties.TITLE, "Default title")
+                        .with(IllustrationCardItemProperties.SUBTITLE, "Default subtitle")
+                        .with(
+                                IllustrationCardItemProperties.ROTATING_PLACEHOLDERS,
+                                List.of("Title A", "Title B"))
+                        .build();
+        modelList.add(new ListItem(HomeProperties.ItemType.ILLUSTRATION_CARD, model));
+
+        AtMemoryHomeView homeView = mView.getHomeView();
+        homeView.setUpSheetItems(modelList);
+        ShadowLooper.idleMainLooper();
+
+        RecyclerView recyclerView = homeView.findViewById(R.id.suggestions_view);
+        recyclerView.layout(0, 0, 100, 1000);
+        AtMemoryBottomSheetIllustrationCardView cardView =
+                (AtMemoryBottomSheetIllustrationCardView) recyclerView.getChildAt(0);
+        TextView titleView = cardView.findViewById(R.id.illustration_card_title);
+
+        assertEquals("Default title", titleView.getText().toString());
+
+        ShadowLooper.idleMainLooper(
+                AtMemoryBottomSheetIllustrationCardView.TITLE_ROTATION_INTERVAL_MS,
+                TimeUnit.MILLISECONDS);
+        String first = titleView.getText().toString();
+        assertTrue(first.equals("Title A") || first.equals("Title B"));
+
+        String second = first.equals("Title A") ? "Title B" : "Title A";
+        ShadowLooper.idleMainLooper(
+                AtMemoryBottomSheetIllustrationCardView.TITLE_ROTATION_INTERVAL_MS,
+                TimeUnit.MILLISECONDS);
+        assertEquals(second, titleView.getText().toString());
+
+        ShadowLooper.idleMainLooper(
+                AtMemoryBottomSheetIllustrationCardView.TITLE_ROTATION_INTERVAL_MS,
+                TimeUnit.MILLISECONDS);
+        assertEquals(first, titleView.getText().toString());
+    }
+
+    @Test
+    public void testIllustrationCardTitleRotation_StopsWhenDetached() {
+        ModelList modelList = new ModelList();
+        PropertyModel model =
+                new PropertyModel.Builder(IllustrationCardItemProperties.ALL_KEYS)
+                        .with(IllustrationCardItemProperties.TITLE, "Default title")
+                        .with(IllustrationCardItemProperties.SUBTITLE, "Default subtitle")
+                        .with(
+                                IllustrationCardItemProperties.ROTATING_PLACEHOLDERS,
+                                List.of("Title A", "Title B"))
+                        .build();
+        modelList.add(new ListItem(HomeProperties.ItemType.ILLUSTRATION_CARD, model));
+
+        AtMemoryHomeView homeView = mView.getHomeView();
+        homeView.setUpSheetItems(modelList);
+        ShadowLooper.idleMainLooper();
+
+        RecyclerView recyclerView = homeView.findViewById(R.id.suggestions_view);
+        recyclerView.layout(0, 0, 100, 1000);
+        AtMemoryBottomSheetIllustrationCardView cardView =
+                (AtMemoryBottomSheetIllustrationCardView) recyclerView.getChildAt(0);
+        TextView titleView = cardView.findViewById(R.id.illustration_card_title);
+
+        ShadowLooper.idleMainLooper(
+                AtMemoryBottomSheetIllustrationCardView.TITLE_ROTATION_INTERVAL_MS,
+                TimeUnit.MILLISECONDS);
+        String rotatedTitle = titleView.getText().toString();
+        assertTrue(rotatedTitle.equals("Title A") || rotatedTitle.equals("Title B"));
+
+        cardView.onDetachedFromWindow();
+        assertEquals(rotatedTitle, titleView.getText().toString());
+
+        ShadowLooper.idleMainLooper(
+                AtMemoryBottomSheetIllustrationCardView.TITLE_ROTATION_INTERVAL_MS,
+                TimeUnit.MILLISECONDS);
+        assertEquals(rotatedTitle, titleView.getText().toString());
+    }
+
+    @Test
+    public void testIllustrationCardViewTitleCrossfade() {
+        ModelList modelList = new ModelList();
+        PropertyModel initialModel =
+                new PropertyModel.Builder(IllustrationCardItemProperties.ALL_KEYS)
+                        .with(IllustrationCardItemProperties.TITLE, "Finding info with Gemini...")
+                        .with(IllustrationCardItemProperties.SUBTITLE, "")
+                        .build();
+        modelList.add(new ListItem(HomeProperties.ItemType.ILLUSTRATION_CARD, initialModel));
+
+        AtMemoryHomeView homeView = mView.getHomeView();
+        homeView.setUpSheetItems(modelList);
+        ShadowLooper.idleMainLooper();
+
+        RecyclerView recyclerView = homeView.findViewById(R.id.suggestions_view);
+        recyclerView.layout(0, 0, 100, 100);
+        ShadowLooper.runUiThreadTasks();
+        AtMemoryBottomSheetIllustrationCardView cardView =
+                (AtMemoryBottomSheetIllustrationCardView) recyclerView.getChildAt(0);
+        TextView titleView = cardView.findViewById(R.id.illustration_card_title);
+
+        assertEquals("Finding info with Gemini...", titleView.getText().toString());
+        assertEquals(View.VISIBLE, titleView.getVisibility());
+        assertEquals(1f, titleView.getAlpha(), 0.01f);
+
+        PropertyModel updatedModel =
+                new PropertyModel.Builder(IllustrationCardItemProperties.ALL_KEYS)
+                        .with(IllustrationCardItemProperties.TITLE, "Reviewing connected apps...")
+                        .with(IllustrationCardItemProperties.SUBTITLE, "")
+                        .build();
+        ShadowChoreographer.setPaused(true);
+        try {
+            modelList.set(
+                    List.of(new ListItem(HomeProperties.ItemType.ILLUSTRATION_CARD, updatedModel)));
+            recyclerView.measure(0, 0);
+            recyclerView.layout(0, 0, 100, 100);
+            ShadowLooper.idleMainLooper();
+
+            // Advance into the 150ms fade-out: old text is still shown and alpha is between 0 and
+            // 1.
+            for (int i = 0; i < 3; i++) {
+                ShadowSystemClock.advanceBy(Duration.ofMillis(25));
+                ShadowLooper.idleMainLooper();
+            }
+            assertEquals(cardView, recyclerView.getChildAt(0));
+            assertEquals("Finding info with Gemini...", titleView.getText().toString());
+            assertTrue(titleView.getAlpha() > 0f && titleView.getAlpha() < 1f);
+
+            // Advance past the 150ms fade-out into the 150ms fade-in: new text is shown and alpha
+            // is between 0 and 1.
+            for (int i = 0; i < 6; i++) {
+                ShadowSystemClock.advanceBy(Duration.ofMillis(25));
+                ShadowLooper.idleMainLooper();
+            }
+            assertEquals("Reviewing connected apps...", titleView.getText().toString());
+            assertTrue(titleView.getAlpha() > 0f && titleView.getAlpha() < 1f);
+
+            // Finish the remaining fade-in: new text is shown at full opacity.
+            for (int i = 0; i < 6; i++) {
+                ShadowSystemClock.advanceBy(Duration.ofMillis(25));
+                ShadowLooper.idleMainLooper();
+            }
+            assertEquals("Reviewing connected apps...", titleView.getText().toString());
+            assertEquals(View.VISIBLE, titleView.getVisibility());
+            assertEquals(1f, titleView.getAlpha(), 0.01f);
+        } finally {
+            ShadowChoreographer.setPaused(false);
+        }
+
+        PropertyModel emptyModel =
+                new PropertyModel.Builder(IllustrationCardItemProperties.ALL_KEYS)
+                        .with(IllustrationCardItemProperties.TITLE, "")
+                        .with(IllustrationCardItemProperties.SUBTITLE, "")
+                        .build();
+        modelList.set(List.of(new ListItem(HomeProperties.ItemType.ILLUSTRATION_CARD, emptyModel)));
+        recyclerView.measure(0, 0);
+        recyclerView.layout(0, 0, 100, 100);
+        ShadowLooper.runUiThreadTasks();
+
+        assertEquals("", titleView.getText().toString());
+        assertEquals(View.GONE, titleView.getVisibility());
     }
 
     private List<ChipView> getChipViews(ViewGroup viewGroup) {

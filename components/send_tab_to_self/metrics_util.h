@@ -43,6 +43,25 @@ enum class ShareEntryPoint {
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/sharing/enums.xml:SendTabToSelfShareEntryPoint)
 
+// Status of received STTS notifications.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// GENERATED_JAVA_ENUM_PACKAGE: (
+//   org.chromium.chrome.browser.share.send_tab_to_self)
+// LINT.IfChange(SendTabToSelfNotificationStatus)
+enum class NotificationStatus {
+  kShown = 0,
+  kDismissed = 1,
+  kOpened = 2,
+  kTimedOut = 3,
+  // kSent = 4,
+  // kDismissReasonUnknown = 5,
+  kThrottled = 6,
+  kMaxValue = kThrottled,
+};
+// LINT.ThenChange(/tools/metrics/histograms/enums.xml:SendTabToSelfNotificationStatus)
+
 // Records the entry point from which the Send Tab to Self feature was invoked.
 void RecordEntryPointInvoked(ShareEntryPoint entry_point);
 
@@ -53,25 +72,10 @@ void RecordEntryPointSent(ShareEntryPoint entry_point);
 // Records the result of attempting to send a tab.
 void RecordSendResult(SendTabToSelfResult result);
 
-// Records when a received STTS notification is shown.
-void RecordNotificationShown();
+// Records the status of a received STTS notification.
+void RecordNotificationStatus(NotificationStatus status);
 
-// Records when a received STTS notification is dismissed.
-void RecordNotificationDismissed();
-
-// Records when a received STTS notification is opened.
-void RecordNotificationOpened();
-
-// Records when a received STTS notification is shown and times out.
-void RecordNotificationTimedOut();
-
-// Records when a received STTS notification is dismissed for an unknown reason.
-void RecordNotificationDismissReasonUnknown();
-
-// Records when a received STTS notification is throttled from being sent.
-void RecordNotificationThrottled();
-
-// Status of the auto-open attempt for a received STTS tab.
+// Outcome of an auto-open attempt when opening a tab is triggered.
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
 //
@@ -79,12 +83,7 @@ void RecordNotificationThrottled();
 //   org.chromium.chrome.browser.share.send_tab_to_self)
 // LINT.IfChange(AutoOpenOutcome)
 enum class AutoOpenOutcome {
-  // Tab(s) received but could not be opened immediately. This happens when:
-  // - Desktop: No active browser window is available.
-  // - Android: The app is in the background (a system notification is shown).
-  // - iOS: The app is in the background or the active tab is not visible (e.g.,
-  //   user is in the Tab Grid).
-  kUnopenedImmediately = 0,
+  // Deprecated: kUnopenedImmediately = 0,
 
   // Tab(s) opened immediately upon receipt (browser was active).
   kTabOpenedInForeground = 1,  // Desktop only (single tab).
@@ -100,20 +99,20 @@ enum class AutoOpenOutcome {
   // click.
   kTabOpenedViaNotification = 4,
 
-  // Tab opened in native app immediately (browser was active).
-  kOpenedInNativeAppImmediately = 5,
+  // Deprecated: kOpenedInNativeAppImmediately = 5,
+  // Deprecated: kOpenedInNativeAppUponActivation = 6,
 
-  // Tab opened in native app delayed (browser was inactive/backgrounded/closed
-  // when received).
-  kOpenedInNativeAppUponActivation = 6,
+  // Note: Not commented out because it's still needed for kMaxValue.
+  kDeprecatedUnopenedUponActivation = 7,
 
-  // Tab(s) received but could not be opened upon app activation. This happens
-  // when a previous received entry triggered a switch to another app.
-  kUnopenedUponActivation = 7,
-
-  kMaxValue = kUnopenedUponActivation,
+  kMaxValue = kDeprecatedUnopenedUponActivation,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/sharing/enums.xml:SendTabToSelfAutoOpenOutcome)
+
+// Records whether received STTS tab(s) were auto-opened immediately upon
+// arrival (`true`) or not (`false`). `count` is the number of entries being
+// recorded.
+void RecordAutoOpenedImmediately(bool opened_immediately, size_t count = 1);
 
 // Records the outcome of an auto-open attempt.
 void RecordAutoOpenOutcome(AutoOpenOutcome outcome);
@@ -149,7 +148,9 @@ enum class ShareActivatedEntryPoint {
   kTabOrBrowserClosedWithoutActivation = 6,
   // The entry expired in the database before it was activated.
   kSTTSEntryExpiredWithoutActivation = 7,
-  kMaxValue = kSTTSEntryExpiredWithoutActivation,
+  // Activated via the mobile message banner.
+  kMobileMessageBanner = 8,
+  kMaxValue = kMobileMessageBanner,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/sharing/enums.xml:SendTabToSelfShareActivatedEntryPoint)
 
@@ -175,9 +176,6 @@ void RecordFormFieldMatchOutcome(FormFieldMatchOutcome outcome, int count = 1);
 // Status of scroll position generation when sending a tab.
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
-//
-// GENERATED_JAVA_ENUM_PACKAGE: (
-//   org.chromium.chrome.browser.share.send_tab_to_self)
 // LINT.IfChange(ScrollPositionGenerationOutcome)
 enum class ScrollPositionGenerationOutcome {
   kSuccess = 0,
@@ -188,7 +186,8 @@ enum class ScrollPositionGenerationOutcome {
   kLinkGenerationError = 5,
   kInvalidSelector = 6,
   kRendererTimeout = 7,
-  kMaxValue = kRendererTimeout,
+  kPageNotScrolled = 8,
+  kMaxValue = kPageNotScrolled,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/sharing/enums.xml:SendTabToSelfScrollPositionGenerationOutcome)
 

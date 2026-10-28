@@ -17,8 +17,8 @@
 #include <vector>
 
 #include "base/lazy_instance.h"
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/sanitized_object.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
@@ -92,7 +92,7 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
                                         public ui::WindowEventTarget,
                                         public ui::AXFragmentRootDelegateWin {
   // TODO(https://crbug.com/495981317): Remove this macro.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   // See WindowImpl for details on |debugging_id|.
@@ -253,6 +253,10 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   }
   void set_raw_input_button_state_for_testing(ui::EventFlags state) {
     raw_input_button_state_ = state;
+  }
+
+  bool ignore_window_pos_changes_for_testing() const {
+    return ignore_window_pos_changes_;
   }
 
  protected:

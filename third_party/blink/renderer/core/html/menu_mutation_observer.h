@@ -20,23 +20,24 @@ class MenuMutationObserver : public MutationObserver::Delegate {
   void Trace(Visitor* visitor) const override;
 
   void Disconnect();
+  void CheckNodeAndDescendantsForViolations(
+      Node* node,
+      HeapHashSet<Member<Node>>& visited_nodes,
+      const Node* disconnected_parent);
 
  private:
-  bool IsRecordOwnedByThisMenu(
-      MutationRecord* record,
-      const HeapHashSet<Member<const Node>>& detached_roots_we_own) const;
   void CheckAddedNodes(MutationRecord* record,
                        HeapHashSet<Member<Node>>& visited_nodes);
   void CheckRemovedNodes(MutationRecord* record);
-  void TraverseNodeDescendants(const Node* node,
-                               HeapHashSet<Member<Node>>& visited_nodes);
   void AddDescendantDisallowedErrorToNode(
       Node& node,
-      HeapHashSet<Member<Node>>& visited_nodes);
-  ElementAccessibilityIssueReason CheckForIssue(
-      const Node& descendant,
+      HeapHashSet<Member<Node>>& visited_nodes,
       const Node* disconnected_root = nullptr,
       const Node* disconnected_parent = nullptr);
+  ElementAccessibilityIssueReason CheckForIssue(
+      const Node& descendant,
+      const Node* disconnected_root,
+      const Node* disconnected_parent);
 
   Member<HTMLMenuOwnerElement> menu_owner_;
   Member<MutationObserver> observer_;

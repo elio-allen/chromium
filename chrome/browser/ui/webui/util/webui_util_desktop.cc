@@ -9,10 +9,10 @@
 #include "base/strings/strcat.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/desktop_browser_window_capabilities.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/common/chrome_features.h"
@@ -69,7 +69,7 @@ const std::string_view* GetWebUIMetricsHostname(const GURL& webui_url) {
           {chrome::kChromeUIThemeHost, "Theme"},
           {chrome::kChromeUITopChromeDomain, "TopChrome"},
       });
-  return base::FindOrNull(kWebUIHostnames, webui_url.GetHost());
+  return base::FindOrNull(kWebUIHostnames, webui_url.host());
 }
 
 }  // namespace
@@ -80,16 +80,22 @@ BrowserWindowInterface* GetBrowserForOpeningWebUi(
     return nullptr;
   }
 
-  if (browser->GetType() !=
-      BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE) {
+  if (browser->GetType() != BrowserWindowInterface::Type::TYPE_FLOATING) {
     return browser;
+  }
+
+  if (!DesktopBrowserWindowCapabilities::IsDocumentPictureInPicture(browser)) {
+    BrowserWindowInterface* tabbed_browser =
+        ProfileBrowserCollection::GetForProfile(browser->GetProfile())
+            ->FindTabbedBrowser();
+    return tabbed_browser ? tabbed_browser : browser;
   }
 
   auto* opener_web_contents =
       PictureInPictureWindowManager::GetInstance()->GetWebContents();
   // We should always have an opener web contents if the current browser is a
   // picture-in-picture type.
-  DCHECK(opener_web_contents);
+  CHECK(opener_web_contents, base::NotFatalUntil::M162);
   return GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
       opener_web_contents);
 }
@@ -189,7 +195,8 @@ void AppendWebUIResourceURLToCodeCachePairs(
     // Stripping the .code_cache suffix from code cache resource paths
     // yields the corresponding resource paths.
     constexpr std::string_view kCodeCacheResourceSuffix = ".code_cache";
-    DCHECK(code_cache_path.ends_with(kCodeCacheResourceSuffix));
+    CHECK(code_cache_path.ends_with(kCodeCacheResourceSuffix),
+          base::NotFatalUntil::M162);
     std::string_view resource_path = code_cache_path.substr(
         0, code_cache_path.size() - kCodeCacheResourceSuffix.size());
 
@@ -257,9 +264,7 @@ base::flat_map<GURL, int> GetWebUIResourceUrlToCodeCacheMap() {
     }
 
     // chrome://webui_toolbar.top-chrome
-    if (features::IsWebUIToolbarEnabled() ||
-        base::FeatureList::IsEnabled(
-            features::kWebUIToolbarProcessOverheadExperiment)) {
+    if (features::IsWebUIToolbarEnabled()) {
       AppendWebUIResourceURLToCodeCachePairs(
           content::kChromeUIScheme, chrome::kChromeUIWebUIToolbarHost,
           kWebuiToolbarCodeCacheResources, url_to_code_cache_pairs);

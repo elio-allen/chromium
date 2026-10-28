@@ -10,13 +10,16 @@
 #include "base/callback_list.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/time/time.h"
+#include "base/timer/timer.h"
 #include "chrome/browser/ui/views/permissions/chip/permission_chip_interface.h"
 #include "chrome/browser/ui/views/permissions/chip/permission_chip_theme.h"
 #include "chrome/browser/ui/views/permissions/permission_prompt_style.h"
 #include "components/browser_apis/ui_controllers/toolbar/toolbar_ui_api_data_model.mojom.h"
 #include "components/permissions/permission_actions_history.h"
+#include "ui/base/interaction/element_identifier.h"
 #include "ui/gfx/vector_icon_types.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 
@@ -24,12 +27,19 @@ class LocationBar;
 
 class WebUIPermissionChip : public PermissionChipInterface {
  public:
-  explicit WebUIPermissionChip(LocationBar* location_bar);
+  // `element_id` identifies the tracked WebUI element the permission bubble
+  // anchors to. It must be valid.
+  WebUIPermissionChip(LocationBar* location_bar,
+                      ui::ElementIdentifier element_id);
   ~WebUIPermissionChip() override;
 
   // PermissionChipInterface:
   void SetVisible(bool visible) override;
   bool GetVisible() const override;
+  PermissionChipTheme GetThemeForTesting() const override;
+  std::u16string GetTooltipText() const override;
+  std::u16string GetTextForTesting() const override;
+  bool GetIsRequestForTesting() const override;
   void SetChipIcon(const gfx::VectorIcon& icon) override;
   void SetChipIcon(const gfx::VectorIcon* icon) override;
   void SetMessage(std::u16string message) override;
@@ -53,15 +63,24 @@ class WebUIPermissionChip : public PermissionChipInterface {
   void AnnounceText(const std::u16string& text) override;
   void AnnounceAlert(const std::u16string& text) override;
   bool IsMouseHovered() const override;
-  void SetPressedCallback(base::RepeatingClosure callback) override;
+  void SetPressedCallback(
+      base::RepeatingCallback<void(bool)> callback) override;
   views::BubbleAnchor GetAnchor() override;
+  void WaitForAnchor(base::OnceClosure callback) override;
   void SetBubbleOwner(BubbleOwnerDelegate* owner) override;
+  void ExecuteForTesting() override;
+  void EndAnimationForTesting() override;
 
   // Called from WebUI
   void OnExpandAnimationEnded();
   void OnCollapseAnimationEnded();
   void OnMousePressed();
-  void OnClicked();
+  // Runs the pressed callback only if `state_token` (the token the WebUI
+  // rendered the chip with, echoed back in the click IPC) matches
+  // `state_token()`, and returns whether it did. A mismatch means the click is
+  // stale, e.g. it was queued before a tab or task switch, so it is dropped.
+  // This is the only click entry point, so WebUI clicks can't skip the check.
+  bool OnClickedIfCurrent(bool is_pointer_interaction, uint32_t state_token);
   void OnMouseEntered();
   void OnMouseExited();
 
@@ -70,12 +89,35 @@ class WebUIPermissionChip : public PermissionChipInterface {
   // (e.g., `should_collapse_`), not the instantaneous physical state of the UI.
   toolbar_ui_api::mojom::PermissionChipStatePtr GetState() const;
 
+  uint32_t state_token() const { return state_token_; }
+  void InvalidateStateToken() { ++state_token_; }
+
  private:
+  friend class WebUIPermissionChipTest;
+
+  // How long `WaitForAnchor()` waits for the chip element to be shown before
+  // timing out and running the callback anyway. `GetAnchor()` then returns a
+  // fallback anchor.
+  static constexpr base::TimeDelta kAnchorFallbackTimeout = base::Seconds(3);
+
   void NotifyVisibilityChanged();
   void UpdateState();
+  void FinishAnimation(AnimationState state);
 
   raw_ptr<LocationBar> location_bar_;
+  const ui::ElementIdentifier element_id_;
 
+  // An epoch counter that increments whenever the chip's visibility or
+  // animation state changes (e.g. on navigations and prompt resets via
+  // `ChipController`), and on tab or side panel task switches
+  // (`InvalidateStateToken()`, via
+  // `WebUIPermissionDashboard::ResetTabState()`). The WebUI echoes the token it
+  // rendered the chip with in its click IPC
+  // (`OnLhsChipClicked()` in the main toolbar, `OnChipClicked()` in Contextual
+  // Tasks), and `OnClickedIfCurrent()` drops clicks whose token doesn't match,
+  // so actions don't run against an obsolete tab, task or request model.
+  // Note: Initialized to 1 so that 0 is reserved as an invalid/sentinel token.
+  uint32_t state_token_ = 1;
   bool is_visible_ = false;
   std::string icon_name_;
   std::u16string message_;
@@ -98,7 +140,7 @@ class WebUIPermissionChip : public PermissionChipInterface {
 
   raw_ptr<BubbleOwnerDelegate> bubble_owner_ = nullptr;
 
-  base::RepeatingClosure pressed_callback_;
+  base::RepeatingCallback<void(bool)> pressed_callback_;
 
   // Matching the behavior of native Views PermissionChipView.
   // Allow reentrancy in observer list to prevent crash when the second
@@ -109,6 +151,14 @@ class WebUIPermissionChip : public PermissionChipInterface {
       base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
       observers_;
   base::RepeatingClosureList visibility_callbacks_;
+
+  void OnAnchorElementShown(ui::TrackedElement* element);
+  void RunPendingAnchorCallback();
+
+  base::CallbackListSubscription element_shown_subscription_;
+  base::OneShotTimer anchor_fallback_timer_;
+  base::OnceClosure pending_anchor_callback_;
+  base::WeakPtrFactory<WebUIPermissionChip> weak_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_PERMISSIONS_CHIP_WEBUI_PERMISSION_CHIP_H_

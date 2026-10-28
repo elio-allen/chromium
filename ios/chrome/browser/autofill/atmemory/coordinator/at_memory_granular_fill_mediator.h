@@ -7,13 +7,37 @@
 
 #import <Foundation/Foundation.h>
 
+#import "ios/chrome/browser/autofill/atmemory/ui/at_memory_granular_fill_mutator.h"
+
+@protocol AtMemoryCommands;
 @protocol AtMemoryFillCommands;
+@protocol AtMemoryGranularFillConsumer;
+@protocol AutofillSettingsNavigator;
+
+namespace autofill {
+struct Suggestion;
+}
 
 // Mediator for AtMemory granular fill.
-@interface AtMemoryGranularFillMediator : NSObject
+@interface AtMemoryGranularFillMediator : NSObject <AtMemoryGranularFillMutator>
+
+// The consumer for this mediator.
+@property(nonatomic, weak) id<AtMemoryGranularFillConsumer> consumer;
 
 // Handler for filling commands.
 @property(nonatomic, weak) id<AtMemoryFillCommands> fillHandler;
+
+// Handler for AtMemory commands.
+@property(nonatomic, weak) id<AtMemoryCommands> atMemoryHandler;
+
+// Navigator used to open the Autofill settings pages.
+@property(nonatomic, weak) id<AutofillSettingsNavigator> settingsNavigator;
+
+// Initializes the mediator by moving `suggestion`.
+- (instancetype)initWithSuggestion:(autofill::Suggestion&&)suggestion
+    NS_DESIGNATED_INITIALIZER;
+
+- (instancetype)init NS_UNAVAILABLE;
 
 @end
 

@@ -339,9 +339,10 @@ bool ShouldAddStudy(const ProcessedStudy& processed_study,
                     const ClientFilterableState& client_state,
                     const VariationsLayers& layers) {
   const Study& study = *processed_study.study();
+  const std::string& study_name = study.name();
   if (study.has_layer()) {
     if (!layers.IsLayerMemberActive(study.layer())) {
-      DVLOG(1) << "Filtered out study " << study.name()
+      DVLOG(1) << "Filtered out study " << study_name
                << " due to layer member not being active.";
       return false;
     }
@@ -350,119 +351,120 @@ bool ShouldAddStudy(const ProcessedStudy& processed_study,
         layers.ActiveLayerMemberDependsOnHighEntropy(
             study.layer().layer_id())) {
       DVLOG(1)
-          << "Filtered out study " << study.name()
+          << "Filtered out study " << study_name
           << " due to not allowing a high entropy source yet being a member "
              "of a layer using the default (high) entropy source.";
       return false;
     }
   }
 
+  // Check policy restrictions regardless of if the study has a filter or not.
+  // (E.g. if policies dictate that no studies should apply, then fitlerless
+  // studies should not apply).
+  // Note: a filterless study will default to having a policy_restriction of
+  // NONE.
+  if (!CheckStudyPolicyRestriction(study.filter(),
+                                    client_state.policy_restriction)) {
+    DVLOG(1) << "Filtered out study " << study_name
+             << " due to policy restriction.";
+    return false;
+  }
+
   if (study.has_filter()) {
-    if (!CheckStudyChannel(study.filter(), client_state.channel)) {
-      DVLOG(1) << "Filtered out study " << study.name() << " due to channel.";
+    const Study::Filter& filter = study.filter();
+    if (!CheckStudyChannel(filter, client_state.channel)) {
+      DVLOG(1) << "Filtered out study " << study_name << " due to channel.";
       return false;
     }
 
-    if (!CheckStudyFormFactor(study.filter(), client_state.form_factor)) {
-      DVLOG(1) << "Filtered out study " << study.name() <<
-                  " due to form factor.";
+    if (!CheckStudyFormFactor(filter, client_state.form_factor)) {
+      DVLOG(1) << "Filtered out study " << study_name << " due to form factor.";
       return false;
     }
 
-    if (!CheckStudyCpuArchitecture(study.filter(),
-                                   client_state.cpu_architecture)) {
-      DVLOG(1) << "Filtered out study " << study.name()
+    if (!CheckStudyCpuArchitecture(filter, client_state.cpu_architecture)) {
+      DVLOG(1) << "Filtered out study " << study_name
                << " due to cpu architecture.";
       return false;
     }
 
-    if (!CheckStudyLocale(study.filter(), client_state.locale)) {
-      DVLOG(1) << "Filtered out study " << study.name() << " due to locale.";
+    if (!CheckStudyLocale(filter, client_state.locale)) {
+      DVLOG(1) << "Filtered out study " << study_name << " due to locale.";
       return false;
     }
 
-    if (!CheckStudyPlatform(study.filter(), client_state.platform)) {
-      DVLOG(1) << "Filtered out study " << study.name() << " due to platform.";
+    if (!CheckStudyPlatform(filter, client_state.platform)) {
+      DVLOG(1) << "Filtered out study " << study_name << " due to platform.";
       return false;
     }
 
-    if (!CheckStudyVersion(study.filter(), client_state.version)) {
-      DVLOG(1) << "Filtered out study " << study.name() << " due to version.";
+    if (!CheckStudyVersion(filter, client_state.version)) {
+      DVLOG(1) << "Filtered out study " << study_name << " due to version.";
       return false;
     }
 
-    if (!CheckStudyStartDate(study.filter(), client_state.reference_date)) {
-      DVLOG(1) << "Filtered out study " << study.name() <<
-                  " due to start date.";
+    if (!CheckStudyStartDate(filter, client_state.reference_date)) {
+      DVLOG(1) << "Filtered out study " << study_name << " due to start date.";
       return false;
     }
 
-    if (!CheckStudyEndDate(study.filter(), client_state.reference_date)) {
-      DVLOG(1) << "Filtered out study " << study.name() << " due to end date.";
+    if (!CheckStudyEndDate(filter, client_state.reference_date)) {
+      DVLOG(1) << "Filtered out study " << study_name << " due to end date.";
       return false;
     }
 
-    if (!CheckStudyHardwareClass(study.filter(), client_state.hardware_class)) {
-      DVLOG(1) << "Filtered out study " << study.name() <<
-                  " due to hardware_class.";
+    if (!CheckStudyHardwareClass(filter, client_state.hardware_class)) {
+      DVLOG(1) << "Filtered out study " << study_name
+               << " due to hardware_class.";
       return false;
     }
 
-    if (!CheckStudyHardwareManufacturer(study.filter(),
+    if (!CheckStudyHardwareManufacturer(filter,
                                         client_state.hardware_manufacturer)) {
-      DVLOG(1) << "Filtered out study " << study.name()
+      DVLOG(1) << "Filtered out study " << study_name
                << " due to hardware_manufacturer.";
       return false;
     }
 
-    if (!CheckStudyLowEndDevice(study.filter(),
-                                client_state.is_low_end_device)) {
-      DVLOG(1) << "Filtered out study " << study.name()
+    if (!CheckStudyLowEndDevice(filter, client_state.is_low_end_device)) {
+      DVLOG(1) << "Filtered out study " << study_name
                << " due to is_low_end_device.";
       return false;
     }
 
-    if (!CheckStudyPolicyRestriction(study.filter(),
-                                     client_state.policy_restriction)) {
-      DVLOG(1) << "Filtered out study " << study.name()
-               << " due to policy restriction.";
-      return false;
-    }
-
-    if (!CheckStudyOSVersion(study.filter(), client_state.os_version)) {
-      DVLOG(1) << "Filtered out study " << study.name()
-               << " due to os_version.";
+    if (!CheckStudyOSVersion(filter, client_state.os_version)) {
+      DVLOG(1) << "Filtered out study " << study_name << " due to os_version.";
       return false;
     }
 
     const std::string& country = GetClientCountryForStudy(study, client_state);
-    if (!CheckStudyCountry(study.filter(), country)) {
-      DVLOG(1) << "Filtered out study " << study.name() << " due to country.";
+    if (!CheckStudyCountry(filter, country)) {
+      DVLOG(1) << "Filtered out study " << study_name << " due to country.";
       return false;
     }
 
     // Check for enterprise status last as checking whether the client is
     // enterprise can be slow.
-    if (!CheckStudyEnterprise(study.filter(), client_state)) {
-      DVLOG(1) << "Filtered out study " << study.name()
+    if (!CheckStudyEnterprise(filter, client_state)) {
+      DVLOG(1) << "Filtered out study " << study_name
                << " due to enterprise state.";
       return false;
     }
 
-    if (!CheckStudyGoogleGroup(study.filter(), client_state)) {
-      DVLOG(1) << "Filtered out study " << study.name()
+    if (!CheckStudyGoogleGroup(filter, client_state)) {
+      DVLOG(1) << "Filtered out study " << study_name
                << " due to Google groups membership checks.";
       return false;
     }
 
-    if (!CheckStudyEnterpriseGroup(study.filter(), client_state)) {
-      DVLOG(1) << "Filtered out study " << study.name()
+    if (!CheckStudyEnterpriseGroup(filter, client_state)) {
+      DVLOG(1) << "Filtered out study " << study_name
                << " due to enterprise groups membership checks.";
       return false;
     }
   }
 
-  DVLOG(1) << "Kept study " << study.name() << ".";
+  DVLOG(1) << "Kept study " << study_name << ".";
   return true;
 }
 
@@ -507,6 +509,19 @@ std::vector<ProcessedStudy> FilterAndValidateStudies(
 
     filtered_studies.push_back(processed_study);
   }
+
+  // Reorder the studies so that kRuntimeMonitoringStudyName is processed
+  // first. (Note: stable_partition preserves the relative order of elements, so
+  // the order is still deterministic for a given seed).
+  // kRuntimeMonitoringStudyName is processed first because it is used to
+  // monitor the health of newly deployed seeds. This ensures that crash reports
+  // will properly report the newest group in case the application of a
+  // subsequent study is crashy.
+  std::ranges::stable_partition(
+      filtered_studies, [](const ProcessedStudy& study) {
+        return study.study()->name() == kRuntimeMonitoringStudyName;
+      });
+
   return filtered_studies;
 }
 

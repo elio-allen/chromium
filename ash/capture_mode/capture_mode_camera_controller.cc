@@ -5,7 +5,7 @@
 #include "ash/capture_mode/capture_mode_camera_controller.h"
 
 #include <algorithm>
-#include <cstring>
+#include <tuple>
 #include <vector>
 
 #include "ash/accessibility/accessibility_controller.h"
@@ -30,7 +30,7 @@
 #include "ash/wm/window_state.h"
 #include "ash/wm/wm_event.h"
 #include "base/check.h"
-#include "base/compiler_specific.h"
+#include "base/containers/linear_find.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
@@ -171,8 +171,7 @@ bool ShouldCameraActLikeAMirror(const CameraInfo& camera_info) {
 // nullptr if no such item exists.
 const CameraInfo* GetCameraInfoById(const CameraId& id,
                                     const CameraInfoList& list) {
-  const auto iter = std::ranges::find(list, id, &CameraInfo::camera_id);
-  return iter == list.end() ? nullptr : &(*iter);
+  return base::LinearFind(list, id, &CameraInfo::camera_id);
 }
 
 // Returns the widget init params needed to create the camera preview widget.
@@ -367,10 +366,8 @@ CameraId::CameraId(std::string model_id_or_display_name, int number)
 }
 
 bool CameraId::operator<(const CameraId& rhs) const {
-  const int result =
-      UNSAFE_TODO(std::strcmp(model_id_or_display_name_.c_str(),
-                              rhs.model_id_or_display_name_.c_str()));
-  return result != 0 ? result : (number_ < rhs.number_);
+  return std::tie(model_id_or_display_name_, number_) <
+         std::tie(rhs.model_id_or_display_name_, rhs.number_);
 }
 
 std::string CameraId::ToString() const {
@@ -765,9 +762,11 @@ void CaptureModeCameraController::GetCameraDevices() {
 
   DCHECK(video_source_provider_remote_);
 
-  video_source_provider_remote_->GetSourceInfos(base::BindOnce(
-      &CaptureModeCameraController::OnCameraDevicesReceived,
-      weak_ptr_factory_.GetWeakPtr(), ++most_recent_request_id_));
+  video_source_provider_remote_->GetSourceInfos(
+      media::mojom::VideoCaptureDeviceEnumerationMode::kDevicesWithCapabilities,
+      base::BindOnce(&CaptureModeCameraController::OnCameraDevicesReceived,
+                     weak_ptr_factory_.GetWeakPtr(),
+                     ++most_recent_request_id_));
 }
 
 void CaptureModeCameraController::OnCameraDevicesReceived(

@@ -11,8 +11,9 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/policy/system_features_disable_list_policy_handler.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -25,6 +26,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 namespace extensions {
@@ -43,7 +45,7 @@ class TerminalPrivateBrowserTest
 
   void ExpectJsResult(const std::string& script, const std::string& expected) {
     content::WebContents* web_contents =
-        browser()->tab_strip_model()->GetActiveWebContents();
+        browser()->GetTabStripModel()->GetActiveWebContents();
     EXPECT_EQ(
         EvalJs(web_contents, script, content::EXECUTE_SCRIPT_DEFAULT_OPTIONS,
                /*world_id=*/1),
@@ -121,20 +123,20 @@ IN_PROC_BROWSER_TEST_F(TerminalPrivateBrowserTest, OpenCroshProcessChecks) {
 IN_PROC_BROWSER_TEST_F(TerminalPrivateBrowserTest,
                        OnProcessOutputSendToCorrectRenderer) {
   // Open 2 tabs in crosh.  Crosh will echo input for tests.
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),
-                                           GURL("chrome-untrusted://crosh/")));
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), GURL("chrome-untrusted://crosh/html/crosh.html")));
   content::WebContents* tab1 =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
 
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL("chrome-untrusted://crosh/"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), GURL("chrome-untrusted://crosh/html/crosh.html"),
+      WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   content::WebContents* tab2 =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
 
   // Verify that we have two distinct tabs.
-  ASSERT_EQ(2, browser()->tab_strip_model()->count());
+  ASSERT_EQ(2, browser()->GetTabStripModel()->count());
   ASSERT_NE(tab1, tab2);
 
   // In the second tab, register a listener for the onProcessOutput event.

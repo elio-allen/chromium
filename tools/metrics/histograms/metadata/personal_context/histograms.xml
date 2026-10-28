@@ -28,6 +28,7 @@ chromium-metrics-reviews@google.com.
   <variant name="AmbientAutofill" summary="Ambient Autofill"/>
   <variant name="AtMemory" summary="AtMemory"/>
   <variant name="AutoTodos" summary="AutoTodos"/>
+  <variant name="SmartSearch" summary="Smart Search"/>
   <variant name="Unspecified" summary="Unspecified feature"/>
 </variants>
 
@@ -54,9 +55,41 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="PersonalContext.DecryptEntity.Latency" units="microseconds"
+    expires_after="2027-08-18">
+  <owner>sophiechang@chromium.org</owner>
+  <owner>chrome-memory-context-eng@google.com</owner>
+  <summary>
+    Records the duration in microseconds to decrypt an encrypted entity payload
+    and parse the resulting DecryptedEntity proto in PersonalContextService.
+    Recorded on every decryption attempt.
+  </summary>
+</histogram>
+
+<histogram name="PersonalContext.DecryptEntity.Result" enum="BooleanSuccess"
+    expires_after="2027-08-18">
+  <owner>sophiechang@chromium.org</owner>
+  <owner>chrome-memory-context-eng@google.com</owner>
+  <summary>
+    Records whether an encrypted entity was successfully decrypted and parsed in
+    PersonalContextService. Recorded on every decryption attempt.
+  </summary>
+</histogram>
+
+<histogram name="PersonalContext.DecryptEntity.Status"
+    enum="PersonalContextDecryptionStatus" expires_after="2027-08-18">
+  <owner>sophiechang@chromium.org</owner>
+  <owner>chrome-memory-context-eng@google.com</owner>
+  <summary>
+    Records the outcome status (success or specific failure cause) when
+    decrypting an entity in PersonalContextService. Recorded on every decryption
+    attempt.
+  </summary>
+</histogram>
+
 <histogram
     name="PersonalContext.FetchContext.ErrorStatus.{ContextMemoryFeature}"
-    enum="ContextMemoryExecutionError" expires_after="2026-11-15">
+    enum="ContextMemoryExecutionError" expires_after="2027-11-15">
   <owner>qiaoli@google.com</owner>
   <owner>chrome-memory-context-eng@google.com</owner>
   <summary>
@@ -68,7 +101,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PersonalContext.FetchContext.Latency.{ContextMemoryFeature}"
-    units="ms" expires_after="2027-01-24">
+    units="ms" expires_after="2027-03-28">
   <owner>qiaoli@google.com</owner>
   <owner>chrome-memory-context-eng@google.com</owner>
   <summary>
@@ -80,7 +113,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PersonalContext.FetchContext.Result.{ContextMemoryFeature}"
-    enum="BooleanSuccess" expires_after="2026-11-15">
+    enum="BooleanSuccess" expires_after="2027-11-15">
   <owner>qiaoli@google.com</owner>
   <owner>chrome-memory-context-eng@google.com</owner>
   <summary>
@@ -93,7 +126,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PersonalContext.FetchPiiEntities.ErrorStatus.{ContextMemoryFeature}"
-    enum="ContextMemoryExecutionError" expires_after="2026-11-15">
+    enum="ContextMemoryExecutionError" expires_after="2027-11-15">
   <owner>qiaoli@google.com</owner>
   <owner>chrome-memory-context-eng@google.com</owner>
   <summary>
@@ -106,7 +139,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PersonalContext.FetchPiiEntities.Latency.{ContextMemoryFeature}"
-    units="ms" expires_after="2026-11-15">
+    units="ms" expires_after="2027-03-21">
   <owner>qiaoli@google.com</owner>
   <owner>chrome-memory-context-eng@google.com</owner>
   <summary>
@@ -119,7 +152,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PersonalContext.FetchPiiEntities.Result.{ContextMemoryFeature}"
-    enum="BooleanSuccess" expires_after="2026-11-15">
+    enum="BooleanSuccess" expires_after="2027-11-15">
   <owner>qiaoli@google.com</owner>
   <owner>chrome-memory-context-eng@google.com</owner>
   <summary>

@@ -8,7 +8,7 @@
 #include "base/timer/elapsed_timer.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_parse_html_unsafe_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_sanitizer_sanitizerconfig_sanitizerpresets.h"
-#include "third_party/blink/renderer/bindings/core/v8/v8_union_sethtmlunsafeoptions_trustedparseroptions.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_sethtmlunsafeoptions_trustedhtmlparseroptions.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/document_fragment.h"
 #include "third_party/blink/renderer/core/dom/element.h"
@@ -24,12 +24,16 @@
 #include "third_party/blink/renderer/core/html/html_head_element.h"
 #include "third_party/blink/renderer/core/html/html_html_element.h"
 #include "third_party/blink/renderer/core/html/html_template_element.h"
+#include "third_party/blink/renderer/core/html/parser/html_document_parser.h"
 #include "third_party/blink/renderer/core/html/parser/html_document_parser_fastpath.h"
 #include "third_party/blink/renderer/core/sanitizer/sanitizer.h"
 #include "third_party/blink/renderer/core/sanitizer/sanitizer_api.h"
+#include "third_party/blink/renderer/core/trustedtypes/trusted_html_parser_options.h"
 #include "third_party/blink/renderer/core/trustedtypes/trusted_types_util.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/perfetto/include/perfetto/tracing/event_context.h"
 
 namespace blink {
 
@@ -42,39 +46,28 @@ void LogFastPathParserTotalTime(base::TimeDelta parse_time) {
       base::Microseconds(1), base::Milliseconds(10), 100);
 }
 
-// ForceInertTemplate specifies whether the HTML parser should parse into an
-// inert (non-active) template document.
-enum class ForceInertTemplate { kDontForce, kForce };
-
 DocumentFragment* ParseHTMLFragmentInternal(
     const String& markup,
     Element* context_element,
     ParserContentPolicy parser_content_policy,
     FragmentParserConfig::ParseDeclarativeShadowRoots parse_declarative_shadows,
     FragmentParserConfig::ForceHtml force_html,
-    ForceInertTemplate force_inert,
     CustomElementRegistry* registry,
     ExceptionState& exception_state,
     StreamingSanitizer* sanitizer) {
   DCHECK(context_element);
   const HTMLTemplateElement* template_element =
       DynamicTo<HTMLTemplateElement>(*context_element);
-  if (template_element && !template_element->GetExecutionContext()) {
-    return nullptr;
-  }
-
-  // If an inert document is requested, we shouldn't run custom element
-  // callbacks. Those will be run whenever the result template will be inserted
-  // into the final document.
-  if (force_inert == ForceInertTemplate::kForce) {
+  if (template_element) {
+    if (!template_element->GetExecutionContext()) {
+      return nullptr;
+    }
     registry = nullptr;
   }
 
   Document& document =
-      (IsA<HTMLTemplateElement>(*context_element) ||
-       force_inert == ForceInertTemplate::kForce)
-          ? context_element->GetDocument().EnsureTemplateDocument()
-          : context_element->GetDocument();
+      template_element ? context_element->GetDocument().EnsureTemplateDocument()
+                       : context_element->GetDocument();
   DocumentFragment* fragment = DocumentFragment::Create(document);
   document.setAllowDeclarativeShadowRoots(
       parse_declarative_shadows ==
@@ -82,6 +75,14 @@ DocumentFragment* ParseHTMLFragmentInternal(
 
   if (IsA<HTMLDocument>(document) ||
       force_html == FragmentParserConfig::ForceHtml::kForce) {
+    Document& owner_doc = context_element->GetDocument();
+    const bool is_detached_doc = !owner_doc.GetFrame();
+    TRACE_EVENT_BEGIN("blink", "ParseHTMLFragment", "size", markup.length(),
+                      "is_detached_doc", is_detached_doc,
+                      [&](perfetto::EventContext ctx) {
+                        HTMLDocumentParser::AddHtmlContentTraceAnnotations(
+                            ctx, &owner_doc, markup, context_element);
+                      });
     bool log_tag_stats = false;
     base::ElapsedTimer parse_timer;
     HTMLFragmentParsingBehaviorSet parser_behavior;
@@ -104,8 +105,7 @@ DocumentFragment* ParseHTMLFragmentInternal(
       // newly-created elements are using the same registry as the tree scope.
       // If they're the same, we don't need to set registry on the descendants
       // as the descendants can look up the registry from tree scope like usual.
-      if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
-          registry != context_element->GetTreeScope().customElementRegistry()) {
+      if (registry != context_element->GetTreeScope().customElementRegistry()) {
         for (Element& element : ElementTraversal::DescendantsOf(*fragment)) {
           element.SetCustomElementRegistry(
               CustomElementRegistryAssignment::ResolveNullableRegistry(
@@ -114,17 +114,24 @@ DocumentFragment* ParseHTMLFragmentInternal(
         }
       }
       LogFastPathParserTotalTime(parse_timer.Elapsed());
+      TRACE_EVENT_END("blink", "parsed_fast_path", true);
 #if DCHECK_IS_ON()
       // As a sanity check for the fast-path, create another fragment using
-      // the full parser and compare the results.
+      // the full parser and compare the results. Skip this when "blink"
+      // tracing is enabled so traces on DCHECK builds do not incur a 5x
+      // slow-path re-parse or emit duplicate HTMLDocumentParser::append slices.
       // See https://bugs.chromium.org/p/chromium/issues/detail?id=1407201
       // for details.
-      DocumentFragment* fragment2 = DocumentFragment::Create(document);
-      fragment2->ParseHTML(markup, context_element, registry,
-                           parser_content_policy, sanitizer);
-      DCHECK_EQ(CreateMarkup(fragment), CreateMarkup(fragment2))
-          << " supplied value " << markup;
-      DCHECK(fragment->isEqualNode(fragment2));
+      bool blink_tracing_enabled = false;
+      TRACE_EVENT_CATEGORY_GROUP_ENABLED("blink", &blink_tracing_enabled);
+      if (!blink_tracing_enabled) {
+        DocumentFragment* fragment2 = DocumentFragment::Create(document);
+        fragment2->ParseHTML(markup, context_element, registry,
+                             parser_content_policy, sanitizer);
+        DCHECK_EQ(CreateMarkup(fragment), CreateMarkup(fragment2))
+            << " supplied value " << markup;
+        DCHECK(fragment->isEqualNode(fragment2));
+      }
 #endif
       return fragment;
     }
@@ -136,9 +143,11 @@ DocumentFragment* ParseHTMLFragmentInternal(
         RuntimeEnabledFeatures::InnerHTMLParserFastpathLogFailureEnabled()) {
       LogTagsForUnsupportedTagTypeFailure(*fragment);
     }
+    TRACE_EVENT_END("blink", "parsed_fast_path", false);
     return fragment;
   }
 
+  CHECK(!sanitizer);
   bool was_valid = fragment->ParseXML(markup, context_element, exception_state,
                                       parser_content_policy);
   if (!was_valid) {
@@ -163,9 +172,22 @@ inline void RemoveElementPreservingChildren(DocumentFragment* fragment,
   fragment->RemoveChild(element);
 }
 
+bool HasNonEmptySanitizer(
+    const V8UnionSanitizerOrSanitizerConfigOrSanitizerPresets* sanitizer) {
+  if (!sanitizer) {
+    return false;
+  }
+  if (sanitizer->IsSanitizerConfig()) {
+    return !Sanitizer::IsEmpty(sanitizer->GetAsSanitizerConfig());
+  }
+  // Explicit Sanitizer instances (e.g., `new Sanitizer()`) and presets always
+  // require vetting by the default policy when Trusted Types are enforced.
+  return true;
+}
+
 }  // namespace
 
-FragmentParserOptions::FragmentParserOptions(TrustedParserOptions* options)
+FragmentParserOptions::FragmentParserOptions(TrustedHTMLParserOptions* options)
     : trust_mode_(TrustMode::kTrusted),
       run_scripts_((options->runScripts() &&
                     RuntimeEnabledFeatures::SetHTMLCanRunScriptsEnabled())
@@ -183,50 +205,44 @@ FragmentParserOptions::FragmentParserOptions(SetHTMLUnsafeOptions* options)
                     RuntimeEnabledFeatures::SetHTMLCanRunScriptsEnabled())
                        ? RunScripts::kRunScripts
                        : RunScripts::kDontRunScripts),
-      sanitizer_init_(options->sanitizer()) {}
+      sanitizer_init_(options->getSanitizerOr(nullptr)),
+      requires_default_policy_(run_scripts_ == RunScripts::kRunScripts ||
+                               HasNonEmptySanitizer(sanitizer_init_)) {}
 
 FragmentParserOptions::FragmentParserOptions(ParseHTMLUnsafeOptions* options)
-    : sanitizer_init_(options->sanitizer()) {}
+    : sanitizer_init_(options->getSanitizerOr(nullptr)),
+      requires_default_policy_(HasNonEmptySanitizer(sanitizer_init_)) {}
 
 FragmentParserOptions::FragmentParserOptions(SetHTMLOptions* options)
     : sanitizer_init_(options->sanitizer()) {}
 
 // static
 FragmentParserOptions FragmentParserOptions::From(
-    const V8UnionSetHTMLUnsafeOptionsOrTrustedParserOptions* options) {
+    const V8UnionSetHTMLUnsafeOptionsOrTrustedHTMLParserOptions* options) {
   switch (options->GetContentType()) {
-    case V8UnionSetHTMLUnsafeOptionsOrTrustedParserOptions::ContentType::
+    case V8UnionSetHTMLUnsafeOptionsOrTrustedHTMLParserOptions::ContentType::
         kSetHTMLUnsafeOptions:
       return FragmentParserOptions(options->GetAsSetHTMLUnsafeOptions());
-    case V8UnionSetHTMLUnsafeOptionsOrTrustedParserOptions::ContentType::
-        kTrustedParserOptions:
-      return FragmentParserOptions(options->GetAsTrustedParserOptions());
+    case V8UnionSetHTMLUnsafeOptionsOrTrustedHTMLParserOptions::ContentType::
+        kTrustedHTMLParserOptions:
+      return FragmentParserOptions(options->GetAsTrustedHTMLParserOptions());
   }
 }
 
 // static
-FragmentParserConfig FragmentParserConfig::ForContainer(
-    ContainerNode* context,
-    Sanitizer::Mode mode,
-    const AtomicString& interface_name,
-    const AtomicString& property_name) {
+FragmentParserConfig FragmentParserConfig::ForContainer(ContainerNode* context,
+                                                        Sanitizer::Mode mode) {
   CHECK(context->IsElementNode() || context->IsShadowRoot());
-  return {
-      .sanitizer_mode = mode,
-      .parse_declarative_shadows =
-          FragmentParserConfig::ParseDeclarativeShadowRoots::kParse,
-      .force_html = FragmentParserConfig::ForceHtml::kForce,
-      .interface_name = interface_name,
-      .property_name = property_name,
-      .context_element = context->IsElementNode()
-                             ? To<Element>(context)
-                             : &To<ShadowRoot>(context)->host(),
-      .registry =
-          context->IsElementNode()
-              ? (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled()
-                     ? To<Element>(context)->customElementRegistry()
-                     : nullptr)
-              : To<ShadowRoot>(context)->customElementRegistry()};
+  return {.sanitizer_mode = mode,
+          .parse_declarative_shadows =
+              FragmentParserConfig::ParseDeclarativeShadowRoots::kParse,
+          .force_html = FragmentParserConfig::ForceHtml::kForce,
+          .context_element = context->IsElementNode()
+                                 ? To<Element>(context)
+                                 : &To<ShadowRoot>(context)->host(),
+          .registry = context->IsElementNode()
+                          ? To<Element>(context)->customElementRegistry()
+                          : To<ShadowRoot>(context)->customElementRegistry()};
 }
 
 DocumentFragment* ParseHTMLFragment(const String& markup,
@@ -242,14 +258,11 @@ DocumentFragment* ParseHTMLFragment(const String& markup,
           ? kAllowScriptingContentAndDoNotMarkAlreadyStarted
           : kAllowScriptingContent;
 
-  const bool should_sanitize =
-      options.sanitizer_init() ||
-      (config.sanitizer_mode == Sanitizer::Mode::kSafe);
-
-  StreamingSanitizer* streaming_sanitizer = nullptr;
-  if (should_sanitize && RuntimeEnabledFeatures::StreamingSanitizerEnabled()) {
-    streaming_sanitizer = SanitizerAPI::CreateStreamingSanitizer(
-        config.sanitizer_mode, options, exception_state);
+  StreamingSanitizer* streaming_sanitizer =
+      SanitizerAPI::CreateStreamingSanitizer(config.sanitizer_mode, options,
+                                             exception_state);
+  if (exception_state.HadException()) {
+    return nullptr;
   }
 
   if (streaming_sanitizer &&
@@ -260,17 +273,8 @@ DocumentFragment* ParseHTMLFragment(const String& markup,
 
   DocumentFragment* fragment = ParseHTMLFragmentInternal(
       markup, config.context_element, content_policy,
-      config.parse_declarative_shadows, config.force_html,
-      should_sanitize ? ForceInertTemplate::kForce
-                      : ForceInertTemplate::kDontForce,
-      config.registry, exception_state, streaming_sanitizer);
-
-  if (fragment && should_sanitize &&
-      (!streaming_sanitizer || !fragment->GetDocument().IsHTMLDocument())) {
-    SanitizerAPI::SanitizeInternal(config.sanitizer_mode,
-                                   config.context_element, fragment, options,
-                                   exception_state);
-  }
+      config.parse_declarative_shadows, config.force_html, config.registry,
+      exception_state, streaming_sanitizer);
 
   if (exception_state.HadException()) {
     return nullptr;
@@ -289,11 +293,9 @@ DocumentFragment* CreateContextualFragment(const String& html,
   // Use null registry to create fragment if the context element is a
   // template element as the container of the document fragment will be a
   // document fragment without browsing context.
-  CustomElementRegistry* registry =
-      (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
-       IsA<HTMLTemplateElement>(element))
-          ? nullptr
-          : element->customElementRegistry();
+  CustomElementRegistry* registry = IsA<HTMLTemplateElement>(element)
+                                        ? nullptr
+                                        : element->customElementRegistry();
 
   DocumentFragment* fragment = blink::ParseHTMLFragment(
       html,

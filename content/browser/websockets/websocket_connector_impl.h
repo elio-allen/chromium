@@ -14,8 +14,10 @@
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/weak_document_ptr.h"
 #include "net/base/isolation_info.h"
+#include "net/base/network_handle.h"
 #include "net/storage_access_api/status.h"
 #include "services/network/public/mojom/client_security_state.mojom.h"
+#include "services/network/public/mojom/ip_address_space.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/websocket.mojom.h"
 #include "third_party/blink/public/mojom/websockets/websocket_connector.mojom.h"
@@ -41,19 +43,20 @@ class WebSocketConnectorImpl final : public blink::mojom::WebSocketConnector {
       const url::Origin& origin,
       const net::IsolationInfo& isolation_info,
       network::mojom::ClientSecurityStatePtr client_security_state,
+      net::StorageAccessApiStatus storage_access_api_status,
       const base::UnguessableToken& network_restrictions_id,
       std::optional<base::UnguessableToken> devtools_worker_token);
   ~WebSocketConnectorImpl() override;
 
   // WebSocketConnector implementation
-  void Connect(const GURL& url,
-               const std::vector<std::string>& requested_protocols,
-               const std::optional<std::string>& user_agent,
-               net::StorageAccessApiStatus storage_access_api_status,
-               mojo::PendingRemote<network::mojom::WebSocketHandshakeClient>
-                   handshake_client,
-               const std::optional<base::UnguessableToken>&
-                   throttling_profile_id) override;
+  void Connect(
+      const GURL& url,
+      const std::vector<std::string>& requested_protocols,
+      const std::optional<std::string>& user_agent,
+      mojo::PendingRemote<network::mojom::WebSocketHandshakeClient>
+          handshake_client,
+      const std::optional<base::UnguessableToken>& throttling_profile_id,
+      network::mojom::IPAddressSpace target_address_space) override;
 
  private:
   static void ConnectCalledByContentBrowserClient(
@@ -67,6 +70,8 @@ class WebSocketConnectorImpl final : public blink::mojom::WebSocketConnector {
       uint32_t options,
       std::optional<base::UnguessableToken> throttling_profile_id,
       const base::UnguessableToken& network_restrictions_id,
+      network::mojom::IPAddressSpace target_address_space,
+      net::handles::NetworkHandle target_network,
       const GURL& url,
       std::vector<network::mojom::HttpHeaderPtr> additional_headers,
       mojo::PendingRemote<network::mojom::WebSocketHandshakeClient>
@@ -81,6 +86,7 @@ class WebSocketConnectorImpl final : public blink::mojom::WebSocketConnector {
   const url::Origin origin_;
   const net::IsolationInfo isolation_info_;
   const network::mojom::ClientSecurityStatePtr client_security_state_;
+  const net::StorageAccessApiStatus storage_access_api_status_;
   const base::UnguessableToken network_restrictions_id_;
   const std::optional<base::UnguessableToken> devtools_worker_token_;
 };

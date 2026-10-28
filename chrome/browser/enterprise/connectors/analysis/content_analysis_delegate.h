@@ -11,20 +11,22 @@
 
 #include "base/files/file_path.h"
 #include "base/functional/callback.h"
+#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/read_only_shared_memory_region.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "chrome/browser/enterprise/connectors/analysis/content_analysis_info.h"
 #include "chrome/browser/enterprise/connectors/common.h"
 #include "components/enterprise/connectors/core/analysis_settings.h"
 #include "components/enterprise/connectors/core/common.h"
 #include "components/enterprise/connectors/core/content_analysis_data.h"
 #include "components/enterprise/connectors/core/content_analysis_delegate_base.h"
+#include "content/public/browser/global_routing_id.h"
 
 namespace content {
-class WebContent;
+class WebContents;
 struct ClipboardPasteData;
 }  // namespace content
 
@@ -36,9 +38,11 @@ namespace enterprise_connectors {
 
 class BinaryUploadService;
 class ClipboardRequestHandler;
-class ContentAnalysisDialogController;
+class ContentAnalysisDialogControllerBase;
 class FilesRequestHandlerBase;
+#if !BUILDFLAG(IS_ANDROID)
 class PagePrintRequestHandler;
+#endif
 
 // A class that performs deep scans of data (for example malicious or sensitive
 // content checks) before allowing a page to access it.
@@ -85,6 +89,10 @@ class ContentAnalysisDelegate : public ContentAnalysisDelegateBase,
     // `content::ClipboardPasteData` object.
     void AddClipboardData(
         const content::ClipboardPasteData& clipboard_paste_data);
+
+    // ID of the frame initiating the action. If provided, frame URL chain
+    // collection starts from this frame instead of the currently focused frame.
+    std::optional<content::GlobalRenderFrameHostId> initiating_frame_id;
   };
 
   // Result of deep scanning.  Each Result contains the verdicts of deep scans
@@ -272,7 +280,9 @@ class ContentAnalysisDelegate : public ContentAnalysisDelegateBase,
   // testing derived classes.
   void TextRequestCallback(RequestHandlerResult result);
   void ImageRequestCallback(RequestHandlerResult result);
+#if !BUILDFLAG(IS_ANDROID)
   void PageRequestCallback(RequestHandlerResult result);
+#endif
 
   // Callback called after all files are scanned by `files_request_handler_`.
   void FilesRequestCallback(std::vector<RequestHandlerResult> results);
@@ -288,18 +298,24 @@ class ContentAnalysisDelegate : public ContentAnalysisDelegateBase,
     return final_actions_;
   }
 
-  // Methods to either show the final result in the analysis dialog (or via
-  // non-blocking system toast notification for COPY access point) and to
-  // cancel the UI (in case of a dialog only). These methods are protected and
-  // virtual for testing. Returns false if the UI was not shown to indicate no
-  // action was taken.
-  // TODO(b/325455508) refactor to separate code paths between dialog and
-  // toast notification.
+  // Methods to show the final result of the scan to the user and to cancel
+  // the UI. ShowFinalResultInDialog() and CancelDialog() drive the tab-modal
+  // analysis dialog used by every access point except COPY, whose verdicts
+  // are surfaced by ShowFinalResultInToast() through non-blocking toasts
+  // instead. These methods are protected and virtual for testing. They return
+  // true if `this` must stay alive for the UI to finish handling the result,
+  // and false if the caller may delete `this` right away. The dialog methods
+  // return false when there is no dialog. ShowFinalResultInToast() returns
+  // true only for a warning, which the user may still bypass from the toast;
+  // it returns false after showing any other toast, such as a blocked or
+  // audit one, as those need nothing further from `this`.
   virtual bool ShowFinalResultInDialog();
+  virtual bool ShowFinalResultInToast();
   virtual bool CancelDialog();
 
  private:
-  FRIEND_TEST_ALL_PREFIXES(ContentAnalysisDelegateUpdateFinalResultTest, Precedence);
+  FRIEND_TEST_ALL_PREFIXES(ContentAnalysisDelegateUpdateFinalResultTest,
+                           Precedence);
   // Enum representing the data uploading status.
   enum class UploadDataStatus {
     kNoLocalClientFound = 0,
@@ -338,10 +354,13 @@ class ContentAnalysisDelegate : public ContentAnalysisDelegateBase,
   // Fills the arrays in `result_` with the given boolean status.
   void FillAllResultsWith(bool status);
 
-  // Updates the tab modal dialog to show the scanning results. Returns false if
-  // the UI was not enabled to indicate no action was taken. Virtual to override
-  // in tests.
-  virtual bool UpdateDialog();
+  // Updates the UI showing the scanning results: the tab-modal dialog, or a
+  // toast for the COPY access point. Returns true if `this` must stay alive
+  // for the UI to finish handling the result, and false if the caller may
+  // delete `this` right away: either no UI was shown, or only a non-warning
+  // toast (blocked, audit, etc.) that needs nothing further from `this`.
+  // Virtual to override in tests.
+  virtual bool UpdateUI();
 
   // Calls the CompletionCallback `callback_` if all requests associated with
   // scans of `data_` are finished.  This function may delete `this` so no
@@ -390,6 +409,10 @@ class ContentAnalysisDelegate : public ContentAnalysisDelegateBase,
   // Parent URL chain of the frame from which the action was triggered.
   google::protobuf::RepeatedPtrField<std::string> frame_url_chain_;
 
+  // Referrer chain of the frame from which the action was triggered.
+  google::protobuf::RepeatedPtrField<::safe_browsing::ReferrerChainEntry>
+      referrer_chain_;
+
   // The title corresponding to the WebContents triggering the scan.
   std::string title_;
 
@@ -427,7 +450,7 @@ class ContentAnalysisDelegate : public ContentAnalysisDelegateBase,
   CompletionCallback callback_;
 
   // Pointer to UI when enabled.
-  raw_ptr<ContentAnalysisDialogController> dialog_ = nullptr;
+  raw_ptr<ContentAnalysisDialogControllerBase> dialog_ = nullptr;
 
   // Access point to use to record UMA metrics.
   DeepScanAccessPoint access_point_;
@@ -443,15 +466,19 @@ class ContentAnalysisDelegate : public ContentAnalysisDelegateBase,
   // for every file/text. This is read to ensure `this` isn't deleted too early.
   bool data_uploaded_ = false;
 
+  // This should only be used for showing dialogs/toasts, not for accessing
+  // state about the page.
   base::WeakPtr<content::WebContents> web_contents_;
 
   // Responsible for opening and scanning multiple files on parallel threads.
   // Always nullptr for non-file content scanning.
   std::unique_ptr<FilesRequestHandlerBase> files_request_handler_;
 
+#if !BUILDFLAG(IS_ANDROID)
   // Responsible for managing the scan of printed pages.
   // Always nullptr for non-print content scanning.
   std::unique_ptr<PagePrintRequestHandler> page_print_request_handler_;
+#endif
 
   // Responsible for managing the scan of pasted text.
   // Always nullptr for non-text paste content scanning.
@@ -475,8 +502,10 @@ class ContentAnalysisDelegate : public ContentAnalysisDelegateBase,
   // Result updated in `ImageRequestCallback()`.
   RequestHandlerResult image_request_result_;
 
+#if !BUILDFLAG(IS_ANDROID)
   // Result updated in `PageRequestCallback()`.
   RequestHandlerResult page_print_request_result_;
+#endif
 
   // Indicate that `callback_` is currently being called. This is almost always
   // false, but in some cases UI thread tasks can run while `callback_` is not

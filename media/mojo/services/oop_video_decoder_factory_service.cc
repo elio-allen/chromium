@@ -16,7 +16,6 @@
 #include "media/base/media_switches.h"
 #include "media/base/media_util.h"
 #include "media/gpu/buildflags.h"
-#include "media/gpu/chromeos/dmabuf_video_frame_converter.h"
 #include "media/gpu/chromeos/frame_registry.h"
 #include "media/gpu/chromeos/mailbox_video_frame_converter.h"
 #include "media/gpu/chromeos/platform_video_frame_pool.h"
@@ -94,9 +93,7 @@ class MojoMediaClientImpl : public MojoMediaClient {
     auto sii = shared_image_interface_ && !shared_image_interface_->IsLost()
                    ? shared_image_interface_
                    : nullptr;
-    auto converter = base::FeatureList::IsEnabled(kUseSharedImageInOOPVDProcess)
-                         ? MailboxVideoFrameConverter::Create(std::move(sii))
-                         : DmabufVideoFrameConverter::Create();
+    auto converter = MailboxVideoFrameConverter::Create(std::move(sii));
     return VideoDecoderPipeline::Create(
         gpu_driver_bug_workarounds_,
         /*client_task_runner=*/std::move(task_runner),
@@ -147,7 +144,7 @@ void OOPVideoDecoderFactoryService::BindReceiver(
   receiver_.set_disconnect_handler(std::move(disconnect_cb));
 }
 
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 void OOPVideoDecoderFactoryService::CreateVideoDecoderWithTracker(
     mojo::PendingReceiver<mojom::VideoDecoder> receiver,
     mojo::PendingRemote<mojom::VideoDecoderTracker> tracker) {
@@ -167,7 +164,7 @@ void OOPVideoDecoderFactoryService::CreateVideoDecoderWithTracker(
                           &cdm_service_context_),
                       std::move(receiver));
 }
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 
 // The client of the OOPVideoDecoderFactoryService is the browser process which
 // is up the trust gradient. The browser process should never use this service

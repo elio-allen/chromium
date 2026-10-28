@@ -50,6 +50,7 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
@@ -540,12 +541,8 @@ void DomSelection::extend(Node* node,
 
   // 3. Let oldAnchor and oldFocus be the context object's anchor and focus, and
   // let newFocus be the boundary point (node, offset).
-  Position old_anchor(anchorNode(), anchorOffset());
-  if (RuntimeEnabledFeatures::
-          UseSelectionInDOMTreeAnchorInExtendSelectionEnabled()) {
-    old_anchor =
-        Selection().GetSelectionInDomTree().Anchor().ToOffsetInAnchor();
-  }
+  const Position old_anchor =
+      Selection().GetSelectionInDomTree().Anchor().ToOffsetInAnchor();
 
   DCHECK(!old_anchor.IsNull());
   const Position new_focus(node, offset);
@@ -596,7 +593,7 @@ Range* DomSelection::getRangeAt(wtf_size_t index,
   if (index >= rangeCount()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        StrCat({String::Number(index), " is not a valid index."}));
+        Format("{} is not a valid index.", index));
     return nullptr;
   }
 
@@ -894,10 +891,7 @@ String DomSelection::toString() {
 
   TextIteratorBehavior::Builder behavior_builder;
   behavior_builder.SetForSelectionToString(true);
-
-  if (RuntimeEnabledFeatures::SelectionToStringSkipsUserSelectNoneEnabled()) {
-    behavior_builder.SetSkipsUnselectableContent(true);
-  }
+  behavior_builder.SetSkipsUnselectableContent(true);
 
   return PlainText(range, behavior_builder.Build());
 }

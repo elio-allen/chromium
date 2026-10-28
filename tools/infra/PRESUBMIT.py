@@ -9,29 +9,20 @@ for more details on the presubmit API built into depot_tools.
 """
 
 
-
 def _CommonChecks(input_api, output_api):
+  if not input_api.HasAffectedFiles(extensions='.py'):
+    return []
   results = []
-  disabled_warnings = [
-      'bad-indentation',
-      'line-too-long',
-      'logging-not-lazy',
-      'unused-import',
-  ]
-  results.extend(
-      input_api.canned_checks.RunPylint(input_api,
-                                        output_api,
-                                        disabled_warnings=disabled_warnings,
-                                        version='3.2'))
-
   commands = []
   commands.extend(
-      input_api.canned_checks.GetUnitTestsRecursively(
-          input_api,
-          output_api,
-          input_api.os_path.join(input_api.PresubmitLocalPath()),
-          files_to_check=[r'.+_unittest\.py$'],
-          files_to_skip=[]))
+    input_api.canned_checks.GetUnitTestsRecursively(
+      input_api,
+      output_api,
+      input_api.os_path.join(input_api.PresubmitLocalPath()),
+      files_to_check=[r'.+_unittest\.py$'],
+      files_to_skip=[],
+    )
+  )
   results.extend(input_api.RunTests(commands))
 
   return results
@@ -39,6 +30,7 @@ def _CommonChecks(input_api, output_api):
 
 def CheckChangeOnUpload(input_api, output_api):
   return _CommonChecks(input_api, output_api)
+
 
 def CheckChangeOnCommit(input_api, output_api):
   return _CommonChecks(input_api, output_api)

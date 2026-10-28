@@ -20,15 +20,15 @@ import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteController;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.embedder_support.util.UrlUtilities;
-import org.chromium.components.metrics.OmniboxEventProtos.OmniboxEventProto.PageClassification;
+import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteInput.AutocompleteState;
 import org.chromium.components.omnibox.AutocompleteRequestType;
 import org.chromium.components.omnibox.OmniboxCapabilities;
-import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.components.omnibox.OmniboxFocusReason;
 import org.chromium.components.omnibox.PageClassificationUtils;
 import org.chromium.components.omnibox.TextSelection;
+import org.chromium.components.omnibox.ToolModeProtoIntDef.ToolMode;
 import org.chromium.components.omnibox.ToolModeUtils;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.url.GURL;
@@ -39,12 +39,15 @@ import java.util.Optional;
  * Fusebox / Omnibox session state object. Captures controllers and state details needed to fulfill
  * or reconstruct the user input. This object is associated with a specific {@link Profile}.
  *
- * <p>Unlike the AutocompleteInput - this class is permitted to hold external controllers required
- * to fulfill navigation request.
+ * <p>Unlike {@link AutocompleteInput} - this class is permitted to hold heavier-weight,
+ * non-serializable objects and external controllers required to fulfill navigation requests, in
+ * addition to {@link AutocompleteInput}.
  *
  * <ul>
  *   <li>All FuseboxSessionState members should be considered `final` from the moment the session is
- *       fully activated to the moment the session is deactivated.
+ *       fully activated to the moment the session is deactivated. The one exception is the page
+ *       classification, URL and title of the {@link AutocompleteInput}, which are refreshed from
+ *       the current page each time the session is activated, see {@link #activate}.
  *   <li>Consumers of FuseboxSessionState can cache individual fields of the FuseboxSessionState
  *       between beginInput() and endInput() for easier access to relevant controllers and data.
  *   <li>It is illegal to change reported instances or values once `onFullyActivated` callback has
@@ -66,7 +69,8 @@ public class FuseboxSessionState implements UserData {
                     FuseboxSessionState.this.onAttachmentListChanged();
                 }
             };
-    private final Callback<Integer> mOnRequestTypeChanged = this::onRequestTypeChanged;
+    private final Callback<@AutocompleteRequestType Integer> mOnRequestTypeChanged =
+            this::onRequestTypeChanged;
 
     /**
      * Details about the user input in the Omnibox. Retained to allow session reconstruction, for
@@ -95,32 +99,36 @@ public class FuseboxSessionState implements UserData {
      */
     public static @Nullable FuseboxSessionState from(LocationBarDataProvider dataProvider) {
         if (sInstanceForTesting != null) return sInstanceForTesting.orElse(null);
+        return dataProvider.getFuseboxSessionState();
+    }
 
-        var state = dataProvider.getFuseboxSessionState();
-        if (state == null) return null;
-
-        // Re-apply page metadata in case of ephemeral session, background reload etc.
-        state.mAutocompleteInput.setPageClassification(dataProvider.getPageClassification(false));
-        state.mAutocompleteInput.setPageUrl(dataProvider.getCurrentGurl());
-        state.mAutocompleteInput.setPageTitle(dataProvider.getTitle());
-        return state;
+    /**
+     * Apply the page classification, URL and title of the current page to the given input.
+     *
+     * <p>Used when an input session is begun or activated. The metadata is then retained for the
+     * lifetime of the session, even if the tab navigates while the session is active. In
+     * particular, it must not be refreshed while a session is being torn down, as the current page
+     * may already be the navigation target and session end metrics must be attributed to the page
+     * the session was started on.
+     *
+     * @param input The {@link AutocompleteInput} to update.
+     * @param dataProvider The {@link LocationBarDataProvider} describing the current page.
+     */
+    /* package */ static void applyPageMetadata(
+            AutocompleteInput input, LocationBarDataProvider dataProvider) {
+        input.setPageClassification(dataProvider.getPageClassification(/* prefetch= */ false));
+        input.setPageUrl(dataProvider.getCurrentGurl());
+        input.setPageTitle(dataProvider.getTitle());
     }
 
     /** Constructs a new, empty FuseboxSessionState. */
     public FuseboxSessionState() {
-        if (OmniboxFeatures.sShowModelPicker.getValue()) {
-            mAutocompleteInput.getRequestTypeSupplier().addSyncObserver(mOnRequestTypeChanged);
-        }
+        mAutocompleteInput.getRequestTypeSupplier().addSyncObserver(mOnRequestTypeChanged);
     }
 
     /** Returns the WebContents of the contextual tasks WebUI associated with the fusebox. */
     public @Nullable WebContents getContextualTasksWebContents() {
         return mWebContents;
-    }
-
-    /** Returns whether the session is scoped to a specific AI task. */
-    public boolean isTaskScoped() {
-        return false;
     }
 
     /** Returns the current {@link Profile} for this session. */
@@ -135,18 +143,28 @@ public class FuseboxSessionState implements UserData {
      * initialize all required session controllers. The caller may supply an optional {@link
      * Runnable} to be notified when the session is fully set up.
      *
+     * <p>Activation applies the page classification, URL and title of the current page to the
+     * session input, see {@link #applyPageMetadata}. Re-activating an already active session
+     * applies them again, for example after the tab navigated in the background while the session
+     * stayed active. Only this page metadata is refreshed on re-activation. The initial user text
+     * and preview match URL, which are derived from the page URL below, are computed once on the
+     * first activation and are left as they are.
+     *
      * @param context The context appropriate for the current Activity window.
      * @param webContents The WebContents of the contextual tasks WebUI.
      * @param profileSupplier The supplier for the {@link Profile} object.
+     * @param dataProvider The {@link LocationBarDataProvider} describing the current page.
      * @param onFullyActivated Optional runnable to be invoked when the session is fully activated.
      */
     public void activate(
             Context context,
             @Nullable WebContents webContents,
             MonotonicObservableSupplier<Profile> profileSupplier,
+            LocationBarDataProvider dataProvider,
             @Nullable Runnable onFullyActivated) {
         mWebContents = webContents;
         mProfileSupplier = profileSupplier;
+        applyPageMetadata(mAutocompleteInput, dataProvider);
         if (mIsActive) {
             // This session is being re-activated. It has already been fully initialized so simply
             // emit the event.
@@ -161,7 +179,12 @@ public class FuseboxSessionState implements UserData {
         // Use current URL if the Retention is active as the starting input.
         // On eligible LFF devices the Omnibox should, by default, present the
         // current page URL (if the URL is eligible for display).
+        // Hub and Tab Search always start with an empty search box (see below), so the page URL
+        // must not become their initial input either. Otherwise an empty search box would be
+        // treated as text edited by the user (crbug.com/561860973).
         if (OmniboxCapabilities.hasDesktopExperience(context)
+                && !PageClassificationUtils.isHubOrTabSearch(
+                        mAutocompleteInput.getPageClassification())
                 && UrlBarData.shouldShowUrl(
                         mAutocompleteInput.getPageUrl(), /* isOffTheRecord= */ false)) {
             GURL pageUrl = mAutocompleteInput.getPageUrl();
@@ -172,18 +195,18 @@ public class FuseboxSessionState implements UserData {
                 initialUserText = UrlUtilities.stripTrailingSlash(initialUserText);
             }
             mAutocompleteInput.setPreviewMatchUrl(pageUrl);
-            mAutocompleteInput.setInitialUserText(initialUserText);
+            mAutocompleteInput.setInitialInput(initialUserText, pageUrl);
         } else {
             mAutocompleteInput.setPreviewMatchUrl(null);
-            mAutocompleteInput.setInitialUserText("");
+            mAutocompleteInput.setInitialInput("", null);
         }
 
         // Apply the initial default value unless user text is already set.
         if (mAutocompleteInput.getUserText().isEmpty()
                 && mAutocompleteInput.getPageClassification()
-                        != PageClassification.ANDROID_SEARCH_WIDGET_VALUE
+                        != PageClassification.ANDROID_SEARCH_WIDGET
                 && mAutocompleteInput.getPageClassification()
-                        != PageClassification.ANDROID_SHORTCUTS_WIDGET_VALUE
+                        != PageClassification.ANDROID_SHORTCUTS_WIDGET
                 && !PageClassificationUtils.isHubOrTabSearch(
                         mAutocompleteInput.getPageClassification())) {
             mAutocompleteInput
@@ -251,7 +274,12 @@ public class FuseboxSessionState implements UserData {
 
         if (mComposeBoxQueryControllerBridge == null) {
             mComposeBoxQueryControllerBridge =
-                    ComposeboxQueryControllerBridge.create(mProfile, mWebContents, isTaskScoped());
+                    ComposeboxQueryControllerBridge.create(mProfile, mWebContents);
+            if (mComposeBoxQueryControllerBridge != null) {
+                // The request type may have been applied before the bridge existed (e.g. when the
+                // NTP requests a specific tool), so make sure native knows about it.
+                onRequestTypeChanged(mAutocompleteInput.getRequestType());
+            }
         }
 
         if (mComposeBoxQueryControllerBridge != null && mFuseboxAttachmentModelList == null) {
@@ -292,9 +320,7 @@ public class FuseboxSessionState implements UserData {
         }
         mWebContents = null;
         mIsActive = false;
-        if (OmniboxFeatures.sShowModelPicker.getValue()) {
-            mAutocompleteInput.getRequestTypeSupplier().removeObserver(mOnRequestTypeChanged);
-        }
+        mAutocompleteInput.getRequestTypeSupplier().removeObserver(mOnRequestTypeChanged);
     }
 
     /** Unlinks and destroys session controllers. */
@@ -340,8 +366,8 @@ public class FuseboxSessionState implements UserData {
     }
 
     private void onRequestTypeChanged(@AutocompleteRequestType int requestType) {
-        assert OmniboxFeatures.sShowModelPicker.getValue();
         if (mComposeBoxQueryControllerBridge != null) {
+            @ToolMode
             int toolMode =
                     ToolModeUtils.getToolModeForRequestType(
                             requestType, /* hasAttachments= */ false);
@@ -352,11 +378,6 @@ public class FuseboxSessionState implements UserData {
     /** Returns whether the Fusebox session is active. */
     public boolean isSessionActive() {
         return mIsActive;
-    }
-
-    /** Returns whether the session is a contextual tasks session. */
-    public boolean isContextualTasksState() {
-        return false;
     }
 
     /** Modifies this session input to have the values of the given input. */
@@ -389,6 +410,15 @@ public class FuseboxSessionState implements UserData {
         return mFuseboxAttachmentModelList;
     }
 
+    private static boolean canStripTrailingSlash(GURL url) {
+        return url.isValid()
+                && !url.getScheme().equals(UrlConstants.FILE_SCHEME)
+                && !url.getScheme().equals(UrlConstants.FILESYSTEM_SCHEME)
+                && url.getQuery().isEmpty()
+                && url.getRef().isEmpty()
+                && url.getPath().equals("/");
+    }
+
     /**
      * Directly specify FuseboxSessionState object to be used to conduct tests.
      *
@@ -402,14 +432,5 @@ public class FuseboxSessionState implements UserData {
     /** Revert all overrides for testing. */
     public static void resetInstanceForTesting() {
         sInstanceForTesting = null;
-    }
-
-    private static boolean canStripTrailingSlash(GURL url) {
-        return url.isValid()
-                && !url.getScheme().equals(UrlConstants.FILE_SCHEME)
-                && !url.getScheme().equals(UrlConstants.FILESYSTEM_SCHEME)
-                && url.getQuery().isEmpty()
-                && url.getRef().isEmpty()
-                && url.getPath().equals("/");
     }
 }

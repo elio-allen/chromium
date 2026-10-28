@@ -93,11 +93,6 @@ id<GREYMatcher> ImageViewWithImage(UIImage* image);
 // bundle.
 id<GREYMatcher> ImageViewWithImageNamed(NSString* imageName);
 
-// Returns a matcher for an element with a custom symbol defined by its name and
-// point size in the main bundle.
-id<GREYMatcher> ImageViewWithCustomSymbolNameAndPointSize(NSString* symbolName,
-                                                          CGFloat pointSize);
-
 // Returns a matcher for an element with a symbol defined by `symbol` and
 // `pointSize`.
 id<GREYMatcher> ImageViewWithSymbolAndPointSize(Symbol symbol,
@@ -295,6 +290,9 @@ id<GREYMatcher> NavigationBarCloseButton();
 // Returns a matcher for the done button on the navigation bar.
 id<GREYMatcher> NavigationBarDoneButton();
 
+// Returns a matcher for the edit button on the navigation bar.
+id<GREYMatcher> NavigationBarEditButton();
+
 // Returns a matcher for the done button on the Bookmarks navigation bar.
 id<GREYMatcher> BookmarksNavigationBarDoneButton();
 
@@ -445,9 +443,6 @@ id<GREYMatcher> SettingsMenuNotificationsButton();
 
 // Returns a matcher for the voice search button on the main Settings screen.
 id<GREYMatcher> VoiceSearchButton();
-
-// Returns a matcher for the voice search button on the omnibox input accessory.
-id<GREYMatcher> VoiceSearchInputAccessoryButton();
 
 // Returns a matcher for the settings main menu view.
 id<GREYMatcher> SettingsCollectionView();

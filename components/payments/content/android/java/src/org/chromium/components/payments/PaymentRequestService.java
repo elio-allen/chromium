@@ -19,6 +19,7 @@ import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.embedder_support.util.UrlConstants;
+import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.url_formatter.SchemeDisplay;
 import org.chromium.components.url_formatter.UrlFormatter;
 import org.chromium.content_public.browser.RenderFrameHost;
@@ -295,13 +296,17 @@ public class PaymentRequestService
 
         /**
          * @param request The SecurePaymentConfirmationRequest to verify.
+         * @param initiatorOrigin The origin of the initiator frame.
+         * @param applicationLocale The current application locale.
          * @return The validation error result.
          */
         default @SecurePaymentConfirmationRequestValidationError int
                 validateSecurePaymentConfirmationRequest(
-                        SecurePaymentConfirmationRequest request, Origin initiatorOrigin) {
+                        SecurePaymentConfirmationRequest request,
+                        Origin initiatorOrigin,
+                        String applicationLocale) {
             return PaymentValidator.validateSecurePaymentConfirmationRequest(
-                    request, initiatorOrigin);
+                    request, initiatorOrigin, applicationLocale);
         }
 
         /**
@@ -509,6 +514,16 @@ public class PaymentRequestService
         mShippingType = mPaymentOptions.shippingType;
 
         mJourneyLogger.recordCheckoutStep(CheckoutFunnelStep.INITIATED);
+        if (!mRenderFrameHost.isOutermostMainFrame()
+                && mRenderFrameHost.getLastCommittedURL() != null
+                && mRenderFrameHost.getMainFrame() != null
+                && mRenderFrameHost.getMainFrame().getLastCommittedURL() != null
+                && !UrlUtilities.sameDomainOrHost(
+                        mRenderFrameHost.getLastCommittedURL().getSpec(),
+                        mRenderFrameHost.getMainFrame().getLastCommittedURL().getSpec(),
+                        true)) {
+            mJourneyLogger.setInitiatedInCrossSiteIframe();
+        }
 
         if (!mDelegate.isOriginAllowedToUseWebPaymentApis(mWebContents.getLastCommittedUrl())) {
             Log.d(TAG, ErrorStrings.PROHIBITED_ORIGIN);
@@ -545,11 +560,16 @@ public class PaymentRequestService
         }
         if (methodData.containsKey(MethodStrings.SECURE_PAYMENT_CONFIRMATION)) {
             @SecurePaymentConfirmationRequestValidationError
-            int validationResult = validateSecurePaymentConfirmationRequest(methodData, options);
+            int validationResult = validateSecurePaymentConfirmationRequest(rawMethodData, options);
             if (validationResult != SecurePaymentConfirmationRequestValidationError.OK) {
                 mJourneyLogger.setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
 
                 if (validationResult
+                        == SecurePaymentConfirmationRequestValidationError.LOCALE_DOES_NOT_MATCH) {
+                    disconnectFromClientWithDebugMessage(
+                            ErrorStrings.SPC_LOCALE_DOES_NOT_MATCH,
+                            PaymentErrorReason.NOT_SUPPORTED);
+                } else if (validationResult
                         == SecurePaymentConfirmationRequestValidationError
                                 .WEB_AUTHN_EXTENSIONS_NOT_SUPPORTED) {
                     disconnectFromClientWithDebugMessage(
@@ -602,27 +622,30 @@ public class PaymentRequestService
      * SecurePaymentConfirmation (SPC) request. Checks both structural constraints (e.g. SPC cannot
      * be combined with shipping/payer requests) and the SPC parameters.
      *
-     * @param methodData The map of requested payment methods.
+     * @param rawMethodData The array of raw PaymentMethodData from the renderer.
      * @param options The payment options requested by the merchant.
      * @return An error code indicating if the request parameters are valid and acceptable to
      *     proceed. Returns SecurePaymentConfirmationRequestValidationError.OK if valid.
      */
     private @SecurePaymentConfirmationRequestValidationError int
             validateSecurePaymentConfirmationRequest(
-                    Map<String, PaymentMethodData> methodData, PaymentOptions options) {
-        PaymentMethodData spcMethodData = methodData.get(MethodStrings.SECURE_PAYMENT_CONFIRMATION);
-        assumeNonNull(spcMethodData);
+                    PaymentMethodData[] rawMethodData, PaymentOptions options) {
+        assert rawMethodData.length > 0;
 
         // If the SPC feature is not enabled and a website specifies "secure-payment-confirmation",
         // the renderer should pass the browser a null SPC object.
         if (!PaymentFeatureList.isEnabled(PaymentFeatureList.SECURE_PAYMENT_CONFIRMATION)) {
-            return spcMethodData.securePaymentConfirmation == null
-                    ? SecurePaymentConfirmationRequestValidationError.OK
-                    : SecurePaymentConfirmationRequestValidationError.SPC_METHOD_MUST_BE_NULL;
+            for (PaymentMethodData entry : rawMethodData) {
+                if (MethodStrings.SECURE_PAYMENT_CONFIRMATION.equals(entry.supportedMethod)
+                        && entry.securePaymentConfirmation != null) {
+                    return SecurePaymentConfirmationRequestValidationError.SPC_METHOD_MUST_BE_NULL;
+                }
+            }
+            return SecurePaymentConfirmationRequestValidationError.OK;
         }
 
         // SPC cannot be combined with other payment methods or shipping/payer requests.
-        if (methodData.size() > 1) {
+        if (rawMethodData.length > 1) {
             return SecurePaymentConfirmationRequestValidationError
                     .MULTIPLE_PAYMENT_METHODS_NOT_ALLOWED;
         }
@@ -634,6 +657,9 @@ public class PaymentRequestService
             return SecurePaymentConfirmationRequestValidationError.UNSUPPORTED_OPTIONS;
         }
 
+        PaymentMethodData spcMethodData = rawMethodData[0];
+        assert MethodStrings.SECURE_PAYMENT_CONFIRMATION.equals(spcMethodData.supportedMethod);
+
         // The SPC data from the renderer must not be null if the feature is enabled.
         if (spcMethodData.securePaymentConfirmation == null) {
             return SecurePaymentConfirmationRequestValidationError.SPC_METHOD_MUST_NOT_BE_NULL;
@@ -641,7 +667,9 @@ public class PaymentRequestService
 
         // Delegate to the native implementation for final validation.
         return mDelegate.validateSecurePaymentConfirmationRequest(
-                spcMethodData.securePaymentConfirmation, mPaymentRequestSecurityOrigin);
+                spcMethodData.securePaymentConfirmation,
+                mPaymentRequestSecurityOrigin,
+                LocaleUtils.getDefaultLocaleString());
     }
 
     private void startPaymentAppService() {
@@ -1011,13 +1039,16 @@ public class PaymentRequestService
                 mBrowserPaymentRequest.showOrSkipAppSelector(
                         mIsShowWaitingForUpdatedDetails, mSpec.getRawTotal(), shouldSkip);
         if (showError != null) {
-            return new PaymentNotShownError(showError, PaymentErrorReason.NOT_SUPPORTED);
+            return TextUtils.equals(showError, ErrorStrings.CANNOT_SHOW_IN_BACKGROUND_TAB)
+                    ? new PaymentNotShownError(showError, NotShownReason.BACKGROUND_TAB)
+                    : new PaymentNotShownError(
+                            showError, NotShownReason.NO_SUPPORTED_PAYMENT_METHOD);
         }
 
         if (mIsShowWaitingForUpdatedDetails) return null;
         String error = mBrowserPaymentRequest.onShowCalledAndAppsQueriedAndDetailsFinalized();
         if (error != null) {
-            return new PaymentNotShownError(error, PaymentErrorReason.NOT_SUPPORTED);
+            return new PaymentNotShownError(error, NotShownReason.NO_SUPPORTED_PAYMENT_METHOD);
         }
 
         return null;
@@ -1030,18 +1061,10 @@ public class PaymentRequestService
         return !mBrowserPaymentRequest.getSelectedPaymentApp().hasEnrolledInstrument();
     }
 
-    private void onShowFailed(String error) {
-        onShowFailed(error, PaymentErrorReason.USER_CANCEL);
-    }
-
     private void onShowFailed(PaymentNotShownError error) {
-        onShowFailed(error.getErrorMessage(), error.getPaymentErrorReason());
-    }
-
-    // paymentErrorReason is defined in PaymentErrorReason.
-    private void onShowFailed(String error, int paymentErrorReason) {
-        mJourneyLogger.setNotShown();
-        disconnectFromClientWithDebugMessage(error, paymentErrorReason);
+        mJourneyLogger.setNotShown(error.getNotShownReason());
+        disconnectFromClientWithDebugMessage(
+                error.getErrorMessage(), error.getPaymentErrorReason());
         if (sObserverForTest != null) sObserverForTest.onPaymentRequestServiceShowFailed();
     }
 
@@ -1059,12 +1082,10 @@ public class PaymentRequestService
             // cards, but the merchant does not support them either. The payment request must be
             // rejected.
             String debugMessage;
-            int paymentErrorReason;
             if (mDelegate.isOffTheRecord()) {
                 // If the user is in the OffTheRecord mode, hide the absence of their payment
                 // methods from the merchant site.
                 debugMessage = ErrorStrings.USER_CANCELLED;
-                paymentErrorReason = PaymentErrorReason.USER_CANCEL;
             } else {
                 if (sNativeObserverForTest != null) {
                     sNativeObserverForTest.onNotSupportedError();
@@ -1080,9 +1101,11 @@ public class PaymentRequestService
                                 + (TextUtils.isEmpty(mRejectShowErrorMessage)
                                         ? ""
                                         : " " + mRejectShowErrorMessage);
-                paymentErrorReason = PaymentErrorReason.NOT_SUPPORTED;
             }
-            return new PaymentNotShownError(debugMessage, paymentErrorReason);
+            return new PaymentNotShownError(
+                    debugMessage,
+                    NotShownReason.NO_SUPPORTED_PAYMENT_METHOD,
+                    mDelegate.isOffTheRecord());
         }
         return null;
     }
@@ -1294,7 +1317,9 @@ public class PaymentRequestService
             // The renderer can create multiple instances of PaymentRequest and call show() on each
             // one. Only the first one will be shown. This also prevents multiple tabs and windows
             // from showing PaymentRequest UI at the same time.
-            onShowFailed(ErrorStrings.ANOTHER_UI_SHOWING, PaymentErrorReason.ALREADY_SHOWING);
+            onShowFailed(
+                    new PaymentNotShownError(
+                            ErrorStrings.ANOTHER_UI_SHOWING, NotShownReason.ALREADY_SHOWING));
             return;
         }
         PaymentRequestWebContentsData paymentRequestWebContentsData =
@@ -1306,8 +1331,9 @@ public class PaymentRequestService
                 // page.
                 mRejectShowForUserActivation = true;
                 onShowFailed(
-                        ErrorStrings.CANNOT_SHOW_WITHOUT_USER_ACTIVATION,
-                        PaymentErrorReason.USER_ACTIVATION_REQUIRED);
+                        new PaymentNotShownError(
+                                ErrorStrings.CANNOT_SHOW_WITHOUT_USER_ACTIVATION,
+                                NotShownReason.USER_ACTIVATION_REQUIRED));
                 return;
             }
             mJourneyLogger.setActivationlessShow();
@@ -1441,7 +1467,7 @@ public class PaymentRequestService
             // show()'s PaymentDetailsUpdate promise.
             String error = continueShowWithUpdatedDetails(details);
             if (error != null) {
-                onShowFailed(error);
+                onShowFailed(new PaymentNotShownError(error, NotShownReason.USER_CANCEL));
                 return;
             }
             return;
@@ -1570,6 +1596,7 @@ public class PaymentRequestService
         if (sNativeObserverForTest != null) {
             sNativeObserverForTest.onCanMakePaymentCalled();
         }
+        mJourneyLogger.setCanMakePaymentCalled();
 
         if (mIsFinishedQueryingPaymentApps) {
             respondCanMakePaymentQuery();
@@ -1584,6 +1611,7 @@ public class PaymentRequestService
         if (sNativeObserverForTest != null) {
             sNativeObserverForTest.onHasEnrolledInstrumentCalled();
         }
+        mJourneyLogger.setHasEnrolledInstrumentCalled();
 
         if (mIsFinishedQueryingPaymentApps) {
             respondHasEnrolledInstrumentQuery();
@@ -1970,13 +1998,13 @@ public class PaymentRequestService
         if (mBrowserPaymentRequest == null) return;
         if (mBrowserPaymentRequest.hasSkippedAppSelector()) {
             assert !TextUtils.isEmpty(errorMessage);
-            mJourneyLogger.setAborted(AbortReason.ABORTED_BY_USER);
             int reason = PaymentErrorReason.USER_CANCEL;
             // LINT.IfChange(PaymentEventResponseTypeToErrorReason)
             switch (error) {
                 // User cancel
                 case PaymentEventResponseType.PAYMENT_EVENT_REJECT:
                 case PaymentEventResponseType.PAYMENT_HANDLER_WINDOW_CLOSING:
+                    mJourneyLogger.setAborted(AbortReason.ABORTED_BY_USER);
                     reason = PaymentErrorReason.USER_CANCEL;
                     break;
                 // App failures
@@ -1998,13 +2026,16 @@ public class PaymentRequestService
                 case PaymentEventResponseType.PAYMENT_DETAILS_NOT_OBJECT:
                 case PaymentEventResponseType.PAYMENT_DETAILS_STRINGIFY_ERROR:
                 case PaymentEventResponseType.PAYMENT_METHOD_NAME_EMPTY:
+                    mJourneyLogger.setAborted(AbortReason.INSTRUMENT_DETAILS_ERROR);
                     reason = PaymentErrorReason.PAYMENT_APP_ERROR;
                     break;
                 // Violations
                 case PaymentEventResponseType.PAYMENT_HANDLER_INSECURE_NAVIGATION:
+                    mJourneyLogger.setAborted(AbortReason.INSTRUMENT_DETAILS_ERROR);
                     reason = PaymentErrorReason.NOT_ALLOWED_ERROR;
                     break;
                 default:
+                    mJourneyLogger.setAborted(AbortReason.INSTRUMENT_DETAILS_ERROR);
                     reason = PaymentErrorReason.UNKNOWN;
                     break;
             }

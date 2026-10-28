@@ -16,7 +16,9 @@
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/devtools/chrome_devtools_session_android.h"
 #include "chrome/browser/devtools/devtools_availability_checker.h"
-#include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/devtools/devtools_browser_context_manager.h"
+#include "chrome/browser/devtools/devtools_window.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/grit/browser_resources.h"
@@ -24,7 +26,9 @@
 #include "content/public/browser/devtools_agent_host_client.h"
 #include "content/public/browser/devtools_external_agent_proxy.h"
 #include "content/public/browser/devtools_external_agent_proxy_delegate.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_delegate.h"
 #include "extensions/buildflags/buildflags.h"
 #include "ui/base/resource/resource_bundle.h"
 
@@ -220,9 +224,33 @@ DevToolsManagerDelegateAndroid::DevToolsManagerDelegateAndroid() = default;
 
 DevToolsManagerDelegateAndroid::~DevToolsManagerDelegateAndroid() = default;
 
+std::vector<base::WeakPtr<content::BrowserContext>>
+DevToolsManagerDelegateAndroid::GetBrowserContexts() {
+  return DevToolsBrowserContextManager::GetInstance().GetBrowserContexts();
+}
+
 content::BrowserContext*
 DevToolsManagerDelegateAndroid::GetDefaultBrowserContext() {
-  return ProfileManager::GetActiveUserProfile()->GetOriginalProfile();
+  return DevToolsBrowserContextManager::GetInstance()
+      .GetDefaultBrowserContext();
+}
+
+content::BrowserContext* DevToolsManagerDelegateAndroid::GetBrowserContext(
+    const std::string& context_id) {
+  return DevToolsBrowserContextManager::GetInstance().GetProfileById(
+      context_id);
+}
+
+content::BrowserContext*
+DevToolsManagerDelegateAndroid::CreateBrowserContext() {
+  return DevToolsBrowserContextManager::GetInstance().CreateBrowserContext();
+}
+
+void DevToolsManagerDelegateAndroid::DisposeBrowserContext(
+    content::BrowserContext* context,
+    DisposeCallback callback) {
+  DevToolsBrowserContextManager::GetInstance().DisposeBrowserContext(
+      context, std::move(callback));
 }
 
 bool DevToolsManagerDelegateAndroid::IsCreatedByDevTools(
@@ -232,7 +260,7 @@ bool DevToolsManagerDelegateAndroid::IsCreatedByDevTools(
 
 void DevToolsManagerDelegateAndroid::MarkCreatedByDevTools(
     WebContents& web_contents) {
-  DCHECK(!IsCreatedByDevTools(web_contents));
+  CHECK(!IsCreatedByDevTools(web_contents), base::NotFatalUntil::M161);
   web_contents.SetUserData(kCreatedByDevTools,
                            std::make_unique<base::SupportsUserData::Data>());
 }
@@ -302,6 +330,17 @@ bool DevToolsManagerDelegateAndroid::IsBrowserTargetDiscoverable() {
   return true;
 }
 
+bool DevToolsManagerDelegateAndroid::AllowInspectingRenderFrameHost(
+    content::RenderFrameHost* rfh) {
+  // Resolve the profile owning the RenderFrameHost to evaluate DevTools
+  // availability policies on Android identically to desktop platforms.
+  Profile* profile = Profile::FromBrowserContext(rfh->GetBrowserContext());
+  if (!profile) {
+    return true;
+  }
+  return IsInspectionAllowed(profile, rfh);
+}
+
 bool DevToolsManagerDelegateAndroid::AllowInspectingTarget(
     content::DevToolsAgentHost* agent_host) {
   // For non-Android desktop platforms, we have the same implementation
@@ -312,6 +351,29 @@ bool DevToolsManagerDelegateAndroid::AllowInspectingTarget(
     return true;
   }
   return IsInspectionAllowed(profile, agent_host);
+}
+
+void DevToolsManagerDelegateAndroid::Activate(
+    content::DevToolsAgentHost* agent_host) {
+  auto* web_contents = agent_host->GetWebContents();
+  if (!web_contents) {
+    return;
+  }
+
+  // Brings the tab to foreground. We need to do this in case the devtools
+  // window is undocked and this is being called from another tab that is in
+  // the foreground.
+  if (auto* delegate = web_contents->GetDelegate()) {
+    delegate->ActivateContents(web_contents);
+  }
+
+  // Brings a undocked devtools window to the foreground.
+  DevToolsWindow* devtools_window =
+      DevToolsWindow::GetInstanceForInspectedWebContents(web_contents);
+  if (!devtools_window) {
+    return;
+  }
+  devtools_window->ActivateWindow();
 }
 
 void DevToolsManagerDelegateAndroid::HandleCommand(
@@ -329,7 +391,7 @@ void DevToolsManagerDelegateAndroid::HandleCommand(
 
 void DevToolsManagerDelegateAndroid::ClientAttached(
     content::DevToolsAgentHostClientChannel* channel) {
-  DCHECK(sessions_.find(channel) == sessions_.end());
+  CHECK(sessions_.find(channel) == sessions_.end(), base::NotFatalUntil::M161);
   sessions_.emplace(channel,
                     std::make_unique<ChromeDevToolsSessionAndroid>(channel));
 }

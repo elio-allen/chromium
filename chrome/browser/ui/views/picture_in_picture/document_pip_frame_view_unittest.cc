@@ -15,7 +15,6 @@
 #include "chrome/browser/content_settings/page_specific_content_settings_delegate.h"
 #include "chrome/browser/picture_in_picture/auto_pip_setting_overlay_view.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
-#include "chrome/browser/ssl/chrome_security_state_tab_helper.h"
 #include "chrome/browser/ssl/chrome_security_state_util.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
@@ -28,7 +27,6 @@
 #include "chrome/test/views/chrome_views_test_base.h"
 #include "components/content_settings/browser/page_specific_content_settings.h"
 #include "components/permissions/permission_recovery_success_rate_tracker.h"
-#include "components/security_state/content/security_state_tab_helper.h"
 #include "components/security_state/core/security_state.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/web_contents.h"
@@ -50,6 +48,7 @@
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/layout/flex_layout_view.h"
+#include "ui/views/test/mock_activation_controller.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/dialog_delegate.h"
@@ -108,9 +107,6 @@ class DocumentPipFrameViewTest : public ChromeViewsTestBase {
     opener_web_contents_ =
         content::WebContentsTester::CreateTestWebContents(&profile_, nullptr);
     ASSERT_TRUE(opener_web_contents_);
-    // The thin origin chip reads the opener's security state.
-    ChromeSecurityStateTabHelper::CreateForWebContents(
-        opener_web_contents_.get());
 
     opener_host_widget_ =
         CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
@@ -275,6 +271,10 @@ class DocumentPipFrameViewTest : public ChromeViewsTestBase {
     return frame_view->IsOverlayViewVisible();
   }
 
+  void UpdateOriginAndSecurity(DocumentPipFrameView* frame_view) {
+    frame_view->UpdateOriginAndSecurity();
+  }
+
   // Injects a real auto-PiP overlay onto the frame view the same way the
   // production ctor would (AddChildView + raw_ptr). The unit-test harness
   // creates the host directly (bypassing
@@ -327,8 +327,6 @@ TEST_F(DocumentPipFrameViewTest, CloseButtonAlwaysPresent) {
   opener_web_contents_.reset();
   opener_web_contents_ =
       content::WebContentsTester::CreateTestWebContents(&profile_, nullptr);
-  ChromeSecurityStateTabHelper::CreateForWebContents(
-      opener_web_contents_.get());
   auto* web_view =
       static_cast<views::WebView*>(opener_host_widget_->GetContentsView());
   web_view->SetWebContents(opener_web_contents_.get());
@@ -537,16 +535,16 @@ TEST_F(DocumentPipFrameViewTest, OriginChipPresent) {
   EXPECT_TRUE(GetWindowTitle(frame_view));
 }
 
-// The window title shows the opener URL formatted the omnibox way: scheme and
-// trivial subdomain omitted, path preserved.
-TEST_F(DocumentPipFrameViewTest, WindowTitleShowsFormattedUrl) {
+// The window title shows only the opener host, matching the browser-backed
+// Document PiP frame.
+TEST_F(DocumentPipFrameViewTest, WindowTitleShowsFormattedHost) {
   content::WebContentsTester::For(opener())->NavigateAndCommit(
-      GURL("https://www.example.com/some/path?query=1"));
+      GURL("https://www.example.com/some/path?query=1#fragment"));
 
   auto* frame_view =
       CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
 
-  EXPECT_EQ(std::u16string(u"example.com/some/path?query=1"),
+  EXPECT_EQ(std::u16string(u"example.com"),
             GetWindowTitle(frame_view)->GetText());
 }
 
@@ -639,6 +637,130 @@ TEST_F(DocumentPipFrameViewTest, DangerousManagedPolicyUrlHasEmptyChipText) {
       CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
 
   EXPECT_TRUE(GetOriginChip(frame_view)->GetText().empty());
+}
+
+// The origin chip label uses the security-chip color, like the browser-backed
+// frame's LocationIconView, and does not follow the top-bar inactive fade.
+TEST_F(DocumentPipFrameViewTest, OriginChipLabelUsesSecurityChipColor) {
+  content::WebContentsTester::For(opener())->NavigateAndCommit(
+      GURL("file:///home/user/movie.html"));
+
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  IconLabelBubbleView* chip = GetOriginChip(frame_view);
+  ASSERT_TRUE(chip);
+  const SkColor secure_color =
+      chip->GetColorProvider()->GetColor(kColorOmniboxSecurityChipSecure);
+  EXPECT_EQ(secure_color, chip->GetCurrentTextColor());
+
+  OnMouseEnteredOrExitedWindow(frame_view, /*entered=*/false);
+  StepTopBarAnimationsToEnd(frame_view);
+  ASSERT_FALSE(GetRenderActive(frame_view));
+  EXPECT_EQ(secure_color, chip->GetCurrentTextColor());
+}
+
+// A "Dangerous" chip uses the security-chip text color, like LocationIconView.
+TEST_F(DocumentPipFrameViewTest, DangerousChipLabelUsesSecurityChipTextColor) {
+  content::WebContentsTester::For(opener())->NavigateAndCommit(
+      GURL("https://malware.test/"));
+  SeedFakeSecurityState(security_state::MALICIOUS_CONTENT_STATUS_MALWARE);
+
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  IconLabelBubbleView* chip = GetOriginChip(frame_view);
+  ASSERT_TRUE(chip);
+  ASSERT_EQ(l10n_util::GetStringUTF16(IDS_DANGEROUS_VERBOSE_STATE),
+            chip->GetText());
+  EXPECT_EQ(chip->GetColorProvider()->GetColor(kColorOmniboxSecurityChipText),
+            chip->GetCurrentTextColor());
+}
+
+// The origin chip uses LocationIconView's page-info padding, with the extra
+// trailing padding while a label is shown.
+TEST_F(DocumentPipFrameViewTest, OriginChipBorderMatchesLocationIcon) {
+  content::WebContentsTester::For(opener())->NavigateAndCommit(
+      GURL("file:///home/user/movie.html"));
+
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  IconLabelBubbleView* chip = GetOriginChip(frame_view);
+  ASSERT_TRUE(chip);
+  ASSERT_FALSE(chip->GetText().empty());
+
+  gfx::Insets expected = GetLayoutInsets(LOCATION_BAR_PAGE_INFO_ICON_PADDING);
+  expected.set_right(
+      expected.right() +
+      GetLayoutConstant(
+          LayoutConstant::kLocationBarPageInfoIconLabelExtraTrailingPadding));
+  EXPECT_EQ(expected, chip->GetInsets());
+}
+
+// Without a label, the origin chip uses the plain page-info padding.
+TEST_F(DocumentPipFrameViewTest, OriginChipBorderWithoutLabel) {
+  content::WebContentsTester::For(opener())->NavigateAndCommit(
+      GURL("https://www.example.com/"));
+
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  IconLabelBubbleView* chip = GetOriginChip(frame_view);
+  ASSERT_TRUE(chip);
+  ASSERT_TRUE(chip->GetText().empty());
+
+  EXPECT_EQ(GetLayoutInsets(LOCATION_BAR_PAGE_INFO_ICON_PADDING),
+            chip->GetInsets());
+}
+
+// A "Dangerous" chip uses LocationIconView's dangerous-state padding.
+TEST_F(DocumentPipFrameViewTest, DangerousOriginChipBorderMatchesLocationIcon) {
+  content::WebContentsTester::For(opener())->NavigateAndCommit(
+      GURL("https://malware.test/"));
+  SeedFakeSecurityState(security_state::MALICIOUS_CONTENT_STATUS_MALWARE);
+
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  IconLabelBubbleView* chip = GetOriginChip(frame_view);
+  ASSERT_TRUE(chip);
+  ASSERT_FALSE(chip->GetText().empty());
+
+  gfx::Insets expected = GetLayoutInsets(LOCATION_BAR_PAGE_INFO_ICON_PADDING);
+  expected.set_left(GetLayoutConstant(
+      LayoutConstant::kLocationBarPageInfoIconDangerousLeadingPadding));
+  expected.set_right(GetLayoutConstant(
+      LayoutConstant::kLocationBarPageInfoIconDangerousTrailingPadding));
+  EXPECT_EQ(expected, chip->GetInsets());
+}
+
+// When the security level changes to DANGEROUS, the chip text slides in and
+// stays visible after the animation, like LocationIconView.
+TEST_F(DocumentPipFrameViewTest, AnimatedChipLabelStaysVisible) {
+  content::WebContentsTester::For(opener())->NavigateAndCommit(
+      GURL("https://malware.test/"));
+
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  IconLabelBubbleView* chip = GetOriginChip(frame_view);
+  ASSERT_TRUE(chip);
+  ASSERT_TRUE(chip->GetText().empty());
+
+  SeedFakeSecurityState(security_state::MALICIOUS_CONTENT_STATUS_MALWARE);
+  UpdateOriginAndSecurity(frame_view);
+  ASSERT_EQ(l10n_util::GetStringUTF16(IDS_DANGEROUS_VERBOSE_STATE),
+            chip->GetText());
+  ASSERT_TRUE(chip->is_animating_label());
+
+  gfx::AnimationTestApi api(&chip->slide_animation_for_testing());
+  const base::TimeTicks now = base::TimeTicks::Now();
+  api.SetStartTime(now);
+  api.Step(now + base::Seconds(1));
+
+  EXPECT_FALSE(chip->is_animating_label());
+  EXPECT_TRUE(chip->ShouldShowLabel());
+  gfx::Insets expected = GetLayoutInsets(LOCATION_BAR_PAGE_INFO_ICON_PADDING);
+  expected.set_left(GetLayoutConstant(
+      LayoutConstant::kLocationBarPageInfoIconDangerousLeadingPadding));
+  expected.set_right(GetLayoutConstant(
+      LayoutConstant::kLocationBarPageInfoIconDangerousTrailingPadding));
+  EXPECT_EQ(expected, chip->GetInsets());
 }
 
 // The recompute after Widget::Init() grows the outer window by the non-client
@@ -751,13 +873,48 @@ TEST_F(DocumentPipFrameViewTest, MouseInsideKeepsRenderActive) {
                                         /*active=*/false);
   EXPECT_TRUE(GetRenderActive(frame_view));
 
-  // OnMouseEnteredOrExitedWindow reads Widget::IsActive() directly, so the
-  // following expectation only holds if the widget really is inactive at the
-  // OS level (not just that the observer was notified above). The widget is
-  // shown (and thus activated) when it is created; hiding it deactivates it
-  // (NativeWidgetMac::Deactivate() is a no-op, so Hide() is used here).
-  frame_view->GetWidget()->Hide();
-  ASSERT_FALSE(frame_view->GetWidget()->IsActive());
+  OnMouseEnteredOrExitedWindow(frame_view, /*entered=*/false);
+  EXPECT_FALSE(GetRenderActive(frame_view));
+}
+
+class DocumentPipFrameViewActivationTest : public DocumentPipFrameViewTest {
+ private:
+#if defined(USE_MOCK_ACTIVATION_CONTROLLER)
+  // Emulate activation before SetUp creates any widgets; this unit test must
+  // not depend on the desktop compositor granting activation.
+  views::test::MockActivationController mock_activation_controller_;
+#endif
+};
+
+TEST_F(DocumentPipFrameViewActivationTest,
+       MouseExitDeactivatesTopBarWhileWidgetActive) {
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  auto* widget = frame_view->GetWidget();
+  widget->Activate();
+  ASSERT_TRUE(widget->IsActive());
+
+  OnMouseEnteredOrExitedWindow(frame_view, /*entered=*/true);
+  EXPECT_TRUE(GetRenderActive(frame_view));
+
+  OnMouseEnteredOrExitedWindow(frame_view, /*entered=*/false);
+  EXPECT_TRUE(widget->IsActive());
+  EXPECT_FALSE(GetRenderActive(frame_view));
+
+  OnMouseEnteredOrExitedWindow(frame_view, /*entered=*/true);
+  EXPECT_TRUE(GetRenderActive(frame_view));
+}
+
+TEST_F(DocumentPipFrameViewTest, MouseExitKeepsTopBarActiveWithOverlay) {
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  auto* overlay = InjectAutoPipOverlay(frame_view);
+  ASSERT_TRUE(IsOverlayViewVisible(frame_view));
+
+  OnMouseEnteredOrExitedWindow(frame_view, /*entered=*/false);
+  EXPECT_TRUE(GetRenderActive(frame_view));
+
+  overlay->SetVisible(false);
   OnMouseEnteredOrExitedWindow(frame_view, /*entered=*/false);
   EXPECT_FALSE(GetRenderActive(frame_view));
 }
@@ -773,11 +930,11 @@ TEST_F(DocumentPipFrameViewTest, ShowPageInfoOpensBubble) {
   widget->SetBounds(gfx::Rect(0, 0, 400, 300));
   widget->Show();
 
-  ASSERT_FALSE(PageInfoBubbleViewBase::GetPageInfoBubbleForTesting());
+  ASSERT_FALSE(PageInfoBubbleViewBase::IsShowing(opener()));
   EXPECT_TRUE(ShowPageInfo(frame_view));
 
   views::BubbleDialogDelegateView* bubble =
-      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting();
+      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting(opener());
   ASSERT_TRUE(bubble);
   EXPECT_EQ(GetOriginChip(frame_view), bubble->GetAnchorView());
 
@@ -1073,5 +1230,45 @@ TEST_F(DocumentPipFrameViewTest, IsOverlayViewVisible_TracksOverlayVisibility) {
   EXPECT_TRUE(IsOverlayViewVisible(frame_view));
 
   overlay->SetVisible(false);
+  EXPECT_FALSE(IsOverlayViewVisible(frame_view));
+}
+
+// A visible auto-PiP overlay keeps the top bar rendered active even when the
+// widget deactivates, so the Allow/Block prompt stays legible (matching
+// PictureInPictureBrowserFrameView, which folds IsOverlayViewVisible() into the
+// render-active computation). Hiding the overlay lets deactivation take effect.
+TEST_F(DocumentPipFrameViewTest, AutoPipOverlayVisibleKeepsTopBarActive) {
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  AutoPipSettingOverlayView* overlay = InjectAutoPipOverlay(frame_view);
+  ASSERT_TRUE(overlay);
+  ASSERT_TRUE(IsOverlayViewVisible(frame_view));
+
+  // Deactivating while the overlay is visible must not drop the active render
+  // state (without the overlay this would go inactive, per
+  // WidgetActivationTogglesRenderState).
+  frame_view->OnWidgetActivationChanged(frame_view->GetWidget(),
+                                        /*active=*/false);
+  EXPECT_TRUE(GetRenderActive(frame_view));
+
+  // Once the overlay is hidden, the same deactivation drops the active state.
+  overlay->SetVisible(false);
+  frame_view->OnWidgetActivationChanged(frame_view->GetWidget(),
+                                        /*active=*/false);
+  EXPECT_FALSE(GetRenderActive(frame_view));
+}
+
+// OnWidgetDestroying nulls the overlay raw_ptr during teardown (the overlay is
+// owned by the view tree, which is torn down after this hook), so no dangling
+// pointer survives into ~DocumentPipFrameView.
+TEST_F(DocumentPipFrameViewTest, OnWidgetDestroyingClearsAutoPipOverlay) {
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  ASSERT_TRUE(InjectAutoPipOverlay(frame_view));
+  ASSERT_TRUE(GetAutoPipOverlay(frame_view));
+
+  frame_view->OnWidgetDestroying(frame_view->GetWidget());
+
+  EXPECT_FALSE(GetAutoPipOverlay(frame_view));
   EXPECT_FALSE(IsOverlayViewVisible(frame_view));
 }

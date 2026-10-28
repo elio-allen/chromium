@@ -20,6 +20,8 @@ import android.view.View;
 import android.view.ViewStructure;
 import android.view.autofill.AutofillValue;
 
+import androidx.test.core.app.ApplicationProvider;
+
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -57,11 +59,10 @@ public class TabViewAndroidDelegateTest {
 
     @Mock private WindowAndroid mWindowAndroid;
 
-    @Mock private ContentView mContentView;
-
     private final ApplicationViewportInsetTracker mApplicationInsetSupplier =
             ApplicationViewportInsetTracker.createForTests();
     private SettableNonNullObservableSupplier<Integer> mVisualViewportInsetSupplier;
+    private ContentView mContentView;
     private TabViewAndroidDelegate mViewAndroidDelegate;
 
     @Before
@@ -75,9 +76,12 @@ public class TabViewAndroidDelegateTest {
 
         when(mWindowAndroid.getApplicationBottomInsetTracker())
                 .thenReturn(mApplicationInsetSupplier);
-        when(mTab.getWindowAndroidChecked()).thenReturn(mWindowAndroid);
+        when(mTab.getWindowAndroid()).thenReturn(mWindowAndroid);
         when(mTab.getWebContents()).thenReturn(mWebContents);
 
+        mContentView =
+                ContentView.createContentView(
+                        ApplicationProvider.getApplicationContext(), /* webContents= */ null);
         mViewAndroidDelegate = new TabViewAndroidDelegate(mTab, mContentView);
         verify(mTab).addObserver(mTabObserverCaptor.capture());
     }
@@ -121,6 +125,7 @@ public class TabViewAndroidDelegateTest {
                 mViewAndroidDelegate.getViewportInsetBottom());
 
         WindowAndroid window = mock(WindowAndroid.class);
+        when(window.getApplicationBottomInsetTracker()).thenReturn(mApplicationInsetSupplier);
         mTabObserverCaptor.getValue().onActivityAttachmentChanged(mTab, window);
         assertEquals(
                 "The bottom inset for the tab should be non-zero.",

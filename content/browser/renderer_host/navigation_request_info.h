@@ -45,15 +45,14 @@ struct CONTENT_EXPORT NavigationRequestInfo {
       const base::UnguessableToken& devtools_navigation_token,
       const base::UnguessableToken& devtools_throttling_token,
       network::mojom::ClientSecurityStatePtr client_security_state,
-      const std::optional<std::vector<net::SourceStreamType>>&
-          devtools_accepted_stream_types,
       bool is_pdf,
       ChildProcessId initiator_process_id,
       std::optional<blink::DocumentToken> initiator_document_token,
       bool allow_cookies_from_browser,
       int64_t navigation_id,
       bool is_ad_tagged,
-      bool force_no_https_upgrade);
+      bool force_no_https_upgrade,
+      bool is_visible);
   NavigationRequestInfo(const NavigationRequestInfo& other) = delete;
   ~NavigationRequestInfo();
 
@@ -127,12 +126,6 @@ struct CONTENT_EXPORT NavigationRequestInfo {
   // too once the UX story is sorted out.
   const network::mojom::ClientSecurityStatePtr client_security_state;
 
-  // If not null, the network service will not advertise any stream types
-  // (via Accept-Encoding) that are not listed. Also, it will not attempt
-  // decoding any non-listed stream types.
-  std::optional<std::vector<net::SourceStreamType>>
-      devtools_accepted_stream_types;
-
   // Indicates that this navigation is for PDF content in a renderer.
   const bool is_pdf;
 
@@ -153,6 +146,9 @@ struct CONTENT_EXPORT NavigationRequestInfo {
 
   // If true, the navigation will not be upgraded to HTTPS.
   bool force_no_https_upgrade;
+
+  // Whether the WebContents where the navigation is happening is visible.
+  const bool is_visible;
 };
 
 }  // namespace content

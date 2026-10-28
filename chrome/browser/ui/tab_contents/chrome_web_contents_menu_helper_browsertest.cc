@@ -8,7 +8,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/prefs/browser_prefs.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -24,6 +23,7 @@
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/window_open_disposition.h"
 
 using ::testing::Eq;
 
@@ -40,8 +40,7 @@ IN_PROC_BROWSER_TEST_F(ChromeWebContentsMenuHelperBrowserTest,
   EXPECT_EQ(1U, GlobalBrowserCollection::GetInstance()->GetSize());
 
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL("http://foo/1"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), GURL("http://foo/1"), WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   content::ContextMenuParams enriched_params =
@@ -61,8 +60,7 @@ IN_PROC_BROWSER_TEST_F(ChromeWebContentsMenuHelperBrowserTest,
   EXPECT_EQ(1U, GlobalBrowserCollection::GetInstance()->GetSize());
 
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL("http://foo/1"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), GURL("http://foo/1"), WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   content::ContextMenuParams enriched_params =

@@ -321,6 +321,7 @@ CSSValue* ConsumeDescriptor(StyleRule::RuleType rule_type,
     case StyleRule::kSupports:
     case StyleRule::kStartingStyle:
     case StyleRule::kResult:
+    case StyleRule::kPrivate:
     case StyleRule::kApplyMixin:
     case StyleRule::kContents:
     case StyleRule::kPositionTry:
@@ -438,20 +439,6 @@ CSSValue* AtRuleDescriptorParser::ParseFontFaceDescriptor(
     StringView string,
     const CSSParserContext& context) {
   CSSParserTokenStream stream(string);
-  return ParseFontFaceDescriptor(id, stream, context);
-}
-
-CSSValue* AtRuleDescriptorParser::ParseFontFaceDeclaration(
-    CSSParserTokenStream& stream,
-    const CSSParserContext& context) {
-  DCHECK_EQ(stream.Peek().GetType(), kIdentToken);
-  const CSSParserToken& token = stream.ConsumeIncludingWhitespace();
-  AtRuleDescriptorID id = token.ParseAsAtRuleDescriptorID();
-
-  if (stream.Consume().GetType() != kColonToken) {
-    return nullptr;  // Parse error
-  }
-
   return ParseFontFaceDescriptor(id, stream, context);
 }
 

@@ -2,11 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import '//resources/cr_elements/cr_icon/cr_icon.js';
+import './icons.js';
+
+import {TrackedElementManager} from '//resources/js/tracked_element/tracked_element_manager.js';
 import {ensureTransitionEndEvent} from '//resources/js/util.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import {HelpBubbleMixinLit} from 'chrome://resources/cr_components/help_bubble/help_bubble_mixin_lit.js';
 
+import {AnimationTracker} from './animation_tracker.js';
 import {getCss} from './permission_chip.css.js';
 import {getHtml} from './permission_chip.html.js';
 import type {PermissionChipDelegate} from './permission_chip_delegate.js';
@@ -97,6 +102,16 @@ export class PermissionChipElement extends PermissionChipElementBase {
       }
     };
 
+    // When animations are disabled (e.g. prefers-reduced-motion), Native Views
+    // (AnimatingLayoutManager) transitions state synchronously. We purposely
+    // fire the IPC immediately here (without waiting for DOM updates or CSS
+    // transitions) to enforce correct timeline parity with the backend and
+    // prevent race conditions.
+    if (!AnimationTracker.showAnimations) {
+      fireIpc();
+      return;
+    }
+
     const messageEl = this.$.message;
     messageEl.addEventListener('transitionend', fireIpc, {once: true});
     // Fallback in case there is no CSS transition (e.g., hidden
@@ -160,11 +175,16 @@ export class PermissionChipElement extends PermissionChipElementBase {
   }
 
   protected onClick_(e: PointerEvent) {
+    if (!this.chipState) {
+      return;
+    }
+    TrackedElementManager.getInstance().notifyElementActivated(this);
     // Note:'click' event dispatches using PointerEvents. Keyboard clicks
     // (Enter/Space) also dispatch PointerEvents, but they have an empty
     // pointerType (""). We only want to suppress true pointer interactions
     // (mouse, touch, pen).
-    this.delegate?.onChipClicked(this.getIdentifier_(), e.pointerType !== '');
+    this.delegate?.onChipClicked(
+        this.getIdentifier_(), e.pointerType !== '', this.chipState.stateToken);
   }
 
   // Computes the foreground and background colors for the chip based on its
@@ -245,53 +265,49 @@ export class PermissionChipElement extends PermissionChipElementBase {
     this.style.setProperty('--chip-fg-color', fgColor);
   }
 
-  protected getIconUrl_(): string {
+  protected getIconName_(): string {
     if (!this.chipState || !this.chipState.iconName) {
       return '';
     }
 
     let iconName = '';
-    // TODO(crbug.com/502598627): This maps new rounded icon names and old names
-    // to the same pre-canned SVG, which means it doesn't actually support
-    // rounded icons. We will need to add the rounded SVGs and update this
-    // mapping if we want to support them in the future.
     switch (this.chipState.iconName) {
       case 'kLocationOnIcon':
       case 'kLocationOnChromeRefreshOldIcon':
-        iconName = 'location_on_chrome_refresh';
+        iconName = 'location_on';
         break;
       case 'kLocationOffIcon':
       case 'kLocationOffChromeRefreshOldIcon':
-        iconName = 'location_off_chrome_refresh';
+        iconName = 'location_off';
         break;
       case 'kVideocamIcon':
       case 'kVideocamChromeRefreshOldIcon':
-        iconName = 'videocam_chrome_refresh';
+        iconName = 'videocam';
         break;
       case 'kVideocamOffIcon':
       case 'kVideocamOffChromeRefreshOldIcon':
-        iconName = 'videocam_off_chrome_refresh';
+        iconName = 'videocam_off';
         break;
       case 'kMicIcon':
       case 'kMicChromeRefreshOldIcon':
-        iconName = 'mic_chrome_refresh';
+        iconName = 'mic';
         break;
       case 'kMicOffIcon':
       case 'kMicOffChromeRefreshOldIcon':
-        iconName = 'mic_off_chrome_refresh';
+        iconName = 'mic_off';
         break;
       case 'kNotificationsIcon':
       case 'kNotificationsChromeRefreshOldIcon':
-        iconName = 'notifications_chrome_refresh';
+        iconName = 'notifications';
         break;
       case 'kNotificationsOffIcon':
       case 'kNotificationsOffChromeRefreshOldIcon':
-        iconName = 'notifications_off_chrome_refresh';
+        iconName = 'notifications_off';
         break;
       default:
         break;
     }
-    return iconName ? `url('shared/rhs_icons/${iconName}.svg')` : '';
+    return iconName ? `webui-toolbar-shared:${iconName}` : '';
   }
 }
 

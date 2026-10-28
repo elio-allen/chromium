@@ -11,6 +11,7 @@
 #include "base/json/json_writer.h"
 #include "base/strings/strcat.h"
 #include "base/strings/to_string.h"
+#include "base/test/gmock_callback_support.h"
 #include "base/test/gmock_expected_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
@@ -22,14 +23,14 @@
 #include "components/autofill/core/browser/actor/actor_filling_observer.h"
 #include "components/autofill/core/browser/actor/actor_form_filling_service_impl.h"
 #include "components/autofill/core/browser/actor/actor_form_filling_service_impl_test_api.h"
-#include "components/autofill/core/browser/actor/actor_test_utils.h"
+#include "components/autofill/core/browser/actor/actor_test_util.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
 #include "components/autofill/core/browser/integrators/actor/actor_form_filling_types.h"
 #include "components/autofill/core/browser/payments/credit_card_access_manager_test_api.h"
-#include "components/autofill/core/browser/test_utils/autofill_form_test_utils.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
-#include "components/autofill/core/common/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
+#include "components/autofill/core/common/autofill_test_util.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -149,7 +150,7 @@ FillRequest BillingAddressFillRequest(std::vector<FieldGlobalId> field_ids,
 
 // Returns the value that `group` would fill into a field with a certain `type`.
 std::u16string GetFillValue(const FormGroup& group, FieldType type) {
-  return group.GetInfo(AutofillType(FieldTypeSet({type})), "en-us");
+  return group.GetInfo(type, "en-us");
 }
 
 constexpr ActorFormFillingError kActorFormFillingSuccessForMetrics =
@@ -780,7 +781,7 @@ TEST_F(ActorFormFillingServiceTest, FillAfterFetchingServerCard) {
   FillSuggestionsFuture fill_future;
   service().FillSuggestions(
       client(), {ActorFormFillingSelection(requests[0].suggestions[0].id)},
-      /*trigger_field_map=*/{}, fill_future.GetCallback());
+      fill_future.GetCallback());
 
   ASSERT_GT(ActorFillingObserver::GetMaximumTimeout(), base::Seconds(1));
   task_environment()->FastForwardBy(ActorFillingObserver::GetMaximumTimeout() -
@@ -831,7 +832,7 @@ TEST_F(ActorFormFillingServiceTest, TimeoutWithFetching) {
   FillSuggestionsFuture fill_future;
   service().FillSuggestions(
       client(), {ActorFormFillingSelection(requests[0].suggestions[0].id)},
-      /*trigger_field_map=*/{}, fill_future.GetCallback());
+      fill_future.GetCallback());
 
   ASSERT_GT(ActorFillingObserver::GetMaximumTimeout(), base::Seconds(2));
   task_environment()->FastForwardBy(base::Seconds(1));
@@ -918,10 +919,10 @@ TEST_F(ActorFormFillingServiceTest, FillOrPreview) {
   // TODO(crbug.com/480936584): Expect actual fields to be previewed/filled
   // instead of passing `_` when the splitting logic is finalized.
   EXPECT_CALL(driver(), ApplyFormAction(_, mojom::ActionPersistence::kPreview,
-                                        _, _, _, _, _, _))
+                                        _, _, _, _, _))
       .Times(1);
   EXPECT_CALL(driver(), ApplyFormAction(_, mojom::ActionPersistence::kFill, _,
-                                        _, _, _, _, _))
+                                        _, _, _, _))
       .Times(1);
 
   ASSERT_EQ(manager().last_trigger_field_id(), FieldGlobalId());
@@ -1051,7 +1052,7 @@ TEST_F(ActorFormFillingServiceTest, FillSuggestions_FilledData) {
   base::test::TestFuture<base::expected<std::string, ActorFormFillingError>>
       fill_future;
   service().FillSuggestions(
-      client(), {ActorFormFillingSelection(requests[0].suggestions[0].id)}, {},
+      client(), {ActorFormFillingSelection(requests[0].suggestions[0].id)},
       fill_future.GetCallback());
 
   AutofillProfile expected_profile = GetProfile1();
@@ -1127,6 +1128,118 @@ TEST_F(ActorFormFillingServiceTest, LogsMultipleSkipReasonsToJournal) {
 
   service().FillForm(client(), /*form_index=*/0,
                      ActorFormFillingSelection(requests[0].suggestions[0].id));
+}
+
+TEST_F(ActorFormFillingServiceTest,
+       RetrieveSuggestionForCreditCardOpaqueToken) {
+  base::HistogramTester histogram_tester;
+  FormData form =
+      SeeForm({.fields = {{.server_type = CREDIT_CARD_NAME_FULL},
+                          {.server_type = CREDIT_CARD_NUMBER},
+                          {.server_type = CREDIT_CARD_EXP_DATE_4_DIGIT_YEAR}}});
+  CreditCard card = test::GetCreditCard();
+  EXPECT_CALL(credit_card_access_manager(),
+              RetrieveCreditCardForOpaqueToken("opaque_token_xyz", _))
+      .WillOnce(base::test::RunOnceCallback<1>(card));
+
+  GetSuggestionsFuture future;
+  service().RetrieveSuggestionForCreditCardOpaqueToken(
+      client(), {CreditCardFillRequest({form.fields()[0].global_id()})},
+      "opaque_token_xyz", future.GetCallback());
+  ASSERT_THAT(future.Get(), HasValue());
+  std::vector<ActorFormFillingRequest> requests = future.Take().value();
+  ASSERT_EQ(requests.size(), 1u);
+  EXPECT_EQ(requests[0].requested_data,
+            ActorFormFillingRequest::RequestedData::kCreditCard);
+  ASSERT_EQ(requests[0].suggestions.size(), 1u);
+  EXPECT_EQ(requests[0].suggestions[0].id, ActorSuggestionId(1));
+
+  ExpectGetSuggestionsOutcome(kActorFormFillingSuccessForMetrics,
+                              histogram_tester);
+
+  // Verify that FillForm succeeds without error now that field_ids are stored.
+  service().FillForm(client(), /*form_index=*/0,
+                     ActorFormFillingSelection(requests[0].suggestions[0].id));
+  ASSERT_TRUE(credit_card_access_manager().RunCreditCardFetchedCallback(card));
+  EXPECT_TRUE(test_api(service()).FillingErrors().empty());
+  EXPECT_THAT(last_filled_values(),
+              Contains(std::pair(form.fields()[0].global_id(),
+                                 GetFillValue(card, CREDIT_CARD_NAME_FULL))));
+}
+
+TEST_F(ActorFormFillingServiceTest,
+       RetrieveSuggestionForCreditCardOpaqueToken_NoSuggestions) {
+  base::HistogramTester histogram_tester;
+  FormData form =
+      SeeForm({.fields = {{.server_type = CREDIT_CARD_NAME_FULL},
+                          {.server_type = CREDIT_CARD_NUMBER},
+                          {.server_type = CREDIT_CARD_EXP_DATE_4_DIGIT_YEAR}}});
+  EXPECT_CALL(credit_card_access_manager(),
+              RetrieveCreditCardForOpaqueToken("opaque_token_xyz", _))
+      .WillOnce(base::test::RunOnceCallback<1>(std::nullopt));
+
+  GetSuggestionsFuture future;
+  service().RetrieveSuggestionForCreditCardOpaqueToken(
+      client(), {CreditCardFillRequest({form.fields()[0].global_id()})},
+      "opaque_token_xyz", future.GetCallback());
+  EXPECT_THAT(future.Get(), ErrorIs(ActorFormFillingError::kNoSuggestions));
+  ExpectGetSuggestionsOutcome(ActorFormFillingError::kNoSuggestions,
+                              histogram_tester);
+}
+
+TEST_F(ActorFormFillingServiceTest,
+       RetrieveSuggestionForCreditCardOpaqueToken_EmptyFields) {
+  base::HistogramTester histogram_tester;
+  GetSuggestionsFuture future;
+  service().RetrieveSuggestionForCreditCardOpaqueToken(
+      client(), {CreditCardFillRequest({})}, "opaque_token_xyz",
+      future.GetCallback());
+  EXPECT_THAT(future.Get(), ErrorIs(ActorFormFillingError::kNoSuggestions));
+  ExpectGetSuggestionsOutcome(ActorFormFillingError::kNoSuggestions,
+                              histogram_tester);
+}
+
+TEST_F(ActorFormFillingServiceTest,
+       RetrieveSuggestionForCreditCardOpaqueToken_WithAddressRequest) {
+  base::HistogramTester histogram_tester;
+  FormData form = SeeForm({.fields = {{.server_type = ADDRESS_HOME_LINE1}}});
+  GetSuggestionsFuture future;
+  service().RetrieveSuggestionForCreditCardOpaqueToken(
+      client(), {AddressFillRequest({form.fields()[0].global_id()})},
+      "opaque_token_xyz", future.GetCallback());
+  EXPECT_THAT(future.Get(), ErrorIs(ActorFormFillingError::kOther));
+  ExpectGetSuggestionsOutcome(ActorFormFillingError::kOther, histogram_tester);
+}
+
+TEST_F(ActorFormFillingServiceTest,
+       RetrieveSuggestionForCreditCardOpaqueToken_AddressFormDoesNotFill) {
+  FormData form = SeeForm({.fields = {{.server_type = ADDRESS_HOME_LINE1},
+                                      {.server_type = ADDRESS_HOME_CITY}}});
+  CreditCard card = test::GetCreditCard();
+  EXPECT_CALL(credit_card_access_manager(),
+              RetrieveCreditCardForOpaqueToken("opaque_token_xyz", _))
+      .WillOnce(base::test::RunOnceCallback<1>(card));
+
+  GetSuggestionsFuture future;
+  service().RetrieveSuggestionForCreditCardOpaqueToken(
+      client(), {CreditCardFillRequest({form.fields()[0].global_id()})},
+      "opaque_token_xyz", future.GetCallback());
+  ASSERT_THAT(future.Get(), HasValue());
+  std::vector<ActorFormFillingRequest> requests = future.Take().value();
+
+  service().FillForm(client(), /*form_index=*/0,
+                     ActorFormFillingSelection(requests[0].suggestions[0].id));
+  EXPECT_TRUE(test_api(service()).FillingErrors().empty());
+  EXPECT_TRUE(last_filled_values().empty());
+}
+
+TEST_F(ActorFormFillingServiceTest, FillSuggestionsWithoutFillingObserver) {
+  base::test::TestFuture<base::expected<std::string, ActorFormFillingError>>
+      future;
+  service().FillSuggestions(client(),
+                            {ActorFormFillingSelection(ActorSuggestionId(1))},
+                            future.GetCallback());
+  EXPECT_THAT(future.Get(), ErrorIs(ActorFormFillingError::kOther));
 }
 
 }  // namespace

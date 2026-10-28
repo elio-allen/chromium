@@ -2,13 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-toolbar.top-chrome/app.js';
+import 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 import {CrLitElement, html} from '//resources/lit/v3_0/lit.rollup.js';
+import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import {assertEquals, assertFalse, assertThrows, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {AnimationTracker, ToolbarActionContainerMixin} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {KeyedActionState, ToolbarActionContainerMixinInterface} from 'chrome://webui-toolbar.top-chrome/app.js';
+import {AnimationTracker, ToolbarActionContainerMixin} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import type {KeyedActionState, ToolbarActionContainerMixinInterface} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 interface TestState {
   id: string;
@@ -51,10 +52,6 @@ class TestContainerElement extends TestContainerBase {
             s => html`
           <div class="item ${s.exiting ? 'exiting' : ''} ${
                 s.animateIn ? 'animate-in' : ''}"
-               style="${
-                s.exiting && this.forceZeroWidthExiting ?
-                    'width: 0px; display: inline-block;' :
-                    'width: 100px; display: inline-block;'}"
                data-key="${s.key}">
             ${s.state.name}
           </div>
@@ -66,8 +63,36 @@ class TestContainerElement extends TestContainerBase {
   static override get properties() {
     return {
       customIsInitial: {type: Boolean},
-      forceZeroWidthExiting: {type: Boolean},
+      disableTransitions: {type: Boolean},
     };
+  }
+
+  override updated(changedProperties: PropertyValues<this>) {
+    super.updated(changedProperties);
+    // Mock getBoundingClientRect to simulate transition state.
+    for (const el of this.shadowRoot.querySelectorAll<HTMLElement>('.item')) {
+      if (!el.hasOwnProperty('getBoundingClientRect')) {
+        const original = el.getBoundingClientRect.bind(el);
+        el.getBoundingClientRect = () => {
+          if (el.classList.contains('exiting')) {
+            // If transitions are disabled, it snaps to 0 width immediately.
+            // Otherwise, it simulates a running transition by returning >0
+            // width.
+            return {
+              width: this.disableTransitions ? 0 : 100,
+              x: 0,
+              y: 0,
+              top: 0,
+              bottom: 0,
+              left: 0,
+              right: 0,
+              toJSON: () => {},
+            } as DOMRect;
+          }
+          return original();
+        };
+      }
+    }
   }
 
   // When true, modifies isInitialUpdate() to only return true when the incoming
@@ -75,10 +100,8 @@ class TestContainerElement extends TestContainerBase {
   // behavior.
   accessor customIsInitial: boolean = false;
 
-  // When true, renders exiting items with a width of 0px so that
-  // reconcileKeys() immediately removes them without waiting for CSS
-  // transitions to finish.
-  accessor forceZeroWidthExiting: boolean = false;
+  // When true, simulates that CSS transitions are disabled (width snaps to 0).
+  accessor disableTransitions: boolean = false;
 
   override getKey(state: TestState): string {
     return state.id;
@@ -102,8 +125,15 @@ class TestContainerElement extends TestContainerBase {
   override get childTagName(): string {
     return 'div';
   }
-  override isDivider(_key: string): boolean {
-    return false;
+  override isDraggable(state: TestState, index: number): boolean {
+    if (state.id === 'divider') {
+      return false;
+    }
+    const dividerIdx = this.keyedStates.findIndex(s => s.key === 'divider');
+    if (dividerIdx !== -1 && index > dividerIdx) {
+      return false;
+    }
+    return true;
   }
 }
 
@@ -146,6 +176,7 @@ suite('ToolbarActionContainerMixinTest', function() {
 
     assertTrue(element.hidden);
     assertTrue(element.isInitialUpdate(element.states));
+    assertTrue(element.classList.contains('initial-load'));
 
     element.states = [
       {id: 'a', name: 'Item A'},
@@ -157,20 +188,26 @@ suite('ToolbarActionContainerMixinTest', function() {
     assertEquals(2, element.keyedStates.length);
     assertEquals(false, element.keyedStates[0]!.animateIn);
     assertEquals(false, element.keyedStates[1]!.animateIn);
+    assertTrue(element.classList.contains('initial-load'));
     assertFalse(element.allExiting());
     assertFalse(element.animateInDivider());
   });
 
   test('AnimateInForNewItems', async function() {
+    // First update (initial)
     element.states = [{id: 'a', name: 'Item A'}];
     await microtasksFinished();
+    assertTrue(element.classList.contains('initial-load'));
+    assertEquals(1, element.keyedStates.length);
+    assertEquals(false, element.keyedStates[0]!.animateIn);
 
+    // Second update (non-initial)
     element.states = [
       {id: 'a', name: 'Item A'},
       {id: 'b', name: 'Item B'},
     ];
     await microtasksFinished();
-
+    assertFalse(element.classList.contains('initial-load'));
     assertEquals(2, element.keyedStates.length);
     assertEquals(false, element.keyedStates[0]!.animateIn);
     assertEquals(true, element.keyedStates[1]!.animateIn);
@@ -194,7 +231,7 @@ suite('ToolbarActionContainerMixinTest', function() {
 
     assertEquals(1, element.keyedStates.length);
     assertEquals('b', element.keyedStates[0]!.key);
-    assertTrue(element.animateInDivider());
+    assertFalse(element.animateInDivider());
     assertFalse(element.allExiting());
 
     AnimationTracker.showAnimations = true;
@@ -251,6 +288,9 @@ suite('ToolbarActionContainerMixinTest', function() {
         'transitionend', {propertyName: 'width', bubbles: true}));
     assertEquals(2, element.keyedStates.length);
 
+    // Simulate that transition finished and width is now 0.
+    element.disableTransitions = true;
+
     domItem.dispatchEvent(new TransitionEvent(
         'transitionend', {propertyName: 'width', bubbles: true}));
     assertEquals(1, element.keyedStates.length);
@@ -271,6 +311,9 @@ suite('ToolbarActionContainerMixinTest', function() {
     const domItem = element.shadowRoot.querySelector('[data-key="b"]');
     assertTrue(!!domItem);
 
+    // Simulate that transitions are now disabled/cancelled and it snapped to 0.
+    element.disableTransitions = true;
+
     domItem.dispatchEvent(new TransitionEvent(
         'transitioncancel', {propertyName: 'width', bubbles: true}));
     assertEquals(1, element.keyedStates.length);
@@ -278,7 +321,7 @@ suite('ToolbarActionContainerMixinTest', function() {
   });
 
   test('ExitingItemsWithZeroWidthRemovedImmediately', async function() {
-    element.forceZeroWidthExiting = true;
+    element.disableTransitions = true;
 
     // Add two actions.
     element.states = [
@@ -288,7 +331,8 @@ suite('ToolbarActionContainerMixinTest', function() {
     await microtasksFinished();
     assertEquals(2, element.keyedStates.length);
 
-    // Get rid of 'b' action, `forceZeroWidthExiting` should make it 0 width.
+    // Get rid of 'b' action. Since disableTransitions is true, it should snap
+    // to 0.
     element.states = [{id: 'a', name: 'Item A'}];
     await microtasksFinished();
 
@@ -307,5 +351,323 @@ suite('ToolbarActionContainerMixinTest', function() {
     assertEquals(1, element.keyedStates.length);
     assertEquals('a', element.keyedStates[0]!.key);
     assertEquals(true, element.keyedStates[0]!.animateIn);
+    assertFalse(element.classList.contains('initial-load'));
+  });
+
+  test('AnimateInResetAfterTransitionDone', async function() {
+    element.states = [
+      {id: 'a', name: 'Item A'},
+    ];
+    await microtasksFinished();
+
+    // Initial update doesn't animate.
+    assertFalse(element.keyedStates[0]!.animateIn === true);
+
+    // Add new item.
+    element.states = [
+      {id: 'a', name: 'Item A'},
+      {id: 'b', name: 'Item B'},
+    ];
+    await microtasksFinished();
+
+    // New item should have animateIn = true.
+    assertTrue(element.keyedStates[1]!.animateIn === true);
+
+    // Simulate transitionend event for width.
+    const childElB = element.shadowRoot.querySelector('[data-key="b"]');
+    assertTrue(!!childElB);
+    childElB.dispatchEvent(new TransitionEvent('transitionend', {
+      propertyName: 'width',
+      bubbles: true,
+      composed: true,
+    }));
+    await microtasksFinished();
+
+    // animateIn should be reset to false.
+    assertFalse(element.keyedStates[1]!.animateIn === true);
+  });
+
+  test('ExitingItemsRemovedOnTransitionDoneMidSlideIn', async function() {
+    // Add 'a' as initial.
+    element.states = [{id: 'a', name: 'Item A'}];
+    await microtasksFinished();
+
+    // Add 'b'. It should start sliding in.
+    element.states = [
+      {id: 'a', name: 'Item A'},
+      {id: 'b', name: 'Item B'},
+    ];
+    await microtasksFinished();
+
+    // Remove 'b' immediately (mid-slide-in).
+    element.states = [{id: 'a', name: 'Item A'}];
+    await microtasksFinished();
+
+    // 'b' should now be exiting, but NOT removed yet because its width in test
+    // is 100px (disableTransitions is false), so it simulates transitioning.
+    assertEquals(2, element.keyedStates.length);
+    const itemB = element.keyedStates[1]!;
+    assertEquals('b', itemB.key);
+    assertEquals(true, itemB.exiting);
+
+    const domItem = element.shadowRoot.querySelector('[data-key="b"]');
+    assertTrue(!!domItem);
+    assertTrue(domItem.classList.contains('exiting'));
+
+    // Simulate that transition finished and width is now 0.
+    element.disableTransitions = true;
+
+    // Trigger transitionend to remove it.
+    domItem.dispatchEvent(new TransitionEvent(
+        'transitionend', {propertyName: 'width', bubbles: true}));
+
+    assertEquals(1, element.keyedStates.length);
+    assertEquals('a', element.keyedStates[0]!.key);
+  });
+
+  test('DragLeaveGuardedByRelatedTarget', async function() {
+    element.states = [
+      {id: 'a', name: 'Item A'},
+      {id: 'b', name: 'Item B'},
+    ];
+    await microtasksFinished();
+
+    // Start drag.
+    element.fire('toolbar-action-drag-start', {itemId: 'a'});
+    await microtasksFinished();
+
+    // Dispatch dragenter to simulate entering the host from outside.
+    const dragEnterEvent = new DragEvent('dragenter', {
+      relatedTarget: null,
+      bubbles: true,
+      composed: true,
+    });
+    Object.defineProperty(dragEnterEvent, 'dataTransfer', {
+      value: {
+        types: ['application/x-test'],
+      },
+    });
+    element.dispatchEvent(dragEnterEvent);
+    await microtasksFinished();
+
+    // Verify element 'a' has dragPlaceholder.
+    assertTrue(element.keyedStates[0]!.dragPlaceholder === true);
+
+    const childElB = element.shadowRoot.querySelector('[data-key="b"]');
+    assertTrue(!!childElB);
+
+    // Simulate dragover 'b' to reorder.
+    const dragOverEvent = {
+      preventDefault: () => {},
+      dataTransfer: {
+        types: ['application/x-test'],
+        dropEffect: 'none',
+      },
+      currentTarget: childElB,
+    } as unknown as DragEvent;
+    element.onActionDragover(dragOverEvent);
+    await microtasksFinished();
+
+    // Verify reordered: 'b' then 'a'. 'a' is still placeholder.
+    assertEquals('b', element.keyedStates[0]!.key);
+    assertEquals('a', element.keyedStates[1]!.key);
+    assertTrue(element.keyedStates[1]!.dragPlaceholder === true);
+
+    // Simulate dragleave where relatedTarget is a child.
+    const dragLeaveEvent = new DragEvent('dragleave', {
+      relatedTarget: childElB,
+      bubbles: true,
+      composed: true,
+    });
+    Object.defineProperty(dragLeaveEvent, 'dataTransfer', {
+      value: {
+        types: ['application/x-test'],
+      },
+    });
+    element.dispatchEvent(dragLeaveEvent);
+    await microtasksFinished();
+
+    // Reconcile should NOT have been called, order should still be 'b' then
+    // 'a'.
+    assertEquals('b', element.keyedStates[0]!.key);
+    assertEquals('a', element.keyedStates[1]!.key);
+    assertTrue(element.keyedStates[1]!.dragPlaceholder === true);
+
+    // Simulate dragleave where relatedTarget is null (outside).
+    const rect = element.getBoundingClientRect();
+    const dragLeaveOutsideEvent = new DragEvent('dragleave', {
+      relatedTarget: null,
+      bubbles: true,
+      composed: true,
+      clientX: rect.left - 10,
+      clientY: rect.top - 10,
+    });
+    Object.defineProperty(dragLeaveOutsideEvent, 'dataTransfer', {
+      value: {
+        types: ['application/x-test'],
+      },
+    });
+    element.dispatchEvent(dragLeaveOutsideEvent);
+    await microtasksFinished();
+
+    // Reconcile should have been called, order reverted to 'a' then 'b'.
+    // Placeholder flag should still be present on 'a'.
+    assertEquals('a', element.keyedStates[0]!.key);
+    assertEquals('b', element.keyedStates[1]!.key);
+    assertTrue(element.keyedStates[0]!.dragPlaceholder === true);
+  });
+
+  test('DragCannotCrossDivider', async function() {
+    element.states = [
+      {id: 'a', name: 'Item A'},
+      {id: 'b', name: 'Item B'},
+      {id: 'divider', name: 'Divider'},
+      {id: 'c', name: 'Item C'},
+      {id: 'd', name: 'Item D'},
+    ];
+    await microtasksFinished();
+
+    // Start drag on 'a'.
+    element.fire('toolbar-action-drag-start', {itemId: 'a'});
+    await microtasksFinished();
+
+    // Verify 'a' has placeholder.
+    assertTrue(element.keyedStates[0]!.dragPlaceholder === true);
+
+    const childElC = element.shadowRoot.querySelector('[data-key="c"]');
+    assertTrue(!!childElC);
+
+    // Try to drag 'a' over 'c' (past divider).
+    const dragOverCEvent = {
+      preventDefault: () => {},
+      dataTransfer: {
+        types: ['application/x-test'],
+        dropEffect: 'none',
+      },
+      currentTarget: childElC,
+    } as unknown as DragEvent;
+    element.onActionDragover(dragOverCEvent);
+    await microtasksFinished();
+
+    // 'a' should NOT have moved past divider. It should be at index 1 (just
+    // before divider). Order should be 'b', 'a' (placeholder), 'divider', 'c',
+    // 'd'.
+    assertEquals('b', element.keyedStates[0]!.key);
+    assertEquals('a', element.keyedStates[1]!.key);
+    assertEquals('divider', element.keyedStates[2]!.key);
+    assertEquals('c', element.keyedStates[3]!.key);
+    assertEquals('d', element.keyedStates[4]!.key);
+    assertTrue(element.keyedStates[1]!.dragPlaceholder === true);
+  });
+
+  test('DragStartNotAbortedByNonOrderChangingUpdates', async function() {
+    element.states = [
+      {id: 'a', name: 'Item A'},
+      {id: 'b', name: 'Item B'},
+    ];
+    await microtasksFinished();
+
+    const childElA = element.shadowRoot.querySelector('[data-key="a"]');
+    assertTrue(!!childElA);
+
+    // Simulate pointerdown on 'a'.
+    childElA.dispatchEvent(new PointerEvent('pointerdown', {
+      isPrimary: true,
+      bubbles: true,
+      composed: true,
+    }));
+    await microtasksFinished();
+
+    // Simulate a state update that doesn't change order.
+    element.states = [
+      {id: 'a', name: 'Item A Updated'},
+      {id: 'b', name: 'Item B'},
+    ];
+    await microtasksFinished();
+
+    // The update should NOT be deferred, so DOM should have updated.
+    const childElA_afterUpdate =
+        element.shadowRoot.querySelector('[data-key="a"]');
+    assertTrue(!!childElA_afterUpdate);
+    assertEquals('Item A Updated', childElA_afterUpdate.textContent.trim());
+
+    // Start drag on 'a'.
+    element.fire('toolbar-action-drag-start', {itemId: 'a'});
+    await microtasksFinished();
+
+    // Verify drag is NOT aborted (placeholder flag should be set).
+    assertTrue(element.keyedStates[0]!.dragPlaceholder === true);
+  });
+
+  test('DragNotAbortedOnOrderChangeIfDraggedItemNotRemoved', async function() {
+    element.states = [
+      {id: 'a', name: 'Item A'},
+      {id: 'b', name: 'Item B'},
+    ];
+    await microtasksFinished();
+
+    // Start drag.
+    element.fire('toolbar-action-drag-start', {itemId: 'a'});
+    await microtasksFinished();
+
+    // Verify element 'a' has dragPlaceholder.
+    assertTrue(element.keyedStates[0]!.dragPlaceholder === true);
+    assertEquals('a', (element as any).draggedItemId_);
+
+    // Change states (swap order in Mojo).
+    element.states = [
+      {id: 'b', name: 'Item B'},
+      {id: 'a', name: 'Item A'},
+    ];
+    await microtasksFinished();
+
+    // Drag should NOT be aborted.
+    assertEquals('a', (element as any).draggedItemId_);
+
+    // Layout should NOT update to Mojo order immediately, preserve local
+    // placeholder. So order is still 'a*' then 'b'.
+    assertEquals('a', element.keyedStates[0]!.key);
+    assertTrue(element.keyedStates[0]!.dragPlaceholder === true);
+    assertEquals('b', element.keyedStates[1]!.key);
+
+    // End drag (aborted)
+    element.fire('toolbar-action-drag-end', {itemId: 'a', dropEffect: 'none'});
+    await microtasksFinished();
+
+    // Verify drag is ended and layout updated to Mojo order (b then a).
+    assertEquals(null, (element as any).draggedItemId_);
+    assertEquals('b', element.keyedStates[0]!.key);
+    assertEquals('a', element.keyedStates[1]!.key);
+    assertFalse(element.keyedStates[1]!.dragPlaceholder === true);
+  });
+
+  test('AbortDragOnDraggedItemRemoval', async function() {
+    element.states = [
+      {id: 'a', name: 'Item A'},
+      {id: 'b', name: 'Item B'},
+    ];
+    await microtasksFinished();
+
+    // Start drag.
+    element.fire('toolbar-action-drag-start', {itemId: 'a'});
+    await microtasksFinished();
+
+    assertTrue(element.keyedStates[0]!.dragPlaceholder === true);
+
+    // Remove dragged item 'a'
+    element.states = [
+      {id: 'b', name: 'Item B'},
+    ];
+    await microtasksFinished();
+
+    // Drag should be aborted immediately
+    assertEquals(null, (element as any).draggedItemId_);
+
+    // Layout updated immediately: dragged item 'a' is removed completely from
+    // keyedStates rather than retained as an exiting state.
+    assertEquals(1, element.keyedStates.length);
+    assertEquals('b', element.keyedStates[0]!.key);
+    assertFalse(element.keyedStates.some(s => s.key === 'a'));
+    assertFalse(!!element.shadowRoot.querySelector('[data-key="a"]'));
   });
 });

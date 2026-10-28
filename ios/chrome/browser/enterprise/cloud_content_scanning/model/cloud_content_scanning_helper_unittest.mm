@@ -4,10 +4,28 @@
 
 #import "ios/chrome/browser/enterprise/cloud_content_scanning/model/cloud_content_scanning_helper.h"
 
+#import <optional>
+
 #import "base/files/file_path.h"
+#import "base/files/file_util.h"
+#import "base/files/scoped_temp_dir.h"
 #import "base/functional/callback_helpers.h"
+#import "base/json/json_reader.h"
 #import "base/memory/raw_ptr.h"
+#import "base/task/thread_pool/thread_pool_instance.h"
+#import "base/test/run_until.h"
+#import "base/test/scoped_feature_list.h"
 #import "base/test/test_future.h"
+#import "components/enterprise/browser/controller/fake_browser_dm_token_storage.h"
+#import "components/enterprise/connectors/core/analysis_settings.h"
+#import "components/enterprise/connectors/core/cloud_content_scanning/binary_upload_service.h"
+#import "components/enterprise/connectors/core/common.h"
+#import "components/enterprise/connectors/core/features.h"
+#import "components/prefs/pref_service.h"
+#import "ios/chrome/browser/enterprise/cloud_content_scanning/model/background_cloud_scanner_manager.h"
+#import "ios/chrome/browser/enterprise/cloud_content_scanning/model/background_cloud_scanner_manager_factory.h"
+#import "ios/chrome/browser/enterprise/cloud_content_scanning/model/ios_cloud_binary_upload_service_factory.h"
+#import "ios/chrome/browser/enterprise/connectors/analysis/content_analysis_info.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list_factory.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
@@ -18,6 +36,7 @@
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/fakes/fake_enterprise_commands_handler.h"
+#import "ios/web/public/test/fakes/fake_navigation_context.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest_mac.h"
@@ -29,6 +48,55 @@
 
 namespace enterprise_connectors {
 
+constexpr char kBlockingAnalysisSettingsPref[] = R"([
+  {
+    "service_provider": "google",
+    "enable": [
+      {"url_list": ["*"], "tags": ["dlp", "malware"]}
+    ],
+    "block_until_verdict": 1
+  }
+])";
+
+constexpr char kNonBlockingAnalysisSettingsPref[] = R"([
+  {
+    "service_provider": "google",
+    "enable": [
+      {"url_list": ["*"], "tags": ["dlp", "malware"]}
+    ],
+    "block_until_verdict": 0
+  }
+])";
+
+class FakeBinaryUploadService : public BinaryUploadService {
+ public:
+  FakeBinaryUploadService() = default;
+  ~FakeBinaryUploadService() override = default;
+
+  void MaybeUploadForDeepScanning(
+      std::unique_ptr<BinaryUploadRequest> request) override {
+    ++upload_count_;
+  }
+  void MaybeAcknowledge(std::unique_ptr<BinaryUploadAck> ack) override {}
+  void MaybeCancelRequests(
+      std::unique_ptr<BinaryUploadCancelRequests> cancel) override {}
+
+  base::WeakPtr<BinaryUploadService> AsWeakPtr() override {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
+
+  size_t upload_count() const { return upload_count_; }
+
+ private:
+  size_t upload_count_ = 0;
+  base::WeakPtrFactory<FakeBinaryUploadService> weak_ptr_factory_{this};
+};
+
+std::unique_ptr<KeyedService> BuildFakeBinaryUploadService(
+    ProfileIOS* profile) {
+  return std::make_unique<FakeBinaryUploadService>();
+}
+
 // Unit tests for CloudContentScanningHelper testing:
 // 1. Starting the cloud content scanning process and preparing scanning
 // resources correctly.
@@ -39,6 +107,9 @@ class CloudContentScanningHelperTest : public PlatformTest {
  protected:
   void SetUp() override {
     TestProfileIOS::Builder profile_builder;
+    profile_builder.AddTestingFactory(
+        IOSCloudBinaryUploadServiceFactory::GetInstance(),
+        base::BindOnce(&BuildFakeBinaryUploadService));
     profile_ = std::move(profile_builder).Build();
     browser_ = std::make_unique<TestBrowser>(profile_.get());
 
@@ -82,7 +153,25 @@ class CloudContentScanningHelperTest : public PlatformTest {
     return result;
   }
 
+  // Configures FakeBrowserDMTokenStorage and sets the AnalysisConnector policy
+  // pref.
+  void SetUpAnalysisConnectorPolicy(const char* settings_pref) {
+    fake_browser_dm_token_storage_.SetDMToken("fake_dm_token");
+    fake_browser_dm_token_storage_.SetClientId("fake_client_id");
+
+    profile_->GetPrefs()->Set(
+        enterprise_connectors::AnalysisConnectorPref(
+            enterprise_connectors::AnalysisConnector::FILE_DOWNLOADED),
+        *base::JSONReader::Read(settings_pref,
+                                base::JSON_PARSE_CHROMIUM_EXTENSIONS));
+    profile_->GetPrefs()->SetInteger(
+        enterprise_connectors::AnalysisConnectorScopePref(
+            enterprise_connectors::AnalysisConnector::FILE_DOWNLOADED),
+        policy::POLICY_SCOPE_MACHINE);
+  }
+
   web::WebTaskEnvironment task_environment_;
+  policy::FakeBrowserDMTokenStorage fake_browser_dm_token_storage_;
   std::unique_ptr<TestBrowser> browser_;
   std::unique_ptr<TestProfileIOS> profile_;
   raw_ptr<web::FakeWebState> web_state_;
@@ -256,17 +345,245 @@ TEST_F(CloudContentScanningHelperTest, CloseTabWithPendingDecision) {
   EXPECT_FALSE(future.Get());
 }
 
-// Tests that StartCloudContentScanning constructs
+// Tests that PrepareCloudContentScanning constructs
 // `FileDownloadScanningResources` correctly.
-TEST_F(CloudContentScanningHelperTest, StartCloudContentScanning) {
+TEST_F(CloudContentScanningHelperTest, PrepareCloudContentScanning) {
   base::test::TestFuture<bool> future;
   base::FilePath file_path(FILE_PATH_LITERAL("/path/to/fake/file.txt"));
-  FileDownloadScanningResources resources = StartCloudContentScanning(
+  FileDownloadScanningResources resources = PrepareCloudContentScanning(
       web_state_, GURL("https://example.com/download"), file_path,
       TriggerType::kSavePrompt, future.GetCallback());
 
   EXPECT_NE(resources.content_analysis_info, nullptr);
   EXPECT_NE(resources.files_request_handler, nullptr);
+}
+
+// Tests that PrepareCloudContentScanning correctly parses and sets up resources
+// for a blocking scan (block_until_verdict = kBlock).
+TEST_F(CloudContentScanningHelperTest, PrepareCloudContentScanningBlocking) {
+  // Set up the policy pref to enable blocking scans.
+  SetUpAnalysisConnectorPolicy(kBlockingAnalysisSettingsPref);
+
+  base::test::TestFuture<bool> future;
+  base::FilePath file_path(FILE_PATH_LITERAL("/path/to/fake/file.txt"));
+
+  std::optional<FileDownloadScanningResources> resources;
+  resources.emplace(PrepareCloudContentScanning(
+      web_state_, GURL("https://example.com/download"), file_path,
+      TriggerType::kSavePrompt, future.GetCallback()));
+
+  EXPECT_NE(resources->content_analysis_info, nullptr);
+  EXPECT_NE(resources->files_request_handler, nullptr);
+  EXPECT_EQ(resources->content_analysis_info->settings().block_until_verdict,
+            BlockUntilVerdict::kBlock);
+
+  // The future callback should NOT be invoked yet.
+  EXPECT_FALSE(future.IsReady());
+
+  resources.reset();
+  web_state_ = nullptr;
+  browser_.reset();
+  profile_.reset();
+}
+
+// Tests that PrepareCloudContentScanning handles non-blocking scans correctly.
+TEST_F(CloudContentScanningHelperTest, PrepareCloudContentScanningNonBlocking) {
+  // Set up the policy pref to enable non-blocking scans.
+  SetUpAnalysisConnectorPolicy(kNonBlockingAnalysisSettingsPref);
+
+  base::test::TestFuture<bool> future;
+  base::FilePath file_path(FILE_PATH_LITERAL("/path/to/fake/file.txt"));
+  FileDownloadScanningResources resources = PrepareCloudContentScanning(
+      web_state_, GURL("https://example.com/download"), file_path,
+      TriggerType::kSavePrompt, future.GetCallback());
+
+  EXPECT_NE(resources.content_analysis_info, nullptr);
+  EXPECT_NE(resources.files_request_handler, nullptr);
+
+  // Non-blocking mode should invoke the callback with `true` asynchronously.
+  EXPECT_TRUE(future.Get());
+}
+
+// Tests that BackgroundCloudScannerManager is successfully created for the
+// Profile, and that destroying the profile cleanly tears down the manager and
+// all active scans.
+TEST_F(CloudContentScanningHelperTest,
+       PrepareCloudContentScanningNonBlockingLifetime) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  // `kEnableCancelUploadOnContentAnalysis` is enabled here even though it is
+  // disabled by default on iOS: it makes cancelling a pending scan report an
+  // "unscanned file" event, which needs ConnectorsService and the
+  // ReportingEventRouter. That reporting is what makes the teardown order below
+  // non-trivial, so the test would not cover much without it.
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{enterprise_connectors::
+                                kEnableCancelUploadOnContentAnalysis},
+      /*disabled_features=*/{});
+
+  // Set up the policy pref to enable non-blocking scans.
+  SetUpAnalysisConnectorPolicy(kNonBlockingAnalysisSettingsPref);
+
+  base::test::TestFuture<bool> future;
+  base::FilePath file_path(FILE_PATH_LITERAL("/path/to/fake/file.txt"));
+
+  std::optional<FileDownloadScanningResources> resources;
+  resources.emplace(PrepareCloudContentScanning(
+      web_state_, GURL("https://example.com/download"), file_path,
+      TriggerType::kSavePrompt, future.GetCallback()));
+
+  // Confirm that a BackgroundCloudScannerManager has been created for our
+  // profile.
+  BackgroundCloudScannerManager* manager =
+      BackgroundCloudScannerManagerFactory::GetForProfile(profile_.get());
+  EXPECT_NE(manager, nullptr);
+
+  // Destroy resources first to release raw_ptr<ProfileIOS> and prevent
+  // dangling pointers.
+  resources.reset();
+
+  // Destroying the browser and the profile should run completely cleanly
+  // without any dangling pointer/crashes or leaks of the pending scan.
+  web_state_ = nullptr;
+  browser_.reset();
+  profile_.reset();
+}
+
+// Tests that any pending decisions are dropped on corss-document navigation.
+TEST_F(CloudContentScanningHelperTest,
+       DeferredWarningDroppedAfterCrossOriginNavigation) {
+  base::test::TestFuture<bool> future;
+
+  // Tab is on evil.test and gets hidden while the DLP scan is in flight.
+  web_state_->SetCurrentURL(GURL("https://evil.test/poc.html"));
+  web_state_->WasHidden();
+  ASSERT_FALSE(web_state_->IsVisible());
+
+  // WARNING verdict arrives while hidden -> stashed in PendingScanDecision.
+  RequestHandlerResult result =
+      CreateResult(FinalContentAnalysisResult::WARNING);
+  HandleScanDecision(web_state_->GetWeakPtr(), TriggerType::kSavePrompt,
+                     future.GetCallback(), result);
+  ASSERT_TRUE(fake_commands_handler_->_callback.is_null());
+
+  // Attacker navigates the hidden tab cross-origin.
+  web::FakeNavigationContext context;
+  context.SetUrl(GURL("https://bank.example/"));
+  context.SetIsSameDocument(false);
+  web_state_->OnNavigationStarted(&context);
+  web_state_->SetCurrentURL(GURL("https://bank.example/"));
+
+  // User switches back to the tab.
+  web_state_->WasShown();
+
+  // EXPECTED (secure): pending warning was dropped on navigation -> no dialog
+  // dispatched, download blocked.
+  EXPECT_TRUE(fake_commands_handler_->_callback.is_null());
+}
+
+// Tests that non-blocking scanning correctly clones the downloaded file to an
+// isolated directory, runs the download_proceed callback, and subsequently
+// deletes the cloned temporary directory when the BackgroundCloudScanner is
+// destroyed.
+TEST_F(CloudContentScanningHelperTest,
+       PrepareCloudContentScanningNonBlockingFileCloneAndCleanup) {
+  // Set up non-blocking policy.
+  SetUpAnalysisConnectorPolicy(kNonBlockingAnalysisSettingsPref);
+
+  // Create a real file to scan in a ScopedTempDir.
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::FilePath file_path =
+      temp_dir.GetPath().AppendASCII("confidential_report.pdf");
+  ASSERT_TRUE(base::WriteFile(file_path, "test file content"));
+
+  base::test::TestFuture<bool> future;
+  std::optional<FileDownloadScanningResources> resources;
+  resources.emplace(PrepareCloudContentScanning(
+      web_state_, GURL("https://example.com/download"), file_path,
+      TriggerType::kSavePrompt, future.GetCallback()));
+
+  // 1. Verify that download_proceed callback ran with `true`.
+  EXPECT_TRUE(future.Get());
+
+  BackgroundCloudScannerManager* manager =
+      BackgroundCloudScannerManagerFactory::GetForProfile(profile_.get());
+  ASSERT_NE(manager, nullptr);
+
+  // 2. Locate and release the scanning resources.
+  resources.reset();
+
+  // Destroys the browser and profile, which destroys
+  // BackgroundCloudScannerManager and cancels/destroys all
+  // BackgroundCloudScanners.
+  web_state_ = nullptr;
+  browser_.reset();
+  profile_.reset();
+
+  // Flush the ThreadPool to allow asynchronous deletion tasks to execute
+  // completely.
+  base::ThreadPoolInstance::Get()->FlushForTesting();
+
+  // The original file at `file_path` should still exist (it was only cloned).
+  EXPECT_TRUE(base::PathExists(file_path));
+}
+
+// Tests that calling `DeleteTempEnterpriseScanDirectory()` deletes directories
+// from previous sessions without deleting the current session's cloned file or
+// causing an in-progress non-blocking scan to fail.
+TEST_F(CloudContentScanningHelperTest,
+       DeleteTempEnterpriseScanDirectoryDoesNotFailActiveScan) {
+  SetUpAnalysisConnectorPolicy(kNonBlockingAnalysisSettingsPref);
+
+  // Create a directory simulating a leftover scan from a previous app session.
+  base::FilePath scan_dir;
+  ASSERT_TRUE(GetTempEnterpriseScanDirectory(&scan_dir));
+  base::FilePath previous_session_dir =
+      scan_dir.Append(FILE_PATH_LITERAL("previous_session"));
+  ASSERT_TRUE(base::CreateDirectory(previous_session_dir));
+
+  // Create a real file to scan in a ScopedTempDir.
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::FilePath file_path =
+      temp_dir.GetPath().AppendASCII("confidential_report.pdf");
+  ASSERT_TRUE(base::WriteFile(file_path, "test file content"));
+
+  base::test::TestFuture<bool> future;
+  std::optional<FileDownloadScanningResources> resources;
+  resources.emplace(PrepareCloudContentScanning(
+      web_state_, GURL("https://example.com/download"), file_path,
+      TriggerType::kSavePrompt, future.GetCallback()));
+
+  // Flush the ThreadPool so the file clone is created in the current session's
+  // directory before `DeleteTempEnterpriseScanDirectory()` runs, then flush
+  // again so `DeleteTempEnterpriseScanDirectory()` completes before the scanner
+  // reads the cloned file.
+  base::ThreadPoolInstance::Get()->FlushForTesting();
+  DeleteTempEnterpriseScanDirectory();
+  base::ThreadPoolInstance::Get()->FlushForTesting();
+
+  EXPECT_FALSE(base::DirectoryExists(previous_session_dir));
+  EXPECT_TRUE(future.Get());
+
+  // Verify the cloned file was not deleted and the scan proceeds to upload
+  // without failing.
+  FakeBinaryUploadService* upload_service =
+      static_cast<FakeBinaryUploadService*>(
+          IOSCloudBinaryUploadServiceFactory::GetForProfile(profile_.get()));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return upload_service->upload_count() == 1u; }));
+
+  BackgroundCloudScannerManager* manager =
+      BackgroundCloudScannerManagerFactory::GetForProfile(profile_.get());
+  ASSERT_NE(manager, nullptr);
+  EXPECT_EQ(manager->GetScannerCountForTesting(), 1u);
+  EXPECT_EQ(manager->GetPendingDeletionCountForTesting(), 0u);
+
+  resources.reset();
+  web_state_ = nullptr;
+  browser_.reset();
+  profile_.reset();
+  base::ThreadPoolInstance::Get()->FlushForTesting();
 }
 
 }  // namespace enterprise_connectors

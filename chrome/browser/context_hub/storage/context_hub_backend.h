@@ -5,10 +5,17 @@
 #ifndef CHROME_BROWSER_CONTEXT_HUB_STORAGE_CONTEXT_HUB_BACKEND_H_
 #define CHROME_BROWSER_CONTEXT_HUB_STORAGE_CONTEXT_HUB_BACKEND_H_
 
+#include <cstdint>
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "base/containers/span.h"
 #include "base/functional/callback_forward.h"
+
+namespace passage_embeddings {
+class Embedding;
+}  // namespace passage_embeddings
 
 namespace context_hub {
 
@@ -22,9 +29,17 @@ class ContextHubBackend {
 
   // MemoryBankTable operations:
   using OperationCompleteCallback = base::OnceCallback<void(bool)>;
-  // Adds or updates an entry in the MemoryBankTable.
-  virtual void AddOrUpdateMemoryBankEntry(
-      MemoryBankEntry entry,
+  using AddOrUpdateCallback = base::OnceCallback<void(std::optional<int64_t>)>;
+  // Adds or updates an entry in the MemoryBankTable and passes its ID on
+  // success, or std::nullopt on failure.
+  virtual void AddOrUpdateMemoryBankEntry(MemoryBankEntry entry,
+                                          AddOrUpdateCallback callback) = 0;
+  // Updates annotations for an existing entry in the MemoryBankTable.
+  virtual void UpdateMemoryBankEntryAnnotations(
+      int64_t id,
+      std::vector<std::string> tags,
+      std::optional<std::string> note,
+      std::optional<std::string> collection,
       OperationCompleteCallback callback) = 0;
   // Deletes entries in the MemoryBankTable with the given ids.
   virtual void DeleteMemoryBankEntries(base::span<const int64_t> ids,
@@ -38,6 +53,31 @@ class ContextHubBackend {
   virtual void GetMemoryBankEntriesByIds(
       base::span<const int64_t> ids,
       GetEntriesCallback callback) const = 0;
+  using GetStringsCallback =
+      base::OnceCallback<void(const std::vector<std::string>&)>;
+  // Returns all unique tags in the MemoryBankTable.
+  virtual void GetAllMemoryBankTags(GetStringsCallback callback) const = 0;
+  // Returns all unique collections in the MemoryBankTable.
+  virtual void GetAllMemoryBankCollections(
+      GetStringsCallback callback) const = 0;
+  // Memory bank embedding operations:
+  // Adds or updates the passage embeddings for an entry in the memory bank.
+  virtual void AddOrUpdateMemoryBankEmbeddings(
+      int64_t entry_id,
+      std::vector<passage_embeddings::Embedding> embeddings,
+      OperationCompleteCallback callback) = 0;
+  using GetIdsCallback = base::OnceCallback<void(std::vector<int64_t>)>;
+  // Returns the IDs of all entries that do not yet have embeddings.
+  virtual void GetMemoryBankEntryIdsWithoutEmbeddings(
+      GetIdsCallback callback) = 0;
+  // Records the embedder model version under which embeddings are computed. If
+  // it differs from the stored version, all stored embeddings are deleted so
+  // that they can be recomputed; `GetMemoryBankEntryIdsWithoutEmbeddings()`
+  // will then return every entry. Should be called once embedder metadata is
+  // available.
+  virtual void SetMemoryBankEmbeddingsVersion(
+      int64_t version,
+      OperationCompleteCallback callback) = 0;
 };
 
 }  // namespace context_hub

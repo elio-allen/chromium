@@ -27,12 +27,41 @@ class EwalletAccountLinkingManagerTestApi {
     manager_->DoOnGetDetailsForCreatePaymentInstrumentResponse(is_eligible);
   }
 
+  void set_action_token(std::vector<uint8_t> action_token) {
+    manager_->SetActionTokenForTesting(std::move(action_token));
+  }
+
   std::optional<AccountLinkingParams> CreateAccountLinkingParams() {
     return manager_->CreateAccountLinkingParams();
   }
 
   void DoOnAccountLinkingResult(AccountLinkingResult result) {
     manager_->DoOnAccountLinkingResult(result);
+  }
+
+  void DoOnAccepted() { manager_->DoOnAccepted(); }
+
+  void OnUiScreenEvent(UiEvent ui_event_type) {
+    manager_->OnUiScreenEvent(ui_event_type);
+  }
+
+  void ShowAccountLinkingLoadingScreen() {
+    manager_->ShowAccountLinkingLoadingScreen();
+  }
+
+  bool is_prompt_showing() const {
+    return manager_->ui_state_ ==
+           EwalletAccountLinkingManager::UiState::kPrompt;
+  }
+
+  bool is_progress_screen_showing() const {
+    return manager_->ui_state_ ==
+           EwalletAccountLinkingManager::UiState::kProgressScreen;
+  }
+
+  bool is_hidden() const {
+    return manager_->ui_state_ ==
+           EwalletAccountLinkingManager::UiState::kHidden;
   }
 
   base::DictValue GetPayloadForGetDetailsForCreatePaymentInstrument() {
@@ -42,6 +71,16 @@ class EwalletAccountLinkingManagerTestApi {
   std::string_view GetHistogramSuffix() const {
     return manager_->GetHistogramSuffix();
   }
+
+  base::WeakPtr<NativeAccountLinkingHandler> GetWeakPtr() {
+    return manager_->GetWeakPtr();
+  }
+
+  strike_database::StrikeDatabaseIntegratorBase* GetStrikeDatabase() {
+    return manager_->GetStrikeDatabase();
+  }
+
+  bool IsUserPrefEnabled() const { return manager_->IsUserPrefEnabled(); }
 
  private:
   const raw_ptr<EwalletAccountLinkingManager> manager_;

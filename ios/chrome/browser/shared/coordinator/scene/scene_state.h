@@ -58,6 +58,8 @@ class SigninInProgress;
 @property(nonatomic, weak) UIWindowScene* scene;
 
 // Connection options of `scene`, if any, from when the scene was connected.
+// TODO(crbug.com/462018636): Remove this property once `kEnableNewStartupFlow`
+// is enabled by default.
 @property(nonatomic, strong) UISceneConnectionOptions* connectionOptions;
 
 // The interface provider associated with this scene.
@@ -75,14 +77,23 @@ class SigninInProgress;
 // external intent.
 @property(nonatomic, assign) BOOL startupHadExternalIntent;
 
+// YES if there is at least one external intent waiting to be executed or
+// currently being executed on this scene. Only set when `kEnableNewStartupFlow`
+// is enabled.
+@property(nonatomic, assign) BOOL hasPendingIntent;
+
 // URLs passed to `UIWindowSceneDelegate scene:openURLContexts:` that needs to
 // be open next time the scene is activated.
 // Setting the property to not nil will add the new URL contexts to the set.
 // Setting the property to nil will clear the set.
+// TODO(crbug.com/462018636): Remove this property once `kEnableNewStartupFlow`
+// is enabled by default.
 @property(nonatomic) NSSet<UIOpenURLContext*>* URLContextsToOpen;
 
 // A NSUserActivity that has been passed to
 // `UISceneDelegate scene:continueUserActivity:` and needs to be opened.
+// TODO(crbug.com/462018636): Remove this property once `kEnableNewStartupFlow`
+// is enabled by default.
 @property(nonatomic) NSUserActivity* pendingUserActivity;
 
 // YES if the UI is enabled. The browser UI objects are available when this is
@@ -95,6 +106,10 @@ class SigninInProgress;
 // YES if sign-in is in progress which covers the authentication flow and the
 // sign-in prompt UI.
 @property(nonatomic, readonly) BOOL signinInProgress;
+
+// YES if multiple scenes are supported and new windows can currently be opened
+// from this scene. Setting this property will notify observers.
+@property(nonatomic) BOOL multipleScenesAvailable;
 
 // Object containing the state of whether some incognito content is visible, for
 // example an incognito tab or the incognito tab switcher.

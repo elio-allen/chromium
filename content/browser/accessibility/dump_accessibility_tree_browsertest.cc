@@ -82,7 +82,7 @@ void DumpAccessibilityTreeTest::SetUpCommandLine(
   // Enable headingoffset/headingreset attributes
   command_line->AppendSwitchASCII(switches::kEnableBlinkFeatures,
                                   "HeadingOffset");
-  // Enable layout of canvas children with the layoutsubtree attribute.
+  // Enable layout of canvas descendants with the content=drawable attribute.
   command_line->AppendSwitchASCII(switches::kEnableBlinkFeatures,
                                   "CanvasDrawElement");
   // Enable MenuElements so that the new menu elements are recognized.
@@ -134,6 +134,10 @@ void DumpAccessibilityTreeTest::RunApgPatternThirdPartyTest(
 void DumpAccessibilityTreeTest::ChooseFeatures(
     std::vector<base::test::FeatureRef>* enabled_features,
     std::vector<base::test::FeatureRef>* disabled_features) {
+  // Enable AccessibilityCanvas to ensure dump accessibility tree tests
+  // evaluate canvas structure with the feature enabled, consistent with
+  // the field trial testing configuration.
+  enabled_features->emplace_back(features::kAccessibilityCanvas);
   // crbug.com/339418716 - temporary until enabled by default
   enabled_features->emplace_back(blink::features::kUserMediaElement);
   enabled_features->emplace_back(blink::features::kUserMediaElementLegacy);
@@ -304,6 +308,11 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityCSSBackgroundColorNestedInlineSpan) {
+  RunCSSTest(FILE_PATH_LITERAL("background-color-nested-inline-span.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
                        AccessibilityCSSBeforeAfterBlock) {
   RunCSSTest(FILE_PATH_LITERAL("before-after-block.html"));
 }
@@ -366,6 +375,11 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityCSSFontFamily) {
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityCSSFontSize) {
   RunCSSTest(FILE_PATH_LITERAL("font-size.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityCSSFontSizeZero) {
+  RunCSSTest(FILE_PATH_LITERAL("font-size-zero.html"));
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
@@ -728,6 +742,15 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
                        AccessibilityComboboxWithRedundantAriaRole) {
   RunHtmlTest(FILE_PATH_LITERAL("combobox-with-redundant-aria-role.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityComboboxDetachedListboxPortal) {
+  RunHtmlTest(FILE_PATH_LITERAL("combobox-detached-listbox-portal.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityAriaMenuItems) {
+  RunHtmlTest(FILE_PATH_LITERAL("aria-menu-items.html"));
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
@@ -1625,12 +1648,29 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityMenuListViolationModeSetsize) {
+  RunHtmlTest(FILE_PATH_LITERAL("menulist-violation-mode-setsize.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(
+    DumpAccessibilityTreeTest,
+    AccessibilityMenuListViolationModeSetsizeNoDirectMenuitem) {
+  RunHtmlTest(FILE_PATH_LITERAL(
+      "menulist-violation-mode-setsize-no-direct-menuitem.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
                        AccessibilityAriaMismatchedTableAttr) {
   RunAriaTest(FILE_PATH_LITERAL("aria-mismatched-table-attr.html"));
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityAriaModal) {
   RunAriaTest(FILE_PATH_LITERAL("aria-modal.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityAriaModalWithAriaOwns) {
+  RunAriaTest(FILE_PATH_LITERAL("aria-modal-with-aria-owns.html"));
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
@@ -1661,6 +1701,11 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
                        AccessibilityAriaModalCloseVisibilityHidden) {
   RunAriaTest(FILE_PATH_LITERAL("aria-modal-close-visibility-hidden.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityAriaModalMoveBeforeCrash) {
+  RunCrashTest(FILE_PATH_LITERAL("aria-modal-move-before-crash.html"));
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityAriaMultiline) {
@@ -1760,6 +1805,11 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityAriaOwnsFromHiddenOwner) {
+  RunAriaTest(FILE_PATH_LITERAL("aria-owns-from-hidden-owner.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
                        AccessibilityAriaOwnsIllegalMultipleOwner) {
   RunAriaTest(FILE_PATH_LITERAL("aria-owns-illegal-multiple-owner.html"));
 }
@@ -1833,6 +1883,24 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityAriaRadiogroup) {
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
                        AccessibilityAriaRadioInShadowRoot) {
   RunAriaTest(FILE_PATH_LITERAL("aria-radio-in-shadow-root.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(
+    DumpAccessibilityTreeTest,
+    AccessibilityRadiosInRadiogroupsWithInterveningNonGenerics) {
+  RunAriaTest(FILE_PATH_LITERAL(
+      "radios-in-radiogroups-with-intervening-non-generics.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityRadioGroupPosinsetSetsizeOverrides) {
+  RunAriaTest(FILE_PATH_LITERAL("radio-group-posinset-setsize-overrides.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityRadioGroupCalculationWithIgnoredRadios) {
+  RunAriaTest(
+      FILE_PATH_LITERAL("radio-group-calculation-with-ignored-radios.html"));
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityAriaReadonly) {
@@ -2190,7 +2258,11 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
 }
 
 // TODO(crbug.com/40943250): Fix failure on android
-#if BUILDFLAG(IS_ANDROID)
+// TODO(crbug.com/372910798): Flaky on Linux with ASan and LSan and Debug
+// builds.
+#if BUILDFLAG(IS_ANDROID) || \
+(BUILDFLAG(IS_LINUX) && \
+ (defined(ADDRESS_SANITIZER) || defined(LEAK_SANITIZER) || !defined(NDEBUG)))
 #define MAYBE_AccessibilityAudio DISABLED_AccessibilityAudio
 #else
 #define MAYBE_AccessibilityAudio AccessibilityAudio
@@ -2299,6 +2371,11 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityBRWithChild) {
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityButton) {
   RunHtmlTest(FILE_PATH_LITERAL("button.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityButtonChildrenPresentational) {
+  RunHtmlTest(FILE_PATH_LITERAL("button-children-presentational.html"));
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityButtonSubmit) {
@@ -2507,6 +2584,17 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityGraphicsRoles) {
   RunAriaTest(FILE_PATH_LITERAL("graphics-roles.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityHeadingWithAriaLabel) {
+  RunAriaTest(FILE_PATH_LITERAL("heading-with-aria-label.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityContainerWithGenericDescendantsAndName) {
+  RunHtmlTest(
+      FILE_PATH_LITERAL("container-with-generic-descendants-and-name.html"));
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
@@ -2846,40 +2934,7 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
   RunHtmlTest(FILE_PATH_LITERAL("iframe-empty-positioned.html"));
 }
 
-class DumpAccessibilityTreeFencedFrameTest : public DumpAccessibilityTreeTest {
- protected:
-  DumpAccessibilityTreeFencedFrameTest() {
-    feature_list_.InitWithFeatures(
-        {{blink::features::kFencedFrames},
-         {features::kPrivacySandboxAdsAPIsOverride},
-         {blink::features::kFencedFramesAPIChanges},
-         {blink::features::kFencedFramesDefaultMode}},
-        {/* disabled_features */});
 
-    UseHttpsTestServer();
-  }
-
-  ~DumpAccessibilityTreeFencedFrameTest() override {
-    // Ensure that the feature lists are destroyed in the same order they
-    // were created in.
-    scoped_feature_list_.Reset();
-    feature_list_.Reset();
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-INSTANTIATE_TEST_SUITE_P(
-    All,
-    DumpAccessibilityTreeFencedFrameTest,
-    ::testing::ValuesIn(DumpAccessibilityTestBase::TreeTestPasses()),
-    DumpAccessibilityTreeTestPassToString());
-
-IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeFencedFrameTest,
-                       AccessibilityFencedFrameScrollable) {
-  RunHtmlTest(FILE_PATH_LITERAL("fencedframe-scrollable-mparch.html"));
-}
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
                        AccessibilityIframeScrollable) {
@@ -3041,7 +3096,14 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
   RunHtmlTest(FILE_PATH_LITERAL("input-color-with-popup-open.html"));
 }
 
-IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityInputDate) {
+// TODO(crbug.com/569708363): Re-enable this test
+#if BUILDFLAG(IS_FUCHSIA)
+#define MAYBE_AccessibilityInputDate DISABLED_AccessibilityInputDate
+#else
+#define MAYBE_AccessibilityInputDate AccessibilityInputDate
+#endif
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       MAYBE_AccessibilityInputDate) {
   RunHtmlTest(FILE_PATH_LITERAL("input-date.html"));
 }
 
@@ -3055,8 +3117,16 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
   RunHtmlTest(FILE_PATH_LITERAL("input-color-disabled.html"));
 }
 
+// TODO(crbug.com/569708363): Re-enable this test
+#if BUILDFLAG(IS_FUCHSIA)
+#define MAYBE_AccessibilityInputDateWithPopupOpen \
+  DISABLED_AccessibilityInputDateWithPopupOpen
+#else
+#define MAYBE_AccessibilityInputDateWithPopupOpen \
+  AccessibilityInputDateWithPopupOpen
+#endif
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
-                       NOT_ANDROID(AccessibilityInputDateWithPopupOpen)) {
+                       NOT_ANDROID(MAYBE_AccessibilityInputDateWithPopupOpen)) {
   RunHtmlTest(FILE_PATH_LITERAL("input-date-with-popup-open.html"));
 }
 
@@ -3083,13 +3153,22 @@ IN_PROC_BROWSER_TEST_P(
   RunHtmlTest(AccessibilityInputDateWithPopupOpenMultiple_TestFile);
 }
 
+// TODO(crbug.com/569708363): Re-enable this test
+#if BUILDFLAG(IS_FUCHSIA)
+#define MAYBE_AccessibilityInputTimeWithPopupOpen \
+  DISABLED_AccessibilityInputTimeWithPopupOpen
+#else
+#define MAYBE_AccessibilityInputTimeWithPopupOpen \
+  AccessibilityInputTimeWithPopupOpen
+#endif
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
-                       NOT_ANDROID(AccessibilityInputTimeWithPopupOpen)) {
+                       NOT_ANDROID(MAYBE_AccessibilityInputTimeWithPopupOpen)) {
   RunHtmlTest(FILE_PATH_LITERAL("input-time-with-popup-open.html"));
 }
 
+// TODO(crbug.com/569708363): Re-enable this test
 IN_PROC_BROWSER_TEST_P(YieldingParserDumpAccessibilityTreeTest,
-                       NOT_ANDROID(AccessibilityInputTimeWithPopupOpen)) {
+                       NOT_ANDROID(MAYBE_AccessibilityInputTimeWithPopupOpen)) {
   RunHtmlTest(FILE_PATH_LITERAL("input-time-with-popup-open.html"));
 }
 
@@ -3097,8 +3176,15 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityInputDateTime) {
   RunHtmlTest(FILE_PATH_LITERAL("input-datetime.html"));
 }
 
+// TODO(crbug.com/569708363): Re-enable this test
+#if BUILDFLAG(IS_FUCHSIA)
+#define MAYBE_AccessibilityInputDateTimeLocal \
+  DISABLED_AccessibilityInputDateTimeLocal
+#else
+#define MAYBE_AccessibilityInputDateTimeLocal AccessibilityInputDateTimeLocal
+#endif
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
-                       AccessibilityInputDateTimeLocal) {
+                       MAYBE_AccessibilityInputDateTimeLocal) {
   RunHtmlTest(FILE_PATH_LITERAL("input-datetime-local.html"));
 }
 
@@ -3122,7 +3208,14 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityInputList) {
   RunHtmlTest(FILE_PATH_LITERAL("input-list.html"));
 }
 
-IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityInputMonth) {
+// TODO(crbug.com/569708363): Re-enable this test
+#if BUILDFLAG(IS_FUCHSIA)
+#define MAYBE_AccessibilityInputMonth DISABLED_AccessibilityInputMonth
+#else
+#define MAYBE_AccessibilityInputMonth AccessibilityInputMonth
+#endif
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       MAYBE_AccessibilityInputMonth) {
   RunHtmlTest(FILE_PATH_LITERAL("input-month.html"));
 }
 
@@ -3141,6 +3234,10 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityInputRadio) {
   RunHtmlTest(FILE_PATH_LITERAL("input-radio.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityInputRadioHidden) {
+  RunHtmlTest(FILE_PATH_LITERAL("input-radio-hidden.html"));
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
@@ -3270,7 +3367,14 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
   RunHtmlTest(FILE_PATH_LITERAL("input-text-with-selection.html"));
 }
 
-IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityInputTime) {
+// TODO(crbug.com/569708363): Re-enable this test
+#if BUILDFLAG(IS_FUCHSIA)
+#define MAYBE_AccessibilityInputTime DISABLED_AccessibilityInputTime
+#else
+#define MAYBE_AccessibilityInputTime AccessibilityInputTime
+#endif
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       MAYBE_AccessibilityInputTime) {
   RunHtmlTest(FILE_PATH_LITERAL("input-time.html"));
 }
 
@@ -3283,7 +3387,14 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityInputTime) {
 #define AccessibilityInputTypes_TestFile FILE_PATH_LITERAL("input-types.html")
 #endif
 
-IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityInputTypes) {
+// TODO(crbug.com/569708363): Re-enable this test
+#if BUILDFLAG(IS_FUCHSIA)
+#define MAYBE_AccessibilityInputTypes DISABLED_AccessibilityInputTypes
+#else
+#define MAYBE_AccessibilityInputTypes AccessibilityInputTypes
+#endif
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       MAYBE_AccessibilityInputTypes) {
   RunHtmlTest(AccessibilityInputTypes_TestFile);
 }
 
@@ -3306,7 +3417,14 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityInputUrl) {
   RunHtmlTest(FILE_PATH_LITERAL("input-url.html"));
 }
 
-IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityInputWeek) {
+// TODO(crbug.com/569708363): Re-enable this test
+#if BUILDFLAG(IS_FUCHSIA)
+#define MAYBE_AccessibilityInputWeek DISABLED_AccessibilityInputWeek
+#else
+#define MAYBE_AccessibilityInputWeek AccessibilityInputWeek
+#endif
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       MAYBE_AccessibilityInputWeek) {
   RunHtmlTest(FILE_PATH_LITERAL("input-week.html"));
 }
 
@@ -3328,8 +3446,16 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilityIns) {
   RunHtmlTest(FILE_PATH_LITERAL("ins.html"));
 }
 
+// TODO(crbug.com/569708363): Re-enable this test
+#if BUILDFLAG(IS_FUCHSIA)
+#define MAYBE_AccessibilityInteractiveControlsWithLabels \
+  DISABLED_AccessibilityInteractiveControlsWithLabels
+#else
+#define MAYBE_AccessibilityInteractiveControlsWithLabels \
+  AccessibilityInteractiveControlsWithLabels
+#endif
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
-                       AccessibilityInteractiveControlsWithLabels) {
+                       MAYBE_AccessibilityInteractiveControlsWithLabels) {
   RunHtmlTest(FILE_PATH_LITERAL("interactive-controls-with-labels.html"));
 }
 
@@ -3881,11 +4007,6 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilitySelect) {
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest, AccessibilitySelectDisabled) {
   RunHtmlTest(FILE_PATH_LITERAL("select-disabled.html"));
-}
-
-IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
-                       AccessibilityAriaAttributeRemoval) {
-  RunHtmlTest(FILE_PATH_LITERAL("aria-attribute-removal.html"));
 }
 
 // The test times out on Mac because it cannot open the native select.
@@ -5080,9 +5201,399 @@ IN_PROC_BROWSER_TEST_P(
       "list-with-multi-line-list-item-in-content-editable.html"));
 }
 
+// TODO(crbug.com/545647752): APG pattern third-party tests are disabled on
+// Fuchsia to avoid exceeding test runner argument limits during flakiness
+// checks.
+#if !BUILDFLAG(IS_FUCHSIA)
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyAccordion) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("accordion/examples/accordion.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyAdvancedDataGrid) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("grid/examples/advanced-data-grid.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyAlert) {
+  RunApgPatternThirdPartyTest(FILE_PATH_LITERAL("alert/examples/alert.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyAlertdialog) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("alertdialog/examples/alertdialog.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyBreadcrumb) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("breadcrumb/examples/breadcrumb.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyButton) {
+  RunApgPatternThirdPartyTest(FILE_PATH_LITERAL("button/examples/button.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyButtonIdl) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("button/examples/button_idl.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyCarousel1PrevNext) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("carousel/examples/carousel-1-prev-next.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyCarousel2Tablist) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("carousel/examples/carousel-2-tablist.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyCheckbox) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("checkbox/examples/checkbox.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyCheckboxMixed) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("checkbox/examples/checkbox-mixed.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(
+    DumpAccessibilityTreeTest,
+    AccessibilityApgPatternThirdPartyComboboxAutocompleteBoth) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("combobox/examples/combobox-autocomplete-both.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(
+    DumpAccessibilityTreeTest,
+    AccessibilityApgPatternThirdPartyComboboxAutocompleteList) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("combobox/examples/combobox-autocomplete-list.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(
+    DumpAccessibilityTreeTest,
+    AccessibilityApgPatternThirdPartyComboboxAutocompleteNone) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("combobox/examples/combobox-autocomplete-none.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyComboboxDatepicker) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("combobox/examples/combobox-datepicker.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyComboboxSelectOnly) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("combobox/examples/combobox-select-only.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyDataGrids) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("grid/examples/data-grids.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyDatepickerDialog) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("dialog-modal/examples/datepicker-dialog.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyDatepickerSpinbuttons) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("spinbutton/examples/datepicker-spinbuttons.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyDialog) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("dialog-modal/examples/dialog.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyDisclosureCard) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("disclosure/examples/disclosure-card.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyDisclosureFaq) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("disclosure/examples/disclosure-faq.html"));
+}
+
+// TODO(crbug.com/545647752): disabled due to flakiness
+IN_PROC_BROWSER_TEST_P(
+    DumpAccessibilityTreeTest,
+    DISABLED_AccessibilityApgPatternThirdPartyDisclosureImageDescription) {
+  RunApgPatternThirdPartyTest(FILE_PATH_LITERAL(
+      "disclosure/examples/disclosure-image-description.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyDisclosureNavigation) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("disclosure/examples/disclosure-navigation.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(
+    DumpAccessibilityTreeTest,
+    AccessibilityApgPatternThirdPartyDisclosureNavigationHybrid) {
+  RunApgPatternThirdPartyTest(FILE_PATH_LITERAL(
+      "disclosure/examples/disclosure-navigation-hybrid.html"));
+}
+
+// TODO(crbug.com/545647752): disabled due to flakiness
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       DISABLED_AccessibilityApgPatternThirdPartyFeed) {
+  RunApgPatternThirdPartyTest(FILE_PATH_LITERAL("feed/examples/feed.html"));
+}
+
+// TODO(crbug.com/545647752): disabled due to flakiness
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       DISABLED_AccessibilityApgPatternThirdPartyFeedDisplay) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("feed/examples/feed-display.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyGridCombo) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("combobox/examples/grid-combo.html"));
+}
+
+// TODO(crbug.com/545647752): disabled due to flakiness
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       DISABLED_AccessibilityApgPatternThirdPartyLayoutGrids) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("grid/examples/layout-grids.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyLink) {
+  RunApgPatternThirdPartyTest(FILE_PATH_LITERAL("link/examples/link.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyListboxCollapsible) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("listbox/examples/listbox-collapsible.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyListboxGrouped) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("listbox/examples/listbox-grouped.html"));
+}
+
+// TODO(crbug.com/545647752): disabled due to flakiness
+IN_PROC_BROWSER_TEST_P(
+    DumpAccessibilityTreeTest,
+    DISABLED_AccessibilityApgPatternThirdPartyListboxRearrangeable) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("listbox/examples/listbox-rearrangeable.html"));
+}
+
+// TODO(crbug.com/545647752): disabled due to flakiness
+IN_PROC_BROWSER_TEST_P(
+    DumpAccessibilityTreeTest,
+    DISABLED_AccessibilityApgPatternThirdPartyListboxScrollable) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("listbox/examples/listbox-scrollable.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyMenuButtonActions) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("menu-button/examples/menu-button-actions.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(
+    DumpAccessibilityTreeTest,
+    AccessibilityApgPatternThirdPartyMenuButtonActionsActiveDescendant) {
+  RunApgPatternThirdPartyTest(FILE_PATH_LITERAL(
+      "menu-button/examples/menu-button-actions-active-descendant.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyMenuButtonLinks) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("menu-button/examples/menu-button-links.html"));
+}
+
+// TODO(crbug.com/545647752): disabled due to flakiness
+IN_PROC_BROWSER_TEST_P(
+    DumpAccessibilityTreeTest,
+    DISABLED_AccessibilityApgPatternThirdPartyMenubarEditor) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("menubar/examples/menubar-editor.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyMenubarNavigation) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("menubar/examples/menubar-navigation.html"));
+}
+
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
                        AccessibilityApgPatternThirdPartyMeter) {
   RunApgPatternThirdPartyTest(FILE_PATH_LITERAL("meter/examples/meter.html"));
 }
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyQuantitySpinbutton) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("spinbutton/examples/quantity-spinbutton.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyRadio) {
+  RunApgPatternThirdPartyTest(FILE_PATH_LITERAL("radio/examples/radio.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyRadioActivedescendant) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("radio/examples/radio-activedescendant.html"));
+}
+
+// TODO(crbug.com/545647752): disabled due to flakiness
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       DISABLED_AccessibilityApgPatternThirdPartyRadioRating) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("radio/examples/radio-rating.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartySliderColorViewer) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("slider/examples/slider-color-viewer.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartySliderMultithumb) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("slider-multithumb/examples/slider-multithumb.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartySliderRating) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("slider/examples/slider-rating.html"));
+}
+
+// TODO(crbug.com/545647752): disabled due to flakiness
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       DISABLED_AccessibilityApgPatternThirdPartySliderSeek) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("slider/examples/slider-seek.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartySliderTemperature) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("slider/examples/slider-temperature.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartySortableTable) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("table/examples/sortable-table.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartySwitch) {
+  RunApgPatternThirdPartyTest(FILE_PATH_LITERAL("switch/examples/switch.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartySwitchButton) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("switch/examples/switch-button.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartySwitchCheckbox) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("switch/examples/switch-checkbox.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyTable) {
+  RunApgPatternThirdPartyTest(FILE_PATH_LITERAL("table/examples/table.html"));
+}
+
+// TODO(crbug.com/545647752): disabled due to flakiness
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       DISABLED_AccessibilityApgPatternThirdPartyTabsActions) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("tabs/examples/tabs-actions.html"));
+}
+
+// TODO(crbug.com/545647752): disabled due to flakiness
+IN_PROC_BROWSER_TEST_P(
+    DumpAccessibilityTreeTest,
+    DISABLED_AccessibilityApgPatternThirdPartyTabsAutomatic) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("tabs/examples/tabs-automatic.html"));
+}
+
+// TODO(crbug.com/545647752): disabled due to flakiness
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       DISABLED_AccessibilityApgPatternThirdPartyTabsManual) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("tabs/examples/tabs-manual.html"));
+}
+
+// TODO(crbug.com/545647752): disabled due to flakiness
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       DISABLED_AccessibilityApgPatternThirdPartyToolbar) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("toolbar/examples/toolbar.html"));
+}
+
+// TODO(crbug.com/545647752): disabled due to flakiness
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       DISABLED_AccessibilityApgPatternThirdPartyTreegrid1) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("treegrid/examples/treegrid-1.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyTreeview1a) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("treeview/examples/treeview-1a.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityTreeTest,
+                       AccessibilityApgPatternThirdPartyTreeview1b) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("treeview/examples/treeview-1b.html"));
+}
+
+// TODO(crbug.com/545647752): disabled due to flakiness
+IN_PROC_BROWSER_TEST_P(
+    DumpAccessibilityTreeTest,
+    DISABLED_AccessibilityApgPatternThirdPartyTreeviewNavigation) {
+  RunApgPatternThirdPartyTest(
+      FILE_PATH_LITERAL("treeview/examples/treeview-navigation.html"));
+}
+#endif  // !BUILDFLAG(IS_FUCHSIA)
 
 }  // namespace content

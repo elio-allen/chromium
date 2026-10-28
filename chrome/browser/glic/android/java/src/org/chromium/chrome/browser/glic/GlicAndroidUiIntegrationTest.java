@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.glic;
 
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
+import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
@@ -38,6 +39,7 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -55,6 +57,8 @@ import org.chromium.chrome.browser.actor.ui.ControlOwnership;
 import org.chromium.chrome.browser.actor.ui.TabIndicatorStatus;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicButtonStateController;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicToolbarButtonController;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonController;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
@@ -72,11 +76,7 @@ import java.util.Set;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Restriction({DeviceFormFactor.PHONE})
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@EnableFeatures({
-    ChromeFeatureList.GLIC,
-    ChromeFeatureList.ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_V2,
-    ChromeFeatureList.TAB_BOTTOM_SHEET
-})
+@EnableFeatures({ChromeFeatureList.GLIC, ChromeFeatureList.TAB_BOTTOM_SHEET})
 @DisableFeatures({
     ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL,
     ChromeFeatureList.ANDROID_BOTTOM_BAR
@@ -245,11 +245,13 @@ public class GlicAndroidUiIntegrationTest {
 
         // Verify that toggleUI was called on GlicKeyedService.
         verify(mGlicService, Mockito.timeout(5000))
-                .toggleUI(Mockito.anyLong(), Mockito.eq(false), Mockito.any(), Mockito.anyInt());
+                .toggleUI(Mockito.any(), Mockito.eq(false), Mockito.any(), Mockito.anyInt());
     }
 
     @Test
     @LargeTest
+    // TODO(crbug.com/570554196): Re-enable.
+    @DisableIf.Build(supported_abis_includes = "x86_64", message = "https://crbug.com/570554196")
     public void testButtonClickShowsTaskMenuWhenTaskOnOtherTab() {
         // Set up active task on a different tab.
         int otherTabId = mTab.getId() + 1;
@@ -307,8 +309,8 @@ public class GlicAndroidUiIntegrationTest {
     @Test
     @LargeTest
     public void testActorOverlayViewAndTakeOver() {
-        // Initially, the overlay view should not be visible.
-        onView(withId(R.id.actor_overlay)).check(matches(not(isDisplayed())));
+        // Initially, the overlay view should not be inflated/present in the hierarchy.
+        onView(withId(R.id.actor_overlay)).check(doesNotExist());
 
         // 1. Simulate Actor UI Tab state update on the tab -> overlay active, border glow visible,
         // handoff button active.

@@ -4,9 +4,9 @@
 
 #include "components/autofill/core/browser/integrators/personal_context/personal_context_autofill_util.h"
 
-#include "components/autofill/core/browser/at_memory/at_memory_enablement_utils.h"
+#include "components/autofill/core/browser/at_memory/at_memory_enablement_util.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
-#include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_utils.h"
+#include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_util.h"
 #include "components/personal_context/core/personal_context_eligibility_service.h"
 #include "components/personal_context/core/personal_context_types.h"
 
@@ -50,7 +50,7 @@ bool ShouldShowPersonalContextAutofillSetting(
 #endif
       prefs, edm, identity_manager, sync_service,
       is_wallet_public_pass_storage_enabled, is_off_the_record, country_code,
-      subscription_service, eligibility_service->GetEligibilityState(),
+      eligibility_service->GetEligibilityState(),
       AutofillAiAction::kShowAmbientAutofillInSettings);
 
   const bool at_memory_enabled = MayPerformAtMemoryActionBase(

@@ -18,9 +18,7 @@
 #include "base/task/post_job.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
-#include "base/trace_event/trace_arguments.h"
 #include "base/trace_event/trace_event.h"
-#include "gpu/command_buffer/service/dawn_caching_interface.h"
 #include "gpu/config/gpu_finch_features.h"
 #include "gpu/vulkan/buildflags.h"
 #include "ui/gl/progress_reporter.h"
@@ -223,13 +221,10 @@ void EmitUnifiedHistogram(const std::string& uma_prefix,
 DawnPlatform::CacheCountsMap::CacheCountsMap() = default;
 DawnPlatform::CacheCountsMap::~CacheCountsMap() = default;
 
-DawnPlatform::DawnPlatform(
-    std::unique_ptr<DawnCachingInterface> dawn_caching_interface,
-    gl::ProgressReporter* progress_reporter,
-    const char* uma_prefix,
-    bool record_cache_count_uma)
-    : dawn_caching_interface_(std::move(dawn_caching_interface)),
-      progress_reporter_(progress_reporter),
+DawnPlatform::DawnPlatform(gl::ProgressReporter* progress_reporter,
+                           const char* uma_prefix,
+                           bool record_cache_count_uma)
+    : progress_reporter_(progress_reporter),
       uma_prefix_(uma_prefix),
       cache_map_(base::MakeRefCounted<CacheCountsMap>()),
       startup_time_(base::TimeTicks::Now()) {
@@ -242,38 +237,8 @@ DawnPlatform::DawnPlatform(
 
 DawnPlatform::~DawnPlatform() = default;
 
-const unsigned char* DawnPlatform::GetTraceCategoryEnabledFlag(
-    dawn::platform::TraceCategory category) {
-  // For now, all Dawn trace categories are put under "gpu.dawn"
-  return TRACE_EVENT_API_GET_CATEGORY_GROUP_ENABLED(
-      TRACE_DISABLED_BY_DEFAULT("gpu.dawn"));
-}
-
 double DawnPlatform::MonotonicallyIncreasingTime() {
   return (base::TimeTicks::Now() - base::TimeTicks()).InSecondsF();
-}
-
-uint64_t DawnPlatform::AddTraceEvent(
-    char phase,
-    const unsigned char* category_group_enabled,
-    const char* name,
-    uint64_t id,
-    double timestamp,
-    int num_args,
-    const char** arg_names,
-    const unsigned char* arg_types,
-    const uint64_t* arg_values,
-    unsigned char flags) {
-  base::TimeTicks timestamp_tt = base::TimeTicks() + base::Seconds(timestamp);
-
-  base::trace_event::TraceArguments args(
-      num_args, arg_names, arg_types,
-      reinterpret_cast<const unsigned long long*>(arg_values));
-
-      TRACE_EVENT_API_ADD_TRACE_EVENT_WITH_THREAD_ID_AND_TIMESTAMP(
-          phase, category_group_enabled, name, id,
-          base::PlatformThread::CurrentId(), timestamp_tt, &args, flags);
-      return 0;
 }
 
 void DawnPlatform::HistogramCacheCountHelper(std::string_view name,
@@ -351,10 +316,6 @@ void DawnPlatform::HistogramBoolean(const char* name, bool sample) {
   base::UmaHistogramBoolean(uma_prefix_ + name, sample);
 }
 
-dawn::platform::CachingInterface* DawnPlatform::GetCachingInterface() {
-  return dawn_caching_interface_.get();
-}
-
 std::unique_ptr<dawn::platform::WorkerTaskPool>
 DawnPlatform::CreateWorkerTaskPool() {
   return std::make_unique<AsyncWorkerTaskPool>(progress_reporter_);
@@ -370,14 +331,8 @@ bool DawnPlatform::IsFeatureEnabled(dawn::platform::Features feature) {
           features::kWebGPUEnableRangeAnalysisForRobustness);
     case dawn::platform::Features::kWebGPUUseSpirv14:
       return base::FeatureList::IsEnabled(features::kWebGPUUseSpirv14);
-    case dawn::platform::Features::kWebGPUDecomposeUniformBuffers:
-      return base::FeatureList::IsEnabled(
-          features::kWebGPUDecomposeUniformBuffers);
     case dawn::platform::Features::kWebGPUUseHLSL2021:
       return base::FeatureList::IsEnabled(features::kWebGPUUseHLSL2021);
-    case dawn::platform::Features::kWebGPUUseSpirvReconvergenceMode:
-      return base::FeatureList::IsEnabled(
-          features::kWebGPUUseSpirvReconvergenceMode);
     default:
       return false;
   }

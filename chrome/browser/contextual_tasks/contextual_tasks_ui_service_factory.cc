@@ -97,7 +97,7 @@ void ContextualTasksUiServiceFactory::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
   registry->RegisterIntegerPref(kContextualTasksOnboardingTooltipDismissedCount,
                                 0);
-  registry->RegisterIntegerPref(kContextualTasksLensSearchTooltipDismissedCount,
+  registry->RegisterIntegerPref(kContextualTasksAskGTooltipDismissedCount,
                                 0);
 
   registry->RegisterBooleanPref(kContextualTasksShareOpenTabsEveryThread,

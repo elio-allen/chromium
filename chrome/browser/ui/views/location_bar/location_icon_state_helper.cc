@@ -6,18 +6,27 @@
 
 #include "build/branding_buildflags.h"
 #include "chrome/browser/extensions/extension_ui_util.h"
+#include "chrome/browser/ui/omnibox/omnibox_controller.h"
+#include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/contextual_tasks/public/features.h"
 #include "components/dom_distiller/core/url_constants.h"
+#include "components/omnibox/browser/autocomplete_classifier.h"
+#include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/location_bar_model.h"
+#include "components/omnibox/browser/omnibox_client.h"
+#include "components/omnibox/browser/omnibox_text_util.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/url_constants.h"
 #include "extensions/common/constants.h"
+#include "third_party/metrics_proto/omnibox_event.pb.h"
 #include "ui/accessibility/ax_enums.mojom.h"
+#include "ui/base/clipboard/clipboard.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
+#include "url/gurl.h"
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)              // nocheck
 #include "chrome/grit/theme_resources.h"
@@ -41,14 +50,11 @@ std::u16string GetSecurityChipText(const LocationBarModel* model,
     return l10n_util::GetStringUTF16(IDS_SHORT_PRODUCT_NAME);
   }
 
-  if (model->GetURL().SchemeIs(url::kFileScheme)) {
-    return l10n_util::GetStringUTF16(IDS_OMNIBOX_FILE);
-  }
-
-  if (model->GetURL().SchemeIs(dom_distiller::kDomDistillerScheme)) {
-    return l10n_util::GetStringUTF16(IDS_OMNIBOX_READER_MODE);
-  }
-
+  // Checked before the scheme labels below: an extension rendering the tab
+  // owns its identity even when the URL scheme has a label of its own (e.g. a
+  // file:// PDF rendered by a MIME handler). The icon override applies the
+  // same precedence, and the two must agree.
+  //
   // On ChromeOS, this can be called using web_contents from
   // SimpleWebViewDialog::GetWebContents() which always returns null.
   // TODO(crbug.com/40501128) Remove the null check and make
@@ -61,6 +67,14 @@ std::u16string GetSecurityChipText(const LocationBarModel* model,
     if (!extension_name.empty()) {
       return extension_name;
     }
+  }
+
+  if (model->GetURL().SchemeIs(url::kFileScheme)) {
+    return l10n_util::GetStringUTF16(IDS_OMNIBOX_FILE);
+  }
+
+  if (model->GetURL().SchemeIs(dom_distiller::kDomDistillerScheme)) {
+    return l10n_util::GetStringUTF16(IDS_OMNIBOX_READER_MODE);
   }
 
   return model->GetSecureDisplayText();
@@ -163,6 +177,49 @@ bool ShouldAnimateSecurityChipTextChange(
   }
   return new_level == security_state::DANGEROUS ||
          new_level == security_state::WARNING;
+}
+
+void ExecutePasteAndGo(OmniboxController& omnibox_controller,
+                       AutocompleteClassifier* autocomplete_classifier,
+                       const std::u16string& text,
+                       base::TimeTicks event_timestamp) {
+  const std::u16string sanitized_text = omnibox::SanitizeTextForPaste(text);
+
+  if (!autocomplete_classifier) {
+    return;
+  }
+
+  if (!omnibox_controller.edit_model()->CanPasteAndGo(sanitized_text)) {
+    return;
+  }
+
+  const metrics::OmniboxEventProto::PageClassification page_classification =
+      omnibox_controller.client()->GetPageClassification(
+          /*is_prefetch=*/false);
+  AutocompleteMatch match;
+  autocomplete_classifier->Classify(sanitized_text, /*in_keyword_mode=*/false,
+                                    /*allow_exact_keyword_match=*/false,
+                                    page_classification, &match, nullptr);
+  if (!match.destination_url.is_valid() ||
+      !match.destination_url.SchemeIsHTTPOrHTTPS()) {
+    return;
+  }
+
+  omnibox_controller.edit_model()->PasteAndGo(sanitized_text, event_timestamp);
+}
+
+bool InitiateMiddleClickPasteIfSupported(
+    bool is_middle_click,
+    base::OnceCallback<void(std::u16string)> paste_callback) {
+  if (is_middle_click && ui::Clipboard::IsMiddleClickPasteEnabled() &&
+      ui::Clipboard::IsSupportedClipboardBuffer(
+          ui::ClipboardBuffer::kSelection)) {
+    ui::Clipboard::GetForCurrentThread()->ReadText(
+        ui::ClipboardBuffer::kSelection, /*data_dst=*/std::nullopt,
+        std::move(paste_callback));
+    return true;
+  }
+  return false;
 }
 
 }  // namespace location_bar

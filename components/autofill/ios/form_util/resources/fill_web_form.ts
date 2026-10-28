@@ -112,17 +112,11 @@ export function webFormElementToFormData(
   const controlElements =
       getFormControlElements(formElement) as FormControlElement[];
 
-  let iframeElements = extractChildFrames &&
-          autofillFormFeaturesApi.getFunction(
-              'isAutofillAcrossIframesEnabled')() ?
-      getIframeElements(formElement) :
-      [];
+  let iframeElements = extractChildFrames ? getIframeElements(formElement) : [];
 
   // To avoid performance bottlenecks, do not keep child frames if their
   // quantity exceeds the allowed threshold.
-  if (iframeElements.length > fillConstants.MAX_EXTRACTABLE_FRAMES &&
-      autofillFormFeaturesApi.getFunction(
-          'isAutofillAcrossIframesThrottlingEnabled')()) {
+  if (iframeElements.length > fillConstants.MAX_EXTRACTABLE_FRAMES) {
     iframeElements = [];
   }
 
@@ -205,10 +199,16 @@ export function webFormControlElementToFormField(
       inferenceUtil.isTextAreaElement(element) ||
       inferenceUtil.isSelectElement(element)) {
     field.is_autofilled = (element as any).isAutofilled;
-    field.is_user_edited_deprecated = fieldWasEditedByUser(element);
     field.should_autocomplete = fillUtil.shouldAutocomplete(element);
+    // A negative `tabindex` only removes an element from the sequential focus
+    // order; the element stays programmatically focusable. Blink's
+    // Element::IsFocusable() therefore ignores it, and some payment providers
+    // rely on that to receive autofilled values in off-screen mirror fields.
     field.is_focusable = !element.disabled && !(element as any).readOnly &&
-        element.tabIndex >= 0 && fillUtil.isVisibleNode(element);
+        (element.tabIndex >= 0 ||
+         autofillFormFeaturesApi.getFunction(
+             'isAutofillIgnoreTabIndexForFocusabilityEnabled')()) &&
+        fillUtil.isVisibleNode(element);
   }
 
   if (isTextField(element) || inferenceUtil.isTextAreaElement(element)) {
@@ -221,11 +221,7 @@ export function webFormControlElementToFormField(
     field.max_length = 0;
   }
 
-  if (inferenceUtil.isAutofillableInputElement(element)) {
-    field.is_checkable = inferenceUtil.isCheckableElement(element);
-  } else if (inferenceUtil.isTextAreaElement(element)) {
-    // Nothing more to do in this case.
-  } else {
+  if (inferenceUtil.isSelectElement(element)) {
     fillUtil.getOptionStringsFromElement(element as HTMLSelectElement, field);
   }
 
@@ -448,9 +444,7 @@ export function unownedFormElementsAndFieldSetsToFormData(
 
   // To avoid performance bottlenecks, do not keep child frames if their
   // quantity exceeds the allowed threshold.
-  if (iframeElements.length > fillConstants.MAX_EXTRACTABLE_FRAMES &&
-      autofillFormFeaturesApi.getFunction(
-          'isAutofillAcrossIframesThrottlingEnabled')()) {
+  if (iframeElements.length > fillConstants.MAX_EXTRACTABLE_FRAMES) {
     iframeElements = [];
   }
 
@@ -733,9 +727,7 @@ export function autofillSubmissionData(form: HTMLFormElement):
  * makes an edited field unedited.
  */
 export function fieldWasEditedByUser(element: Element) {
-  return !autofillFormFeaturesApi.getFunction(
-             'isAutofillCorrectUserEditedBitInParsedField')() ||
-      (wasEditedByUser.get(element) ?? false);
+  return (wasEditedByUser.get(element) ?? false);
 }
 
 /**

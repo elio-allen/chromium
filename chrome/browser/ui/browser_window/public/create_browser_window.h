@@ -78,6 +78,8 @@ struct BrowserWindowCreateParams {
       bool user_gesture);
 
   static BrowserWindowCreateParams CreateForDevTools(Profile* profile);
+
+  bool is_pip() const { return pip_options.has_value(); }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
   // The type of browser window to create.
@@ -161,7 +163,10 @@ struct BrowserWindowCreateParams {
   // fullscreen.
   bool can_fullscreen = true;
 
-  // Document Picture in Picture options, specific to TYPE_PICTURE_IN_PICTURE.
+  // Document Picture in Picture options, specific to TYPE_FLOATING when used
+  // for Document Picture-in-Picture. Presence of this value indicates that the
+  // window is a Document Picture-in-Picture window; do not set this for
+  // non-Picture-in-Picture windows.
   std::optional<blink::mojom::PictureInPictureWindowOptions> pip_options;
 
   // Specifies the collapsed state for the Vertical Tab Strip. True if the
@@ -188,9 +193,12 @@ struct BrowserWindowCreateParams {
 #endif
 
 #if BUILDFLAG(IS_OZONE)
+  // The default value for a browser's `restore_id` param.
+  static constexpr int kDefaultRestoreId = 0;
+
   // Some platforms support session management assisted by the windowing
   // system.
-  int32_t restore_id = 0;
+  int32_t restore_id = kDefaultRestoreId;
 #endif
 #endif  // !BUILDFLAG(IS_ANDROID)
 
@@ -252,6 +260,16 @@ BrowserWindowInterface* CreateBrowserWindow(
 void CreateBrowserWindow(
     BrowserWindowCreateParams create_params,
     base::OnceCallback<void(BrowserWindowInterface*)> callback);
+
+#if !BUILDFLAG(IS_ANDROID)
+// WARNING: Use of this is DEPRECATED and exists only to support pre-existing
+// browser unittests.
+// TODO(crbug.com/417766643): Remove this once all use of Browser in unittests
+// has been eliminated.
+std::unique_ptr<BrowserWindowInterface>
+DeprecatedCreateOwnedBrowserWindowForTesting(
+    BrowserWindowCreateParams create_params);
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 // Returns whether a browser window can currently be created for the specified
 // // profile. This condition may change during runtime for a given `profile`

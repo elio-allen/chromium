@@ -36,7 +36,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
-#include "chrome/browser/ui/browser_commands.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/chrome_test_utils.h"
@@ -61,6 +60,7 @@
 #include "components/variations/variations_switches.h"
 #include "components/variations/variations_test_utils.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -79,6 +79,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/zlib/google/compression_utils.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -87,6 +88,7 @@
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/test/base/android/android_ui_test_utils.h"
 #else
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/test/base/ui_test_utils.h"
 #endif
 
@@ -360,7 +362,12 @@ class VariationHeaderSetter : public ChromeBrowserMainExtraParts {
 class VariationsHttpHeadersBrowserTest : public PlatformBrowserTest {
  public:
   VariationsHttpHeadersBrowserTest()
-      : https_server_(net::test_server::EmbeddedTestServer::TYPE_HTTPS) {}
+      : https_server_(net::test_server::EmbeddedTestServer::TYPE_HTTPS) {
+#if BUILDFLAG(IS_ANDROID)
+    // SetUpOnMainThread() uses NetworkConnectionChangeSimulator.
+    set_use_test_network_connection_tracker(false);
+#endif
+  }
 
   VariationsHttpHeadersBrowserTest(const VariationsHttpHeadersBrowserTest&) =
       delete;
@@ -368,26 +375,6 @@ class VariationsHttpHeadersBrowserTest : public PlatformBrowserTest {
       const VariationsHttpHeadersBrowserTest&) = delete;
 
   ~VariationsHttpHeadersBrowserTest() override = default;
-
-  void TearDownOnMainThread() override {
-    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-#if BUILDFLAG(IS_ANDROID)
-    // TODO(crbug.com/480962318): Remove this workaround when fixed.
-    // On Android there seems to be a race between deinitialization of the
-    // FeatureList through the browsertest and Android actual UI thread.
-    // This results in rare crash in
-    // BluetoothNotificationManager.clearBluetoothNotifications().
-    // The workaround is to drain the RunLoop before allowing the test
-    // to tear down.
-    base::RunLoop run_loop;
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, run_loop.QuitClosure());
-    run_loop.Run();
-    sync();
-#endif
-    PlatformBrowserTest::TearDownOnMainThread();
-  }
 
   // TODO(crbug.com/452922329): Share the helpers around Android Incognito in
   // more general helper library if it actually doesn't flake for a while.
@@ -401,7 +388,7 @@ class VariationsHttpHeadersBrowserTest : public PlatformBrowserTest {
             /*create_if_needed=*/true);
     OpenUrlInNewTab(otr_profile, GetWebContents(), url);
 #else
-    Browser* incognito =
+    BrowserWindowInterface* incognito =
         CreateIncognitoBrowser(chrome_test_utils::GetProfile(this));
     SetBrowser(incognito);
     NavigateToURL(url);
@@ -709,27 +696,9 @@ class VariationsHttpHeadersBrowserTestWithLimitedLayerBase
   }
 
   bool SetUpUserDataDirectoryWithGroup(std::optional<Study::Experiment> group) {
-    const base::FilePath user_data_dir =
-        base::PathService::CheckedGet(chrome::DIR_USER_DATA);
-    const base::FilePath seed_file_path =
-        user_data_dir.AppendASCII("VariationsSeedV1");
-    const base::FilePath local_state_path =
-        user_data_dir.Append(chrome::kLocalStateFilename);
-
-    std::string serialized_seed = CreateTestSeedWithLimitedEntropyLayer(
-                                      /*limited_layer_study_group=*/group)
-                                      .SerializeAsString();
-    std::string compressed_seed;
-    compression::GzipCompress(serialized_seed, &compressed_seed);
-
-    // Write the seed for the seed file experiment's treatment-group clients.
-    CHECK(base::WriteFile(seed_file_path, compressed_seed));
-
-    // Write the seed for the seed file experiment's control-group clients.
-    base::DictValue local_state;
-    local_state.SetByDottedPath(prefs::kVariationsCompressedSeed,
-                                base::Base64Encode(compressed_seed));
-    CHECK(JSONFileValueSerializer(local_state_path).Serialize(local_state));
+    WriteSeedData(base::PathService::CheckedGet(chrome::DIR_USER_DATA),
+                  CreateTestSeedWithLimitedEntropyLayer(
+                      /*limited_layer_study_group=*/group));
     return true;
   }
 
@@ -770,12 +739,12 @@ class VariationsHttpHeadersBrowserTestWithInactiveLimitedLayer
   }
 };
 
-class VariationsHttpHeadersBrowserTestWithSetLowEntropyRandomizationSource
+class VariationsHttpHeadersBrowserTestWithSetLimitedEntropyRandomizationSource
     : public VariationsHttpHeadersBrowserTest {
  public:
-  VariationsHttpHeadersBrowserTestWithSetLowEntropyRandomizationSource() =
+  VariationsHttpHeadersBrowserTestWithSetLimitedEntropyRandomizationSource() =
       default;
-  ~VariationsHttpHeadersBrowserTestWithSetLowEntropyRandomizationSource()
+  ~VariationsHttpHeadersBrowserTestWithSetLimitedEntropyRandomizationSource()
       override = default;
 
  protected:
@@ -1136,7 +1105,7 @@ IN_PROC_BROWSER_TEST_P(VariationsHttpHeadersBrowserTestWithActiveLimitedLayer,
 }
 
 IN_PROC_BROWSER_TEST_F(
-    VariationsHttpHeadersBrowserTestWithSetLowEntropyRandomizationSource,
+    VariationsHttpHeadersBrowserTestWithSetLimitedEntropyRandomizationSource,
     LimitedEntropyRandomization_ExperimentLogging) {
   // CreateEntropyProvidersForTesting() ensures a limited entropy provider is
   // created.
@@ -1167,7 +1136,7 @@ IN_PROC_BROWSER_TEST_F(
 }
 
 IN_PROC_BROWSER_TEST_F(
-    VariationsHttpHeadersBrowserTestWithSetLowEntropyRandomizationSource,
+    VariationsHttpHeadersBrowserTestWithSetLimitedEntropyRandomizationSource,
     LimitedEntropyRandomization_ExperimentLoggingWithoutGoogleWebExperimentationId) {
   // CreateEntropyProvidersForTesting() ensures a limited entropy provider is
   // created.

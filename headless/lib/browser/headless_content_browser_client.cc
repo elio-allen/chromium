@@ -15,6 +15,8 @@
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
+#include "base/i18n/language_tag.h"
 #include "base/i18n/rtl.h"
 #include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
@@ -349,8 +351,8 @@ void HeadlessContentBrowserClient::AppendExtraCommandLineSwitches(
   }
 }
 
-std::string HeadlessContentBrowserClient::GetApplicationLocale() {
-  return base::i18n::GetConfiguredLocale();
+base::i18n::LanguageTag HeadlessContentBrowserClient::GetApplicationLocale() {
+  return base::i18n::GetDefaultIcuLocale();
 }
 
 std::string HeadlessContentBrowserClient::GetAcceptLangs(
@@ -383,7 +385,7 @@ void HeadlessContentBrowserClient::AllowCertificateError(
 
 base::OnceClosure HeadlessContentBrowserClient::SelectClientCertificate(
     content::BrowserContext* browser_context,
-    int process_id,
+    content::ChildProcessId process_id,
     content::WebContents* web_contents,
     net::SSLCertRequestInfo* cert_request_info,
     net::ClientCertIdentityList client_certs,
@@ -399,6 +401,12 @@ bool HeadlessContentBrowserClient::ShouldEnableStrictSiteIsolation() {
   return false;
 }
 
+bool HeadlessContentBrowserClient::ShouldIsolateErrorPage(bool in_main_frame) {
+  // Explicitly turn off subframe error page isolation, since headless tests
+  // currently rely on not having OOPIFs.
+  return in_main_frame;
+}
+
 bool HeadlessContentBrowserClient::
     ShouldAllowProcessPerSiteForMultipleMainFrames(
         content::BrowserContext* context) {
@@ -411,25 +419,6 @@ bool HeadlessContentBrowserClient::IsPrivacySandboxReportingDestinationAttested(
     content::PrivacySandboxInvokingAPI invoking_api) {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   return command_line->HasSwitch(switches::kForceReportingDestinationAttested);
-}
-
-bool HeadlessContentBrowserClient::IsSharedStorageAllowed(
-    content::BrowserContext* browser_context,
-    content::RenderFrameHost* rfh,
-    const url::Origin& top_frame_origin,
-    const url::Origin& accessing_origin,
-    std::string* out_debug_message,
-    bool* out_block_is_site_setting_specific) {
-  return true;
-}
-
-bool HeadlessContentBrowserClient::IsSharedStorageSelectURLAllowed(
-    content::BrowserContext* browser_context,
-    const url::Origin& top_frame_origin,
-    const url::Origin& accessing_origin,
-    std::string* out_debug_message,
-    bool* out_block_is_site_setting_specific) {
-  return true;
 }
 
 void HeadlessContentBrowserClient::ConfigureNetworkContextParams(

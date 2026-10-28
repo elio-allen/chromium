@@ -9,7 +9,6 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 import android.content.Context;
 
 import org.chromium.base.Callback;
-import org.chromium.base.Token;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
@@ -27,6 +26,7 @@ import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarThrottle;
 import org.chromium.ui.util.TokenHolder;
 
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -59,8 +59,7 @@ public class UndoGroupSnackbarController
         mTabGroupObserver =
                 new TabGroupObserver() {
                     @Override
-                    public void willMoveTabOutOfGroup(
-                            Tab movedTab, @Nullable Token destinationTabGroupId) {
+                    public void willMoveTabOutOfGroup(Tab movedTab) {
                         // Fix for b/338511492 is to dismiss the snackbar if an ungroup operation
                         // happens because information that allowed the group action to be undone
                         // may no longer be usable (incorrect indices, group IDs, etc.).
@@ -103,6 +102,12 @@ public class UndoGroupSnackbarController
 
                     @Override
                     public void willCloseTab(Tab tab, boolean didCloseAlone) {
+                        dismissSnackbars();
+                    }
+
+                    @Override
+                    public void willCloseTabs(
+                            List<Tab> tabs, boolean isAllTabs, boolean allowUndo) {
                         dismissSnackbars();
                     }
 

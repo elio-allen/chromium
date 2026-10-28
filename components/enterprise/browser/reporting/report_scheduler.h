@@ -36,7 +36,7 @@ class ReportGenerator;
 // administrative policy. If either of these triggers fires while a report is
 // being generated, processing is deferred until the existing processing
 // completes.
-class ReportScheduler {
+class ReportScheduler : public ReportUploader::Listener {
  public:
   using ReportTriggerCallback = base::RepeatingCallback<void(ReportTrigger)>;
 
@@ -66,10 +66,13 @@ class ReportScheduler {
     virtual std::string GetProfileClientId() = 0;
 
     // Security signals
-    virtual bool AreSecurityReportsEnabled();
-    virtual bool UseCookiesInUploads();
+    bool AreSecurityReportsEnabled();
+    bool UseCookiesInUploads();
     // Invoked when security signals was uploaded by a report.
-    virtual void OnSecuritySignalsUploaded();
+    void OnSecuritySignalsUploaded();
+
+    // Returns true if the current profile is an isolated profile.
+    virtual bool IsIsolatedProfile() const = 0;
 
    protected:
     ReportTriggerCallback trigger_report_callback_;
@@ -98,7 +101,7 @@ class ReportScheduler {
   ReportScheduler(const ReportScheduler&) = delete;
   ReportScheduler& operator=(const ReportScheduler&) = delete;
 
-  ~ReportScheduler();
+  ~ReportScheduler() override;
 
   // Returns true if cloud reporting is enabled.
   bool IsReportingEnabled() const;
@@ -150,6 +153,9 @@ class ReportScheduler {
   // Starts report generation in response to |trigger|.
   void GenerateAndUploadReport(ReportTrigger trigger);
 
+  // Starts report generation workflow.
+  void StartReportGeneration(ReportTrigger trigger, bool is_retrying);
+
   // Returns true if we need to fetch a challenge before generating the report.
   bool NeedChallenge(ReportTrigger trigger,
                      SecuritySignalsMode signals_mode) const;
@@ -169,6 +175,9 @@ class ReportScheduler {
       SecuritySignalsMode signals_mode,
       const std::optional<std::string>& challenge);
 
+  // ReportUploader::Listener implementation:
+  void OnReportWillRetry(const ReportGenerationConfig& config) override;
+
   // Continues processing a report (contained in the |result| collection) by
   // sending it to the uploader.
   void OnReportGenerated(
@@ -184,6 +193,10 @@ class ReportScheduler {
 
   // Records that `active_trigger_` was responsible for an upload attempt.
   void RecordUploadTrigger();
+
+  // Updates kLastUploadTimestamp pref to now and restarts the periodic report
+  // timer if cloud reporting is enabled.
+  void UpdateLastUploadTimestampAndStartNextReport();
 
   ReportType TriggerToReportType(ReportTrigger trigger);
   bool IsTriggerEnabled(ReportTrigger trigger) const;

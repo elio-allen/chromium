@@ -4,13 +4,12 @@
 
 #include "headless/lib/browser/command_line_handler.h"
 
-#include <cstdio>
 #include <string_view>
 
-#include "base/compiler_specific.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_split.h"
 #include "build/build_config.h"
 #include "cc/base/switches.h"
 #include "components/headless/screen_info/headless_screen_info.h"
@@ -22,6 +21,7 @@
 #include "third_party/blink/public/common/switches.h"
 #include "ui/gfx/font_render_params.h"
 #include "ui/gfx/geometry/size.h"
+#include "url/gurl.h"
 
 namespace headless {
 
@@ -88,6 +88,23 @@ void HandleProxyServer(base::CommandLine& command_line,
   options.proxy_config = std::move(proxy_config);
 }
 
+bool HandleProxyPacUrl(base::CommandLine& command_line,
+                       HeadlessBrowser::Options& options) {
+  DCHECK(command_line.HasSwitch(switches::kProxyPacUrl));
+
+  std::string pac_url_str =
+      command_line.GetSwitchValueASCII(switches::kProxyPacUrl);
+  GURL pac_url(pac_url_str);
+  if (!pac_url.is_valid()) {
+    LOG(ERROR) << "Invalid PAC script URL: " << pac_url_str;
+    return false;
+  }
+
+  options.proxy_config = std::make_unique<net::ProxyConfig>(
+      net::ProxyConfig::CreateFromCustomPacURL(pac_url));
+  return true;
+}
+
 bool HandleWindowSize(base::CommandLine& command_line,
                       HeadlessBrowser::Options& options) {
   DCHECK(command_line.HasSwitch(switches::kWindowSize));
@@ -95,11 +112,17 @@ bool HandleWindowSize(base::CommandLine& command_line,
   const std::string switch_value =
       command_line.GetSwitchValueASCII(switches::kWindowSize);
 
+  const std::vector<std::string_view> parts = base::SplitStringPiece(
+      switch_value, "x,", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
+  if (parts.size() != 2) {
+    LOG(ERROR) << "Malformed window size: " << switch_value;
+    return false;
+  }
+
   int width = 0;
   int height = 0;
-  int n =
-      UNSAFE_TODO(sscanf(switch_value.c_str(), "%d%*[x,]%d", &width, &height));
-  if (n != 2 || width < 0 || height < 0) {
+  if (!base::StringToInt(parts[0], &width) ||
+      !base::StringToInt(parts[1], &height) || width < 0 || height < 0) {
     LOG(ERROR) << "Malformed window size: " << switch_value;
     return false;
   }
@@ -200,7 +223,11 @@ bool HandleCommandLineSwitches(base::CommandLine& command_line,
     options.devtools_pipe_enabled = true;
   }
 
-  if (command_line.HasSwitch(switches::kProxyServer)) {
+  if (command_line.HasSwitch(switches::kProxyPacUrl)) {
+    if (!HandleProxyPacUrl(command_line, options)) {
+      return false;
+    }
+  } else if (command_line.HasSwitch(switches::kProxyServer)) {
     HandleProxyServer(command_line, options);
   }
 

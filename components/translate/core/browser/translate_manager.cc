@@ -45,6 +45,8 @@
 #include "components/translate/core/browser/translate_trigger_decision.h"
 #include "components/translate/core/browser/translate_url_util.h"
 #include "components/translate/core/common/language_detection_details.h"
+#include "components/translate/core/common/translate_constants.h"
+#include "components/translate/core/common/translate_features.h"
 #include "components/translate/core/common/translate_language_matcher.h"
 #include "components/translate/core/common/translate_switches.h"
 #include "components/translate/core/common/translate_util.h"
@@ -231,17 +233,6 @@ bool TranslateManager::CanManuallyTranslate(bool menu_logging) {
     can_translate = false;
   }
 
-  if (language_state_.pdf_translatability_status() ==
-      LanguageState::PdfTranslatabilityStatus::kUntranslatable) {
-    if (!menu_logging) {
-      return false;
-    }
-    TranslateBrowserMetrics::ReportMenuTranslationUnavailableReason(
-        TranslateBrowserMetrics::MenuTranslationUnavailableReason::
-            kURLNotTranslatable);
-    can_translate = false;
-  }
-
   const std::string source_language = language_state_.source_language();
   // The source language is empty when language detection has not finished
   // running. In this case, Android queues the translation and waits until the
@@ -312,6 +303,10 @@ bool TranslateManager::IsMimeTypeSupported(std::string_view mime_type) {
     return false;
   if (mime_type == "multipart/related")
     return false;
+  if (mime_type == kPdfMimeType &&
+      !base::FeatureList::IsEnabled(translate::kEnableTranslatePdf)) {
+    return false;
+  }
 
   return true;
 }
@@ -380,6 +375,18 @@ void TranslateManager::TranslatePage(std::string_view original_source_lang,
   // should be monitored and investigated if it increases.
   if (!translate_client_->IsTranslatableURL(page_url)) {
     base::debug::DumpWithoutCrashing();
+    return;
+  }
+
+  // Full page translation is not possible for PDFs that were determined to be
+  // untranslatable. This is checked here rather than in CanManuallyTranslate()
+  // so that partial translation remains available for such PDFs.
+  if (language_state_.pdf_translatability_status() ==
+      LanguageState::PdfTranslatabilityStatus::kUntranslatable) {
+    translate_client_->ShowTranslateUI(
+        translate::TRANSLATE_STEP_TRANSLATE_ERROR,
+        std::string(original_source_lang), std::string(target_lang),
+        TranslateErrors::TRANSLATION_ERROR, triggered_from_menu);
     return;
   }
 
@@ -470,14 +477,37 @@ void TranslateManager::RevertTranslation() {
   language_state_.SetCurrentLanguage(language_state_.source_language());
 
   GetActiveTranslateMetricsLogger()->LogReversion();
+
+  translate_client_->RevertPdfTranslation();
 }
 
 void TranslateManager::DoTranslatePage(std::string_view translate_script,
                                        std::string_view source_lang,
                                        std::string_view target_lang) {
   language_state_.set_translation_pending(true);
-  translate_driver_->TranslatePage(page_seq_no_, translate_script, source_lang,
-                                   target_lang);
+  if (translate_driver_->GetContentsMimeType() == kPdfMimeType &&
+      base::FeatureList::IsEnabled(translate::kEnableTranslatePdf) &&
+      !translate_client_->IsReadingModeOpen()) {
+    std::optional<LanguageTag> parsed_source =
+        base::i18n::GetLanguageTagFromString(source_lang)
+            .value_or(base::i18n::GetKnownLanguageTag("und"));
+    std::optional<LanguageTag> parsed_target =
+        base::i18n::GetLanguageTagFromString(target_lang)
+            .value_or(base::i18n::GetKnownLanguageTag("und"));
+
+    TranslateBrowserMetrics::ReportPdfSourceLanguage(
+        parsed_source->tag_string());
+    TranslateBrowserMetrics::ReportPdfTargetLanguage(
+        parsed_target->tag_string());
+
+    language_state_.SetPendingTranslationLanguages(*parsed_source,
+                                                   *parsed_target);
+    translate_client_->TriggerPdfTranslation();
+
+  } else {
+    translate_driver_->TranslatePage(page_seq_no_, translate_script,
+                                     source_lang, target_lang);
+  }
 }
 
 // Notifies |g_error_callback_list_| of translate errors.
@@ -675,10 +705,9 @@ std::string TranslateManager::GetTargetLanguage(
   }
 
   // Get the first supported language on the Accept Languages list.
-  std::vector<std::string> accept_languages_list;
-  prefs->GetLanguageList(&accept_languages_list);
-  for (const auto& lang : accept_languages_list) {
-    std::string lang_code = TranslateDownloadManager::GetLanguageCode(lang);
+  for (const auto& lang : prefs->GetLanguageList()) {
+    std::string lang_code =
+        TranslateDownloadManager::GetLanguageCode(lang.tag_string());
     if (TranslateDownloadManager::IsSupportedLanguage(lang_code)) {
       target_language_origin =
           TranslateBrowserMetrics::TargetLanguageOrigin::kAcceptLanguages;
@@ -789,8 +818,7 @@ bool TranslateManager::ShouldSuppressBubbleUI(
 void TranslateManager::AddTargetLanguageToAcceptLanguages(
     std::string_view target_language_code) {
   auto prefs = translate_client_->GetTranslatePrefs();
-  std::vector<std::string> languages;
-  prefs->GetLanguageList(&languages);
+  std::vector<base::i18n::LanguageTag> languages = prefs->GetLanguageList();
 
   std::string_view target_language, tail;
   // |target_language_code| should satisfy BCP47 and consist of a language code
@@ -802,13 +830,15 @@ void TranslateManager::AddTargetLanguageToAcceptLanguages(
   // list.
   if (tail.empty()) {
     for (const auto& language : languages) {
-      if (language::ExtractBaseLanguage(language) == target_language)
+      if (language.language_subtag() == target_language) {
         return;
+      }
     }
   } else {
     for (const auto& language : languages) {
-      if (language == target_language_code)
+      if (language.tag_string() == target_language_code) {
         return;
+      }
     }
   }
 
@@ -816,7 +846,10 @@ void TranslateManager::AddTargetLanguageToAcceptLanguages(
   // translation happens because of an hrefTranslate navigation).
   if (language_state_.AutoTranslateTo() != target_language_code &&
       language_state_.href_translate() != target_language_code) {
-    prefs->AddToLanguageList(target_language_code, /*force_blocked=*/false);
+    if (std::optional<LanguageTag> parsed_tag =
+            GetLanguageTagFromString(target_language_code)) {
+      prefs->AddToLanguageList(*parsed_tag, /*force_blocked=*/false);
+    }
   }
 }
 
@@ -835,6 +868,13 @@ const TranslateTriggerDecision TranslateManager::ComputePossibleOutcomes(
   // object is then used to trigger the correct behavior, and finally record
   // corresponding metrics in InitiateTranslation.
   TranslateTriggerDecision decision;
+
+  // If translation triggering is disabled, we can return early to prevent
+  // further filtering and potential side effects.
+  if (!IsTranslateTriggerEnabled()) {
+    decision.PreventAllTriggering();
+    return decision;
+  }
 
   FilterIsTranslatePossible(&decision, translate_prefs, page_language_code,
                             target_lang);
@@ -1286,9 +1326,8 @@ void TranslateManager::RecordDecisionRankerEvent(
   }
 }
 
-void TranslateManager::SetPredefinedTargetLanguage(
-    base::i18n::LanguageTag language,
-    bool should_auto_translate) {
+void TranslateManager::SetPredefinedTargetLanguage(LanguageTag language,
+                                                   bool should_auto_translate) {
   language_state_.SetPredefinedTargetLanguage(language, should_auto_translate);
 }
 

@@ -20,7 +20,7 @@
 #include "chrome/browser/ui/browser_window/public/desktop_browser_window_capabilities.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
-#include "chrome/browser/ui/tabs/organizer/organizer_panel_state_controller.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_controller.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_metrics.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -70,7 +70,7 @@ SavedTabGroupBar::SavedTabGroupBar(BrowserWindowInterface* browser,
       tab_group_service_(tab_group_service),
       browser_(browser) {
   CHECK(tab_group_service_);
-  DCHECK(browser_);
+  CHECK(browser_, base::NotFatalUntil::M162);
   GetViewAccessibility().SetRole(ax::mojom::Role::kToolbar);
   GetViewAccessibility().SetName(
       l10n_util::GetStringUTF16(IDS_ACCNAME_SAVED_TAB_GROUPS));
@@ -518,7 +518,8 @@ views::View* SavedTabGroupBar::GetButton(const base::Uuid& guid) {
 
 void SavedTabGroupBar::OnTabGroupButtonPressed(const base::Uuid& id,
                                                const ui::Event& event) {
-  DCHECK(tab_group_service_ && tab_group_service_->GetGroup(id).has_value());
+  CHECK(tab_group_service_ && tab_group_service_->GetGroup(id).has_value(),
+        base::NotFatalUntil::M162);
   chrome::UpdateBookmarkBarVisibilityPrefOnUserAction(browser_->GetProfile());
   const std::optional<SavedTabGroup> group = tab_group_service_->GetGroup(id);
 

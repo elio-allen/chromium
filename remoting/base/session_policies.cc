@@ -5,9 +5,9 @@
 #include "remoting/base/session_policies.h"
 
 #include <optional>
+#include <ostream>
 
-#include "base/strings/string_number_conversions.h"
-#include "build/build_config.h"
+#include "base/notreached.h"
 
 namespace remoting {
 
@@ -35,24 +35,47 @@ SessionPolicies& SessionPolicies::operator=(SessionPolicies&&) = default;
 
 bool SessionPolicies::operator==(const SessionPolicies&) const = default;
 
-base::expected<void, Loggable> SessionPolicies::Validate() const {
-  if (!host_udp_port_range.is_valid()) {
-    return base::unexpected(
-        Loggable(FROM_HERE, "Invalid host UDP port range policy"));
+bool SessionPolicies::is_host_to_client_audio_allowed() const {
+  switch (audio_mode.value_or(AudioMode::kBoth)) {
+    case AudioMode::kUnspecified:
+    case AudioMode::kHostToClient:
+    case AudioMode::kBoth:
+      return true;
+    case AudioMode::kNone:
+    case AudioMode::kClientToHost:
+      return false;
   }
-#if !BUILDFLAG(IS_CHROMEOS)
-  if (maximum_session_duration.has_value() &&
-      *maximum_session_duration < kMinMaximumSessionDuration) {
-    return base::unexpected(Loggable(
-        FROM_HERE,
-        "maximum_session_duration (" +
-            base::NumberToString(maximum_session_duration->InMinutes()) +
-            " mins) is shorter than minimum required (" +
-            base::NumberToString(kMinMaximumSessionDuration.InMinutes()) +
-            " mins)"));
+  NOTREACHED();
+}
+
+bool SessionPolicies::is_client_to_host_audio_allowed() const {
+  switch (audio_mode.value_or(AudioMode::kBoth)) {
+    case AudioMode::kUnspecified:
+    case AudioMode::kClientToHost:
+    case AudioMode::kBoth:
+      return true;
+    case AudioMode::kNone:
+    case AudioMode::kHostToClient:
+      return false;
   }
-#endif
-  return base::ok();
+  NOTREACHED();
+}
+
+std::ostream& operator<<(std::ostream& os,
+                         SessionPolicies::AudioMode audio_mode) {
+  switch (audio_mode) {
+    case SessionPolicies::AudioMode::kUnspecified:
+      return os << "kUnspecified";
+    case SessionPolicies::AudioMode::kNone:
+      return os << "kNone";
+    case SessionPolicies::AudioMode::kClientToHost:
+      return os << "kClientToHost";
+    case SessionPolicies::AudioMode::kHostToClient:
+      return os << "kHostToClient";
+    case SessionPolicies::AudioMode::kBoth:
+      return os << "kBoth";
+  }
+  NOTREACHED();
 }
 
 std::ostream& operator<<(std::ostream& os,
@@ -73,7 +96,9 @@ std::ostream& operator<<(std::ostream& os,
      << ", curtain_required: " << session_policies.curtain_required
      << ", host_username_match_required: "
      << session_policies.host_username_match_required
-     << ", allow_remote_input: " << session_policies.allow_remote_input << " }";
+     << ", allow_remote_input: " << session_policies.allow_remote_input
+     << ", allow_terminal_mode: " << session_policies.allow_terminal_mode
+     << ", audio_mode: " << session_policies.audio_mode << " }";
   return os;
 }
 

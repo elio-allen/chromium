@@ -5,9 +5,14 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_TABS_COMMON_TAB_STRIP_UTILS_H_
 #define CHROME_BROWSER_UI_VIEWS_TABS_COMMON_TAB_STRIP_UTILS_H_
 
+#include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
 #include "ui/gfx/geometry/rect.h"
 
 class TabStripView;
+
+namespace ui {
+class GestureEvent;
+}
 
 namespace views {
 class View;
@@ -23,15 +28,10 @@ gfx::Rect GetTabStripViewTargetBounds(const views::View* view);
 // through the parent hierarchy until a `TabStripView` is found.
 TabStripView* GetTabStripView(views::View* view);
 
-// Calculates the allocated width for each child view given the available
-// width, preferred widths, and minimum widths. If available space is
-// constrained, children are proportionally shrunk between preferred and minimum
-// widths.
-std::vector<int> CalculateProportionalChildWidths(
-    int available_width,
-    const std::vector<int>& child_preferred_widths,
-    const std::vector<int>& child_min_widths,
-    int total_preferred_width,
-    int total_min_width);
+// Returns true if the `ScrollView` ancestor of `view` is scrollable along the
+// primary direction of the given `kGestureScrollBegin` `event`.
+bool CanScrollAlongAxis(const views::View* view,
+                        TabStripOrientation orientation,
+                        const ui::GestureEvent& event);
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TABS_COMMON_TAB_STRIP_UTILS_H_

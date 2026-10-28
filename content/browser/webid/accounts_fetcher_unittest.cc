@@ -13,7 +13,10 @@
 #include "content/browser/webid/test/mock_api_permission_delegate.h"
 #include "content/browser/webid/test/mock_idp_network_request_manager.h"
 #include "content/browser/webid/test/mock_permission_delegate.h"
+#include "content/public/browser/content_browser_client.h"
+#include "content/public/browser/webid/native_idp_fetcher.h"
 #include "content/public/common/content_features.h"
+#include "content/public/test/test_utils.h"
 #include "content/test/test_render_frame_host.h"
 #include "content/test/test_web_contents.h"
 #include "net/http/http_status_code.h"
@@ -264,6 +267,398 @@ TEST_F(AccountsFetcherTest, UncachedIdpFetchesConfigAndAccounts) {
       .Run({ParseStatus::kSuccess, net::HTTP_OK}, std::move(accounts_response));
 
   loop.Run();
+}
+
+class MockNativeIdpFetcher : public NativeIdpFetcher {
+ public:
+  MockNativeIdpFetcher() = default;
+  ~MockNativeIdpFetcher() override = default;
+
+  MOCK_METHOD(void,
+              Fetch,
+              (const NativeIdpFetcher::RequestParams& params,
+               FetchCallback callback),
+              (override));
+};
+
+class TestContentBrowserClientWithNativeIdp : public ContentBrowserClient {
+ public:
+  explicit TestContentBrowserClientWithNativeIdp(
+      std::unique_ptr<NativeIdpFetcher> fetcher)
+      : fetcher_(std::move(fetcher)) {}
+
+  std::unique_ptr<NativeIdpFetcher> CreateNativeIdpFetcher(
+      const url::Origin& idp_origin) override {
+    return std::move(fetcher_);
+  }
+
+ private:
+  std::unique_ptr<NativeIdpFetcher> fetcher_;
+};
+
+TEST_F(AccountsFetcherTest, NativeIdpAccountsFallback) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kFedCmNativeIdPs);
+
+  const GURL kIdpConfigUrl("https://idp.example/fedcm.json");
+  const GURL kAccountsEndpoint("https://idp.example/accounts.json");
+  const GURL kTokenEndpoint("https://idp.example/token.json");
+
+  auto mock_native_fetcher = std::make_unique<NiceMock<MockNativeIdpFetcher>>();
+  EXPECT_CALL(*mock_native_fetcher,
+              Fetch(testing::Field(&NativeIdpFetcher::RequestParams::url,
+                                   kAccountsEndpoint),
+                    _))
+      .WillOnce(WithArg<1>([](NativeIdpFetcher::FetchCallback callback) {
+        std::move(callback).Run(base::ok(
+            "{\"accounts\":[{\"id\":\"123\",\"email\":\"native@example.com\","
+            "\"name\":\"Native User\"}]}"));
+      }));
+
+  TestContentBrowserClientWithNativeIdp test_browser_client(
+      std::move(mock_native_fetcher));
+  ContentBrowserClient* original_client =
+      SetBrowserClientForTesting(&test_browser_client);
+
+  auto network_manager =
+      std::make_unique<NiceMock<MockIdpNetworkRequestManager>>();
+
+  IdpNetworkRequestManager::AccountsRequestCallback accounts_callback;
+  EXPECT_CALL(*network_manager, SendAccountsRequest)
+      .WillOnce(
+          WithArg<2>([&accounts_callback](
+                         IdpNetworkRequestManager::AccountsRequestCallback cb) {
+            accounts_callback = std::move(cb);
+            return true;
+          }));
+
+  base::RunLoop loop;
+  AccountsFetcher fetcher(
+      *main_rfh(), network_manager.get(), api_permission_delegate_.get(),
+      permission_delegate_.get(),
+      AccountsFetcher::FedCmFetchingParams(
+          blink::mojom::RpMode::kPassive, /*icon_ideal_size=*/0,
+          /*icon_minimum_size=*/0,
+          password_manager::CredentialMediationRequirement::kOptional),
+      base::BindLambdaForTesting(
+          [&](base::TimeTicks well_known_and_config_fetched_time,
+              std::vector<AccountsFetcher::Result> results) {
+            ASSERT_EQ(results.size(), 1ul);
+            EXPECT_FALSE(results[0].error);
+            ASSERT_TRUE(results[0].accounts);
+            EXPECT_EQ(results[0].accounts->accounts.size(), 1ul);
+            EXPECT_EQ(results[0].accounts->accounts[0]->id, "123");
+            EXPECT_EQ(results[0].accounts->accounts[0]->email,
+                      "native@example.com");
+            loop.Quit();
+          }));
+
+  auto config = blink::mojom::IdentityProviderConfig::New();
+  config->config_url = kIdpConfigUrl;
+  auto provider = blink::mojom::IdentityProviderRequestOptions::New(
+      std::move(config), "nonce", /*login_hint=*/"", /*domain_hint=*/"",
+      /*fields=*/std::nullopt, /*params_json=*/std::nullopt,
+      /*format=*/std::nullopt);
+
+  IdpNetworkRequestManager::Endpoints endpoints;
+  endpoints.accounts = kAccountsEndpoint;
+  endpoints.token = kTokenEndpoint;
+
+  auto idp_info = std::make_unique<IdentityProviderInfo>(
+      provider, endpoints, IdentityProviderMetadata(),
+      blink::mojom::RpContext::kSignIn, blink::mojom::RpMode::kPassive,
+      /*format=*/std::nullopt);
+
+  std::vector<std::unique_ptr<IdentityProviderInfo>> idp_infos;
+  idp_infos.push_back(std::move(idp_info));
+
+  base::flat_map<GURL, AccountsFetcher::IdentityProviderGetInfo>
+      token_request_get_infos;
+
+  fetcher.FetchAccountsForIdps(
+      idp_infos, token_request_get_infos, metrics_.get(),
+      url::Origin::Create(GURL("https://rp.example")), base::DoNothing());
+
+  // Fail the HTTP request so it triggers the NativeIdpFetcher fallback.
+  ASSERT_TRUE(accounts_callback);
+  std::move(accounts_callback)
+      .Run({ParseStatus::kInvalidResponseError, net::HTTP_NOT_FOUND},
+           IdpNetworkRequestManager::AccountsResponse());
+
+  loop.Run();
+
+  SetBrowserClientForTesting(original_client);
+}
+
+TEST_F(AccountsFetcherTest, NativeIdpAccountsFallbackFetchError) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kFedCmNativeIdPs);
+
+  const GURL kIdpConfigUrl("https://idp.example/fedcm.json");
+  const GURL kAccountsEndpoint("https://idp.example/accounts.json");
+  const GURL kTokenEndpoint("https://idp.example/token.json");
+
+  auto mock_native_fetcher = std::make_unique<NiceMock<MockNativeIdpFetcher>>();
+  EXPECT_CALL(*mock_native_fetcher,
+              Fetch(testing::Field(&NativeIdpFetcher::RequestParams::url,
+                                   kAccountsEndpoint),
+                    _))
+      .WillOnce(WithArg<1>([](NativeIdpFetcher::FetchCallback callback) {
+        std::move(callback).Run(
+            base::unexpected(NativeIdpFetcher::FetchError::kFetchFailed));
+      }));
+
+  TestContentBrowserClientWithNativeIdp test_browser_client(
+      std::move(mock_native_fetcher));
+  ContentBrowserClient* original_client =
+      SetBrowserClientForTesting(&test_browser_client);
+
+  auto network_manager =
+      std::make_unique<NiceMock<MockIdpNetworkRequestManager>>();
+
+  IdpNetworkRequestManager::AccountsRequestCallback accounts_callback;
+  EXPECT_CALL(*network_manager, SendAccountsRequest)
+      .WillOnce(
+          WithArg<2>([&accounts_callback](
+                         IdpNetworkRequestManager::AccountsRequestCallback cb) {
+            accounts_callback = std::move(cb);
+            return true;
+          }));
+
+  base::RunLoop loop;
+  AccountsFetcher fetcher(
+      *main_rfh(), network_manager.get(), api_permission_delegate_.get(),
+      permission_delegate_.get(),
+      AccountsFetcher::FedCmFetchingParams(
+          blink::mojom::RpMode::kPassive, /*icon_ideal_size=*/0,
+          /*icon_minimum_size=*/0,
+          password_manager::CredentialMediationRequirement::kOptional),
+      base::BindLambdaForTesting(
+          [&](base::TimeTicks well_known_and_config_fetched_time,
+              std::vector<AccountsFetcher::Result> results) {
+            ASSERT_EQ(results.size(), 1ul);
+            EXPECT_TRUE(results[0].error);
+            loop.Quit();
+          }));
+
+  auto config = blink::mojom::IdentityProviderConfig::New();
+  config->config_url = kIdpConfigUrl;
+  auto provider = blink::mojom::IdentityProviderRequestOptions::New(
+      std::move(config), "nonce", /*login_hint=*/"", /*domain_hint=*/"",
+      /*fields=*/std::nullopt, /*params_json=*/std::nullopt,
+      /*format=*/std::nullopt);
+
+  IdpNetworkRequestManager::Endpoints endpoints;
+  endpoints.accounts = kAccountsEndpoint;
+  endpoints.token = kTokenEndpoint;
+
+  auto idp_info = std::make_unique<IdentityProviderInfo>(
+      provider, endpoints, IdentityProviderMetadata(),
+      blink::mojom::RpContext::kSignIn, blink::mojom::RpMode::kPassive,
+      /*format=*/std::nullopt);
+
+  std::vector<std::unique_ptr<IdentityProviderInfo>> idp_infos;
+  idp_infos.push_back(std::move(idp_info));
+
+  base::flat_map<GURL, AccountsFetcher::IdentityProviderGetInfo>
+      token_request_get_infos;
+
+  fetcher.FetchAccountsForIdps(
+      idp_infos, token_request_get_infos, metrics_.get(),
+      url::Origin::Create(GURL("https://rp.example")), base::DoNothing());
+
+  // Fail HTTP request to trigger fallback.
+  ASSERT_TRUE(accounts_callback);
+  std::move(accounts_callback)
+      .Run({ParseStatus::kInvalidResponseError, net::HTTP_NOT_FOUND},
+           IdpNetworkRequestManager::AccountsResponse());
+
+  loop.Run();
+
+  SetBrowserClientForTesting(original_client);
+}
+
+// Verifies that if AccountsFetcher is destroyed re-entrantly during
+// SetIdpSigninStatus (e.g. via observer callbacks), OnAccountsResponseReceived
+// returns cleanly without use-after-free.
+TEST_F(AccountsFetcherTest, ReentrantDestructionInAccountsResponse) {
+  const GURL kIdpConfigUrl("https://idp.example/fedcm.json");
+  const GURL kAccountsEndpoint("https://idp.example/accounts.json");
+  const GURL kTokenEndpoint("https://idp.example/token.json");
+
+  auto network_manager =
+      std::make_unique<StrictMock<MockIdpNetworkRequestManager>>();
+
+  IdpNetworkRequestManager::AccountsRequestCallback accounts_callback;
+  EXPECT_CALL(*network_manager, SendAccountsRequest)
+      .WillOnce(
+          WithArg<2>([&accounts_callback](
+                         IdpNetworkRequestManager::AccountsRequestCallback cb) {
+            accounts_callback = std::move(cb);
+            return true;
+          }));
+
+  std::unique_ptr<AccountsFetcher> fetcher = std::make_unique<AccountsFetcher>(
+      *main_rfh(), network_manager.get(), api_permission_delegate_.get(),
+      permission_delegate_.get(),
+      AccountsFetcher::FedCmFetchingParams(
+          blink::mojom::RpMode::kPassive, /*icon_ideal_size=*/0,
+          /*icon_minimum_size=*/0,
+          password_manager::CredentialMediationRequirement::kOptional),
+      base::BindLambdaForTesting(
+          [](base::TimeTicks, std::vector<AccountsFetcher::Result>) {
+            FAIL() << "Callback should not be called after destruction";
+          }));
+
+  auto config = blink::mojom::IdentityProviderConfig::New();
+  config->config_url = kIdpConfigUrl;
+
+  auto options = blink::mojom::IdentityProviderRequestOptions::New(
+      std::move(config), "nonce", /*login_hint=*/"", /*domain_hint=*/"",
+      /*fields=*/std::nullopt, /*params_json=*/std::nullopt,
+      /*format=*/std::nullopt);
+
+  IdpNetworkRequestManager::Endpoints endpoints;
+  endpoints.accounts = kAccountsEndpoint;
+  endpoints.token = kTokenEndpoint;
+
+  auto idp_info = std::make_unique<IdentityProviderInfo>(
+      options, endpoints, IdentityProviderMetadata(),
+      blink::mojom::RpContext::kSignIn, blink::mojom::RpMode::kPassive,
+      /*format=*/std::nullopt);
+
+  std::vector<std::unique_ptr<IdentityProviderInfo>> cached_idp_infos;
+  cached_idp_infos.push_back(std::move(idp_info));
+
+  base::flat_map<GURL, AccountsFetcher::IdentityProviderGetInfo>
+      token_request_get_infos;
+  token_request_get_infos.emplace(
+      kIdpConfigUrl,
+      AccountsFetcher::IdentityProviderGetInfo(
+          options.Clone(), blink::mojom::RpContext::kSignIn,
+          blink::mojom::RpMode::kPassive, /*format=*/std::nullopt));
+
+  fetcher->FetchAccountsForIdps(
+      std::move(cached_idp_infos), token_request_get_infos, metrics_.get(),
+      url::Origin::Create(GURL("https://rp.example")), base::DoNothing());
+
+  EXPECT_CALL(*permission_delegate_, SetIdpSigninStatus)
+      .WillOnce(
+          [&fetcher](const url::Origin&, bool,
+                     base::optional_ref<
+                         const blink::common::webid::LoginStatusOptions>) {
+            fetcher.reset();
+          });
+
+  IdpNetworkRequestManager::AccountsResponse accounts_response;
+  accounts_response.accounts.push_back(
+      base::MakeRefCounted<IdentityRequestAccount>(
+          "123", "user@example.com", "User Name", "user@example.com",
+          "User Name", "User", GURL(), /*phone=*/"", /*username=*/"",
+          /*potentially_approved_site_hashes=*/std::vector<std::string>(),
+          /*login_hints=*/std::vector<std::string>(),
+          /*domain_hints=*/std::vector<std::string>(),
+          /*labels=*/std::vector<std::string>()));
+
+  ASSERT_TRUE(accounts_callback);
+  std::move(accounts_callback)
+      .Run({ParseStatus::kSuccess, net::HTTP_OK}, std::move(accounts_response));
+  EXPECT_FALSE(fetcher);
+}
+
+class AccountsFetcherNativeAppUiTest
+    : public AccountsFetcherTest,
+      public ::testing::WithParamInterface<blink::mojom::RpMode> {};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         AccountsFetcherNativeAppUiTest,
+                         ::testing::Values(blink::mojom::RpMode::kActive,
+                                           blink::mojom::RpMode::kPassive));
+
+TEST_P(AccountsFetcherNativeAppUiTest, TryNativeAppUi) {
+  blink::mojom::RpMode rp_mode = GetParam();
+
+  const GURL kIdpConfigUrl("https://idp.example/fedcm.json");
+  const GURL kAccountsEndpoint("https://idp.example/accounts.json");
+  const GURL kTokenEndpoint("https://idp.example/token.json");
+
+  auto network_manager =
+      std::make_unique<StrictMock<MockIdpNetworkRequestManager>>();
+
+  EXPECT_CALL(*network_manager, FetchWellKnown).Times(0);
+  EXPECT_CALL(*network_manager, FetchConfig).Times(0);
+
+  IdpNetworkRequestManager::AccountsRequestCallback accounts_callback;
+  EXPECT_CALL(*network_manager, SendAccountsRequest)
+      .WillOnce(
+          WithArg<2>([&accounts_callback](
+                         IdpNetworkRequestManager::AccountsRequestCallback cb) {
+            accounts_callback = std::move(cb);
+            return true;
+          }));
+
+  base::RunLoop loop;
+  std::vector<AccountsFetcher::Result> fetch_results;
+  AccountsFetcher fetcher(
+      *main_rfh(), network_manager.get(), api_permission_delegate_.get(),
+      permission_delegate_.get(),
+      AccountsFetcher::FedCmFetchingParams(
+          rp_mode, /*icon_ideal_size=*/0, /*icon_minimum_size=*/0,
+          password_manager::CredentialMediationRequirement::kOptional),
+      base::BindLambdaForTesting(
+          [&](base::TimeTicks well_known_and_config_fetched_time,
+              std::vector<AccountsFetcher::Result> results) {
+            fetch_results = std::move(results);
+            loop.Quit();
+          }));
+
+  auto config = blink::mojom::IdentityProviderConfig::New();
+  config->config_url = kIdpConfigUrl;
+  auto provider = blink::mojom::IdentityProviderRequestOptions::New(
+      std::move(config), "nonce", /*login_hint=*/"", /*domain_hint=*/"",
+      /*fields=*/std::nullopt, /*params_json=*/std::nullopt,
+      /*format=*/std::nullopt);
+
+  IdpNetworkRequestManager::Endpoints endpoints;
+  endpoints.accounts = kAccountsEndpoint;
+  endpoints.token = kTokenEndpoint;
+
+  auto idp_info = std::make_unique<IdentityProviderInfo>(
+      provider.Clone(), endpoints, IdentityProviderMetadata(),
+      blink::mojom::RpContext::kSignIn, rp_mode, /*format=*/std::nullopt);
+
+  std::vector<std::unique_ptr<IdentityProviderInfo>> idp_infos;
+  idp_infos.push_back(std::move(idp_info));
+
+  base::flat_map<GURL, AccountsFetcher::IdentityProviderGetInfo>
+      token_request_get_infos;
+  token_request_get_infos.emplace(
+      kIdpConfigUrl,
+      AccountsFetcher::IdentityProviderGetInfo(
+          std::move(provider), blink::mojom::RpContext::kSignIn, rp_mode,
+          /*format=*/std::nullopt));
+
+  fetcher.FetchAccountsForIdps(
+      idp_infos, token_request_get_infos, metrics_.get(),
+      url::Origin::Create(GURL("https://rp.example")), base::DoNothing());
+
+  ASSERT_TRUE(accounts_callback);
+  std::move(accounts_callback)
+      .Run({ParseStatus::kUseNativeUiDelegation, net::HTTP_OK},
+           IdpNetworkRequestManager::AccountsResponse());
+
+  loop.Run();
+
+  ASSERT_EQ(fetch_results.size(), 1ul);
+  if (rp_mode == blink::mojom::RpMode::kActive) {
+    EXPECT_FALSE(fetch_results[0].error);
+    EXPECT_TRUE(fetch_results[0].use_native_app_ui);
+  } else {
+    // In passive mode, native app UI is not activated and fails with an
+    // error.
+    EXPECT_TRUE(fetch_results[0].error.has_value());
+    EXPECT_FALSE(fetch_results[0].use_native_app_ui);
+  }
 }
 
 }  // namespace content::webid

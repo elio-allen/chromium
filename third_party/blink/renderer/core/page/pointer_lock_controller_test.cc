@@ -8,6 +8,7 @@
 
 #include "base/time/time.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "third_party/blink/public/mojom/input/pointer_lock_result.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
@@ -18,16 +19,24 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_pointer_lock_options.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
+#include "third_party/blink/renderer/core/editing/frame_caret.h"
+#include "third_party/blink/renderer/core/editing/frame_selection.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
+#include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/html/html_iframe_element.h"
+#include "third_party/blink/renderer/core/input/event_handler.h"
+#include "third_party/blink/renderer/core/layout/layout_theme.h"
+#include "third_party/blink/renderer/core/page/focus_controller.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_request.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_test.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
+#include "third_party/blink/renderer/platform/scheduler/test/fake_task_runner.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
+#include "third_party/blink/renderer/platform/web_test_support.h"
 
 namespace blink {
 
@@ -63,8 +72,7 @@ class PointerLockControllerTest : public SimTest {
   }
 
   void TearDown() override {
-    PointerLockController().last_successful_lock_timestamp_ = base::TimeTicks();
-    PointerLockController().recent_lock_attempts_ = 0;
+    PointerLockController().recent_lock_request_timestamps_.clear();
     SimTest::TearDown();
   }
 
@@ -80,9 +88,7 @@ class PointerLockControllerTest : public SimTest {
     return PointerLockController::kLockRateLimitWindow;
   }
 
-  Element* GetTargetElement() {
-    return GetDocument().getElementById(AtomicString("target"));
-  }
+  Element* GetTargetElement() { return GetElementById("target"); }
 
   // Simulates receiving a response from the browser process to a previous
   // pointer lock request.
@@ -115,8 +121,8 @@ class PointerLockControllerTest : public SimTest {
     PointerLockController().ExitPointerLock();
   }
 
-  uint8_t GetRecentLockCount() {
-    return PointerLockController().recent_lock_attempts_;
+  wtf_size_t GetRecentLockCount() {
+    return PointerLockController().recent_lock_request_timestamps_.size();
   }
 
   // Loads a page containing a sandboxed iframe with the given `sandbox_tokens`
@@ -173,6 +179,65 @@ TEST_F(PointerLockControllerTest, SuccessfulLockAddsToRecentTimestamps) {
   EXPECT_EQ(2, GetRecentLockCount());
 }
 
+TEST_F(PointerLockControllerTest, CaretBlinksBeforeDuringAndAfterPointerLock) {
+  ScopedWebTestMode web_test_mode(false);
+  auto task_runner = base::MakeRefCounted<scheduler::FakeTaskRunner>();
+  task_runner->SetTime(0);
+  auto& selection = GetDocument().GetFrame()->Selection();
+  auto& caret = selection.FrameCaretForTesting();
+  caret.RecreateCaretBlinkTimerForTesting(task_runner.get(),
+                                          task_runner->GetMockTickClock());
+
+  ResizeView(gfx::Size(800, 600));
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
+      "<input id='target' value='value' "
+      "style='position:absolute;left:0;top:0'>");
+  auto& focus_controller = GetDocument().GetPage()->GetFocusController();
+  focus_controller.SetActive(true);
+  focus_controller.SetFocused(true);
+  GetTargetElement()->Focus();
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  ASSERT_EQ(GetTargetElement(), GetDocument().FocusedElement());
+
+  const auto blink_interval = LayoutTheme::GetTheme().CaretBlinkInterval();
+  ASSERT_GT(blink_interval, base::TimeDelta());
+  const auto expect_caret_blinks = [&](const char* stage) {
+    SCOPED_TRACE(stage);
+    ASSERT_TRUE(caret.IsActive());
+    EXPECT_FALSE(selection.IsCaretBlinkingSuspended());
+    EXPECT_EQ(1.f, caret.CaretEffectNode().Opacity());
+    task_runner->AdvanceTimeAndRun(blink_interval);
+    // The hidden caret retains its compositing quad with a nonzero opacity.
+    EXPECT_NEAR(0.0f, caret.CaretEffectNode().Opacity(), 0.01f);
+    task_runner->AdvanceTimeAndRun(blink_interval);
+    EXPECT_EQ(1.f, caret.CaretEffectNode().Opacity());
+  };
+  expect_caret_blinks("before pointer lock");
+
+  WebMouseEvent event(WebInputEvent::Type::kMouseDown,
+                      WebInputEvent::kLeftButtonDown,
+                      WebInputEvent::GetStaticTimeStampForTests());
+  event.button = WebPointerProperties::Button::kLeft;
+  event.click_count = 1;
+  event.SetPositionInWidget(10, 10);
+  GetDocument().GetFrame()->GetEventHandler().HandleMousePressEvent(event);
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  // Mouse-down suspends blinking to keep the caret solid until mouse-up.
+  // Acquiring pointer lock must clear this suspension because locked mouse-up
+  // events bypass the normal cleanup.
+  ASSERT_TRUE(selection.IsCaretBlinkingSuspended());
+
+  ScriptState* script_state = ToScriptStateForMainWorld(Window().GetFrame());
+  ScriptState::Scope scope(script_state);
+  SimulateAcquirePointerLock(script_state, GetTargetElement());
+  ASSERT_EQ(GetTargetElement(), GetDocument().PointerLockElement());
+  expect_caret_blinks("during pointer lock");
+
+  PointerLockController().ExitPointerLock();
+  ASSERT_EQ(nullptr, GetDocument().PointerLockElement());
+  expect_caret_blinks("after pointer unlock");
+}
+
 // Simulate enough locks to exceed the threshold and assert that the pointer
 // lock request is rejected due to the rate limit.
 TEST_F(PointerLockControllerTest, RequestRejectedAfterThresholdExceeded) {
@@ -221,13 +286,13 @@ TEST_F(PointerLockControllerTest, RequestAcceptedAfterRateLimitWindowPasses) {
     PointerLockController().RequestPointerLock(resolver, target, nullptr);
     EXPECT_EQ(v8::Promise::kRejected, resolver->Promise().V8Promise()->State());
     // Counter is not reset yet since we're still within the window.
-    EXPECT_LT(static_cast<int>(GetMaxLocksInWindow()), GetRecentLockCount());
+    EXPECT_LE(static_cast<int>(GetMaxLocksInWindow()), GetRecentLockCount());
   }
 
-  // Advance time past the rate limit window. Counter should reset and request
-  // should be accepted (pending browser response).
+  // Advance time past the rate limit window. The queue should be flushed and
+  // the request should be accepted (pending browser response).
   task_environment().FastForwardBy(GetLockRateLimitWindow() / 2 +
-                                   base::Seconds(1));
+                                   base::Milliseconds(10));
   {
     auto* resolver =
         MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
@@ -236,8 +301,42 @@ TEST_F(PointerLockControllerTest, RequestAcceptedAfterRateLimitWindowPasses) {
     // The promise should be pending (waiting for browser response) after the
     // counter was reset.
     EXPECT_EQ(v8::Promise::kPending, promise.V8Promise()->State());
-    // Counter resets when the window passes.
-    EXPECT_EQ(0, GetRecentLockCount());
+    // Counter resets when the window passes. The only timestamp is the one
+    // from this request.
+    EXPECT_EQ(1, GetRecentLockCount());
+  }
+}
+
+// Verify that a steady cadence of requests that stays below the threshold
+// does not cause the rate limit blocking to trigger.
+TEST_F(PointerLockControllerTest, SteadyCadenceDoesNotBlockRequests) {
+  Element* target = GetTargetElement();
+  ScriptState* script_state = ToScriptStateForMainWorld(Window().GetFrame());
+  ScriptState::Scope scope(script_state);
+
+  // Request `GetMaxLocksInWindow()`+1 locks in exactly
+  // `GetLockRateLimitWindow()`. When the last request arrives, the first
+  // timestamp should expire and the request should be successful.
+  const base::TimeDelta time_interval =
+      GetLockRateLimitWindow() / (GetMaxLocksInWindow() - 1);
+  for (size_t i = 0; i <= GetMaxLocksInWindow(); ++i) {
+    SimulateAcquireAndReleasePointerLock(script_state, target);
+    task_environment().FastForwardBy(time_interval);
+    if (i < GetMaxLocksInWindow() - 1) {
+      EXPECT_EQ(i + 1, GetRecentLockCount());
+    }
+  }
+  // First timestamp expired, and the last one made it into the queue.
+  EXPECT_EQ(static_cast<int>(GetMaxLocksInWindow()), GetRecentLockCount());
+  // Now, repeat requests at the exact interval and ensure that this cycle of
+  // expiring the oldest stamp and accepting the newest repeats.
+  // This emulates the scenario where a user may be working on a page that
+  // requires short, fine and repeated motions during a period of time longer
+  // than `kLockRateLimitWindow`.
+  for (size_t i = 0; i < 5; ++i) {
+    SimulateAcquireAndReleasePointerLock(script_state, target);
+    task_environment().FastForwardBy(time_interval);
+    EXPECT_EQ(static_cast<int>(GetMaxLocksInWindow()), GetRecentLockCount());
   }
 }
 

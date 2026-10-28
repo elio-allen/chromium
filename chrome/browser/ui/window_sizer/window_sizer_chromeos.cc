@@ -8,11 +8,12 @@
 
 #include "base/command_line.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
+#include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
@@ -35,7 +36,7 @@ bool ShouldForceMaximizeOnFirstRun(const Profile* profile) {
 
 WindowSizerChromeOS::WindowSizerChromeOS(
     std::unique_ptr<StateProvider> state_provider,
-    Browser* browser)
+    BrowserWindowInterface* browser)
     : WindowSizer(std::move(state_provider), browser) {}
 
 WindowSizerChromeOS::~WindowSizerChromeOS() = default;
@@ -91,7 +92,7 @@ bool WindowSizerChromeOS::GetBrowserBounds(
   }
 
   // This should not be called on a Browser that already has a window.
-  DCHECK(!browser()->GetWindow());
+  CHECK(!browser()->GetWindow(), base::NotFatalUntil::M162);
 
   bool determined = false;
   if (bounds->IsEmpty()) {
@@ -148,10 +149,11 @@ bool WindowSizerChromeOS::GetBrowserBounds(
 void WindowSizerChromeOS::GetTabbedBrowserBounds(
     gfx::Rect* bounds_in_screen,
     ui::mojom::WindowShowState* show_state) const {
-  DCHECK(show_state);
-  DCHECK(bounds_in_screen);
-  DCHECK(browser()->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL);
-  DCHECK(bounds_in_screen->IsEmpty());
+  CHECK(show_state, base::NotFatalUntil::M162);
+  CHECK(bounds_in_screen, base::NotFatalUntil::M162);
+  CHECK(browser()->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL,
+        base::NotFatalUntil::M162);
+  CHECK(bounds_in_screen->IsEmpty(), base::NotFatalUntil::M162);
 
   const ui::mojom::WindowShowState passed_show_state = *show_state;
 
@@ -195,9 +197,10 @@ void WindowSizerChromeOS::GetTabbedBrowserBounds(
 bool WindowSizerChromeOS::GetAppBrowserBoundsFromLastActive(
     gfx::Rect* bounds_in_screen,
     ui::mojom::WindowShowState* show_state) const {
-  DCHECK(show_state);
-  DCHECK(bounds_in_screen);
-  DCHECK(web_app::AppBrowserController::From(browser()));
+  CHECK(show_state, base::NotFatalUntil::M162);
+  CHECK(bounds_in_screen, base::NotFatalUntil::M162);
+  CHECK(web_app::AppBrowserController::From(browser()),
+        base::NotFatalUntil::M162);
 
   if (state_provider() && state_provider()->GetLastActiveWindowState(
                               bounds_in_screen, show_state)) {

@@ -182,10 +182,6 @@ class FuchsiaVideoDecoder::OutputMailbox {
     // Request a fence we'll wait on before reusing the buffer.
     frame->metadata().read_lock_fences_enabled = true;
 
-    // Set the frame to have same color space as that for underlying shared
-    // image.
-    frame->set_color_space(shared_image_->color_space());
-
     return frame;
   }
 
@@ -218,8 +214,7 @@ class FuchsiaVideoDecoder::OutputMailbox {
         std::vector<gpu::SyncToken>{release_sync_token_},
         base::BindPostTaskToCurrentDefault(base::BindOnce(
             &OutputMailbox::OnSyncTokenSignaled, weak_factory_.GetWeakPtr())),
-        raster_context_provider_->ContextSupport(),
-        /*pending_callback_id=*/0);
+        raster_context_provider_->SharedImageInterface());
   }
 
   void OnSyncTokenSignaled() {
@@ -654,11 +649,6 @@ void FuchsiaVideoDecoder::OnStreamProcessorOutputPacket(
   // Mark the frame as power-efficient since (software decoders are used only in
   // tests).
   frame->metadata().power_efficient = true;
-
-  // Allow this video frame to be promoted as an overlay, because it was
-  // registered with an ImagePipe.
-  frame->metadata().allow_overlay =
-      frame->shared_image()->usage().Has(gpu::SHARED_IMAGE_USAGE_SCANOUT);
 
   if (protected_output_) {
     frame->metadata().protected_video = true;

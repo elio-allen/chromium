@@ -13,6 +13,7 @@
 #include "base/auto_reset.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
+#include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
@@ -58,8 +59,11 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/blink/public/mojom/devtools/inspector_issue.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/display/screen.h"
+#include "ui/display/types/display_constants.h"
 #include "ui/events/event.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -272,7 +276,18 @@ void PermissionRequestManager::AddRequest(
     return;
   }
 
+  // Cancel all requests if the WebContents does not support permission
+  // requests at all. This takes priority over
+  // `allowlist_for_permission_requests_`.
   if (!web_contents_supports_permission_requests_) {
+    request->Cancelled();
+    return;
+  }
+
+  // If the WebContents only supports specific permission types, cancel any
+  // request not in the allowlist.
+  if (allowlist_for_permission_requests_.has_value() &&
+      !allowlist_for_permission_requests_->contains(request->request_type())) {
     request->Cancelled();
     return;
   }
@@ -345,6 +360,9 @@ void PermissionRequestManager::AddRequest(
   // the frame is navigated, we still record the correct source_id.
   request->set_ukm_source_id(source_frame->GetPageUkmSourceId());
 
+  MaybeReportGeolocationPromptWithoutUserGestureInspectorIssue(request.get(),
+                                                               source_frame);
+
   QueueRequest(source_frame, std::move(request));
 
   if (!IsRequestInProgress()) {
@@ -355,9 +373,65 @@ void PermissionRequestManager::AddRequest(
   ReprioritizeCurrentRequestIfNeeded();
 }
 
+void PermissionRequestManager::
+    MaybeReportGeolocationPromptWithoutUserGestureInspectorIssue(
+        const PermissionRequest* request,
+        content::RenderFrameHost* source_frame) {
+  if (request->request_type() == RequestType::kGeolocation &&
+      !request->IsEmbeddedPermissionElementInitiated() &&
+      request->GetGestureType() == PermissionRequestGestureType::NO_GESTURE &&
+      !had_same_origin_navigation_) {
+    auto details = blink::mojom::InspectorIssueDetails::New();
+    auto generic_issue_details = blink::mojom::GenericIssueDetails::New();
+    generic_issue_details->error_type = blink::mojom::GenericIssueErrorType::
+        kGeolocationPromptWithoutUserGesture;
+    generic_issue_details->frame_id =
+        source_frame->GetDevToolsFrameToken().ToString();
+    details->generic_issue_details = std::move(generic_issue_details);
+    auto issue_info = blink::mojom::InspectorIssueInfo::New(
+        blink::mojom::InspectorIssueCode::kGenericIssue, std::move(details));
+    source_frame->ReportInspectorIssue(std::move(issue_info));
+  }
+}
+
+void PermissionRequestManager::CancelAllRequestsWithType(
+    RequestType request_type) {
+  std::vector<PermissionRequest*> pending_to_cancel;
+  for (const base::circular_deque<std::unique_ptr<PermissionRequest>>&
+           request_list : pending_permission_requests_) {
+    for (const std::unique_ptr<PermissionRequest>& request : request_list) {
+      if (request->request_type() == request_type) {
+        pending_to_cancel.push_back(request.get());
+      }
+    }
+  }
+  for (PermissionRequest* request : pending_to_cancel) {
+    if (pending_permission_requests_.Contains(request)) {
+      std::erase(validated_requests_, *request);
+      request_sources_map_.erase(
+          base::raw_ref<PermissionRequest>::from_ptr(request));
+      CancelRequestIncludingDuplicates(request);
+      FinishRequestIncludingDuplicates(request);
+      pending_permission_requests_.Erase(request);
+    }
+  }
+
+  if (can_preempt_current_request_ &&
+      std::ranges::any_of(
+          requests_,
+          [request_type](const std::unique_ptr<PermissionRequest>& element) {
+            return element->request_type() == request_type;
+          })) {
+    Ignore(/*prompt_options=*/std::monostate());
+  }
+}
+
 bool PermissionRequestManager::ReprioritizeCurrentRequestIfNeeded() {
+  // Use `ShouldCurrentRequestUsePermissionElementSecondaryUI` to also include
+  // allowlisted surfaces.
   if (!IsRequestInProgress() ||
-      IsCurrentRequestEmbeddedPermissionElementInitiated() ||
+      PermissionUtil::ShouldCurrentRequestUsePermissionElementSecondaryUI(
+          this, web_contents()) ||
       !can_preempt_current_request_) {
     return true;
   }
@@ -606,12 +680,24 @@ void PermissionRequestManager::OnVisibilityChanged(
   }
 }
 
+void PermissionRequestManager::DidToggleFullscreenModeForTab(
+    bool entered_fullscreen,
+    bool will_cause_resize) {
+  if (entered_fullscreen && view_) {
+    Ignore(/*prompt_options=*/std::monostate());
+  }
+}
+
 const std::vector<std::unique_ptr<PermissionRequest>>&
-PermissionRequestManager::Requests() {
+PermissionRequestManager::Requests() const {
   return requests_;
 }
 
 GURL PermissionRequestManager::GetRequestingOrigin() const {
+  if (requesting_origin_for_testing_.has_value()) {
+    return requesting_origin_for_testing_.value();
+  }
+
   CHECK(!requests_.empty());
   GURL origin = requests_.front()->requesting_origin();
   if (DCHECK_IS_ON()) {
@@ -823,12 +909,12 @@ void PermissionRequestManager::OpenHelpCenterLink(const ui::Event& event) {
   switch (requests_[0]->request_type()) {
     case permissions::RequestType::kStorageAccess:
       GetAssociatedWebContents()->OpenURL(
-          content::OpenURLParams(
+          content::OpenURLParams::CreateBrowserInitiated(
               GURL(permissions::kEmbeddedContentHelpCenterURL),
-              content::Referrer(),
               ui::DispositionFromEventFlags(
-                  event.flags(), WindowOpenDisposition::NEW_FOREGROUND_TAB),
-              ui::PAGE_TRANSITION_LINK, /*is_renderer_initiated=*/false),
+                  event.flags(),
+                  ui::mojom::WindowOpenDisposition::kNewForegroundTab),
+              ui::PAGE_TRANSITION_LINK),
           /*navigation_handle_callback=*/{});
       break;
     default:
@@ -903,7 +989,11 @@ bool PermissionRequestManager::RecreateView() {
   const bool should_do_auto_response_for_testing =
       (current_request_prompt_disposition_ ==
        PermissionPromptDisposition::MAC_OS_PROMPT);
-  if (IsCurrentRequestEmbeddedPermissionElementInitiated()) {
+  // Check that a request is filed, and the surface is allowlisted or
+  // has an initiated permission prompt. If a flow model is not created even
+  // though a permission prompt has been requested, it will cause a crash.
+  if (PermissionUtil::ShouldCurrentRequestUsePermissionElementSecondaryUI(
+          this, web_contents())) {
     if (!embedded_prompt_flow_model_) {
       embedded_prompt_flow_model_ =
           std::make_unique<EmbeddedPermissionPromptFlowModel>(web_contents(),
@@ -918,7 +1008,11 @@ bool PermissionRequestManager::RecreateView() {
     if (ShouldDropCurrentRequestIfCannotShowQuietly()) {
       CurrentRequestsDecided(PermissionAction::IGNORED,
                              /*prompt_options=*/std::monostate());
-    } else if (IsCurrentRequestEmbeddedPermissionElementInitiated() ||
+      // Use `ShouldCurrentRequestUsePermissionElementSecondaryUI` to also
+      // include allowlisted surfaces.
+    } else if (PermissionUtil::
+                   ShouldCurrentRequestUsePermissionElementSecondaryUI(
+                       this, web_contents()) ||
                IsCurrentRequestExclusiveAccess()) {
       Ignore(/*prompt_options=*/std::monostate());
     }
@@ -980,11 +1074,14 @@ GeolocationAccuracy
 PermissionRequestManager::GetInitialGeolocationAccuracySelection() const {
   static constexpr GeolocationAccuracy kDefaultAccuracy =
       GeolocationAccuracy::kPrecise;
+  // `current_request_ui_to_use_` is not yet populated when the WebContents is
+  // destroyed while the asynchronous `PermissionUiSelector` evaluations were
+  // still in flight.
   if (!base::FeatureList::IsEnabled(
-          features::kPermissionPredictionsGeolocationAccuracy)) {
+          features::kPermissionPredictionsGeolocationAccuracy) ||
+      !current_request_ui_to_use_.has_value()) {
     return kDefaultAccuracy;
   }
-  CHECK(current_request_ui_to_use_.has_value());
   switch (current_request_ui_to_use_->geolocation_accuracy) {
     case PermissionUiSelector::GeolocationAccuracy::kUnspecified:
       return kDefaultAccuracy;
@@ -1001,12 +1098,6 @@ std::optional<GeolocationPromptType>
 PermissionRequestManager::GetGeolocationPromptType() const {
   CHECK_EQ(requests_.size(), 1u);
   return requests_[0]->GetGeolocationPromptType();
-}
-
-bool PermissionRequestManager::
-    IsCurrentRequestEmbeddedPermissionElementInitiated() const {
-  return IsRequestInProgress() &&
-         requests_[0]->IsEmbeddedPermissionElementInitiated();
 }
 
 std::optional<gfx::Rect>
@@ -1182,6 +1273,24 @@ void PermissionRequestManager::ShowPrompt() {
   if (!tab_is_active_) {
     NotifyPromptCreationFailedHiddenTab();
     return;
+  }
+
+  if (web_contents()->IsFullscreen()) {
+    if (ShouldCurrentRequestUseQuietUI()) {
+      Ignore(/*prompt_options=*/std::monostate());
+      return;
+    }
+    base::WeakPtr<PermissionRequestManager> weak_this =
+        weak_factory_.GetWeakPtr();
+    if (!web_contents()->ForSecurityDropFullscreen(
+            display::kInvalidDisplayId)) {
+      return;
+    }
+    // The tab might have been destroyed or navigated away while dropping
+    // fullscreen, which could have deleted the current requests.
+    if (!weak_this || !IsRequestInProgress()) {
+      return;
+    }
   }
 
   // We check `requests_.empty()` after some following calls
@@ -1622,7 +1731,10 @@ void PermissionRequestManager::RemoveObserver(Observer* observer) {
 }
 
 bool PermissionRequestManager::ShouldCurrentRequestUseQuietUI() const {
-  if (IsCurrentRequestEmbeddedPermissionElementInitiated()) {
+  // Use `ShouldCurrentRequestUsePermissionElementSecondaryUI` to include
+  // allowlisted surfaces.
+  if (PermissionUtil::ShouldCurrentRequestUsePermissionElementSecondaryUI(
+          this, web_contents())) {
     return false;
   }
   // ContentSettingImageModel might call into this method if the user switches
@@ -1901,7 +2013,6 @@ bool PermissionRequestManager::IsCurrentRequestExclusiveAccess() const {
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 }
 
-
 PermissionEmbargoStatus
 PermissionRequestManager::RecordActionAndGetEmbargoStatus(
     content::BrowserContext* browser_context,
@@ -2034,7 +2145,7 @@ void PermissionRequestManager::OnTabWillDiscardContents(
     content::WebContents* new_contents) {
   // Runs on the manager of old_contents — the only object that exists
   // before the swap and is subscribed to the tab. The replacement's manager
-  // already exists (TabStripModel::DiscardWebContentsAt() attaches tab
+  // already exists (TabStripModel::DiscardWebContents() attaches tab
   // helpers before the swap) but cannot discover the TabInterface itself:
   // the TabLookupFromWebContents entry moves over only after this
   // notification returns. Hand it over explicitly.

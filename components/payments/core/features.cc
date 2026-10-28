@@ -32,21 +32,43 @@ BASE_FEATURE(kAppStoreBillingDebug, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kAllowJITInstallationWhenAppIconIsMissing,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kDelayNativePaymentAppScrimShow,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kEnforceFullDelegation, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kGPayAppDynamicUpdate, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kSecurePaymentConfirmationCredentialDiscoveryMode,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kSecurePaymentConfirmationUseCredentialStoreAPIs,
+constexpr base::FeatureParam<CredentialDiscoveryMode>::Option
+    kCredentialDiscoveryModeOptions[] = {
+        {CredentialDiscoveryMode::kUserDatabaseOnly,
+         CredentialDiscoveryModeToString(
+             CredentialDiscoveryMode::kUserDatabaseOnly)},
+        {CredentialDiscoveryMode::kHybrid,
+         CredentialDiscoveryModeToString(CredentialDiscoveryMode::kHybrid)},
+        {CredentialDiscoveryMode::kOsOnly,
+         CredentialDiscoveryModeToString(CredentialDiscoveryMode::kOsOnly)},
+};
+
+const base::FeatureParam<CredentialDiscoveryMode> kCredentialDiscoveryModeParam{
+    &kSecurePaymentConfirmationCredentialDiscoveryMode, "mode",
+#if BUILDFLAG(IS_ANDROID)
+    CredentialDiscoveryMode::kOsOnly,
+#elif BUILDFLAG(IS_WIN)
+    CredentialDiscoveryMode::kHybrid,
+#else
+    CredentialDiscoveryMode::kUserDatabaseOnly,
+#endif
+    &kCredentialDiscoveryModeOptions};
+
+BASE_FEATURE(kSecurePaymentConfirmationStoreCredentialsInOS,
 #if BUILDFLAG(IS_ANDROID)
              base::FEATURE_ENABLED_BY_DEFAULT
 #else
              base::FEATURE_DISABLED_BY_DEFAULT
 #endif
 );
-
-
-BASE_FEATURE(kPaymentRequestUseRendererUrlLoader,
-             base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kPaymentRequestRejectTooSmallWindows,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -59,10 +81,33 @@ BASE_FEATURE(kPaymentHandlerDialogUseInitiatorInUrlLoad,
 #endif
 );
 
+BASE_FEATURE(kPaymentHandlerHtmlHeadThemeColor,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 BASE_FEATURE(kPaymentRequestMandatoryPaymentAppUi,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPaymentHandlerCameraAccessUx, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPaymentHandlerDynamicCustomSize,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kPaymentHandlerCameraAccess, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kSPCLocaleValidation, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kThreeDSecureTelemetry, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kThreeDSecureTelemetryForIos, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPaymentHandlerModalDialogHost, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPaymentRequestEnforceLNAWithClientSecurityState,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Used to control whether user-initiated browser reloads on non-error
+// documents reset the once-per-navigation activationless PaymentRequest.show()
+// allowance.
+BASE_FEATURE(kPaymentRequestResetActivationlessShowOnReload,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 }  // namespace features
 }  // namespace payments

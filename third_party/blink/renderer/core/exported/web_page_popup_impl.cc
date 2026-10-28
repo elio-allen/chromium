@@ -32,6 +32,7 @@
 #include <memory>
 
 #include "base/functional/callback_helpers.h"
+#include "base/memory/raw_ptr.h"
 #include "cc/animation/animation_host.h"
 #include "cc/animation/animation_timeline.h"
 #include "cc/base/features.h"
@@ -53,7 +54,7 @@
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
-#include "third_party/blink/renderer/core/frame/local_frame_ukm_aggregator.h"
+#include "third_party/blink/renderer/core/frame/local_frame_metrics_aggregator.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/screen_metrics_emulator.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
@@ -107,21 +108,15 @@ bool CanScroll(Node* node) {
 
 Node* FindFirstScroller(Node* event_target) {
   DCHECK(event_target);
-  Node* cur_node = nullptr;
-  bool found = false;
-  LayoutBox* cur_box = event_target->GetLayoutObject()
-                           ? event_target->GetLayoutObject()->EnclosingBox()
-                           : nullptr;
-  while (cur_box) {
-    cur_node = cur_box->GetNode();
-    if (CanScroll(cur_node)) {
-      found = true;
-      break;
+  LayoutBox* box = event_target->GetLayoutObject()
+                       ? event_target->GetLayoutObject()->EnclosingBox()
+                       : nullptr;
+  while (box) {
+    Node* node = box->GetNode();
+    if (CanScroll(node)) {
+      return node;
     }
-    cur_box = cur_box->ContainingBlock();
-  }
-  if (found && cur_node) {
-    return cur_node;
+    box = box->ContainingBlock();
   }
   return nullptr;
 }
@@ -299,15 +294,15 @@ class PagePopupChromeClient final : public EmptyChromeClient {
   }
 
   const display::ScreenInfo& GetScreenInfo(LocalFrame&) const override {
-    // LocalFrame is ignored since there is only 1 frame in a popup.
     CHECK(popup_);
+    // LocalFrame is ignored since there is only 1 frame in a popup.
     return popup_->GetScreenInfo();
   }
 
   const display::ScreenInfos& GetScreenInfos(LocalFrame&) const override {
     CHECK(popup_);
     // LocalFrame is ignored since there is only 1 frame in a popup.
-    return popup_->GetScreenInfos();
+    return popup_->widget_base_->screen_infos();
   }
 
   gfx::Size MinimumWindowSize() const override { return gfx::Size(0, 0); }
@@ -367,7 +362,7 @@ class PagePopupChromeClient final : public EmptyChromeClient {
         delta, granularity, scrollable_area_element_id, injected_type);
   }
 
-  WebPagePopupImpl* popup_;
+  raw_ptr<WebPagePopupImpl, UnprotectedInRelease | DanglingUntriaged> popup_;
 };
 
 // WebPagePopupImpl ----------------------------------------------------------
@@ -451,8 +446,10 @@ WebPagePopupImpl::WebPagePopupImpl(
   }
 
   // TODO(https://crbug.com/1355751) Initialize `storage_key`.
-  frame->Init(/*opener=*/nullptr, DocumentToken(), /*policy_container=*/nullptr,
-              StorageKey(), /*document_ukm_source_id=*/ukm::kInvalidSourceId,
+  frame->Init(/*opener=*/nullptr, DocumentToken(),
+              /*initiator_state_token=*/InitiatorStateToken(),
+              /*policy_container=*/nullptr, StorageKey(),
+              /*document_ukm_source_id=*/ukm::kInvalidSourceId,
               /*creator_base_url=*/NullUrl());
   frame->View()->SetParentVisible(true);
   frame->View()->SetSelfVisible(true);
@@ -592,15 +589,7 @@ void WebPagePopupImpl::ApplyVisualProperties(
   widget_base_->UpdateVisualProperties(visual_properties);
 }
 
-const display::ScreenInfo& WebPagePopupImpl::GetScreenInfo() {
-  return widget_base_->GetScreenInfo();
-}
-
-const display::ScreenInfos& WebPagePopupImpl::GetScreenInfos() {
-  return widget_base_->screen_infos();
-}
-
-const display::ScreenInfo& WebPagePopupImpl::GetOriginalScreenInfo() {
+const display::ScreenInfo& WebPagePopupImpl::GetScreenInfo() const {
   return widget_base_->GetScreenInfo();
 }
 
@@ -657,6 +646,10 @@ void WebPagePopupImpl::Update() {
   }
 
   popup_client_->Update(forced_update);
+  if (!widget_base_) {
+    // Something inside Update() closed this popup.
+    return;
+  }
   if (forced_update) {
     SetWindowRect(WindowRectInScreen());
   }
@@ -778,6 +771,12 @@ WebInputEventResult WebPagePopupImpl::HandleKeyEvent(
       suppress_next_keypress_event_ = true;
     }
   }
+  // TODO(crbug.com/40091540): Remove user activation notification for all
+  // non-keydown events. Apparently this notification was added without the
+  // understanding that a single user key "click" fires down/up/char events.
+  // While sending 3 notifications for a single user action is not terrible
+  // (because we only ever track a _single_ user activation per Window), this
+  // allows opportunistic "in-between" consumptions by the popup client.
   LocalFrame::NotifyUserActivation(
       popup_client_->OwnerElement().GetDocument().GetFrame(),
       mojom::blink::UserActivationNotificationType::kInteraction);
@@ -850,8 +849,8 @@ WebInputEventResult WebPagePopupImpl::HandleGestureEvent(
         MainFrame().GetEventHandler().HitTestResultAtLocation(locationScroll);
     scrollable_node_ = FindFirstScroller(resultScroll.InnerNode());
     RecordScrollReasonsMetric(
-        event.SourceDevice(),
-        cc::MainThreadScrollingReason::kPopupNoThreadedInput);
+        event.SourceDevice(), {}, {},
+        {cc::MainThreadScrollingOtherReason::kPopupNoThreadedInput});
     return WebInputEventResult::kHandledSystem;
   }
   if (event.GetType() == WebInputEvent::Type::kGestureScrollUpdate) {
@@ -1048,11 +1047,11 @@ gfx::Rect WebPagePopupImpl::ViewportVisibleRect() {
 }
 
 KURL WebPagePopupImpl::GetURLForDebugTrace() {
-  if (!page_) {
+  if (!page_ || !opener_web_view_) {
     return {};
   }
   WebFrame* main_frame = opener_web_view_->MainFrame();
-  if (main_frame->IsWebLocalFrame()) {
+  if (main_frame && main_frame->IsWebLocalFrame()) {
     return main_frame->ToWebLocalFrame()->GetDocument().Url();
   }
   return {};
@@ -1061,6 +1060,10 @@ KURL WebPagePopupImpl::GetURLForDebugTrace() {
 void WebPagePopupImpl::WidgetHostDisconnected() {
   Close();
   // Careful, this is now destroyed.
+}
+
+void WebPagePopupImpl::WidgetHostDisconnectedForTesting() {
+  WidgetHostDisconnected();
 }
 
 void WebPagePopupImpl::Close() {
@@ -1082,6 +1085,10 @@ void WebPagePopupImpl::Close() {
         controller->ClearPagePopupClient();
       }
       DestroyPage();
+      if (opener_web_view_) {
+        opener_web_view_->CleanupPagePopup();
+        opener_web_view_ = nullptr;
+      }
     }
   }
 
@@ -1141,7 +1148,10 @@ void WebPagePopupImpl::ClosePopup() {
   // owner of itself. Note however that WebViewImpl may briefly extend the
   // lifetime of this object since it owns a reference, but it should only be
   // to call HasSamePopupClient().
-  opener_web_view_->CleanupPagePopup();
+  if (opener_web_view_) {
+    opener_web_view_->CleanupPagePopup();
+    opener_web_view_ = nullptr;
+  }
 }
 
 LocalDOMWindow* WebPagePopupImpl::Window() {

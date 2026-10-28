@@ -42,9 +42,20 @@ export function getHtml(this: SettingsSearchPageElement) {
       ${this.showSearchEngineListDialog_ ? html`
         <settings-search-engine-list-dialog
             .searchEngines="${this.searchEngines_}"
+            .saveGuestChoice="${this.saveGuestChoice_}"
             @close="${this.onSearchEngineListDialogClose_}"
+            @more-engines-click="${this.onMoreEnginesClick_}"
+            @save-guest-choice-changed="${this.onSaveGuestChoiceChanged_}"
             @search-engine-changed="${this.onSearchEngineChanged_}">
         </settings-search-engine-list-dialog>
+      ` : ''}
+      ${this.showMoreEnginesDialog_ ? html`
+        <settings-search-engine-more-engines-dialog
+            .saveGuestChoice="${this.saveGuestChoice_}"
+            @close="${this.onMoreEnginesDialogClose_}"
+            @save-guest-choice-changed="${this.onSaveGuestChoiceChanged_}"
+            @search-engine-changed="${this.onSearchEngineChanged_}">
+        </settings-search-engine-more-engines-dialog>
       ` : ''}
       <cr-toast id="confirmationToast" duration="10000">
         <div>${this.confirmationToastLabel_}</div>
@@ -59,8 +70,8 @@ export function getHtml(this: SettingsSearchPageElement) {
               extension-name="${
                   this.defaultSearchProviderDataPref_?.controlledByName}"
               ?extension-can-be-disabled="${
-                  !!this.defaultSearchProviderDataPref_?.extensionCanBeDisabled}"
-              @disable-extension-click="${this.onDisableExtensionClick_}">
+                  !!this.defaultSearchProviderDataPref_
+                      ?.extensionCanBeDisabled}">
           </extension-controlled-message>
         </div>
       ` : html`
@@ -71,8 +82,8 @@ export function getHtml(this: SettingsSearchPageElement) {
               extension-name="${
                   this.defaultSearchProviderDataPref_?.controlledByName}"
               ?extension-can-be-disabled="${
-                  !!this.defaultSearchProviderDataPref_?.extensionCanBeDisabled}"
-              @disable-extension-click="${this.onDisableExtensionClick_}">
+                  !!this.defaultSearchProviderDataPref_
+                      ?.extensionCanBeDisabled}">
           </extension-controlled-indicator>
         </div>
       `}

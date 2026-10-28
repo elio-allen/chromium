@@ -34,6 +34,7 @@
 #include "chrome/browser/extensions/extension_garbage_collector.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_utils.h"
+#include "extensions/browser/api/constants.h"
 #include "extensions/browser/api/declarative_net_request/composite_matcher.h"
 #include "extensions/browser/api/declarative_net_request/constants.h"
 #include "extensions/browser/api/declarative_net_request/declarative_net_request_api.h"
@@ -52,6 +53,7 @@
 #include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/load_error_reporter.h"
 #include "extensions/browser/test_extension_registry_observer.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/api/declarative_net_request/constants.h"
 #include "extensions/common/api/declarative_net_request/test_utils.h"
 #include "extensions/common/error_utils.h"
@@ -1816,8 +1818,8 @@ TEST_P(SingleRulesetTest, GetMatchedRulesInvalidTabID) {
       base::MakeRefCounted<DeclarativeNetRequestGetMatchedRulesFunction>();
   function->set_extension(extension());
 
-  std::string expected_error = ErrorUtils::FormatErrorMessage(
-      declarative_net_request::kTabNotFoundError, "-9001");
+  std::string expected_error =
+      ErrorUtils::FormatErrorMessage(kTabNotFoundError, "-9001");
 
   std::string error = api_test_utils::RunFunctionAndReturnError(
       function.get(), R"([{ "tabId": -9001 }])" /* args */, browser_context());
@@ -3304,6 +3306,53 @@ TEST_P(MultipleRulesetsTest_Unpacked, ReinstallPreservesGlobalRuleAllocation) {
   // Allocation still held: reinstall path preserved it.
   EXPECT_EQ(total_limit - kAllocation,
             global_rules_tracker.GetUnallocatedRuleCount());
+}
+
+// Regression test for crbug.com/40807910. Stale dynamic rules left on disk from
+// a prior installation should be cleaned up when the extension is loaded, so
+// that new dynamic rules reusing the same IDs can be added.
+TEST_P(SingleRulesetTest, StaleDynamicRulesCleanedUpOnLoad) {
+  RulesetManagerObserver ruleset_waiter(manager());
+
+  AddRule(CreateGenericRule());
+  LoadAndExpectSuccess();
+  ruleset_waiter.WaitForExtensionsWithRulesetsCount(1);
+
+  // Simulate stale dynamic rules left on disk from a previous installation.
+  FileBackedRulesetSource dynamic_source =
+      FileBackedRulesetSource::CreateDynamic(browser_context(),
+                                             extension()->id());
+  base::CreateDirectory(dynamic_source.json_path().DirName());
+  const std::string stale_rules =
+      R"([{"id":1,"priority":1,"action":{"type":"block"},)"
+      R"("condition":{"urlFilter":"stale"}}])";
+  ASSERT_TRUE(base::WriteFile(dynamic_source.json_path(), stale_rules));
+
+  // No stored dynamic ruleset checksum in prefs means no established dynamic
+  // ruleset, so loading the extension should delete the stale files.
+  int dynamic_checksum = 0;
+  ASSERT_FALSE(
+      PrefsHelper(*ExtensionPrefs::Get(browser_context()))
+          .GetDynamicRulesetChecksum(extension()->id(), dynamic_checksum));
+
+  // Reloading the extension (disable then enable) triggers the cleanup in
+  // OnExtensionLoaded().
+  registrar()->DisableExtension(extension()->id(),
+                                {disable_reason::DISABLE_USER_ACTION});
+  ruleset_waiter.WaitForExtensionsWithRulesetsCount(0);
+  registrar()->EnableExtension(extension()->id());
+  ruleset_waiter.WaitForExtensionsWithRulesetsCount(1);
+
+  // Adding a dynamic rule reusing the stale ID should succeed.
+  TestRule dynamic_rule = CreateGenericRule();
+  dynamic_rule.id = 1;
+  dynamic_rule.condition->url_filter = std::string("new_filter");
+  ASSERT_NO_FATAL_FAILURE(
+      RunUpdateRulesFunction(*extension(), {} /* rule_ids_to_remove */,
+                             {dynamic_rule}, RulesetScope::kDynamic));
+
+  VerifyPublicRulesetIDs(*extension(),
+                         {kDefaultRulesetID, dnr_api::DYNAMIC_RULESET_ID});
 }
 
 INSTANTIATE_TEST_SUITE_P(All,

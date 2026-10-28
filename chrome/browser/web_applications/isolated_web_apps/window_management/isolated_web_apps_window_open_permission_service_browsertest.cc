@@ -17,9 +17,9 @@
 #include "chrome/browser/notifications/notification_display_service_tester.h"
 #include "chrome/browser/notifications/notification_handler.h"
 #include "chrome/browser/notifications/stub_notification_display_service.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/desktop_browser_window_capabilities.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
@@ -45,9 +45,9 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "url/origin.h"
-
-class Browser;
 
 namespace web_app {
 namespace {
@@ -121,8 +121,8 @@ class IsolatedWebAppsWindowOpenPermissionServiceBrowserTest
         ->app_id();
   }
 
-  Browser* OpenIwaWindow(const webapps::AppId& app_id) {
-    Browser* app_browser =
+  BrowserWindowInterface* OpenIwaWindow(const webapps::AppId& app_id) {
+    BrowserWindowInterface* app_browser =
         ::web_app::LaunchWebAppBrowserAndWait(profile(), app_id);
     EXPECT_TRUE(app_browser);
     return app_browser;
@@ -248,8 +248,8 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppsWindowOpenPermissionServiceBrowserTest,
   webapps::AppId app1_id = InstallIsolatedWebApp();
   webapps::AppId app2_id = InstallIsolatedWebApp(kIsolatedApp2DefaultName);
 
-  Browser* iwa1_browser = OpenIwaWindow(app1_id);
-  Browser* iwa2_browser = OpenIwaWindow(app2_id);
+  BrowserWindowInterface* iwa1_browser = OpenIwaWindow(app1_id);
+  BrowserWindowInterface* iwa2_browser = OpenIwaWindow(app2_id);
 
   base::test::TestFuture<void> notification_added_future;
   display_service_tester_->SetNotificationAddedClosure(
@@ -584,10 +584,13 @@ IN_PROC_BROWSER_TEST_F(
 
   // Open a new background tab from the scope-extension page, as the renderer
   // does for e.g. a middle-click on a link.
-  content::OpenURLParams params(
-      GURL("https://example.com/destination"), content::Referrer(),
-      WindowOpenDisposition::NEW_BACKGROUND_TAB, ui::PAGE_TRANSITION_LINK,
-      /*is_renderer_initiated=*/true);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateRendererInitiated(
+          GURL("https://example.com/destination"),
+          WindowOpenDisposition::kNewBackgroundTab, ui::PAGE_TRANSITION_LINK,
+          content::Referrer(),
+          opener_contents->GetPrimaryMainFrame()
+              ->GetCurrentInitiatorNavigationState());
   params.initiator_origin = scope_extension_origin;
   params.source_site_instance =
       opener_contents->GetPrimaryMainFrame()->GetSiteInstance();

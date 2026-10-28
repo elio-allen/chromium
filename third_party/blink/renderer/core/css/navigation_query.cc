@@ -4,34 +4,32 @@
 
 #include "third_party/blink/renderer/core/css/navigation_query.h"
 
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_urlpatterninit_usvstring.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_url_pattern_init.h"
 #include "third_party/blink/renderer/core/css/css_markup.h"
+#include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/html/html_anchor_element.h"
 #include "third_party/blink/renderer/core/route_matching/navigation_state.h"
-#include "third_party/blink/renderer/core/route_matching/route.h"
-#include "third_party/blink/renderer/core/route_matching/route_map.h"
 #include "third_party/blink/renderer/core/url_pattern/url_pattern.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
 
-const Route* NavigationLocation::FindOrCreateRoute(Document& document) const {
+const URLPattern* NavigationLocation::FindOrCreateURLPattern(
+    Document& document) const {
   if (type_ == kUrlPattern || type_ == kUrl) {
-    // url-pattern() and url() become anonymous routes. One route for each
-    // unique entry.
-    RouteMap::Ensure(document).AddAnonymousRoute(value_);
+    // The value is url() or url-pattern().
+    V8URLPatternInput* url_pattern_input =
+        MakeGarbageCollected<V8URLPatternInput>(value_);
+    URLPattern* pattern =
+        URLPattern::Create(document.GetExecutionContext()->GetIsolate(),
+                           url_pattern_input, document.Url(), IGNORE_EXCEPTION);
+    return pattern;
   }
-  const auto* route_map = RouteMap::Get(&document);
-  if (!route_map) {
-    return nullptr;
-  }
-  switch (type_) {
-    case kUrl:
-    case kUrlPattern:
-      return route_map->FindAnonymousRoute(value_);
-    case kLocationName:
-      return route_map->FindRoute(value_);
-  }
+  // The value is an @location dashed-ident.
+  DCHECK_EQ(type_, kLocationName);
+  return document.GetStyleEngine().FindURLPatternByLocation(value_);
 }
 
 bool NavigationLocation::CheckSelectorMatch(
@@ -42,9 +40,21 @@ bool NavigationLocation::CheckSelectorMatch(
     return false;
   }
 
-  const Route* route = FindOrCreateRoute(element.GetDocument());
-  return route && route->MatchesUrl(anchor->Href()) &&
-         (!preposition || route->Matches(*preposition));
+  Document& document = element.GetDocument();
+  const URLPattern* url_pattern = FindOrCreateURLPattern(document);
+  if (!url_pattern || !url_pattern->Match(anchor->Href())) {
+    return false;
+  }
+  if (!preposition) {
+    return true;
+  }
+
+  const auto* navigation_state = NavigationState::Get(&document);
+  if (!navigation_state) {
+    return false;
+  }
+  return navigation_state &&
+         navigation_state->Matches(*preposition, *url_pattern);
 }
 
 void NavigationLocation::SerializeTo(StringBuilder& builder) const {
@@ -72,8 +82,13 @@ void NavigationLocationTestExpression::Trace(Visitor* visitor) const {
 }
 
 bool NavigationLocationTestExpression::Matches(Document& document) const {
-  const Route* route = navigation_location_->FindOrCreateRoute(document);
-  return route && route->Matches(preposition_);
+  const auto* navigation_state = NavigationState::Get(&document);
+  if (!navigation_state) {
+    return false;
+  }
+  const URLPattern* url_pattern =
+      navigation_location_->FindOrCreateURLPattern(document);
+  return url_pattern && navigation_state->Matches(preposition_, *url_pattern);
 }
 
 void NavigationLocationTestExpression::SerializeTo(
@@ -107,15 +122,24 @@ void NavigationLocationBetweenTestExpression::Trace(Visitor* visitor) const {
 
 bool NavigationLocationBetweenTestExpression::Matches(
     Document& document) const {
-  const Route* route1 = navigation_location1_->FindOrCreateRoute(document);
-  const Route* route2 = navigation_location2_->FindOrCreateRoute(document);
-  if (!route1 || !route2) {
+  const auto* navigation_state = NavigationState::Get(&document);
+  if (!navigation_state) {
     return false;
   }
-  return (route1->Matches(NavigationPreposition::kFrom) &&
-          route2->Matches(NavigationPreposition::kTo)) ||
-         (route1->Matches(NavigationPreposition::kTo) &&
-          route2->Matches(NavigationPreposition::kFrom));
+  const URLPattern* pattern1 =
+      navigation_location1_->FindOrCreateURLPattern(document);
+  const URLPattern* pattern2 =
+      navigation_location2_->FindOrCreateURLPattern(document);
+  if (!pattern1 || !pattern2) {
+    return false;
+  }
+
+  using NavigationPreposition::kFrom;
+  using NavigationPreposition::kTo;
+  return (navigation_state->Matches(kFrom, *pattern1) &&
+          navigation_state->Matches(kTo, *pattern2)) ||
+         (navigation_state->Matches(kTo, *pattern1) &&
+          navigation_state->Matches(kFrom, *pattern2));
 }
 
 void NavigationLocationBetweenTestExpression::SerializeTo(
@@ -158,6 +182,8 @@ bool NavigationTypeTestExpression::Matches(Document& document) const {
       return type_ == kTraverse || type_ == kBack;
     case NavigationState::kForward:
       return type_ == kTraverse || type_ == kForward;
+    case NavigationState::kReload:
+      return type_ == kReload;
   }
 }
 
@@ -173,7 +199,9 @@ void NavigationTypeTestExpression::SerializeTo(StringBuilder& builder) const {
     case kForward:
       builder.Append("forward");
       break;
-      // TODO(crbug.com/436805487): Support "reload".
+    case kReload:
+      builder.Append("reload");
+      break;
   }
 }
 
@@ -206,10 +234,7 @@ void NavigationQuery::Trace(Visitor* v) const {
 }
 
 bool NavigationQuery::Evaluate(Document* document) const {
-  // TODO(crbug.com/436805487): Detect history navigation queries properly,
-  // instead of assuming that we have those just because there's at least one
-  // @navigation rule to evaluate.
-  RouteMap::Ensure(*document).SetHasHistoryRules();
+  document->GetStyleEngine().SetNeedsStyleUpdateOnNavigation();
 
   class Handler : public ConditionalExpNodeVisitor {
     STACK_ALLOCATED();

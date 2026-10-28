@@ -12,6 +12,7 @@ import android.graphics.drawable.Drawable;
 import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
+import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
@@ -63,6 +64,7 @@ public class ModalDialogView extends BoundedLinearLayout implements View.OnClick
     private TextView mTitleView;
     private ImageView mTitleIcon;
     private ImageView mTitleEndIcon;
+    private int mTitleEndIconGravity;
     private int mTitleDefaultHorizontalPadding;
     private ImageButton mTitleBackButton;
     private ImageButton mTitleCloseButton;
@@ -120,22 +122,41 @@ public class ModalDialogView extends BoundedLinearLayout implements View.OnClick
             // TODO (crbug/369842880): Remove the check when this attr is added for phones.
             widthMeasureSpec = MeasureSpec.makeMeasureSpec(widthMeasureSpec, MeasureSpec.EXACTLY);
         }
-        if (mHorizontalMargin <= 0 && mVerticalMargin <= 0) {
+
+        boolean isLargeFormFactorUiEnabled =
+                ModalDialogFeatureMap.isLargeFormFactorUiEnabled(getContext());
+
+        // Nothing to bound the width or height against.
+        if (mHorizontalMargin <= 0 && mVerticalMargin <= 0 && !isLargeFormFactorUiEnabled) {
             super.onMeasure(widthMeasureSpec, heightMeasureSpec);
             return;
         }
 
         DisplayMetrics metrics = getResources().getDisplayMetrics();
+
+        // Both bounds below are constants, not this view's previous measured width. Deriving them
+        // from the offered width shrinks the dialog on every pass (crbug.com/557352977).
+        // The spec is only rewritten where a bound applies, so an unbounded width stays AT_MOST.
+        int width = MeasureSpec.getSize(widthMeasureSpec);
+
+        // Only dialogs owning their window set a margin here; they have no parent to take one from.
         if (mHorizontalMargin > 0) {
-            int dialogWidth = MeasureSpec.getSize(widthMeasureSpec);
-            int maxWidth = metrics.widthPixels - 2 * mHorizontalMargin;
-            int width = Math.min(dialogWidth, maxWidth);
+            width = Math.min(width, Math.max(0, metrics.widthPixels - 2 * mHorizontalMargin));
+            widthMeasureSpec = MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY);
+        }
+
+        if (isLargeFormFactorUiEnabled) {
+            width =
+                    Math.min(
+                            width,
+                            getResources()
+                                    .getDimensionPixelSize(R.dimen.modal_dialog_max_width_lff));
             widthMeasureSpec = MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY);
         }
 
         if (mVerticalMargin > 0) {
             int dialogHeight = MeasureSpec.getSize(heightMeasureSpec);
-            int maxHeight = metrics.heightPixels - 2 * mVerticalMargin;
+            int maxHeight = Math.max(0, metrics.heightPixels - 2 * mVerticalMargin);
             int height = Math.min(dialogHeight, maxHeight);
             heightMeasureSpec = MeasureSpec.makeMeasureSpec(height, MeasureSpec.AT_MOST);
         }
@@ -335,7 +356,48 @@ public class ModalDialogView extends BoundedLinearLayout implements View.OnClick
      */
     public void setTitleEndIcon(Drawable drawable) {
         mTitleEndIcon.setImageDrawable(drawable);
+        updateTitleEndIconLayoutParams();
         updateContentVisibility();
+    }
+
+    /**
+     * @param gravity The {@link Gravity} of the icon at the end of the title.
+     */
+    public void setTitleEndIconGravity(int gravity) {
+        mTitleEndIconGravity = gravity;
+        updateTitleEndIconLayoutParams();
+    }
+
+    private void updateTitleEndIconLayoutParams() {
+        ViewGroup.LayoutParams layoutParams = mTitleEndIcon.getLayoutParams();
+        if (!(layoutParams instanceof LinearLayout.LayoutParams)) return;
+
+        LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) layoutParams;
+        params.gravity =
+                mTitleEndIconGravity != Gravity.NO_GRAVITY
+                        ? mTitleEndIconGravity
+                        : Gravity.CENTER_VERTICAL;
+        int startMargin = 0;
+        int topMargin = 0;
+        if (params.gravity == Gravity.TOP) {
+            startMargin =
+                    getContext()
+                            .getResources()
+                            .getDimensionPixelSize(
+                                    R.dimen.modal_dialog_title_end_icon_start_margin);
+            Drawable drawable = mTitleEndIcon.getDrawable();
+            if (drawable != null) {
+                // Vertically center the icon against the first line of the title text.
+                int iconHeight = drawable.getIntrinsicHeight();
+                int lineHeight = mTitleView.getLineHeight();
+                if (iconHeight > 0 && lineHeight > iconHeight) {
+                    topMargin = (lineHeight - iconHeight) / 2;
+                }
+            }
+        }
+        params.setMarginStart(startMargin);
+        params.topMargin = topMargin;
+        mTitleEndIcon.setLayoutParams(params);
     }
 
     /**
@@ -359,6 +421,7 @@ public class ModalDialogView extends BoundedLinearLayout implements View.OnClick
         mTitleView = mTitleContainer.findViewById(R.id.title);
         mTitleIcon = mTitleContainer.findViewById(R.id.title_icon);
         mTitleEndIcon = mTitleContainer.findViewById(R.id.title_end_icon);
+        updateTitleEndIconLayoutParams();
         mTitleCloseButton = mTitleContainer.findViewById(R.id.title_close_button);
         if (mTitleCloseButton != null) {
             mTitleCloseButton.setVisibility(mTitleCloseButtonVisible ? View.VISIBLE : View.GONE);

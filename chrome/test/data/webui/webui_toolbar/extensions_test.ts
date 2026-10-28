@@ -2,15 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-toolbar.top-chrome/app.js';
+import 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
-import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {BrowserProxyImpl, TrackedElementManager} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {ExtensionsElement} from 'chrome://webui-toolbar.top-chrome/app.js';
+import {AnimationTracker, BrowserProxyImpl, TrackedElementManager} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import type {ExtensionActionInfo, ExtensionsElement} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 suite('Extensions', function() {
   let container: ExtensionsElement;
+  let executeCalls: string[] = [];
   let moveCalls: Array<{extensionId: string, index: number}> = [];
   let moveByCalls: Array<{extensionId: string, delta: number}> = [];
 
@@ -51,10 +52,14 @@ suite('Extensions', function() {
   setup(async () => {
     channels = [];  // Reset active channels
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    executeCalls = [];
     moveCalls = [];
     moveByCalls = [];
 
     const mockHandler = {
+      executeExtensionAction: (extensionId: string) => {
+        executeCalls.push(extensionId);
+      },
       moveExtensionAction: (extensionId: string, index: number) => {
         moveCalls.push({extensionId, index});
       },
@@ -67,6 +72,7 @@ suite('Extensions', function() {
     const mockTrackedElementManager = {
       startTracking: () => {},
       stopTracking: () => {},
+      notifyElementActivated: () => {},
     };
     TrackedElementManager.setInstance(mockTrackedElementManager as any);
 
@@ -81,24 +87,39 @@ suite('Extensions', function() {
         accessibleName: 'Action 1',
         tooltip: 'Action 1 Tooltip',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 1n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
       },
       {
         id: 'action-2',
         accessibleName: 'Action 2',
         tooltip: 'Action 2 Tooltip',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 2n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
       },
       {
         id: '',
         accessibleName: 'Extensions Button',
         tooltip: 'Extensions Button Tooltip',
         isVisible: true,
+        forceVisible: true,
         icon: {handleId: 3n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
       },
     ];
-    await microtasksFinished();
+    await container.updateComplete;
+    // Simulate the app having rendered the browser's initial state.
+    container.markInitialStateRendered();
+  });
+
+  teardown(() => {
+    AnimationTracker.resetForTesting();
   });
 
   test('Keyboard reorder retains focus', async () => {
@@ -111,10 +132,10 @@ suite('Extensions', function() {
     firstAction.focus();
     assertEquals(
         firstAction.shadowRoot.activeElement,
-        firstAction.shadowRoot.querySelector('cr-button'));
+        firstAction.shadowRoot.querySelector('toolbar-chip-button'));
 
     // Trigger keyboard reorder (Ctrl+ArrowRight)
-    const button = firstAction.shadowRoot.querySelector('cr-button')!;
+    const button = firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
     button.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'ArrowRight',
       ctrlKey: true,
@@ -134,21 +155,30 @@ suite('Extensions', function() {
         accessibleName: 'Action 2',
         tooltip: 'Action 2 Tooltip',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 2n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
       },
       {
         id: 'action-1',
         accessibleName: 'Action 1',
         tooltip: 'Action 1 Tooltip',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 1n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
       },
       {
         id: 'extensions_button',
         accessibleName: 'Extensions Button',
         tooltip: 'Extensions Button Tooltip',
         isVisible: true,
+        forceVisible: true,
         icon: {handleId: 3n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
       },
     ];
     await microtasksFinished();
@@ -162,7 +192,7 @@ suite('Extensions', function() {
         'action-1', newSecondAction.state.id);  // Verify it is indeed Action 1
     assertEquals(
         newSecondAction.shadowRoot.activeElement,
-        newSecondAction.shadowRoot.querySelector('cr-button'));
+        newSecondAction.shadowRoot.querySelector('toolbar-chip-button'));
   });
 
   test('Cross-window dragover identifies action from broadcast', () => {
@@ -231,11 +261,7 @@ suite('Extensions', function() {
     };
 
     // Trigger dragstart on first action
-    firstAction.dispatchEvent(new CustomEvent('toolbar-action-drag-start', {
-      detail: {itemId: 'action-1'},
-      bubbles: true,
-      composed: true,
-    }));
+    firstAction.fire('toolbar-action-drag-start', {itemId: 'action-1'});
 
     assertEquals('drag-start', receivedMessage?.type);
     assertEquals('action-1', receivedMessage?.itemId);
@@ -248,11 +274,7 @@ suite('Extensions', function() {
     const firstAction = actionElements[0]!;
 
     // Start drag first
-    firstAction.dispatchEvent(new CustomEvent('toolbar-action-drag-start', {
-      detail: {itemId: 'action-1'},
-      bubbles: true,
-      composed: true,
-    }));
+    firstAction.fire('toolbar-action-drag-start', {itemId: 'action-1'});
 
     let receivedMessage: any = null;
     const listenerChannel = new BroadcastChannel('extension-action-drag');
@@ -261,11 +283,8 @@ suite('Extensions', function() {
     };
 
     // Trigger dragend
-    container.dispatchEvent(new CustomEvent('toolbar-action-drag-end', {
-      detail: {itemId: 'action-1', dropEffect: 'move'},
-      bubbles: true,
-      composed: true,
-    }));
+    container.fire(
+        'toolbar-action-drag-end', {itemId: 'action-1', dropEffect: 'move'});
 
     assertEquals('drag-end', receivedMessage?.type);
   });
@@ -357,11 +376,7 @@ suite('Extensions', function() {
     const firstAction = actionElements[0]!;
 
     // 1. Start a local drag
-    firstAction.dispatchEvent(new CustomEvent('toolbar-action-drag-start', {
-      detail: {itemId: 'action-1'},
-      bubbles: true,
-      composed: true,
-    }));
+    firstAction.fire('toolbar-action-drag-start', {itemId: 'action-1'});
 
     // Verify it is marked as dragging/placeholder locally
     let keyedStates = container.keyedStates;
@@ -396,11 +411,7 @@ suite('Extensions', function() {
         const firstAction = actionElements[0]!;
 
         // 1. Start a local drag
-        firstAction.dispatchEvent(new CustomEvent('toolbar-action-drag-start', {
-          detail: {itemId: 'action-1'},
-          bubbles: true,
-          composed: true,
-        }));
+        firstAction.fire('toolbar-action-drag-start', {itemId: 'action-1'});
 
         // Verify it is marked as dragging/placeholder locally
         let keyedStates = container.keyedStates;
@@ -561,7 +572,6 @@ suite('Extensions', function() {
     assertEquals('action-2', keyedStates[0]!.key);
     assertEquals('action-1', keyedStates[1]!.key);
     assertTrue(!keyedStates[1]!.dragPlaceholder);
-    assertEquals(0, (container as any).dragEnterCount_);
   });
 
   test('Extension action is draggable', () => {
@@ -569,7 +579,7 @@ suite('Extensions', function() {
         container.shadowRoot.querySelectorAll('webui-toolbar-extension');
     const firstAction = actionElements[0]!;
     assertTrue(firstAction.isDraggable());
-    const button = firstAction.shadowRoot.querySelector('cr-button')!;
+    const button = firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
     assertEquals('true', button.getAttribute('draggable'));
   });
 
@@ -577,7 +587,7 @@ suite('Extensions', function() {
     const actionElements =
         container.shadowRoot.querySelectorAll('webui-toolbar-extension');
     const firstAction = actionElements[0]!;
-    const button = firstAction.shadowRoot.querySelector('cr-button')!;
+    const button = firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
 
     const dragStartEvent = new DragEvent('dragstart', {
       bubbles: true,
@@ -602,7 +612,7 @@ suite('Extensions', function() {
     assertTrue(dataSet);
   });
 
-  test('State updates are deferred during pointerdown', async () => {
+  test('State updates during pointerdown are applied immediately', async () => {
     const actionElements =
         container.shadowRoot.querySelectorAll('webui-toolbar-extension');
     const firstAction = actionElements[0]!;
@@ -616,57 +626,218 @@ suite('Extensions', function() {
     Object.defineProperty(pointerDownEvent, 'isPrimary', {value: true});
     firstAction.dispatchEvent(pointerDownEvent);
 
-    // 2. Update state (change tooltip of action-1)
+    // 2. Update state
     container.states = [
       {
         id: 'action-1',
         accessibleName: 'Action 1',
-        tooltip: 'Action 1 Tooltip Changed',
+        tooltip: 'Action 1 Tooltip',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 1n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
       },
       {
         id: 'action-2',
         accessibleName: 'Action 2',
         tooltip: 'Action 2 Tooltip',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 2n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+      },
+      {
+        id: 'action-3',
+        accessibleName: 'Action 3',
+        tooltip: 'Action 3 Tooltip',
+        isVisible: true,
+        forceVisible: false,
+        icon: {handleId: 4n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
       },
       {
         id: '',
         accessibleName: 'Extensions Button',
         tooltip: 'Extensions Button Tooltip',
         isVisible: true,
+        forceVisible: true,
         icon: {handleId: 3n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
       },
     ];
 
     await microtasksFinished();
 
-    // Verify update is deferred (still has old tooltip in keyedStates)
-    let keyedStates = container.keyedStates;
-    assertEquals('Action 1 Tooltip', keyedStates[0]!.state.tooltip);
-
-    // 3. Dispatch pointerup on window
-    const pointerUpEvent = new PointerEvent('pointerup', {
-      bubbles: true,
-      cancelable: true,
-      composed: true,
-    });
-    window.dispatchEvent(pointerUpEvent);
-
-    await microtasksFinished();
-
-    // Verify update is now applied
-    keyedStates = container.keyedStates;
-    assertEquals('Action 1 Tooltip Changed', keyedStates[0]!.state.tooltip);
+    // Verify update is applied immediately (length is 4)
+    const keyedStates = container.keyedStates;
+    assertEquals(4, keyedStates.length);
+    assertEquals('action-3', keyedStates[2]!.key);
   });
 
-  test('State updates are deferred during drag', async () => {
+  test(
+      'State updates during drag are applied immediately without aborting',
+      async () => {
+        const actionElements =
+            container.shadowRoot.querySelectorAll('webui-toolbar-extension');
+        const firstAction = actionElements[0]!;
+        const button =
+            firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
+
+        // 1. Start drag
+        const dragStartEvent = new DragEvent('dragstart', {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+        });
+        Object.defineProperty(dragStartEvent, 'dataTransfer', {
+          value: {
+            setData: () => {},
+            effectAllowed: 'none',
+          },
+        });
+        button.dispatchEvent(dragStartEvent);
+
+        assertEquals('action-1', (container as any).draggedItemId_);
+
+        // 2. Update state (add action-3)
+        container.states = [
+          {
+            id: 'action-1',
+            accessibleName: 'Action 1',
+            tooltip: 'Action 1 Tooltip',
+            isVisible: true,
+            forceVisible: false,
+            icon: {handleId: 1n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+          },
+          {
+            id: 'action-2',
+            accessibleName: 'Action 2',
+            tooltip: 'Action 2 Tooltip',
+            isVisible: true,
+            forceVisible: false,
+            icon: {handleId: 2n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+          },
+          {
+            id: 'action-3',
+            accessibleName: 'Action 3',
+            tooltip: 'Action 3 Tooltip',
+            isVisible: true,
+            forceVisible: false,
+            icon: {handleId: 4n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+          },
+          {
+            id: '',
+            accessibleName: 'Extensions Button',
+            tooltip: 'Extensions Button Tooltip',
+            isVisible: true,
+            forceVisible: true,
+            icon: {handleId: 3n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+          },
+        ];
+
+        await microtasksFinished();
+
+        // Verify drag is NOT aborted
+        assertEquals('action-1', (container as any).draggedItemId_);
+
+        // Verify update is applied (length is 4) and placeholder is preserved
+        const keyedStates = container.keyedStates;
+        assertEquals(4, keyedStates.length);
+        assertEquals('action-1', keyedStates[0]!.key);
+        assertTrue(keyedStates[0]!.dragPlaceholder === true);
+        assertEquals('action-3', keyedStates[2]!.key);
+
+        // 3. End drag
+        const dragEndEvent = new DragEvent('dragend', {
+          bubbles: true,
+          composed: true,
+        });
+        Object.defineProperty(dragEndEvent, 'dataTransfer', {
+          value: {
+            dropEffect: 'none',
+          },
+        });
+        button.dispatchEvent(dragEndEvent);
+
+        await microtasksFinished();
+        assertEquals(null, (container as any).draggedItemId_);
+        assertFalse(container.keyedStates[0]!.dragPlaceholder === true);
+      });
+
+  test(
+      'Property updates are applied immediately during pointerdown',
+      async () => {
+        const actionElements =
+            container.shadowRoot.querySelectorAll('webui-toolbar-extension');
+        const firstAction = actionElements[0]!;
+
+        // 1. Dispatch pointerdown on the action
+        const pointerDownEvent = new PointerEvent('pointerdown', {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+        });
+        Object.defineProperty(pointerDownEvent, 'isPrimary', {value: true});
+        firstAction.dispatchEvent(pointerDownEvent);
+
+        // 2. Update state (change tooltip)
+        container.states = [
+          {
+            id: 'action-1',
+            accessibleName: 'Action 1',
+            tooltip: 'Action 1 Tooltip Changed',
+            isVisible: true,
+            forceVisible: false,
+            icon: {handleId: 1n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+          },
+          {
+            id: 'action-2',
+            accessibleName: 'Action 2',
+            tooltip: 'Action 2 Tooltip',
+            isVisible: true,
+            forceVisible: false,
+            icon: {handleId: 2n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+          },
+          {
+            id: '',
+            accessibleName: 'Extensions Button',
+            tooltip: 'Extensions Button Tooltip',
+            isVisible: true,
+            forceVisible: true,
+            icon: {handleId: 3n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+          },
+        ];
+
+        await microtasksFinished();
+
+        // Verify update is applied immediately (has new tooltip)
+        const keyedStates = container.keyedStates;
+        assertEquals('Action 1 Tooltip Changed', keyedStates[0]!.state.tooltip);
+      });
+
+  test('Property updates are applied immediately during drag', async () => {
     const actionElements =
         container.shadowRoot.querySelectorAll('webui-toolbar-extension');
     const firstAction = actionElements[0]!;
-    const button = firstAction.shadowRoot.querySelector('cr-button')!;
+    const button = firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
 
     // 1. Start drag
     const dragStartEvent = new DragEvent('dragstart', {
@@ -689,31 +860,40 @@ suite('Extensions', function() {
         accessibleName: 'Action 1',
         tooltip: 'Action 1 Tooltip Changed',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 1n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
       },
       {
         id: 'action-2',
         accessibleName: 'Action 2',
         tooltip: 'Action 2 Tooltip',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 2n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
       },
       {
         id: '',
         accessibleName: 'Extensions Button',
         tooltip: 'Extensions Button Tooltip',
         isVisible: true,
+        forceVisible: true,
         icon: {handleId: 3n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
       },
     ];
 
     await microtasksFinished();
 
-    // Verify update is deferred
-    let keyedStates = container.keyedStates;
-    assertEquals('Action 1 Tooltip', keyedStates[0]!.state.tooltip);
+    // Verify update is NOT deferred (has new tooltip)
+    const keyedStates = container.keyedStates;
+    assertEquals('Action 1 Tooltip Changed', keyedStates[0]!.state.tooltip);
 
-    // 3. End drag (aborted)
+    // 3. End drag
     const dragEndEvent = new DragEvent('dragend', {
       bubbles: true,
       cancelable: true,
@@ -721,23 +901,112 @@ suite('Extensions', function() {
     });
     Object.defineProperty(dragEndEvent, 'dataTransfer', {
       value: {
-        dropEffect: 'none',  // aborted
+        dropEffect: 'none',
       },
     });
     button.dispatchEvent(dragEndEvent);
-
-    await microtasksFinished();
-
-    // Verify update is now applied
-    keyedStates = container.keyedStates;
-    assertEquals('Action 1 Tooltip Changed', keyedStates[0]!.state.tooltip);
   });
 
-  test('State updates that change order abort the drag', async () => {
+
+  test(
+      'State updates that change order do not abort the drag if dragged item is not removed',
+      async () => {
+        const actionElements =
+            container.shadowRoot.querySelectorAll('webui-toolbar-extension');
+        const firstAction = actionElements[0]!;
+        const button =
+            firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
+
+        // 1. Start drag
+        const dragStartEvent = new DragEvent('dragstart', {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+        });
+        Object.defineProperty(dragStartEvent, 'dataTransfer', {
+          value: {
+            setData: () => {},
+            effectAllowed: 'none',
+          },
+        });
+        button.dispatchEvent(dragStartEvent);
+
+        assertEquals('action-1', (container as any).draggedItemId_);
+
+        // 2. Update state changing order (swap action-1 and action-2 in Mojo)
+        container.states = [
+          {
+            id: 'action-2',
+            accessibleName: 'Action 2',
+            tooltip: 'Action 2 Tooltip',
+            isVisible: true,
+            forceVisible: false,
+            icon: {handleId: 2n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+          },
+          {
+            id: 'action-1',
+            accessibleName: 'Action 1',
+            tooltip: 'Action 1 Tooltip',
+            isVisible: true,
+            forceVisible: false,
+            icon: {handleId: 1n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+          },
+          {
+            id: '',
+            accessibleName: 'Extensions Button',
+            tooltip: 'Extensions Button Tooltip',
+            isVisible: true,
+            forceVisible: true,
+            icon: {handleId: 3n},
+            isPinnedByDefaultIphAnchor: false,
+            highlighted: false,
+          },
+        ];
+
+        await microtasksFinished();
+
+        // Verify drag is NOT aborted
+        assertEquals('action-1', (container as any).draggedItemId_);
+
+        // Verify layout is NOT updated immediately to the new Mojo order,
+        // it should preserve local placeholder index 0.
+        let keyedStates = container.keyedStates;
+        assertEquals('action-1', keyedStates[0]!.key);
+        assertTrue(keyedStates[0]!.dragPlaceholder === true);
+        assertEquals('action-2', keyedStates[1]!.key);
+
+        // 3. End drag (aborted)
+        const dragEndEvent = new DragEvent('dragend', {
+          bubbles: true,
+          composed: true,
+        });
+        Object.defineProperty(dragEndEvent, 'dataTransfer', {
+          value: {
+            dropEffect: 'none',
+          },
+        });
+        button.dispatchEvent(dragEndEvent);
+
+        await microtasksFinished();
+
+        // Verify drag is now ended and layout updated to the deferred Mojo
+        // order
+        assertEquals(null, (container as any).draggedItemId_);
+        keyedStates = container.keyedStates;
+        assertEquals('action-2', keyedStates[0]!.key);
+        assertEquals('action-1', keyedStates[1]!.key);
+        assertFalse(keyedStates[1]!.dragPlaceholder === true);
+      });
+
+  test('State updates that remove dragged item abort the drag', async () => {
     const actionElements =
         container.shadowRoot.querySelectorAll('webui-toolbar-extension');
     const firstAction = actionElements[0]!;
-    const button = firstAction.shadowRoot.querySelector('cr-button')!;
+    const button = firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
 
     // 1. Start drag
     const dragStartEvent = new DragEvent('dragstart', {
@@ -755,41 +1024,64 @@ suite('Extensions', function() {
 
     assertEquals('action-1', (container as any).draggedItemId_);
 
-    // 2. Update state changing order (swap action-1 and action-2)
+    // 2. Update state removing action-1
     container.states = [
       {
         id: 'action-2',
         accessibleName: 'Action 2',
         tooltip: 'Action 2 Tooltip',
         isVisible: true,
+        forceVisible: false,
         icon: {handleId: 2n},
-      },
-      {
-        id: 'action-1',
-        accessibleName: 'Action 1',
-        tooltip: 'Action 1 Tooltip',
-        isVisible: true,
-        icon: {handleId: 1n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
       },
       {
         id: '',
         accessibleName: 'Extensions Button',
         tooltip: 'Extensions Button Tooltip',
         isVisible: true,
+        forceVisible: true,
         icon: {handleId: 3n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
       },
     ];
 
     await microtasksFinished();
 
-    // Verify drag is aborted (draggedItemId_ becomes null)
+    // Verify drag is aborted immediately
     assertEquals(null, (container as any).draggedItemId_);
 
-    // Verify layout is updated immediately to the new order
-    const keyedStates = container.keyedStates;
+    // Verify layout is updated immediately (action-1 removed)
+    let keyedStates = container.keyedStates;
+    assertEquals(2, keyedStates.length);  // action-2, button
     assertEquals('action-2', keyedStates[0]!.key);
-    assertEquals('action-1', keyedStates[1]!.key);
-    assertTrue(!keyedStates[1]!.dragPlaceholder);
+
+    // 3. Re-add action-1 to states
+    container.states = [
+      {
+        id: 'action-1',
+        accessibleName: 'Action 1',
+        tooltip: 'Action 1 Tooltip',
+        isVisible: true,
+        forceVisible: false,
+        icon: {handleId: 1n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+      },
+      ...container.states,
+    ];
+    await microtasksFinished();
+
+    // Verify action-1 is restored in the layout
+    keyedStates = container.keyedStates;
+    assertEquals(3, keyedStates.length);
+    assertEquals('action-1', keyedStates[0]!.key);
+    // And it should have a DOM element
+    const restoredAction =
+        container.shadowRoot.querySelector('[data-key="action-1"]');
+    assertTrue(!!restoredAction);
   });
 
   test('Extensions menu button is not draggable', () => {
@@ -801,7 +1093,7 @@ suite('Extensions', function() {
     // Verify it returns false for isDraggable
     assertTrue(!menuButton.isDraggable());
 
-    const button = menuButton.shadowRoot.querySelector('cr-button')!;
+    const button = menuButton.shadowRoot.querySelector('toolbar-chip-button')!;
     assertEquals('false', button.getAttribute('draggable'));
 
     // Try to trigger dragstart
@@ -890,5 +1182,205 @@ suite('Extensions', function() {
     assertEquals(1, moveCalls.length);
     assertEquals('action-1', moveCalls[0]!.extensionId);
     assertEquals(1, moveCalls[0]!.index);
+  });
+
+  test('Extensions menu button has an empty data-key', () => {
+    const actionElements =
+        container.shadowRoot.querySelectorAll('webui-toolbar-extension');
+    assertEquals(3, actionElements.length);
+
+    // The container outline CSS distinguishes the extensions menu button (the
+    // puzzle icon) from the pinned actions via `:not([data-key=''])`, which
+    // relies on the menu button being the action with an empty id.
+    assertEquals('action-1', actionElements[0]!.getAttribute('data-key'));
+    assertEquals('action-2', actionElements[1]!.getAttribute('data-key'));
+    assertEquals('', actionElements[2]!.getAttribute('data-key'));
+  });
+
+  test('getActions', () => {
+    const actions = container.getActions();
+    assertEquals(4, actions.length);
+    assertEquals('action-1', actions[0]!.getAttribute('data-key'));
+    assertEquals('action-2', actions[1]!.getAttribute('data-key'));
+    assertEquals('', actions[2]!.getAttribute('data-key'));
+    assertFalse(actions[2]!.isDivider);
+    assertTrue(actions[3]!.isDivider);
+  });
+
+  test('Prevents overflow of force-visible actions', async () => {
+    const actionElements =
+        container.shadowRoot.querySelectorAll('webui-toolbar-extension');
+    assertEquals(3, actionElements.length);
+    const action1 = actionElements[0]!;
+    const action2 = actionElements[1]!;
+    const menuButton = actionElements[2]!;
+    assertFalse(action1.preventOverflow);
+    assertFalse(action2.preventOverflow);
+    // The extensions menu button is always force-visible.
+    assertTrue(menuButton.preventOverflow);
+
+    // Force action 2 to be visible, as happens when its popup is shown.
+    container.states = container.states.map(
+        s => s.id === 'action-2' ? {...s, forceVisible: true} : s);
+    await microtasksFinished();
+    assertFalse(action1.preventOverflow);
+    assertTrue(action2.preventOverflow);
+    assertTrue(menuButton.preventOverflow);
+
+    container.states = container.states.map(
+        s => s.id === 'action-2' ? {...s, forceVisible: false} : s);
+    await microtasksFinished();
+    assertFalse(action1.preventOverflow);
+    assertFalse(action2.preventOverflow);
+    assertTrue(menuButton.preventOverflow);
+  });
+
+  test('Prevents overflow of tracked highlighted actions', async () => {
+    const actionElements =
+        container.shadowRoot.querySelectorAll('webui-toolbar-extension');
+    assertEquals(3, actionElements.length);
+    const action1 = actionElements[0]!;
+    const action2 = actionElements[1]!;
+    assertFalse(action1.preventOverflow);
+    assertFalse(action2.preventOverflow);
+
+    action2.trackedHighlighted = true;
+    await microtasksFinished();
+    assertFalse(action1.preventOverflow);
+    assertTrue(action2.preventOverflow);
+
+    action2.trackedHighlighted = false;
+    await microtasksFinished();
+    assertFalse(action1.preventOverflow);
+    assertFalse(action2.preventOverflow);
+  });
+
+  test('Overflowed actions are not added to the overflow menu', () => {
+    // Hide everything that may be hidden. Only the extensions menu button,
+    // which may not overflow, and the divider after it, should remain visible.
+    container.setToMinWidth();
+    const actions = container.getActions();
+    assertEquals(4, actions.length);
+    assertTrue(actions[0]!.classList.contains('overflow-display-none'));
+    assertTrue(actions[1]!.classList.contains('overflow-display-none'));
+    assertFalse(actions[2]!.classList.contains('overflow-display-none'));
+    assertFalse(actions[3]!.classList.contains('overflow-display-none'));
+
+    // Overflowed extensions are just hidden, and not added to the overflow
+    // menu.
+    assertEquals(0, container.controlsToAddToOverflowMenu().length);
+  });
+
+  test('Click suppression when bubble is open or recently closed', () => {
+    const actionElements =
+        container.shadowRoot.querySelectorAll('webui-toolbar-extension');
+    const firstAction = actionElements[0]!;
+    const button = firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
+
+    const dispatchMouseClick = () => {
+      button.dispatchEvent(new PointerEvent(
+          'pointerdown', {bubbles: true, button: 0, pointerType: 'mouse'}));
+      button.dispatchEvent(new PointerEvent(
+          'click', {bubbles: true, button: 0, pointerType: 'mouse'}));
+    };
+
+    // 1. Normal click when bubble is closed executes the action.
+    dispatchMouseClick();
+    assertEquals(1, executeCalls.length);
+    assertEquals('action-1', executeCalls[0]);
+
+    // 2. Click while highlighted (bubble open) is suppressed.
+    firstAction.highlightTracker.onHighlightChanged(true);
+    dispatchMouseClick();
+    assertEquals(1, executeCalls.length);
+
+    // 3. Click right after unhighlighting (< 100ms) is suppressed.
+    firstAction.highlightTracker.onHighlightChanged(false);
+    firstAction.highlightTracker.lastUnhighlightedTime =
+        performance.now() + 10000;
+    dispatchMouseClick();
+    assertEquals(1, executeCalls.length);
+
+    // 4. Keyboard activation (empty pointerType) is not suppressed even after
+    // a pointerdown that armed click skipping.
+    button.dispatchEvent(new PointerEvent(
+        'pointerdown', {bubbles: true, button: 0, pointerType: 'mouse'}));
+    button.dispatchEvent(
+        new PointerEvent('click', {bubbles: true, button: 0, pointerType: ''}));
+    assertEquals(2, executeCalls.length);
+
+    // 5. Click after >= 100ms since bubble closed executes the action.
+    firstAction.highlightTracker.lastUnhighlightedTime =
+        performance.now() - 200;
+    dispatchMouseClick();
+    assertEquals(3, executeCalls.length);
+  });
+
+  test('Extension buttons have aria-haspopup menu', () => {
+    const actionElements =
+        container.shadowRoot.querySelectorAll('webui-toolbar-extension');
+    assertEquals(3, actionElements.length);
+
+    for (const element of actionElements) {
+      const button = element.shadowRoot.querySelector('toolbar-chip-button')!;
+      assertEquals('menu', button.ariaHasPopup);
+      assertEquals('menu', button.$.button.getAttribute('aria-haspopup'));
+    }
+  });
+
+  function createExtensionsStates(): ExtensionActionInfo[] {
+    return [
+      {
+        id: 'action-1',
+        accessibleName: 'Action 1',
+        tooltip: 'Action 1 Tooltip',
+        isVisible: true,
+        forceVisible: false,
+        icon: {handleId: 1n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+      },
+      {
+        id: '',
+        accessibleName: 'Extensions Button',
+        tooltip: 'Extensions Button Tooltip',
+        isVisible: true,
+        forceVisible: true,
+        icon: {handleId: 3n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+      },
+    ];
+  }
+
+  test('Actions in the initial state do not animate in', async () => {
+    AnimationTracker.showAnimations = true;
+    const newContainer = document.createElement('webui-toolbar-extensions');
+    document.body.appendChild(newContainer);
+    await microtasksFinished();
+
+    newContainer.states = createExtensionsStates();
+    await microtasksFinished();
+
+    assertEquals(2, newContainer.keyedStates.length);
+    assertFalse(newContainer.keyedStates.some(s => s.animateIn));
+    assertTrue(newContainer.classList.contains('initial-load'));
+  });
+
+  test('First action added after the initial state animates in', async () => {
+    AnimationTracker.showAnimations = true;
+    const newContainer = document.createElement('webui-toolbar-extensions');
+    document.body.appendChild(newContainer);
+    // The browser's initial state has no extensions.
+    newContainer.states = [];
+    await microtasksFinished();
+    newContainer.markInitialStateRendered();
+
+    newContainer.states = createExtensionsStates();
+    await microtasksFinished();
+
+    assertEquals(2, newContainer.keyedStates.length);
+    assertTrue(newContainer.keyedStates.every(s => s.animateIn));
+    assertFalse(newContainer.classList.contains('initial-load'));
   });
 });

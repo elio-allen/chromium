@@ -4,22 +4,26 @@
 
 package org.chromium.chrome.browser.ui.autofill;
 
-import android.content.Context;
 import android.view.View;
 import android.view.View.MeasureSpec;
 
 import androidx.annotation.ColorInt;
 
+import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ui.autofill.internal.R;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 
-/** Implements the content for the @memory bottom sheet. */
+/** Implements the content for the AtMemory bottom sheet. */
 @NullMarked
 class AtMemoryBottomSheetContent implements BottomSheetContent {
+    private static final BottomSheetType BOTTOM_SHEET_TYPE =
+            new BottomSheetType.Builder().setUserInitiated(true).build();
+
     private final AtMemoryBottomSheetView mView;
     private final BottomSheetController mBottomSheetController;
 
@@ -48,6 +52,11 @@ class AtMemoryBottomSheetContent implements BottomSheetContent {
     public void destroy() {}
 
     @Override
+    public BottomSheetType getSheetType() {
+        return BOTTOM_SHEET_TYPE;
+    }
+
+    @Override
     public int getPriority() {
         return BottomSheetContent.ContentPriority.HIGH;
     }
@@ -55,6 +64,11 @@ class AtMemoryBottomSheetContent implements BottomSheetContent {
     @Override
     public boolean hasCustomScrimLifecycle() {
         return false;
+    }
+
+    @Override
+    public boolean showHandlebar() {
+        return true;
     }
 
     @Override
@@ -83,17 +97,6 @@ class AtMemoryBottomSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public boolean hideOnScroll() {
-        return false;
-    }
-
-    @Override
-    public String getSheetContentDescription(Context context) {
-        // TODO(crbug.com/502801668): Implement a string.
-        return "";
-    }
-
-    @Override
     public int getSheetHalfHeightAccessibilityStringId() {
         // TODO(crbug.com/502801668): Implement a string.
         return R.string.done;
@@ -114,6 +117,21 @@ class AtMemoryBottomSheetContent implements BottomSheetContent {
     @Override
     public @ColorInt int getSheetBackgroundColorOverride() {
         return SemanticColorUtils.getDefaultBgColor(getContentView().getContext());
+    }
+
+    @Override
+    public NonNullObservableSupplier<Boolean> getBackPressStateChangedSupplier() {
+        return mView.getBackPressStateChangedSupplier();
+    }
+
+    @Override
+    public void onBackPressed() {
+        handleBackPress();
+    }
+
+    @Override
+    public boolean handleBackPress() {
+        return mView.onBackPressed();
     }
 
     // Measures the content height to achieve a wrap-content effect for the bottom sheet.

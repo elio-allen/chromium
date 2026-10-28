@@ -13,10 +13,8 @@
 #include "chrome/browser/command_updater_impl.h"
 #include "chrome/browser/password_manager/chrome_password_manager_client.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ssl/chrome_security_state_tab_helper.h"
 #include "chrome/browser/themes/theme_properties.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/content_settings/content_setting_bubble_model_delegate.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/toolbar/reload_button.h"
@@ -35,6 +33,7 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/theme_provider.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/color/color_id.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
@@ -186,10 +185,6 @@ content::WebContents* SimpleWebViewDialog::GetWebViewWebContents() {
 
 void SimpleWebViewDialog::Init() {
   // Create the security state model that the location bar model needs.
-  content::WebContents* web_contents = GetWebViewWebContents();
-  if (web_contents) {
-    ChromeSecurityStateTabHelper::CreateForWebContents(web_contents);
-  }
   location_bar_model_ = std::make_unique<LocationBarModelImpl>(
       this, content::kMaxURLDisplayChars);
 
@@ -238,7 +233,7 @@ void SimpleWebViewDialog::Init() {
   // Reload button.
   auto reload = std::make_unique<ReloadButton>(
       /*profile=*/nullptr, command_updater_.get(),
-      /*window_metrics_manager=*/nullptr);
+      /*metrics_dispatcher=*/nullptr);
   reload->SetTriggerableEventFlags(ui::EF_LEFT_MOUSE_BUTTON |
                                    ui::EF_MIDDLE_MOUSE_BUTTON);
   reload->SetTooltipText(l10n_util::GetStringUTF16(IDS_TOOLTIP_RELOAD));
@@ -283,7 +278,7 @@ SimpleWebViewDialog::MakeWidgetDelegate() {
 
 void SimpleWebViewDialog::StartLoad(const GURL& url) {
   WebContents* web_contents = GetWebViewWebContents();
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
 
   // Create the password manager and autofill client that are needed.
   autofill::ChromeAutofillClient::CreateForWebContents(web_contents);
@@ -300,7 +295,7 @@ void SimpleWebViewDialog::StartLoad(const GURL& url) {
 
 std::unique_ptr<views::View> SimpleWebViewDialog::TakeView(
     std::unique_ptr<views::SimpleWebView> self) {
-  DCHECK_EQ(this, self.get());
+  CHECK_EQ(this, self.get(), base::NotFatalUntil::M162);
   self.release();
   return base::WrapUnique<views::View>(this);
 }

@@ -30,7 +30,7 @@
 #include "ui/compositor/layer_tree_owner.h"
 #include "ui/views/widget/widget_observer.h"
 
-class Browser;
+class BrowserWindowInterface;
 class ExtensionsToolbarButton;
 class ToolbarActionViewModel;
 class ExtensionsMenuCoordinator;
@@ -84,7 +84,7 @@ class ExtensionsToolbarDesktop : public ToolbarIconContainerView,
   }
 
   explicit ExtensionsToolbarDesktop(
-      Browser* browser,
+      BrowserWindowInterface* browser,
       DisplayMode display_mode = DisplayMode::kNormal);
   ExtensionsToolbarDesktop(const ExtensionsToolbarDesktop&) = delete;
   ExtensionsToolbarDesktop& operator=(const ExtensionsToolbarDesktop&) = delete;
@@ -166,9 +166,8 @@ class ExtensionsToolbarDesktop : public ToolbarIconContainerView,
     return close_side_panel_button_;
   }
 
-  // Called when the side panel state has changed for an extensions side panel
-  // to pop out button reflecting the side panel being open.
-  void UpdateSidePanelState(bool is_active);
+  // ExtensionsContainerViews:
+  void UpdateSidePanelState(bool is_active) override;
 
   // ToolbarIconContainerView:
   void UpdateAllIcons() override;
@@ -204,6 +203,7 @@ class ExtensionsToolbarDesktop : public ToolbarIconContainerView,
   views::BubbleAnchor GetReferenceButtonForPopup(
       const extensions::ExtensionId& action_id) override;
   views::BubbleAnchor GetExtensionsButtonAnchor() override;
+  views::BubbleBorder::Arrow GetPopupArrow() const override;
 
   // ToolbarActionView::Delegate:
   content::WebContents* GetCurrentWebContents() override;
@@ -344,7 +344,7 @@ class ExtensionsToolbarDesktop : public ToolbarIconContainerView,
   // from navigations.
   base::WeakPtr<content::WebContents> active_web_contents_;
 
-  const raw_ptr<Browser> browser_;
+  const raw_ptr<BrowserWindowInterface> browser_;
   const raw_ptr<ToolbarActionsModel> model_;
 
   DisplayMode display_mode_;

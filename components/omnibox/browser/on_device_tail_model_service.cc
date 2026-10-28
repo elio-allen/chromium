@@ -38,7 +38,7 @@ constexpr base::MemoryConsumerTraits kMemoryConsumerTraits(
     // Hosts TFLite model and runtime tensors; under 10MB.
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
     // Unloading unmaps model files and frees memory in bulk.
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kFreesPagesWithoutTraversal,
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kNone,
     // Model is stateless and can be reloaded.
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     // The unload task is posted to a background thread runner.
@@ -196,7 +196,7 @@ void OnDeviceTailModelService::OnModelUpdated(
 void OnDeviceTailModelService::OnUpdateMemoryLimit() {}
 
 void OnDeviceTailModelService::OnReleaseMemory() {
-  if (memory_limit() > base::kCriticalMemoryPressureThreshold) {
+  if (memory_limit() > base::MemoryLimit::CriticalPressureThreshold()) {
     return;
   }
 
@@ -212,7 +212,7 @@ void OnDeviceTailModelService::GetPredictionsForInput(
     ResultCallback result_callback) {
   if (model_task_runner_) {
     // Do not call the model if memory pressure level is too high.
-    if (memory_limit() > base::kCriticalMemoryPressureThreshold) {
+    if (memory_limit() > base::MemoryLimit::CriticalPressureThreshold()) {
       model_task_runner_->PostTaskAndReplyWithResult(
           FROM_HERE,
           base::BindOnce(&RunTailModelExecutor, tail_model_executor_.get(),

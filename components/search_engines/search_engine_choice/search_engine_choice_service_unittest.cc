@@ -80,7 +80,7 @@ const CountryId kBelgiumCountryId = CountryId("BE");
 const CountryId kJapanCountryId = CountryId("JP");
 #endif
 
-// Checks for the given histogram name and the Profile1 and PUMA variants.
+// Checks for the given histogram name and the Profile1 variant.
 template <typename T>
 void ExpectHistogramsSampleCount(const base::HistogramTester& histogram_tester,
                                  const std::string& base_histogram_name,
@@ -93,16 +93,22 @@ void ExpectHistogramsSampleCount(const base::HistogramTester& histogram_tester,
   std::string profile1_name = base::StrCat({base_histogram_name, ".Profile1"});
   histogram_tester.ExpectUniqueSample(profile1_name, sample, expected_count,
                                       location);
-
-  std::string puma_name =
-      base::StrCat({"PUMA.RegionalCapabilities.", base_histogram_name});
-  histogram_tester.ExpectUniqueSample(puma_name, sample, expected_count,
-                                      location);
 }
 
 }  // namespace
 
 class SearchEngineChoiceServiceTest : public SearchEngineChoiceServiceTestBase {
+ protected:
+  void SetUp() override {
+    SearchEngineChoiceServiceTestBase::SetUp();
+    // TODO(crbug.com/570916277): use better plumbing than empty data.
+    // Empty (default) value for this pref is equivalent to a situation where
+    // the prefs were just reset by anti-tampering mechanisms. Any value
+    // (including empty) is valid, untampered state.
+    pref_service()->SetDict(
+        DefaultSearchManager::kDefaultSearchProviderDataPrefName,
+        base::DictValue());
+  }
 };
 
 #if !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
@@ -160,6 +166,89 @@ TEST_F(SearchEngineChoiceServiceTest,
   EXPECT_EQ(source, DefaultSearchManager::Source::FROM_FALLBACK);
 }
 #endif
+
+TEST_F(SearchEngineChoiceServiceTest, PreserveImportedChoice) {
+  base::CommandLine::ForCurrentProcess()->RemoveSwitch(
+      switches::kSearchEngineChoiceCountry);
+
+#if !BUILDFLAG(IS_IOS)
+  base::test::ScopedFeatureList scoped_feature_list{
+      switches::kInvalidateSearchEngineChoiceOnDeviceRestoreDetection};
+#endif
+
+  InitServiceArgs args = {
+      .force_reset = true,
+      .restore_detected_in_current_session = true,
+      .choice_predates_restore = true,
+  };
+
+  {
+    // 1. Get environment to set up DSE pref.
+    GetOrInitEnvironment(args);
+
+    // Set default search provider (sets DSE pref)
+    std::unique_ptr<TemplateURLData> data =
+        TemplateURLDataFromPrepopulatedEngine(
+            TemplateURLPrepopulateData::google);
+    auto template_url = std::make_unique<TemplateURL>(*data);
+    template_url_service().SetUserSelectedDefaultSearchProvider(
+        template_url.get(), ChoiceMadeLocation::kChoiceScreen);
+
+    ResetServices();
+  }
+
+  // 2. Recreate environment. Services are lazy again.
+  GetOrInitEnvironment(args);
+
+  // 3. Setup custom ProgramSettings to preserve imported choice.
+  // This must be done before search_engine_choice_service() is created.
+  regional_capabilities::ProgramSettings custom_settings{
+      .program = regional_capabilities::Program::kWaffle,
+      .choice_screen_eligibility_config =
+          regional_capabilities::ChoiceScreenEligibilityConfig{
+              .should_preserve_imported_choice = true,  // PRESERVE!
+          },
+  };
+  regional_capabilities_service().SetCacheForTesting(
+      country_codes::CountryId("BE"), custom_settings);
+
+  // 4. Set pre-existing choice metadata (predates restore)
+  // We overwrite the metadata set by SetUserSelectedDefaultSearchProvider in
+  // step 1.
+  SetChoiceCompletionMetadata(
+      *pref_service(),
+      {base::Time::Now() - base::Days(1), base::Version("1.0.0.0"),
+       regional_capabilities::SerializeProgram(
+           regional_capabilities::Program::kWaffle)});
+
+  // 5. Initialize choice service (runs Init())
+  // This will now see:
+  // - DSE pref present
+  // - Custom settings (preserve = true)
+  // - Metadata predating restore
+  search_engine_choice_service();
+
+  // 6. Verify that the choice is NOT invalidated (timestamp pref not set)
+  EXPECT_FALSE(pref_service()->HasPrefPath(
+      prefs::kDefaultSearchProviderChoiceInvalidationTimestamp));
+
+  // 7. Verify conditions
+  SearchEngineChoiceScreenConditions expected_condition =
+#if !BUILDFLAG(CHOICE_SCREEN_IN_CHROME)
+      SearchEngineChoiceScreenConditions::kUnsupportedBrowserType;
+#else
+      SearchEngineChoiceScreenConditions::kAlreadyCompletedImported;
+#endif
+
+  EXPECT_EQ(search_engine_choice_service().GetStaticChoiceScreenConditions(
+                policy_service(), template_url_service()),
+            expected_condition);
+
+  EXPECT_EQ(
+      search_engine_choice_service().GetDynamicChoiceScreenConditions(
+          template_url_service(), {.allow_unknown_current_location = false}),
+      expected_condition);
+}
 
 TEST_F(SearchEngineChoiceServiceTest, RecordChoiceMade) {
   base::CommandLine::ForCurrentProcess()->RemoveSwitch(
@@ -273,7 +362,8 @@ TEST_F(SearchEngineChoiceServiceTest, RecordChoiceMade_NotOverwritten) {
       kSearchEngineChoiceWipeReasonHistogram, 0);
 }
 
-TEST_F(SearchEngineChoiceServiceTest, RecordChoiceMade_DeviceChoiceImport_Initial) {
+TEST_F(SearchEngineChoiceServiceTest,
+       RecordChoiceMade_DeviceChoiceImport_Initial) {
   base::CommandLine::ForCurrentProcess()->RemoveSwitch(
       switches::kSearchEngineChoiceCountry);
   base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
@@ -288,11 +378,12 @@ TEST_F(SearchEngineChoiceServiceTest, RecordChoiceMade_DeviceChoiceImport_Initia
       histogram_tester_,
       search_engines::kSearchEngineChoiceScreenDefaultSearchEngineTypeHistogram,
       SearchEngineType::SEARCH_ENGINE_GOOGLE, 1);
+  // Recorded for DeviceChoiceImport based on alignment
   ExpectHistogramsSampleCount(
       histogram_tester_,
       search_engines::
           kSearchEngineChoiceScreenDefaultSearchEngineType2Histogram,
-      SearchEngineType::SEARCH_ENGINE_GOOGLE, 1);  // Recorded for DeviceChoiceImport based on alignment
+      SearchEngineType::SEARCH_ENGINE_GOOGLE, 1);
 
   EXPECT_NEAR(pref_service()->GetInt64(
                   prefs::kDefaultSearchProviderChoiceScreenCompletionTimestamp),
@@ -303,7 +394,8 @@ TEST_F(SearchEngineChoiceServiceTest, RecordChoiceMade_DeviceChoiceImport_Initia
             version_info::GetVersionNumber());
 }
 
-TEST_F(SearchEngineChoiceServiceTest, RecordChoiceMade_DeviceChoiceImport_Redundant) {
+TEST_F(SearchEngineChoiceServiceTest,
+       RecordChoiceMade_DeviceChoiceImport_Redundant) {
   base::CommandLine::ForCurrentProcess()->RemoveSwitch(
       switches::kSearchEngineChoiceCountry);
   base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
@@ -324,7 +416,8 @@ TEST_F(SearchEngineChoiceServiceTest, RecordChoiceMade_DeviceChoiceImport_Redund
 
   base::HistogramTester scoped_histogram_tester;
 
-  // Test that redundant DeviceChoiceImport calls are dropped safely (no crash) and do not overwrite prefs or log duplicate metrics.
+  // Test that redundant DeviceChoiceImport calls are dropped safely (no crash)
+  // and do not overwrite prefs or log duplicate metrics.
   search_engine_choice_service().RecordChoiceMade(
       search_engines::ChoiceMadeLocation::kDeviceChoiceImport,
       &template_url_service());
@@ -652,9 +745,6 @@ class SearchEngineChoiceServiceDisplayStateRecordTest
 
     CheckHistogramExpectation(
         histogram_tester, kSearchEngineChoiceScreenSelectedEngineIndexHistogram,
-        expectations.selected_index, location);
-    CheckHistogramExpectation(
-        histogram_tester, kPumaSearchChoiceScreenSelectedEngineIndexHistogram,
         expectations.selected_index, location);
 
     CheckHistogramExpectation(
@@ -1606,23 +1696,7 @@ TEST_F(SearchEngineChoiceServiceChoiceScreenDataTest,
       choice_screen_data->display_state().includes_non_regional_set_engine);
 }
 
-class SearchEngineChoiceServiceWipeOnMissingDSETest
-    : public SearchEngineChoiceServiceTest,
-      public testing::WithParamInterface<bool> {
- public:
-  SearchEngineChoiceServiceWipeOnMissingDSETest() {
-    scoped_feature_list_.InitWithFeatureState(
-        switches::kWipeChoicePrefsOnMissingDefaultSearchEngine,
-        IsFeatureEnabled());
-  }
-
-  bool IsFeatureEnabled() const { return GetParam(); }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-TEST_P(SearchEngineChoiceServiceWipeOnMissingDSETest, WipeOnMissingDSE) {
+TEST_F(SearchEngineChoiceServiceTest, WipeOnMissingDSE) {
   {
     // Set up services and make some DSE choice.
     std::unique_ptr<TemplateURLData> data =
@@ -1647,36 +1721,19 @@ TEST_P(SearchEngineChoiceServiceWipeOnMissingDSETest, WipeOnMissingDSE) {
   pref_service()->ClearPref(
       DefaultSearchManager::kDefaultSearchProviderDataPrefName);
 
-  // Instantiating the service should wipe the choice prefs when the feature is
-  // enabled.
+  // Instantiating the service should wipe the choice prefs.
   search_engine_choice_service();
 
-  if (IsFeatureEnabled()) {
-    EXPECT_FALSE(pref_service()->HasPrefPath(
-        prefs::kDefaultSearchProviderChoiceScreenCompletionTimestamp));
-    EXPECT_FALSE(pref_service()->HasPrefPath(
-        prefs::kDefaultSearchProviderChoiceScreenCompletionVersion));
-    histogram_tester_.ExpectUniqueSample(
-        search_engines::kSearchEngineChoiceWipeReasonHistogram,
-        SearchEngineChoiceWipeReason::kMissingDefaultSearchEngine, 1);
-    histogram_tester_.ExpectUniqueSample(
-        "Search.ChoicePrefsCheck.WipeOnMissingDse", true, 1);
-  } else {
-    EXPECT_TRUE(pref_service()->HasPrefPath(
-        prefs::kDefaultSearchProviderChoiceScreenCompletionTimestamp));
-    EXPECT_TRUE(pref_service()->HasPrefPath(
-        prefs::kDefaultSearchProviderChoiceScreenCompletionVersion));
-    histogram_tester_.ExpectTotalCount(
-        search_engines::kSearchEngineChoiceWipeReasonHistogram, 0);
-    histogram_tester_.ExpectUniqueSample(
-        "Search.ChoicePrefsCheck.WipeOnMissingDse", false, 1);
-  }
+  EXPECT_FALSE(pref_service()->HasPrefPath(
+      prefs::kDefaultSearchProviderChoiceScreenCompletionTimestamp));
+  EXPECT_FALSE(pref_service()->HasPrefPath(
+      prefs::kDefaultSearchProviderChoiceScreenCompletionVersion));
+  histogram_tester_.ExpectUniqueSample(
+      search_engines::kSearchEngineChoiceWipeReasonHistogram,
+      SearchEngineChoiceWipeReason::kMissingDefaultSearchEngine, 1);
 }
 
-INSTANTIATE_TEST_SUITE_P(,
-                         SearchEngineChoiceServiceWipeOnMissingDSETest,
-                         ::testing::Bool());
-
+#if !BUILDFLAG(IS_IOS)
 struct DeviceRestoreTestParam {
   std::string test_suffix;
   bool restore_detected_in_current_session;
@@ -1810,9 +1867,6 @@ TEST_P(SearchEngineChoiceServiceDeviceRestoreTest, RepromptOnRestoreDetection) {
   histogram_tester_.ExpectUniqueSample(
       "RegionalCapabilities.FunnelStage.Eligibility.Profile1",
       expected_eligibility_condition, 1);
-  histogram_tester_.ExpectUniqueSample(
-      "PUMA.RegionalCapabilities.FunnelStage.Eligibility",
-      expected_eligibility_condition, 1);
   if (GetParam().restore_detected_in_current_session &&
       GetParam().is_feature_enabled) {
     histogram_tester_.ExpectUniqueSample(
@@ -1833,9 +1887,6 @@ TEST_P(SearchEngineChoiceServiceDeviceRestoreTest, RepromptOnRestoreDetection) {
   histogram_tester_.ExpectUniqueSample(
       "RegionalCapabilities.FunnelStage.Triggering.Profile1",
       expected_eligibility_condition, 1);
-  histogram_tester_.ExpectUniqueSample(
-      "PUMA.RegionalCapabilities.FunnelStage.Triggering",
-      expected_eligibility_condition, 1);
   if (GetParam().restore_detected_in_current_session &&
       GetParam().is_feature_enabled) {
     histogram_tester_.ExpectUniqueSample(
@@ -1854,6 +1905,7 @@ TEST_P(SearchEngineChoiceServiceDeviceRestoreTest, RepromptOnRestoreDetection) {
       search_engines::kSearchEngineChoiceRepromptHistogram,
       RepromptResult::kInvalidDictionary, 0);
 }
+#endif  // !BUILDFLAG(IS_IOS)
 
 struct RepromptTestParam {
   // Whether the user should be reprompted or not.
@@ -1901,9 +1953,13 @@ TEST_P(SearchEngineChoiceUtilsParamTest, Reprompt) {
   pref_service()->SetInt64(
       prefs::kDefaultSearchProviderChoiceScreenCompletionTimestamp,
       kPreviousTimestamp);
+  std::string_view choice_version = GetParam().choice_version;
+  if (choice_version == "CURRENT_VERSION") {
+    choice_version = version_info::GetVersionNumber();
+  }
   pref_service()->SetString(
       prefs::kDefaultSearchProviderChoiceScreenCompletionVersion,
-      GetParam().choice_version);
+      choice_version);
 
   // Trigger the creation of the service, which should check for the reprompt.
   search_engine_choice_service();
@@ -1923,7 +1979,7 @@ TEST_P(SearchEngineChoiceUtilsParamTest, Reprompt) {
         kPreviousTimestamp,
         pref_service()->GetInt64(
             prefs::kDefaultSearchProviderChoiceScreenCompletionTimestamp));
-    EXPECT_EQ(GetParam().choice_version,
+    EXPECT_EQ(choice_version,
               pref_service()->GetString(
                   prefs::kDefaultSearchProviderChoiceScreenCompletionVersion));
     histogram_tester_.ExpectTotalCount(
@@ -2010,7 +2066,7 @@ constexpr RepromptTestParam kRepromptTestParams[] = {
 
     // Don't reprompt when the choice was made in the current version.
     {std::nullopt, RepromptResult::kRecentChoice,
-     RepromptResult::kNoDictionaryKey, version_info::GetVersionNumber(),
+     RepromptResult::kNoDictionaryKey, "CURRENT_VERSION",
      "{\"*\":\"CURRENT_VERSION\"}"},
     // Don't reprompt when the choice was recent enough.
     {std::nullopt, RepromptResult::kRecentChoice,
@@ -2092,9 +2148,6 @@ TEST_P(SearchEngineChoiceServiceFunnelTest, RecordsFunnelStage) {
         scoped_histogram_tester,
         "RegionalCapabilities.FunnelStage.Reported.Profile1",
         GetParam().expected_if_static);
-    CheckHistogramExpectation(scoped_histogram_tester,
-                              "PUMA.RegionalCapabilities.FunnelStage.Reported",
-                              GetParam().expected_if_static);
   }
 
   {
@@ -2108,9 +2161,6 @@ TEST_P(SearchEngineChoiceServiceFunnelTest, RecordsFunnelStage) {
         scoped_histogram_tester,
         "RegionalCapabilities.FunnelStage.Reported.Profile1",
         GetParam().expected_if_dynamic);
-    CheckHistogramExpectation(scoped_histogram_tester,
-                              "PUMA.RegionalCapabilities.FunnelStage.Reported",
-                              GetParam().expected_if_dynamic);
   }
 }
 
@@ -2127,6 +2177,14 @@ INSTANTIATE_TEST_SUITE_P(
 
         {.test_suffix = "AlreadyCompleted",
          .condition = SearchEngineChoiceScreenConditions::kAlreadyCompleted,
+         .expected_if_static =
+             ExpectHistogramUnique(FunnelStage::kAlreadyCompleted),
+         .expected_if_dynamic =
+             ExpectHistogramUnique(FunnelStage::kAlreadyCompleted)},
+
+        {.test_suffix = "AlreadyCompletedImported",
+         .condition =
+             SearchEngineChoiceScreenConditions::kAlreadyCompletedImported,
          .expected_if_static =
              ExpectHistogramUnique(FunnelStage::kAlreadyCompleted),
          .expected_if_dynamic =

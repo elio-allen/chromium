@@ -4,9 +4,7 @@
 
 import '../controls/settings_toggle_button.js';
 import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
-import 'chrome://resources/cr_elements/cr_shared_style.css.js';
 import '../settings_page/settings_section.js';
-import '../settings_shared.css.js';
 import './tab_discard/exception_list.js';
 
 import {PrefService} from '/shared/settings/prefs2/pref_service.js';
@@ -20,6 +18,7 @@ import type {SettingsToggleButtonElement} from '../controls/settings_toggle_butt
 import {loadTimeData} from '../i18n_setup.js';
 import {routes} from '../route.js';
 import {Router} from '../router.js';
+import {getCss as getSettingsSharedCss} from '../settings_shared_lit.css.js';
 
 import {PerformanceBrowserProxyImpl, PerformanceFeedbackCategory} from './performance_browser_proxy.js';
 import type {PerformanceMetricsProxy} from './performance_metrics_proxy.js';
@@ -49,6 +48,12 @@ export class SettingsPerformancePageElement extends
     SettingsPerformancePageElementBase {
   static get is() {
     return 'settings-performance-page';
+  }
+
+  static override get styles() {
+    return [
+      getSettingsSharedCss(),
+    ];
   }
 
   override render() {
@@ -86,7 +91,7 @@ export class SettingsPerformancePageElement extends
   }
 
   protected onTabHoverPreviewCardLinkClick_(): void {
-    Router.getInstance().navigateTo(routes.APPEARANCE);
+    Router.getInstance().navigateTo(routes.APPEARANCE, undefined, true);
   }
 
   protected onPerformanceInterventionToggleButtonChange_() {
@@ -96,13 +101,22 @@ export class SettingsPerformancePageElement extends
             .value);
   }
 
-  // <if expr="_google_chrome">
-  protected onSendFeedback_(e: Event) {
-    e.stopPropagation();
+  protected showSendFeedbackButton_(): boolean {
+    // <if expr="_google_chrome">
+    return true;
+    // </if>
+    // <if expr="not _google_chrome">
+    return false;
+    // </if>
+  }
+
+  protected onSendFeedback_(_e: Event) {
+    // <if expr="_google_chrome">
+    _e.stopPropagation();
     PerformanceBrowserProxyImpl.getInstance().openFeedbackDialog(
         PerformanceFeedbackCategory.NOTIFICATIONS);
+    // </if>
   }
-  // </if>
 }
 
 declare global {

@@ -9,9 +9,12 @@
 
 namespace browser_actuator {
 
-class TransportChannel;
-
 // Service that provides browser actuation capabilities.
+//
+// The transport it sends and receives actions over is a KeyedService of its
+// own: features that only need the transport use
+// `browser_actuator::transport::TransportService` (`TransportServiceFactory` in
+// //chrome) directly.
 class BrowserActuatorService : public KeyedService {
  public:
   ~BrowserActuatorService() override;
@@ -21,9 +24,6 @@ class BrowserActuatorService : public KeyedService {
 
   // Whether the service is initialized and ready to execute actions.
   virtual bool IsInitialized() const = 0;
-
-  // Exposes the transport channel.
-  virtual TransportChannel* GetChannel() = 0;
 
  protected:
   BrowserActuatorService();

@@ -56,6 +56,7 @@
 #import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ios/testing/earl_grey/matchers.h"
+#import "ios/testing/test_tag_registry.h"
 #import "ios/third_party/earl_grey2/src/CommonLib/Matcher/GREYLayoutConstraint.h"  // nogncheck
 #import "ios/web/public/test/element_selector.h"
 #import "ui/base/l10n/l10n_util.h"
@@ -248,8 +249,8 @@ id<GREYMatcher> HidePasswordButton() {
 id<GREYMatcher> DeleteButton() {
   return grey_allOf(
       ButtonWithAccessibilityLabelId(IDS_IOS_SETTINGS_TOOLBAR_DELETE),
-      grey_not(grey_accessibilityTrait(UIAccessibilityTraitNotEnabled)),
-      nullptr);
+      grey_userInteractionEnabled(),
+      grey_not(grey_accessibilityTrait(UIAccessibilityTraitNotEnabled)), nil);
 }
 
 // Matcher for the Delete button in Confirmation Alert for password
@@ -486,8 +487,8 @@ void CheckReauthenticationUIEventMetric(ReauthenticationEvent event) {
                                           forBucket:static_cast<int>(event)
                                        forHistogram:histogram];
 
-  GREYAssertNil(error,
-                @"Failed to record reauthentication ui event histogram.");
+  chrome_test_util::GREYAssertErrorNil(
+      error, @"Failed to record reauthentication ui event histogram.");
 }
 
 // Verifies the total count of reauthentication UI histogram recorded.
@@ -497,8 +498,8 @@ void CheckReauthenticationUIEventMetricTotalCount(int count) {
 
   NSError* error = [MetricsAppInterface expectTotalCount:count
                                             forHistogram:histogram];
-  GREYAssertNil(error,
-                @"Unexpected reauthentication ui event histogram count.");
+  chrome_test_util::GREYAssertErrorNil(
+      error, @"Unexpected reauthentication ui event histogram count.");
 }
 
 // Verifies the total count of password manager visit histogram recorded.
@@ -781,6 +782,7 @@ void OpenPasswordManagerWidgetPromoInstructions() {
 }
 
 // Tests the add password flow from the toolbar button.
+TAG_SMOKE_TEST(PasswordManagerAddTestCase, testAddNewPasswordCredential);
 - (void)testAddNewPasswordCredential {
   OpenPasswordManager();
 
@@ -2069,6 +2071,7 @@ void OpenPasswordManagerWidgetPromoInstructions() {
 // Tests that an alert is displayed when update GPM PIN flow returns an error.
 // For now, fake trusted vault backend returns the error unconditionally.
 - (void)testUpdateGPMPinErrorAlert {
+  [SigninEarlGrey signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
   OpenPasswordManager();
   OpenSettingsSubmenu();
   CheckChangePinVisibleInSettings();
@@ -2092,6 +2095,7 @@ void OpenPasswordManagerWidgetPromoInstructions() {
 // Tests that attempting to change GPM PIN with no passcode does not show the
 // dialog and displays an alert prompting the user to set a passcode.
 - (void)testUpdateGPMPinWithoutPasscodeSet {
+  [SigninEarlGrey signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
   OpenPasswordManager();
   OpenSettingsSubmenu();
   CheckChangePinVisibleInSettings();
@@ -2371,10 +2375,10 @@ void OpenPasswordManagerWidgetPromoInstructions() {
       assertWithMatcher:grey_notVisible()];
 
   // Successful auth should remove blocking view and Password Manager should be
-  // visible visible.
+  // visible.
   [ReauthenticationAppInterface mockReauthenticationModuleReturnMockedResult];
-  [[EarlGrey selectElementWithMatcher:PasswordsTableViewMatcher()]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:PasswordsTableViewMatcher()];
 
   [[EarlGrey selectElementWithMatcher:SettingsDoneButton()]
       performAction:grey_tap()];
@@ -2851,6 +2855,7 @@ void OpenPasswordManagerWidgetPromoInstructions() {
 
   [[EarlGrey selectElementWithMatcher:chrome_test_util::SearchBar()]
       performAction:grey_replaceText(@"2")];
+  [ChromeEarlGrey simulatePhysicalKeyboardEvent:@"\n" flags:0];
 
   TapToolbarSelectButton();
 
@@ -2911,8 +2916,7 @@ void OpenPasswordManagerWidgetPromoInstructions() {
   [GetInteractionForPasswordEntry(@"example1.com, 2 accounts")
       performAction:grey_tap()];
 
-  [[EarlGrey selectElementWithMatcher:NavigationBarEditButton()]
-      performAction:grey_tap()];
+  TapNavigationBarEditButton();
 
   // Delete first password.
   DeleteCredential(@"user1", @"https://example1.com/");

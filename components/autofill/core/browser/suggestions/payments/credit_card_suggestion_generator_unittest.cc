@@ -28,8 +28,9 @@
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card_benefit.h"
 #include "components/autofill/core/browser/data_model/payments/iban.h"
-#include "components/autofill/core/browser/field_type_utils.h"
+#include "components/autofill/core/browser/field_type_util.h"
 #include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/browser/filling/filling_product.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
 #include "components/autofill/core/browser/foundations/test_autofill_driver.h"
@@ -52,8 +53,8 @@
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/browser/suggestions/suggestion_test_helpers.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
-#include "components/autofill/core/browser/test_utils/autofill_form_test_utils.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_clock.h"
 #include "components/autofill/core/common/autofill_constants.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
@@ -308,20 +309,6 @@ Matcher<Suggestion> EqualsSuggestion(const Suggestion& suggestion) {
                EqualSuggestionTabIndex(suggestion.tab_index));
 }
 
-#if !BUILDFLAG(IS_IOS)
-Matcher<Suggestion> EqualsUndoAutofillSuggestion() {
-  return EqualsSuggestion(SuggestionType::kUndoOrClear,
-#if BUILDFLAG(IS_ANDROID)
-                          base::i18n::ToUpper(l10n_util::GetStringUTF16(
-                              IDS_AUTOFILL_UNDO_MENU_ITEM)),
-#else
-                          l10n_util::GetStringUTF16(
-                              IDS_AUTOFILL_UNDO_MENU_ITEM),
-#endif
-                          Suggestion::Icon::kUndo);
-}
-#endif
-
 Matcher<Suggestion> EqualsManagePaymentsMethodsSuggestion(bool with_gpay_logo) {
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
   return EqualsSuggestion(
@@ -406,7 +393,7 @@ class MockCreditCardFormEventLogger
       OnMetadataLoggingContextReceived,
       (autofill_metrics::CardMetadataLoggingContext metadata_logging_context),
       (override));
-  MOCK_METHOD(void, OnBnplSuggestionShown, (), (override));
+  MOCK_METHOD(void, OnBnplSuggestionShown, (bool), (override));
 };
 
 // TODO(crbug.com/40176273): Move GetSuggestionsForCreditCard tests and
@@ -1268,7 +1255,7 @@ TEST_F(CreditCardSuggestionGeneratorTest,
               ContainsCreditCardFooterSuggestions(/*with_gpay_logo=*/true));
 }
 
-#if !BUILDFLAG(IS_IOS)
+#if !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
 TEST_F(CreditCardSuggestionGeneratorTest,
        GetVirtualCardStandaloneCvcFieldSuggestions_UndoAutofill) {
   // Set up a virtual card enrolled server card.
@@ -1286,6 +1273,10 @@ TEST_F(CreditCardSuggestionGeneratorTest,
       {.fields = {{.role = CREDIT_CARD_STANDALONE_VERIFICATION_CODE,
                    .is_autofilled_according_to_renderer = true}},
        .url = "https://example.com"});
+  form_bundle.form_structure->field(0)->AddFieldModifier(
+      FieldModifier::kAutofill);
+  form_bundle.form_structure->field(0)->set_filling_product(
+      FillingProduct::kCreditCard);
 
   // Add Usage Data matching the card and origin.
   VirtualCardUsageData virtual_card_usage_data(
@@ -1309,7 +1300,10 @@ TEST_F(CreditCardSuggestionGeneratorTest,
       ElementsAre(
           EqualsSuggestion(SuggestionType::kVirtualCreditCardEntry),
           EqualsSuggestion(SuggestionType::kSeparator),
-          EqualsUndoAutofillSuggestion(),
+          EqualsSuggestion(
+              SuggestionType::kUndo,
+              l10n_util::GetStringUTF16(IDS_AUTOFILL_UNDO_MENU_ITEM),
+              Suggestion::Icon::kUndo),
           EqualsManagePaymentsMethodsSuggestion(/*with_gpay_logo=*/true)));
 }
 #endif
@@ -1516,6 +1510,55 @@ TEST_F(CreditCardSuggestionGeneratorTest, ShouldShowScanCreditCard) {
               ContainsCreditCardFooterSuggestions(/*with_gpay_logo=*/false));
 }
 
+TEST_F(CreditCardSuggestionGeneratorTest,
+       ShouldShowScanCreditCard_NoCards) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      features::kAutofillEnableScanCardOptionWhenNoCardsSaved};
+  FormBundle form_bundle =
+      GetFormWithTypes({.fields = {{.role = CREDIT_CARD_NUMBER}}});
+
+  ON_CALL(*mock_payments_autofill_client_, HasCreditCardScanFeature)
+      .WillByDefault(testing::Return(true));
+
+  const std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
+      form_bundle.form, *form_bundle.form_structure, form_bundle.trigger_field,
+      *form_bundle.trigger_autofill_field, autofill_client(),
+      /*four_digit_combinations_in_dom=*/{},
+      /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
+      credit_card_form_event_logger(),
+      AutofillMetrics::PaymentsSigninState::kUnknown,
+      /*exclude_virtual_cards=*/false);
+
+  EXPECT_THAT(
+      suggestions[0],
+      EqualsSuggestion(SuggestionType::kScanCreditCard,
+                       l10n_util::GetStringUTF16(IDS_AUTOFILL_SCAN_CREDIT_CARD),
+                       Suggestion::Icon::kScanCreditCard));
+}
+
+TEST_F(CreditCardSuggestionGeneratorTest,
+       ShouldShowScanCreditCard_NoCards_FeatureDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kAutofillEnableScanCardOptionWhenNoCardsSaved);
+  FormBundle form_bundle =
+      GetFormWithTypes({.fields = {{.role = CREDIT_CARD_NUMBER}}});
+
+  ON_CALL(*mock_payments_autofill_client_, HasCreditCardScanFeature)
+      .WillByDefault(testing::Return(true));
+
+  const std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
+      form_bundle.form, *form_bundle.form_structure, form_bundle.trigger_field,
+      *form_bundle.trigger_autofill_field, autofill_client(),
+      /*four_digit_combinations_in_dom=*/{},
+      /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
+      credit_card_form_event_logger(),
+      AutofillMetrics::PaymentsSigninState::kUnknown,
+      /*exclude_virtual_cards=*/false);
+
+  EXPECT_THAT(suggestions, testing::IsEmpty());
+}
+
 // Test that 'Scan New Card' suggestion is shown based on whether autofill
 // credit card is enabled or disabled.
 TEST_F(CreditCardSuggestionGeneratorTest,
@@ -1624,7 +1667,7 @@ TEST_F(CreditCardSuggestionGeneratorTest, ScanCreditCardBasedOnIsFormSecure) {
       *http_form_bundle.form_structure->field(0), autofill_client()));
 }
 
-#if !BUILDFLAG(IS_IOS)
+#if !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
 TEST_F(CreditCardSuggestionGeneratorTest,
        FieldWasAutofilled_UndoAutofillOnCreditCardForm) {
   payments_data().AddCreditCard(test::GetCreditCard());
@@ -1632,6 +1675,10 @@ TEST_F(CreditCardSuggestionGeneratorTest,
   FormBundle form_bundle = GetFormWithTypes(
       {.fields = {{.role = CREDIT_CARD_NUMBER,
                    .is_autofilled_according_to_renderer = true}}});
+  form_bundle.form_structure->field(0)->AddFieldModifier(
+      FieldModifier::kAutofill);
+  form_bundle.form_structure->field(0)->set_filling_product(
+      FillingProduct::kCreditCard);
 
   const std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
       form_bundle.form, *form_bundle.form_structure, form_bundle.trigger_field,
@@ -1645,7 +1692,10 @@ TEST_F(CreditCardSuggestionGeneratorTest,
   EXPECT_THAT(suggestions,
               ElementsAre(EqualsSuggestion(SuggestionType::kCreditCardEntry),
                           EqualsSuggestion(SuggestionType::kSeparator),
-                          EqualsUndoAutofillSuggestion(),
+                          EqualsSuggestion(SuggestionType::kUndo,
+                                           l10n_util::GetStringUTF16(
+                                               IDS_AUTOFILL_UNDO_MENU_ITEM),
+                                           Suggestion::Icon::kUndo),
                           EqualsManagePaymentsMethodsSuggestion(
                               /*with_gpay_logo=*/false)));
 }
@@ -3120,7 +3170,28 @@ TEST_F(CreditCardSuggestionGeneratorBnplTest,
           IsUrlEligibleForBnplIssuer)
       .WillByDefault(testing::Return(true));
 
-  EXPECT_CALL(credit_card_form_event_logger(), OnBnplSuggestionShown())
+  EXPECT_CALL(credit_card_form_event_logger(), OnBnplSuggestionShown(false))
+      .Times(1);
+
+  GetCreditCardSuggestionsForTouchToFill(/*credit_cards=*/{CreateServerCard()},
+                                         autofill_manager(),
+                                         test::MakeFormGlobalId());
+}
+
+TEST_F(
+    CreditCardSuggestionGeneratorBnplTest,
+    GetCreditCardSuggestionsForTouchToFill_OnBnplSuggestionShownCalled_PayLaterTabsEnabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      features::kAutofillEnablePayNowPayLaterTabs);
+
+  payments_data().AddBnplIssuer(test::GetTestUnlinkedBnplIssuer());
+  ON_CALL(*static_cast<MockAutofillOptimizationGuideDecider*>(
+              autofill_client().GetAutofillOptimizationGuideDecider()),
+          IsUrlEligibleForBnplIssuer)
+      .WillByDefault(testing::Return(true));
+
+  EXPECT_CALL(credit_card_form_event_logger(), OnBnplSuggestionShown(true))
       .Times(1);
 
   GetCreditCardSuggestionsForTouchToFill(/*credit_cards=*/{CreateServerCard()},
@@ -3139,7 +3210,7 @@ TEST_F(
           IsUrlEligibleForBnplIssuer)
       .WillByDefault(testing::Return(false));
 
-  EXPECT_CALL(credit_card_form_event_logger(), OnBnplSuggestionShown())
+  EXPECT_CALL(credit_card_form_event_logger(), OnBnplSuggestionShown(_))
       .Times(0);
 
   GetCreditCardSuggestionsForTouchToFill(/*credit_cards=*/{CreateServerCard()},
@@ -3164,7 +3235,7 @@ TEST_F(
           IsUrlEligibleForBnplIssuer)
       .WillByDefault(testing::Return(true));
 
-  EXPECT_CALL(credit_card_form_event_logger(), OnBnplSuggestionShown())
+  EXPECT_CALL(credit_card_form_event_logger(), OnBnplSuggestionShown(_))
       .Times(0);
 
   GetCreditCardSuggestionsForTouchToFill(/*credit_cards=*/{CreateServerCard()},
@@ -3505,9 +3576,6 @@ TEST_F(CreditCardSuggestionGeneratorTest,
 #if BUILDFLAG(IS_IOS)
   base::test::ScopedFeatureList scoped_feature_list(
       features::kAutofillEnableBottomSheetScanCardAndFill);
-#else
-  base::test::ScopedFeatureList scoped_feature_list(
-      features::kAutofillEnableSaveAndFill);
 #endif  // BUILDFLAG(IS_IOS)
   SetCreditCardUploadEnabledForTest(/*credit_card_upload_enabled=*/false);
 
@@ -3562,9 +3630,6 @@ TEST_F(CreditCardSuggestionGeneratorTest,
 #if BUILDFLAG(IS_IOS)
   base::test::ScopedFeatureList scoped_feature_list(
       features::kAutofillEnableBottomSheetScanCardAndFill);
-#else
-  base::test::ScopedFeatureList scoped_feature_list(
-      features::kAutofillEnableSaveAndFill);
 #endif  // BUILDFLAG(IS_IOS)
   SetCreditCardUploadEnabledForTest(/*credit_card_upload_enabled=*/true);
 
@@ -3615,36 +3680,10 @@ TEST_F(CreditCardSuggestionGeneratorTest,
 }
 
 TEST_F(CreditCardSuggestionGeneratorTest,
-       GenerateLocalSaveAndFillSuggestion_FlagDisabled) {
-  // Complete credit card form (passes FormStructure::IsCompleteCreditCardForm)
-  FormBundle form_bundle = GetFormWithTypes(
-      {.fields = {
-           {.role = FieldType::CREDIT_CARD_NUMBER, .value = u"411"},
-           {.role = FieldType::CREDIT_CARD_EXP_MONTH},
-           {.role = FieldType::CREDIT_CARD_EXP_4_DIGIT_YEAR},
-           {.role = FieldType::CREDIT_CARD_VERIFICATION_CODE},
-           {.role = FieldType::CREDIT_CARD_NAME_FULL},
-       }});
-  std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
-      form_bundle.form, *form_bundle.form_structure, form_bundle.trigger_field,
-      *form_bundle.trigger_autofill_field, autofill_client(),
-      /*four_digit_combinations_in_dom=*/{},
-      /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
-      credit_card_form_event_logger(),
-      AutofillMetrics::PaymentsSigninState::kUnknown,
-      /*exclude_virtual_cards=*/false);
-
-  ASSERT_GE(suggestions.size(), 0ul);
-}
-
-TEST_F(CreditCardSuggestionGeneratorTest,
        SaveAndFillSuggestion_NotOfferedWhenCreditCardIsSavedInProfile) {
 #if BUILDFLAG(IS_IOS)
   base::test::ScopedFeatureList scoped_feature_list(
       features::kAutofillEnableBottomSheetScanCardAndFill);
-#else
-  base::test::ScopedFeatureList scoped_feature_list(
-      features::kAutofillEnableSaveAndFill);
 #endif  // BUILDFLAG(IS_IOS)
 
   MockSaveAndFillManager& mock_save_and_fill_manager =
@@ -3687,9 +3726,6 @@ TEST_F(CreditCardSuggestionGeneratorTest,
 #if BUILDFLAG(IS_IOS)
   base::test::ScopedFeatureList scoped_feature_list(
       features::kAutofillEnableBottomSheetScanCardAndFill);
-#else
-  base::test::ScopedFeatureList scoped_feature_list(
-      features::kAutofillEnableSaveAndFill);
 #endif  // BUILDFLAG(IS_IOS)
 
   MockSaveAndFillManager& mock_save_and_fill_manager =
@@ -3724,9 +3760,6 @@ TEST_F(CreditCardSuggestionGeneratorTest,
 #if BUILDFLAG(IS_IOS)
   base::test::ScopedFeatureList scoped_feature_list(
       features::kAutofillEnableBottomSheetScanCardAndFill);
-#else
-  base::test::ScopedFeatureList scoped_feature_list(
-      features::kAutofillEnableSaveAndFill);
 #endif  // BUILDFLAG(IS_IOS)
   autofill_client().set_is_off_the_record(true);
 
@@ -3767,9 +3800,6 @@ TEST_F(CreditCardSuggestionGeneratorTest,
 #if BUILDFLAG(IS_IOS)
   base::test::ScopedFeatureList scoped_feature_list(
       features::kAutofillEnableBottomSheetScanCardAndFill);
-#else
-  base::test::ScopedFeatureList scoped_feature_list(
-      features::kAutofillEnableSaveAndFill);
 #endif  // BUILDFLAG(IS_IOS)
 
   FormBundle form_bundle = GetFormWithTypes(
@@ -3831,9 +3861,6 @@ TEST_F(CreditCardSuggestionGeneratorTest,
 #if BUILDFLAG(IS_IOS)
   base::test::ScopedFeatureList scoped_feature_list(
       features::kAutofillEnableBottomSheetScanCardAndFill);
-#else
-  base::test::ScopedFeatureList scoped_feature_list(
-      features::kAutofillEnableSaveAndFill);
 #endif  // BUILDFLAG(IS_IOS)
   SetCreditCardUploadEnabledForTest(/*credit_card_upload_enabled=*/true);
 
@@ -3884,9 +3911,6 @@ TEST_F(CreditCardSuggestionGeneratorTest,
 #if BUILDFLAG(IS_IOS)
   base::test::ScopedFeatureList scoped_feature_list(
       features::kAutofillEnableBottomSheetScanCardAndFill);
-#else
-  base::test::ScopedFeatureList scoped_feature_list(
-      features::kAutofillEnableSaveAndFill);
 #endif  // BUILDFLAG(IS_IOS)
   SetCreditCardUploadEnabledForTest(/*credit_card_upload_enabled=*/true);
 
@@ -4946,47 +4970,33 @@ TEST_P(SuggestionIphBubbleTest,
 #endif
 }
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+    BUILDFLAG(IS_CHROMEOS)
 // Params of DownstreamCardAwarenessIphTest:
-// -- `bool` is_downstream_card_awareness_iph_enabled: Indicates whether the
-// downstream IPH feature is enabled.
 // -- `CreditCard::CardCreationSource` enrollment_source: The source of the
 // card's enrollment.
 // -- `size_t` use_count: The number of times the card has been used.
 class DownstreamCardAwarenessIphTest
     : public CreditCardSuggestionGeneratorTest,
       public testing::WithParamInterface<
-          std::tuple<bool, CreditCard::CardCreationSource, size_t>> {
+          std::tuple<CreditCard::CardCreationSource, size_t>> {
  public:
   DownstreamCardAwarenessIphTest() = default;
 
   void SetUp() override {
     CreditCardSuggestionGeneratorTest::SetUp();
-    if (is_downstream_card_awareness_iph_enabled()) {
-      scoped_feature_list_.InitAndEnableFeature(
-          features::kAutofillEnableDownstreamCardAwarenessIph);
-    } else {
-      scoped_feature_list_.InitAndDisableFeature(
-          features::kAutofillEnableDownstreamCardAwarenessIph);
-    }
   }
 
-  bool is_downstream_card_awareness_iph_enabled() const {
+  CreditCard::CardCreationSource enrollment_source() const {
     return std::get<0>(GetParam());
   }
-  CreditCard::CardCreationSource enrollment_source() const {
-    return std::get<1>(GetParam());
-  }
-  size_t use_count() const { return std::get<2>(GetParam()); }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
+  size_t use_count() const { return std::get<1>(GetParam()); }
 };
 
 INSTANTIATE_TEST_SUITE_P(
     CreditCardSuggestionGeneratorTest,
     DownstreamCardAwarenessIphTest,
     testing::Combine(
-        testing::Bool(),
         testing::Values(
             CreditCard::CardCreationSource::kCreationSourceUnspecified,
             CreditCard::CardCreationSource::kCreationSourceChromePayments,
@@ -4994,10 +5004,9 @@ INSTANTIATE_TEST_SUITE_P(
         testing::Values(0, 1, 2)));
 
 // Verify that the downstream card awareness suggestion `feature` is set ONLY
-// when the feature flag is enabled, the card enrollment source is
-// `kCreationSourceNonChromePayments`, and the card has a `use_count` of 1.
-// Since `use_count` is initialized to 1, a value of 1 indicates that the card
-// has not yet been used.
+// when the card enrollment source is `kCreationSourceNonChromePayments` and the
+// card has a `use_count` of 1. Since `use_count` is initialized to 1, a value
+// of 1 indicates that the card has not yet been used.
 TEST_P(DownstreamCardAwarenessIphTest,
        CreateCreditCardSuggestion_DownstreamCardAwarenessIph) {
   CreditCard server_card = CreateServerCard();
@@ -5009,7 +5018,6 @@ TEST_P(DownstreamCardAwarenessIphTest,
       /*virtual_card_option=*/false);
 
   bool should_show_iph =
-      is_downstream_card_awareness_iph_enabled() &&
       enrollment_source() ==
           CreditCard::CardCreationSource::kCreationSourceNonChromePayments &&
       use_count() == 1;
@@ -5071,6 +5079,8 @@ TEST_P(DownstreamCardAwarenessIphTest, WithNeverUsedCard) {
 
   EXPECT_EQ(summary.with_never_used_card, use_count() == 1);
 }
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+        // BUILDFLAG(IS_CHROMEOS)
 
 // Params of GetFilteredCardsToSuggestTest:
 // -- FieldType get_trigger_field_type: Indicates triggered field type.
@@ -5129,6 +5139,10 @@ TEST_P(GetFilteredCardsToSuggestTest, GetFilteredCardsToSuggest) {
                   {.role = CREDIT_CARD_NUMBER,
                    .value = u"1111",
                    .is_autofilled_according_to_renderer = true}}});
+  form_bundle.form_structure->field(1)->AddFieldModifier(
+      FieldModifier::kAutofill);
+  form_bundle.form_structure->field(1)->set_filling_product(
+      FillingProduct::kCreditCard);
 
   const std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
       form_bundle.form, *form_bundle.form_structure, form_bundle.trigger_field,
@@ -5256,6 +5270,10 @@ TEST_P(GetFilteredCardsToSuggestTest, NoMatchCard) {
                   {.role = CREDIT_CARD_NUMBER,
                    .value = u"9999",
                    .is_autofilled_according_to_renderer = true}}});
+  form_bundle.form_structure->field(1)->AddFieldModifier(
+      FieldModifier::kAutofill);
+  form_bundle.form_structure->field(1)->set_filling_product(
+      FillingProduct::kCreditCard);
   const std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
       form_bundle.form, *form_bundle.form_structure, form_bundle.trigger_field,
       *form_bundle.trigger_autofill_field, autofill_client(),
@@ -6805,6 +6823,58 @@ TEST_F(CreditCardSuggestionGeneratorTest,
   EXPECT_EQ(suggestions[suggestions.size() - 2].type,
             SuggestionType::kSeparator);
   EXPECT_EQ(suggestions.back().type, SuggestionType::kManageCreditCard);
+}
+
+// Tests that payment swapping does not bypass prefix/non-empty filtering on a
+// field that was autofilled by `FillingProduct::kAddress`.
+TEST_F(CreditCardSuggestionGeneratorTest,
+       PaymentsSwappingDoesNotTriggerOnAddressAutofilledField) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      features::kAutofillPaymentsFieldSwapping};
+
+  CreditCard other_name_card;
+  test::SetCreditCardInfo(&other_name_card, /*name_on_card=*/"Elvis Presley",
+                          /*card_number=*/"4111111111111111",
+                          /*expiration_month=*/"05",
+                          /*expiration_year=*/"2999",
+                          /*billing_address_id=*/"");
+  payments_data().AddCreditCard(other_name_card);
+
+  FormBundle form_bundle = GetFormWithTypes(
+      {.fields = {{.role = CREDIT_CARD_NAME_FULL,
+                   .value = u"John Doe",
+                   .is_autofilled_according_to_renderer = true},
+                  {.role = CREDIT_CARD_NUMBER}}});
+  form_bundle.trigger_autofill_field->AddFieldModifier(
+      FieldModifier::kAutofill);
+
+  for (FillingProduct non_card_product :
+       {FillingProduct::kAddress, FillingProduct::kAutocomplete,
+        FillingProduct::kNone}) {
+    form_bundle.trigger_autofill_field->set_filling_product(non_card_product);
+    std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
+        form_bundle.form, *form_bundle.form_structure,
+        form_bundle.trigger_field, *form_bundle.trigger_autofill_field,
+        autofill_client(),
+        /*four_digit_combinations_in_dom=*/{},
+        /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
+        credit_card_form_event_logger(),
+        AutofillMetrics::PaymentsSigninState::kUnknown,
+        /*exclude_virtual_cards=*/false);
+    EXPECT_TRUE(suggestions.empty());
+  }
+
+  form_bundle.trigger_autofill_field->set_filling_product(
+      FillingProduct::kCreditCard);
+  std::vector<Suggestion> suggestions = GetSuggestionsForCreditCards(
+      form_bundle.form, *form_bundle.form_structure, form_bundle.trigger_field,
+      *form_bundle.trigger_autofill_field, autofill_client(),
+      /*four_digit_combinations_in_dom=*/{},
+      /*amount_extraction_manager=*/nullptr, /*bnpl_manager=*/nullptr,
+      credit_card_form_event_logger(),
+      AutofillMetrics::PaymentsSigninState::kUnknown,
+      /*exclude_virtual_cards=*/false);
+  EXPECT_FALSE(suggestions.empty());
 }
 
 }  // namespace

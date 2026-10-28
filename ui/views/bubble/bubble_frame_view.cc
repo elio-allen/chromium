@@ -254,14 +254,8 @@ bool BubbleFrameView::GetClientMask(const gfx::Size& size, SkPath* path) const {
     return false;
   }
 
-  // Format is upper-left, upper-right, lower-right, and lower-left.
-  const SkVector radii[4]{
-      {corner_radii.upper_left(),  corner_radii.upper_left()},
-      {corner_radii.upper_right(), corner_radii.upper_right()},
-      {corner_radii.lower_right(), corner_radii.lower_right()},
-      {corner_radii.lower_left(),  corner_radii.lower_left()}};
-  *path = SkPath::RRect(SkRRect::MakeRectRadii(
-      SkRect::MakeIWH(size.width(), size.height()), radii));
+  *path =
+      SkPath::RRect(gfx::RoundedRectToSkRRect(gfx::Rect(size), corner_radii));
   return true;
 }
 
@@ -341,11 +335,8 @@ void BubbleFrameView::GetWindowMask(const gfx::Size& size,
                     kBorderStrokeSize)};
 
   if (bubble_border_->shadow() == BubbleBorder::NO_SHADOW) {
-    SkVector radii[4]{{border_radii.upper_left(),  border_radii.upper_left()},
-                      {border_radii.upper_right(), border_radii.upper_right()},
-                      {border_radii.lower_right(), border_radii.lower_right()},
-                      {border_radii.lower_left(),  border_radii.lower_left()}};
-    *window_mask = SkPath::RRect(SkRRect::MakeRectRadii(rect, radii));
+    *window_mask = SkPath::RRect(
+        gfx::RoundedRectFToSkRRect(gfx::SkRectToRectF(rect), border_radii));
   } else {
     static const int kBottomBorderShadowSize = 2;
     rect.fBottom += SkIntToScalar(kBottomBorderShadowSize);
@@ -708,13 +699,16 @@ void BubbleFrameView::Layout(PassKey) {
 }
 
 void BubbleFrameView::OnThemeChanged() {
+  // Call the base class before the early return below:
+  // View::PropagateThemeChanged() DCHECKs that View::OnThemeChanged() ran.
+  FrameView::OnThemeChanged();
+
   // TODO(crbug.com/445859201): investigate which widget's delegate is null.
   // This seems to happen on ChromeOS on a scheduled change of color mode.
   if (!GetWidget() || !GetWidget()->widget_delegate()) {
     return;
   }
 
-  FrameView::OnThemeChanged();
   UpdateWindowTitle();
   UpdateSubtitle();
   ResetWindowControls();
@@ -876,7 +870,16 @@ BubbleBorder::Arrow BubbleFrameView::GetArrow() const {
 }
 
 void BubbleFrameView::SetDisplayVisibleArrow(bool display_visible_arrow) {
+  if (bubble_border_->visible_arrow() == display_visible_arrow) {
+    return;
+  }
   bubble_border_->set_visible_arrow(display_visible_arrow);
+  if (GetWidget() && GetWidget()->widget_delegate()) {
+    if (auto* bubble_delegate =
+            GetWidget()->widget_delegate()->AsBubbleDialogDelegate()) {
+      bubble_delegate->SizeToContents();
+    }
+  }
 }
 
 bool BubbleFrameView::GetDisplayVisibleArrow() const {
@@ -884,7 +887,7 @@ bool BubbleFrameView::GetDisplayVisibleArrow() const {
 }
 
 void BubbleFrameView::SetBackgroundColor(ui::ColorVariant color) {
-  bubble_border_->SetColor(color);
+  bubble_border_->set_background_color(color);
   if (!GetWidget()) {
     return;
   }
@@ -991,7 +994,16 @@ gfx::Rect BubbleFrameView::GetUpdatedWindowBounds(
     SchedulePaint();
   }
 
-  return bubble_border_->GetBounds(anchor_rect, size);
+  gfx::Rect bounds = bubble_border_->GetBounds(anchor_rect, size);
+  if (adjust_to_fit_available_bounds &&
+      BubbleBorder::has_arrow(delegate_arrow)) {
+    const gfx::Rect available_bounds = GetAvailableScreenBounds(anchor_rect);
+    if (!available_bounds.IsEmpty()) {
+      bubble_border_->AdjustBoundsToFitAvailableBounds(bounds,
+                                                       available_bounds);
+    }
+  }
+  return bounds;
 }
 
 void BubbleFrameView::UpdateInputProtectorTimeStamp() {

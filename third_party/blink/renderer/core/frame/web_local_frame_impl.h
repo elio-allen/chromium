@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "base/dcheck_is_on.h"
+#include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/types/pass_key.h"
@@ -54,7 +55,6 @@
 #include "third_party/blink/public/mojom/context_menu/context_menu.mojom-blink.h"
 #include "third_party/blink/public/mojom/devtools/devtools_agent.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/devtools/inspector_issue.mojom-blink-forward.h"
-#include "third_party/blink/public/mojom/fenced_frame/fenced_frame.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/frame/find_in_page.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/frame/lifecycle.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/frame/tree_scope_type.mojom-blink.h"
@@ -70,12 +70,12 @@
 #include "third_party/blink/public/web/web_navigation_control.h"
 #include "third_party/blink/public/web/web_performance_metrics_for_nested_contexts.h"
 #include "third_party/blink/public/web/web_performance_metrics_for_reporting.h"
+#include "third_party/blink/public/web/web_performance_timings.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/editing/forward.h"
 #include "third_party/blink/renderer/core/exported/web_input_method_controller_impl.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/web_remote_frame_impl.h"
-#include "third_party/blink/renderer/platform/heap/self_keep_alive.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "ui/gfx/geometry/rect_f.h"
@@ -84,7 +84,6 @@ namespace blink {
 
 class ChromePrintContext;
 class FindInPage;
-class HTMLFencedFrameElement;
 class LocalFrameClientImpl;
 class ResourceError;
 class ScrollableArea;
@@ -135,7 +134,7 @@ class CORE_EXPORT WebLocalFrameImpl final
   WebContentCaptureClient* ContentCaptureClient() const override;
   BrowserInterfaceBrokerProxy& GetBrowserInterfaceBroker() override;
   WebDocument GetDocument() const override;
-  base::UnguessableToken GetInitiatorStateToken() const override;
+  InitiatorStateToken GetInitiatorStateToken() const override;
   WebString AssignedName() const override;
   ui::AXTreeID GetAXTreeID() const override;
   void SetName(const WebString&) override;
@@ -202,7 +201,8 @@ class CORE_EXPORT WebLocalFrameImpl final
                             WebScriptExecutionCallback,
                             BackForwardCacheAware back_forward_cache_aware,
                             mojom::blink::WantResultOption,
-                            mojom::blink::PromiseResultOption) override;
+                            mojom::blink::PromiseResultOption,
+                            const WebString& script_injector_id) override;
   bool IsInspectorConnected() override;
   void Alert(const WebString& message) override;
   bool Confirm(const WebString& message) override;
@@ -308,6 +308,12 @@ class CORE_EXPORT WebLocalFrameImpl final
   void UsageCountChromeLoadTimes(const WebString& metric) override;
   void UsageCountChromeCSI(const WebString& metric) override;
   bool DispatchedPagehideAndStillHidden() const override;
+#if BUILDFLAG(IS_ANDROID)
+  void PostEmbedderMessageEvent(
+      const WebSecurityOrigin& target_origin,
+      std::vector<MessagePortDescriptor> ports,
+      base::UnsafeSharedMemoryRegion region) override;
+#endif
   FrameScheduler* Scheduler() const override;
   scheduler::WebAgentGroupScheduler* GetAgentGroupScheduler() const override;
   scoped_refptr<base::SingleThreadTaskRunner> GetTaskRunner(TaskType) override;
@@ -345,6 +351,7 @@ class CORE_EXPORT WebLocalFrameImpl final
       const override;
   WebPerformanceMetricsForNestedContexts PerformanceMetricsForNestedContexts()
       const override;
+  WebPerformanceTimings PerformanceTimings() const override;
   bool IsAdFrame() const override;
   bool IsAdScriptInStack() const override;
   void SetAdEvidence(const FrameAdEvidence& ad_evidence) override;
@@ -366,7 +373,7 @@ class CORE_EXPORT WebLocalFrameImpl final
       mojom::blink::UserActivationNotificationType notification_type) override;
   bool HasStickyUserActivation() override;
   bool HasTransientUserActivation() override;
-  bool ConsumeTransientUserActivation(UserActivationUpdateSource) override;
+  bool ConsumeTransientUserActivation(UserActivationUpdateScope) override;
   bool LastActivationWasRestricted() const override;
 #if BUILDFLAG(IS_WIN)
   WebFontFamilyNames GetWebFontFamilyNames() const override;
@@ -434,6 +441,8 @@ class CORE_EXPORT WebLocalFrameImpl final
   bool IsFeatureEnabled(
       const network::mojom::PermissionsPolicyFeature&) const override;
 
+  bool IsInBackForwardCache() const override;
+
   void InitializeCoreFrame(
       Page&,
       FrameOwner*,
@@ -444,6 +453,7 @@ class CORE_EXPORT WebLocalFrameImpl final
       WindowAgentFactory*,
       WebFrame* opener,
       const DocumentToken& document_token,
+      const InitiatorStateToken& initiator_state_token,
       mojo::PendingRemote<mojom::blink::BrowserInterfaceBroker>
           interface_broker,
       std::unique_ptr<blink::WebPolicyContainer> policy_container,
@@ -468,6 +478,7 @@ class CORE_EXPORT WebLocalFrameImpl final
       const WebString& name,
       network::mojom::blink::WebSandboxFlags,
       const DocumentToken& document_token,
+      const InitiatorStateToken& initiator_state_token,
       std::unique_ptr<WebPolicyContainer>,
       const WebURL& creator_base_url,
       std::unique_ptr<base::UnguessableToken> sandbox_origin_token);
@@ -495,10 +506,6 @@ class CORE_EXPORT WebLocalFrameImpl final
 
   LocalFrame* CreateChildFrame(const AtomicString& name,
                                HTMLFrameOwnerElement*);
-
-  RemoteFrame* CreateFencedFrame(
-      HTMLFencedFrameElement*,
-      mojo::PendingAssociatedReceiver<mojom::blink::FencedFrameOwnerHost>);
 
   void DidChangeContentsSize(const gfx::Size&);
 
@@ -661,6 +668,7 @@ class CORE_EXPORT WebLocalFrameImpl final
       WindowAgentFactory*,
       WebFrame* opener,
       const DocumentToken& document_token,
+      const InitiatorStateToken& initiator_state_token,
       mojo::PendingRemote<mojom::blink::BrowserInterfaceBroker>
           interface_broker,
       std::unique_ptr<PolicyContainer> policy_container,
@@ -679,7 +687,8 @@ class CORE_EXPORT WebLocalFrameImpl final
   // Returns whether we should perform compositor warm-up.
   bool ShouldWarmUpCompositor();
 
-  WebLocalFrameClient* client_;
+  raw_ptr<WebLocalFrameClient, UnprotectedInRelease | DanglingUntriaged>
+      client_;
 
   // TODO(dcheng): Inline this field directly rather than going through Member.
   const Member<LocalFrameClientImpl> local_frame_client_;
@@ -695,13 +704,17 @@ class CORE_EXPORT WebLocalFrameImpl final
 
   Member<WebDevToolsAgentImpl> dev_tools_agent_;
 
-  WebAutofillClient* autofill_client_ = nullptr;
+  raw_ptr<WebAutofillClient, UnprotectedInRelease | DanglingUntriaged>
+      autofill_client_ = nullptr;
 
-  WebRecordReplayClient* record_replay_client_ = nullptr;
+  raw_ptr<WebRecordReplayClient, UnprotectedInRelease | DanglingUntriaged>
+      record_replay_client_ = nullptr;
 
-  WebContentCaptureClient* content_capture_client_ = nullptr;
+  raw_ptr<WebContentCaptureClient, UnprotectedInRelease | DanglingUntriaged>
+      content_capture_client_ = nullptr;
 
-  WebContentSettingsClient* content_settings_client_ = nullptr;
+  raw_ptr<WebContentSettingsClient, UnprotectedInRelease | DanglingUntriaged>
+      content_settings_client_ = nullptr;
 
   Member<FindInPage> find_in_page_;
 
@@ -714,20 +727,19 @@ class CORE_EXPORT WebLocalFrameImpl final
   Member<ChromePrintContext> print_context_;
 
   // Borrowed pointers to Mojo objects.
-  InterfaceRegistry* interface_registry_;
+  raw_ptr<InterfaceRegistry, UnprotectedInRelease | DanglingUntriaged>
+      interface_registry_;
 
   WebInputMethodControllerImpl input_method_controller_;
 
-  WebTextCheckClient* text_check_client_;
+  raw_ptr<WebTextCheckClient, UnprotectedInRelease | DanglingUntriaged>
+      text_check_client_;
 
-  WebSpellCheckPanelHostClient* spell_check_panel_host_client_;
+  raw_ptr<WebSpellCheckPanelHostClient,
+          UnprotectedInRelease | DanglingUntriaged>
+      spell_check_panel_host_client_;
 
   mojom::BackForwardCacheNotRestoredReasonsPtr not_restored_reasons_;
-
-  // Oilpan: WebLocalFrameImpl must remain alive until close() is called.
-  // Accomplish that by keeping a self-referential Persistent<>. It is
-  // cleared upon close().
-  SelfKeepAlive<WebLocalFrameImpl> self_keep_alive_{this};
 
 #if DCHECK_IS_ON()
   // True if DispatchBeforePrintEvent() was called, and

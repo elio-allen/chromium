@@ -117,8 +117,9 @@ class CONTENT_EXPORT Navigator {
   // |navigation_request|. The NavigationController should be called back with
   // RendererDidNavigate on success or DiscardPendingEntry on failure. The
   // callbacks should be called in a future iteration of the message loop.
-  void Navigate(std::unique_ptr<NavigationRequest> request,
-                ReloadType reload_type);
+  std::optional<NavigationNotStartedReason> Navigate(
+      std::unique_ptr<NavigationRequest> request,
+      ReloadType reload_type);
 
   // The RenderFrameHostImpl has received a request to open a URL with the
   // specified |disposition|.
@@ -172,8 +173,8 @@ class CONTENT_EXPORT Navigator {
       bool force_new_browsing_instance = false,
       bool is_container_initiated = false,
       bool has_rel_opener = false,
-      std::optional<std::u16string> embedder_shared_storage_context =
-          std::nullopt);
+      network::mojom::CSPDisposition should_check_main_world_csp =
+          network::mojom::CSPDisposition::CHECK);
 
   // Called after BeforeUnloadCompleted callback is invoked from the renderer.
   // If `frame_tree_node` has a NavigationRequest waiting for the renderer

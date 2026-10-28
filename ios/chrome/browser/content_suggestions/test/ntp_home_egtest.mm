@@ -66,6 +66,7 @@
 #import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/disabled_test_macros.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/testing/test_tag_registry.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
 #import "net/test/embedded_test_server/http_request.h"
 #import "net/test/embedded_test_server/http_response.h"
@@ -249,7 +250,8 @@ bool AreNumbersEqual(CGFloat num1, CGFloat num2) {
       [self isRunningTest:@selector(testNavigateInCustomizationMenu)]) {
     // TODO(crbug.com/537272655): Re-enable once the customization menu
     // coordinator is fully testable in the minimal UI test environment.
-    config.features_enabled.push_back(kOverflowMenuHomeCustomizationEntrypoint);
+    config.features_disabled.push_back(
+        kOverflowMenuHomeCustomizationEntrypoint);
   }
 
   return config;
@@ -889,6 +891,7 @@ bool AreNumbersEqual(CGFloat num1, CGFloat num2) {
 }
 
 // Tests that tapping the fake omnibox focuses the real omnibox.
+TAG_SMOKE_TEST(NTPHomeTestCase, testTapFakeOmnibox);
 - (void)testTapFakeOmnibox {
   // Setup the server.
   self.testServer->RegisterRequestHandler(
@@ -1163,6 +1166,7 @@ bool AreNumbersEqual(CGFloat num1, CGFloat num2) {
 }
 
 // Test to ensure that NTP for incognito mode works properly.
+TAG_SMOKE_TEST(NTPHomeTestCase, testIncognitoMode);
 - (void)testIncognitoMode {
   // Checks that default NTP is not incognito.
   [self
@@ -1474,6 +1478,10 @@ bool AreNumbersEqual(CGFloat num1, CGFloat num2) {
                  grey_accessibilityID(
                      kHomeCustomizationMainViewAccessibilityIdentifier)]
       performAction:grey_scrollToContentEdge(kGREYContentEdgeBottom)];
+  [[EarlGrey selectElementWithMatcher:
+                 grey_accessibilityID([HomeCustomizationHelper
+                     navigationBarTitleForPage:CustomizationMenuPage::kMain])]
+      performAction:grey_swipeFastInDirection(kGREYDirectionUp)];
 
   // Check for a toggle cell for Shortcuts and Magic Stack, and ensure that
   // they're all on.
@@ -1572,6 +1580,10 @@ bool AreNumbersEqual(CGFloat num1, CGFloat num2) {
                  grey_accessibilityID(
                      kHomeCustomizationMainViewAccessibilityIdentifier)]
       performAction:grey_scrollToContentEdge(kGREYContentEdgeBottom)];
+  [[EarlGrey selectElementWithMatcher:
+                 grey_accessibilityID([HomeCustomizationHelper
+                     navigationBarTitleForPage:CustomizationMenuPage::kMain])]
+      performAction:grey_swipeFastInDirection(kGREYDirectionUp)];
 
   // Tap the Most Visited cell which shouldn't prompt a navigation.
   [[EarlGrey selectElementWithMatcher:

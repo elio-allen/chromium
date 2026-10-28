@@ -7,8 +7,8 @@
 
 #include <memory>
 #include <string_view>
-#include <vector>
 
+#include "base/containers/span.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
@@ -20,6 +20,7 @@
 #include "components/browser_apis/browser_controls/browser_controls_api.mojom-forward.h"
 #include "components/browser_apis/browser_controls/browser_controls_api_data_model.mojom.h"
 #include "components/browser_apis/ui_controllers/toolbar/toolbar_ui_api.mojom.h"
+#include "components/omnibox/browser/searchbox.mojom.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "content/public/browser/webui_config.h"
@@ -34,9 +35,16 @@
 
 class CommandUpdater;
 
+namespace contextual_search {
+class ContextualSearchSessionHandle;
+}  // namespace contextual_search
+
 namespace user_education {
 class HelpBubbleHandler;
 }  // namespace user_education
+
+class OmniboxController;
+class WebuiOmniboxHandler;
 
 // The webui controller for the webui toolbar. This class has a two part
 // initialization. The controller is not ready to use until after
@@ -44,11 +52,12 @@ class HelpBubbleHandler;
 namespace content {
 class NavigationHandle;
 class WebUIDataSource;
-}
+}  // namespace content
 
 class WebUIToolbarUI : public TopChromeWebUIController,
+                       public content::WebContentsObserver,
                        public help_bubble::mojom::HelpBubbleHandlerFactory,
-                       public content::WebContentsObserver {
+                       public searchbox::mojom::PageHandlerFactory {
  public:
   // Provides dependencies to this controller during init.
   class DependencyProvider {
@@ -63,13 +72,15 @@ class WebUIToolbarUI : public TopChromeWebUIController,
     virtual toolbar_ui_api::ToolbarUIService::ToolbarUIServiceDelegate*
     GetToolbarUIServiceDelegate() = 0;
     // Cannot be null.
-    virtual std::unique_ptr<toolbar_ui_api::NavigationControlsStateFetcher>
-    GetNavigationControlsStateFetcher() = 0;
+    virtual std::unique_ptr<toolbar_ui_api::ToolbarStateFetcher>
+    GetToolbarStateFetcher() = 0;
     // Cannot be null.
     virtual std::unique_ptr<toolbar_ui_api::IconTableFetcher>
     GetIconTableFetcher() = 0;
     // Cannot be null.
     virtual CommandUpdater* GetCommandUpdater() = 0;
+    // Cannot be null (except in tests).
+    virtual OmniboxController* GetOmniboxController() = 0;
   };
 
   explicit WebUIToolbarUI(content::WebUI* web_ui);
@@ -98,20 +109,32 @@ class WebUIToolbarUI : public TopChromeWebUIController,
       mojo::PendingReceiver<help_bubble::mojom::HelpBubbleHandlerFactory>
           receiver);
 
-  virtual void OnNavigationControlsStateChanged(
-      const toolbar_ui_api::mojom::NavigationControlsState& state);
+  void BindInterface(
+      mojo::PendingReceiver<searchbox::mojom::PageHandlerFactory> receiver);
+
+  virtual void OnToolbarStateChanged(
+      const toolbar_ui_api::mojom::ToolbarState& state);
   void OnFocusRequested(toolbar_ui_api::mojom::FocusRequestTarget target);
+  void ShowSplitTabsContextMenu();
+
+  // Blocks until every ToolbarUIObserver message sent so far has been
+  // dispatched by the WebUI. No-op before the service is bound.
+  void FlushToolbarUIObserversForTesting();
 
   // The |depdency_provider| is expected to outlive this class.
   void Init(DependencyProvider* dependency_provider);
+
+  // This should be called when pointers from `dependency_provider` may no
+  // longer be available, to avoid dangling references during shutdown.
+  void DependenciesDestroying();
 
   // TopChromeWebUIController:
   // The controller uses `requesting_origin` to:
   // 1. Decide which resources to expose, e.g. only expose "chrome://theme"
   //    resources to trusted "chrome://" origins.
   // 2. Generate correct CORS headers. Since resources added here often belong
-  //    to a different origin than the page loading them, they need a CORS header
-  //    that explicitly allow `current_origin`.
+  //    to a different origin than the page loading them, they need a CORS
+  //    header that explicitly allow `current_origin`.
   void PopulateLocalResourceLoaderConfig(
       blink::mojom::LocalResourceLoaderConfig* config,
       const url::Origin& requesting_origin) override;
@@ -129,13 +152,29 @@ class WebUIToolbarUI : public TopChromeWebUIController,
       mojo::PendingReceiver<help_bubble::mojom::HelpBubbleHandler> handler)
       override;
 
+  void FinishCreateHelpBubbleHandler(
+      mojo::PendingRemote<help_bubble::mojom::HelpBubbleClient> client,
+      mojo::PendingReceiver<help_bubble::mojom::HelpBubbleHandler> handler,
+      base::WeakPtr<ui::TrackedElementHandler> tracked_element_handler);
+
+  // searchbox::mojom::PageHandlerFactory:
+  void CreatePageHandler(
+      mojo::PendingRemote<searchbox::mojom::Page> page,
+      mojo::PendingReceiver<searchbox::mojom::PageHandler> receiver) override;
+
   content::WebUIController::DisplayDisposition GetDisplayDisposition()
       const override;
 
   // Returns the list of known element identifiers. These elements are HTML
   // elements tracked by ui/webui/tracked_element. Used for anchoring secondary
   // UIs.
-  static const std::vector<ui::ElementIdentifier> GetKnownElementIdentifiers();
+  static base::span<const ui::ElementIdentifier> GetKnownElementIdentifiers();
+
+  OmniboxController* omnibox_controller_for_testing() const {
+    return omnibox_controller_;
+  }
+
+  bool is_initialized() const { return is_initialized_; }
 
  private:
   FRIEND_TEST_ALL_PREFIXES(WebUIToolbarUITest,
@@ -150,6 +189,19 @@ class WebUIToolbarUI : public TopChromeWebUIController,
 
   void InitBrowserControlsService(DependencyProvider& dependency_provider);
   void InitToolbarUIService(DependencyProvider& dependency_provider);
+
+  // Lazily creates and returns a reference to the owned contextual search
+  // session handle for `omnibox_handler_`.
+  contextual_search::ContextualSearchSessionHandle*
+  GetOrCreateContextualSessionHandle();
+
+  bool is_initialized_ = false;
+  raw_ptr<OmniboxController> omnibox_controller_ = nullptr;
+
+  // Must outlive `omnibox_handler_`.
+  std::unique_ptr<contextual_search::ContextualSearchSessionHandle>
+      session_handle_;
+  std::unique_ptr<WebuiOmniboxHandler> omnibox_handler_;
 
   std::unique_ptr<browser_controls_api::BrowserControlsService>
       browser_controls_service_;
@@ -185,6 +237,16 @@ class WebUIToolbarUI : public TopChromeWebUIController,
   std::unique_ptr<user_education::HelpBubbleHandler> help_bubble_handler_;
   mojo::Receiver<help_bubble::mojom::HelpBubbleHandlerFactory>
       help_bubble_service_{this};
+
+  mojo::Receiver<searchbox::mojom::PageHandlerFactory>
+      searchbox_page_factory_receiver_{this};
+
+  // These two are used if searchbox CreatePageHandler is called before Init();
+  mojo::PendingRemote<searchbox::mojom::Page> delayed_searchbox_page_;
+  mojo::PendingReceiver<searchbox::mojom::PageHandler>
+      delayed_searchbox_receiver_;
+
+  base::WeakPtrFactory<WebUIToolbarUI> weak_ptr_factory_{this};
 
   /////////////////////////////////////////////////////////////////////////////
 

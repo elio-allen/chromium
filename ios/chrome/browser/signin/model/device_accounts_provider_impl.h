@@ -11,6 +11,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
+#include "base/scoped_observation.h"
 #include "components/signin/public/identity_manager/ios/device_accounts_provider.h"
 #include "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 
@@ -47,7 +48,12 @@ class DeviceAccountsProviderImpl
 
  private:
   raw_ptr<ChromeAccountManagerService> account_manager_service_ = nullptr;
-  base::ObserverList<DeviceAccountsProvider::Observer, true> observer_list_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      DeviceAccountsProvider::Observer,
+      true,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+      observer_list_;
   base::ScopedObservation<ChromeAccountManagerService,
                           DeviceAccountsProviderImpl>
       chrome_account_manager_observation_{this};

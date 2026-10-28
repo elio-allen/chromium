@@ -15,6 +15,7 @@
 #include "chrome/browser/dictation/dictation_keyed_service.h"
 #include "chrome/browser/dictation/dictation_multiplexer.h"
 #include "chrome/browser/dictation/features.h"
+#include "chrome/browser/dictation/logging.h"
 #include "chrome/browser/dictation/stream_provider.h"
 #include "chrome/browser/dictation/test_util.h"
 #include "chrome/browser/extensions/extension_apitest.h"
@@ -68,9 +69,8 @@ class ExtensionApiTestStreamProvider : public dictation::StreamProvider {
     flags.web_speech_api_backend = dictation::kWebSpeechApiBackend.Get();
     details.flags = std::move(flags);
 
-    base::ListValue event_args =
-        api::dictation_private::OnStartStream::Create(details);
-
+    auto event_args = base::MakeRefCounted<EventArgs>(
+        api::dictation_private::OnStartStream::Create(details));
     auto event = std::make_unique<Event>(
         events::DICTATION_PRIVATE_ON_START_STREAM,
         api::dictation_private::OnStartStream::kEventName,
@@ -80,13 +80,12 @@ class ExtensionApiTestStreamProvider : public dictation::StreamProvider {
         ->DispatchEventToExtension(extension_id_, std::move(event));
   }
 
-  void Stop() override {
+  void Stop(dictation::DictationStreamEndTrigger trigger) override {
     api::dictation_private::EndStreamDetails details;
     details.stream_id = stream_id_.value();
 
-    base::ListValue event_args =
-        api::dictation_private::OnEndStream::Create(details);
-
+    auto event_args = base::MakeRefCounted<EventArgs>(
+        api::dictation_private::OnEndStream::Create(details));
     auto event =
         std::make_unique<Event>(events::DICTATION_PRIVATE_ON_END_STREAM,
                                 api::dictation_private::OnEndStream::kEventName,
@@ -100,8 +99,8 @@ class ExtensionApiTestStreamProvider : public dictation::StreamProvider {
     transcription_updates_.push_back({data, is_final});
   }
 
-  void OnStreamStateChanged(
-      dictation::StreamProvider::StreamState state) override {
+  void OnStreamStateChanged(dictation::StreamProvider::StreamState state,
+                            dictation::StreamErrorReason reason) override {
     state_changes_.push_back(state);
   }
 
@@ -180,6 +179,9 @@ IN_PROC_BROWSER_TEST_F(DictationPrivateApiTest, Basic) {
   ExtensionApiTestStreamProvider test_stream_provider(
       profile(), extension->id(), test_stream_id);
   multiplexer.RegisterStreamProvider(test_stream_id, &test_stream_provider);
+  VT_LOG(profile()) << "Test browser log message";
+  // Flush the buffered log immediately so the test does not wait for the timer.
+  service->log_buffer().Flush();
 
   auto target = std::make_unique<dictation::Target>(dictation::TargetDetails(
       content::GlobalDOMNodeId{content::WeakDocumentPtr()}));

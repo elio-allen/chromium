@@ -31,13 +31,16 @@ void UpdatePageAttachmentState(
     GeminiPageContextAttachmentState gemini_attachment_state) {}
 
 void UpdatePromptAction(gemini::EntryPoint entry_point,
-                        NSString* prepopulated_prompt) {}
+                        NSString* prepopulated_prompt,
+                        bool should_auto_submit) {}
+
+void UpdatePromptAction(gemini::InputType input_type,
+                        NSString* prepopulated_prompt,
+                        bool should_auto_submit) {}
 
 bool IsProtectedUrl(std::string url) {
   return false;
 }
-
-void UpdatePageContext(GeminiPageContext* gemini_page_context) {}
 
 void UpdateActivePageContext(GeminiPageContext* gemini_page_context,
                              NSArray<GeminiPageContext*>* shared_tabs) {}
@@ -75,6 +78,10 @@ GeminiPageContextAttachmentState GetCurrentPageContextAttachmentState() {
 
 void SwitchToMode(GeminiViewMode mode, bool animated) {}
 
+void SwitchToMode(GeminiViewMode mode,
+                  GeminiViewState target_state,
+                  bool animated) {}
+
 GeminiViewMode GetCurrentMode() {
   return GeminiViewMode::kUnknown;
 }
@@ -93,7 +100,9 @@ int GetLiveCaptionsNumberOfLines() {
 
 void SetShouldShowSuggestionChips(bool should_show) {}
 
-void SetRequireFullPageContext(bool require_full_page_context) {}
+void SetBlockQuerySubmissionWhileLoading(bool block_submission) {}
+
+void SetShowPageLoadingSnackbarOnOpeningInvocation(bool show_snackbar) {}
 
 void ShowAccountSnackbar() {}
 
@@ -101,5 +110,15 @@ UIViewController* GetFloatyViewControllerWithConfiguration(
     GeminiConfiguration* gemini_configuration) {
   return nil;
 }
+
+bool IsFeatureModeDisabledByQuota(GeminiFeatureMode feature_mode) {
+  return false;
+}
+
+NSDate* GetRefillDateForFeatureMode(GeminiFeatureMode feature_mode) {
+  return nil;
+}
+
+void ForceRefreshQuotaInfo() {}
 
 }  // namespace ios::provider

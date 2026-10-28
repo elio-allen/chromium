@@ -47,6 +47,13 @@ public class GlicEnabling {
         return GlicEnablingJni.get().isEnabledForProfile(profile);
     }
 
+    /** Returns true if the given profile has Glic enabled and the user has consented. */
+    public static boolean isEnabledAndConsentForProfile(@Nullable Profile profile) {
+        if (profile == null) return false;
+        if (sIsEnabledForTesting != null) return sIsEnabledForTesting;
+        return GlicEnablingJni.get().isEnabledAndConsentForProfile(profile);
+    }
+
     /** Returns true if the user was previously determined to be ineligible for Glic. */
     public static boolean wasPreviouslyNotAllowed(@Nullable Profile profile) {
         if (profile == null) return false;
@@ -66,6 +73,16 @@ public class GlicEnabling {
         if (profile == null) return false;
         if (sIsEnabledForTesting != null) return sIsEnabledForTesting;
         return GlicEnablingJni.get().shouldShowWebActuationToggle(profile);
+    }
+
+    /**
+     * Returns true if the experimental triggering ("Let Gemini Spark browse on this device") toggle
+     * should be shown for the profile.
+     */
+    public static boolean shouldShowExperimentalTriggeringToggle(@Nullable Profile profile) {
+        if (profile == null) return false;
+        if (sIsEnabledForTesting != null) return sIsEnabledForTesting;
+        return GlicEnablingJni.get().shouldShowExperimentalTriggeringToggle(profile);
     }
 
     /** Returns true if Glic is ready to be used for the given profile. */
@@ -131,6 +148,16 @@ public class GlicEnabling {
         return GlicEnablingJni.get().isPolicyEnforced(profile);
     }
 
+    /**
+     * Returns true if explicit experimental opt-in is required for the given profile.
+     *
+     * <p>Note: Caller must ensure {@link #isEnabledForProfile(Profile)} returns true before calling
+     * this method.
+     */
+    public static boolean experimentalOptInIsNeeded(Profile profile) {
+        return GlicEnablingJni.get().experimentalOptInIsNeeded(profile);
+    }
+
     @NativeMethods
     public interface Natives {
         boolean isEnabledByFlags();
@@ -139,11 +166,15 @@ public class GlicEnabling {
 
         boolean isEnabledForProfile(@JniType("Profile*") Profile profile);
 
+        boolean isEnabledAndConsentForProfile(@JniType("Profile*") Profile profile);
+
         boolean wasPreviouslyNotAllowed(@JniType("Profile*") Profile profile);
 
         boolean shouldShowSettingsPage(@JniType("Profile*") Profile profile);
 
         boolean shouldShowWebActuationToggle(@JniType("Profile*") Profile profile);
+
+        boolean shouldShowExperimentalTriggeringToggle(@JniType("Profile*") Profile profile);
 
         boolean isReadyForProfile(@JniType("Profile*") Profile profile);
 
@@ -152,6 +183,8 @@ public class GlicEnabling {
         boolean isProfileManaged(@JniType("Profile*") Profile profile);
 
         boolean isPolicyEnforced(@JniType("Profile*") Profile profile);
+
+        boolean experimentalOptInIsNeeded(@JniType("Profile*") Profile profile);
 
         void setBypassEnablementChecksForTesting(boolean bypass);
     }

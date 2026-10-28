@@ -22,17 +22,19 @@
 #include "chrome/browser/ash/boca/on_task/on_task_locked_controller.h"
 #include "chrome/browser/ash/boca/on_task/on_task_locked_session_navigation_throttle.h"
 #include "chrome/browser/ash/boca/on_task/on_task_system_web_app_manager_impl.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/platform_util.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -40,7 +42,9 @@
 #include "chromeos/ash/components/boca/on_task/on_task_notifications_manager.h"
 #include "chromeos/ash/components/boca/on_task/util/mock_clock.h"
 #include "chromeos/ash/components/boca/proto/bundle.pb.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
+#include "components/sessions/core/session_id.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/webid/identity_credential_source.h"
 #include "content/public/test/browser_test.h"
@@ -53,6 +57,8 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "services/network/public/cpp/resource_request_body.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/base/base_window.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
@@ -116,7 +122,8 @@ class FakeIdentityCredentialSource
 };
 
 class OnTaskLockedSessionNavigationThrottleInteractiveUITestBase
-    : public InProcessBrowserTest {
+    : public InProcessBrowserTest,
+      public testing::WithParamInterface<bool> {
  protected:
   OnTaskLockedSessionNavigationThrottleInteractiveUITestBase() {
     // Initialize the MockClock.
@@ -124,10 +131,19 @@ class OnTaskLockedSessionNavigationThrottleInteractiveUITestBase
 
     // Enable Boca and consumer experience for testing purposes. This is used
     // to set up the Boca SWA for OnTask.
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kBoca, features::kBocaConsumer,
-                              features::kOnDeviceSpeechRecognition},
-        /*disabled_features=*/{});
+    scoped_feature_list_.InitWithFeatureStates(
+        {{features::kBoca, true},
+         {features::kBocaConsumer, true},
+         {features::kOnDeviceSpeechRecognition, true},
+         {::features::kUseUnifiedLockedStateController, GetParam()}});
+  }
+
+  bool IsLockedForOnTask(BrowserWindowInterface* browser) {
+    if (::features::IsUseUnifiedLockedStateControllerEnabled()) {
+      return chromeos::LockedStateController::From(browser)
+          ->IsLockedForOnTask();
+    }
+    return boca::OnTaskLockedController::From(browser)->is_locked_for_on_task();
   }
 
   void SetUpOnMainThread() override {
@@ -169,12 +185,12 @@ class OnTaskLockedSessionNavigationThrottleInteractiveUITestBase
   }
 
   void SpawnChildTabWithURL(
-      const Browser* browser,
+      const BrowserWindowInterface* browser,
       const GURL& url,
       std::optional<std::string> window_features = std::nullopt,
       bool ignore_uncommitted_navigations = true) {
     content::WebContents* const active_web_contents =
-        browser->tab_strip_model()->GetActiveWebContents();
+        browser->GetTabStripModel()->GetActiveWebContents();
     content::TestNavigationObserver navigation_observer(
         active_web_contents, 1, content::MessageLoopRunner::QuitMode::IMMEDIATE,
         ignore_uncommitted_navigations);
@@ -190,11 +206,10 @@ class OnTaskLockedSessionNavigationThrottleInteractiveUITestBase
     navigation_observer.WaitForNavigationFinished();
   }
 
-  Browser* FindBocaSystemWebAppBrowser() {
+  BrowserWindowInterface* FindBocaSystemWebAppBrowser() {
     ash::BrowserDelegate* delegate = FindSystemWebAppBrowser(
         profile(), SystemWebAppType::BOCA, ash::BrowserType::kApp);
-    return delegate ? delegate->GetBrowser().GetBrowserForMigrationOnly()
-                    : nullptr;
+    return delegate ? &delegate->GetBrowser() : nullptr;
   }
 
   void VerifyUrlBlockedToastShown(bool toast_was_shown) {
@@ -243,17 +258,17 @@ class OnTaskLockedSessionNavigationThrottleInteractiveUITest
   }
 };
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        AllowFormSubmission) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window. This is needed to activate
   // the navigation throttle.
@@ -266,7 +281,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   const GURL form_url(embedded_test_server()->GetURL("/form.html"));
   CreateBackgroundTabAndWait(window_id, form_url,
                              ::boca::LockedNavigationOptions::OPEN_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
@@ -275,17 +290,17 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   EXPECT_NE(tab_strip_model->GetActiveWebContents()->GetVisibleURL(), form_url);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        BlockCWSAccess) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window. This is needed to activate
   // the navigation throttle.
@@ -298,7 +313,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   const GURL tab_url = embedded_test_server()->GetURL(kTabUrl1Host, "/");
   CreateBackgroundTabAndWait(window_id, tab_url,
                              ::boca::LockedNavigationOptions::OPEN_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
 
   // Attempt to navigate to CWS and verify it is blocked.
@@ -315,23 +330,23 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
             tab_url);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        NoNavigationThrottleRegisteredWithoutTracker) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   const SessionID window_id = boca_app_browser->GetSessionID();
   CreateBackgroundTabAndWait(
       window_id, embedded_test_server()->GetURL(kTabUrl1Host, "/"),
       ::boca::LockedNavigationOptions::DOMAIN_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
 
   // Verify nav throttle is not created even for navigations that are outside
@@ -346,17 +361,17 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
             different_domain_url);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        BlockUrlsForBlockNavRestriction) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -368,7 +383,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   CreateBackgroundTabAndWait(window_id,
                              embedded_test_server()->GetURL(kTabUrl1Host, "/"),
                              ::boca::LockedNavigationOptions::BLOCK_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -402,17 +417,17 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   VerifyUrlBlockedToastShown(/*toast_was_shown=*/true);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        AllowNavigationsToBocaHomepage) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -424,7 +439,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   CreateBackgroundTabAndWait(window_id,
                              embedded_test_server()->GetURL(kTabUrl1Host, "/"),
                              ::boca::LockedNavigationOptions::BLOCK_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -437,17 +452,17 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   VerifyUrlBlockedToastShown(/*toast_was_shown=*/false);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        AllowUrlsForOpenNavRestriction) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -459,7 +474,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   CreateBackgroundTabAndWait(window_id,
                              embedded_test_server()->GetURL(kTabUrl1Host, "/"),
                              ::boca::LockedNavigationOptions::OPEN_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -493,17 +508,17 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   VerifyUrlBlockedToastShown(/*toast_was_shown=*/false);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        AllowAndBlockUrlsForSameDomainNavRestriction) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -515,7 +530,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   CreateBackgroundTabAndWait(
       window_id, embedded_test_server()->GetURL(kTabUrl1Host, "/"),
       ::boca::LockedNavigationOptions::DOMAIN_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -554,17 +569,17 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   VerifyUrlBlockedToastShown(/*toast_was_shown=*/true);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        AllowAndBlockUrlsForOneLevelDeepNavRestriction) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -576,7 +591,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   CreateBackgroundTabAndWait(
       window_id, embedded_test_server()->GetURL(kTabUrl1Host, "/"),
       ::boca::LockedNavigationOptions::LIMITED_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -601,17 +616,17 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   VerifyUrlBlockedToastShown(/*toast_was_shown=*/true);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        AllowAndBlockUrlsForOneLevelDeepNavRestrictionOnNewTab) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -623,7 +638,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   const GURL tab_url = embedded_test_server()->GetURL(kTabUrl1Host, "/");
   CreateBackgroundTabAndWait(
       window_id, tab_url, ::boca::LockedNavigationOptions::LIMITED_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -657,17 +672,17 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
             different_domain_url);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        BackgroundTabNavigationEnforcesCorrectNavRestriction) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -684,7 +699,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   const GURL tab_url_2 = embedded_test_server()->GetURL(kTabUrl2Host, "/");
   CreateBackgroundTabAndWait(window_id, tab_url_2,
                              ::boca::LockedNavigationOptions::BLOCK_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 3);
 
   // Activate Tab 1 (so Tab 2 is in the background).
@@ -704,17 +719,65 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   VerifyUrlBlockedToastShown(/*toast_was_shown=*/true);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+                       BackgroundTabNavigationEnforcesUnknownNavRestriction) {
+  // Launch OnTask SWA.
+  base::test::TestFuture<bool> launch_future;
+  system_web_app_manager()->LaunchSystemWebAppAsync(
+      launch_future.GetCallback());
+  ASSERT_TRUE(launch_future.Get());
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
+  ASSERT_THAT(boca_app_browser, NotNull());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
+
+  // Set up window tracker to track the app window.
+  const SessionID window_id = boca_app_browser->GetSessionID();
+  ASSERT_TRUE(window_id.is_valid());
+  system_web_app_manager()->SetWindowTrackerForSystemWebAppWindow(
+      window_id, /*observers=*/{});
+
+  // Spawn foreground tab (Tab 1) with OPEN_NAVIGATION.
+  const GURL tab_url_1 = embedded_test_server()->GetURL(kTabUrl1Host, "/");
+  CreateBackgroundTabAndWait(window_id, tab_url_1,
+                             ::boca::LockedNavigationOptions::OPEN_NAVIGATION);
+
+  // Spawn background tab (Tab 2) with NAVIGATION_TYPE_UNKNOWN.
+  const GURL tab_url_2 = embedded_test_server()->GetURL(kTabUrl2Host, "/");
+  CreateBackgroundTabAndWait(
+      window_id, tab_url_2,
+      ::boca::LockedNavigationOptions::NAVIGATION_TYPE_UNKNOWN);
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
+  ASSERT_EQ(tab_strip_model->count(), 3);
+
+  // Activate Tab 1 (so Tab 2 is in the background).
+  tab_strip_model->ActivateTabAt(1);
+  WaitForUrlBlocklistUpdate();
+
+  // Attempt to navigate Tab 2 (background) to a different URL.
+  content::WebContents* const background_contents =
+      tab_strip_model->GetWebContentsAt(2);
+  const GURL different_domain_url =
+      embedded_test_server()->GetURL(kTabUrl1Host, "/some-page");
+  EXPECT_FALSE(
+      content::NavigateToURL(background_contents, different_domain_url));
+
+  // Verify the navigation was blocked on the background tab.
+  EXPECT_EQ(background_contents->GetLastCommittedURL(), tab_url_2);
+  VerifyUrlBlockedToastShown(/*toast_was_shown=*/true);
+}
+
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        BlockNewChildTabWhenParentOneLevelDeepQuotaIsConsumed) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -727,7 +790,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   CreateBackgroundTabAndWait(
       window_id, parent_url,
       ::boca::LockedNavigationOptions::LIMITED_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -756,7 +819,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   VerifyUrlBlockedToastShown(/*toast_was_shown=*/true);
 }
 
-IN_PROC_BROWSER_TEST_F(
+IN_PROC_BROWSER_TEST_P(
     OnTaskLockedSessionNavigationThrottleInteractiveUITest,
     BlockNewNoopenerChildTabWhenParentOneLevelDeepQuotaIsConsumed) {
   // Launch OnTask SWA.
@@ -764,10 +827,10 @@ IN_PROC_BROWSER_TEST_F(
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -780,7 +843,7 @@ IN_PROC_BROWSER_TEST_F(
   CreateBackgroundTabAndWait(
       window_id, parent_url,
       ::boca::LockedNavigationOptions::LIMITED_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -809,7 +872,7 @@ IN_PROC_BROWSER_TEST_F(
   VerifyUrlBlockedToastShown(/*toast_was_shown=*/true);
 }
 
-IN_PROC_BROWSER_TEST_F(
+IN_PROC_BROWSER_TEST_P(
     OnTaskLockedSessionNavigationThrottleInteractiveUITest,
     AllowAndBlockUrlsForSameDomainAndOneLevelDeepNavRestriction) {
   // Launch OnTask SWA.
@@ -817,10 +880,10 @@ IN_PROC_BROWSER_TEST_F(
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -834,7 +897,7 @@ IN_PROC_BROWSER_TEST_F(
       window_id, url_1,
       ::boca::LockedNavigationOptions::
           SAME_DOMAIN_OPEN_OTHER_DOMAIN_LIMITED_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -878,7 +941,7 @@ IN_PROC_BROWSER_TEST_F(
   VerifyUrlBlockedToastShown(/*toast_was_shown=*/true);
 }
 
-IN_PROC_BROWSER_TEST_F(
+IN_PROC_BROWSER_TEST_P(
     OnTaskLockedSessionNavigationThrottleInteractiveUITest,
     AllowAndBlockUrlsForSameDomainAndOneLevelDeepNavRestrictionOnNewPage) {
   // Launch OnTask SWA.
@@ -886,10 +949,10 @@ IN_PROC_BROWSER_TEST_F(
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -903,7 +966,7 @@ IN_PROC_BROWSER_TEST_F(
       window_id, tab_url,
       ::boca::LockedNavigationOptions::
           SAME_DOMAIN_OPEN_OTHER_DOMAIN_LIMITED_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -961,17 +1024,17 @@ IN_PROC_BROWSER_TEST_F(
             different_domain_url_with_path);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        ClosePopupIfNotOauth) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -989,11 +1052,9 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   ASSERT_TRUE(window_tracker->CanOpenNewPopup());
   const size_t original_browser_count =
       GlobalBrowserCollection::GetInstance()->GetSize();
-  Browser* const popup_browser =
-      CreateBrowserWindow(BrowserWindowCreateParams(
-                              BrowserWindowInterface::TYPE_APP_POPUP, profile(),
-                              /*from_user_gesture=*/true))
-          ->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* const popup_browser = CreateBrowserWindow(
+      BrowserWindowCreateParams(BrowserWindowInterface::TYPE_APP_POPUP,
+                                profile(), /*from_user_gesture=*/true));
   content::RunAllTasksUntilIdle();
   ASSERT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(),
             original_browser_count + 1);
@@ -1003,24 +1064,24 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   NavigateParams navigate_params(
       popup_browser, embedded_test_server()->GetURL(kTabUrl1Host, "/"),
       ui::PAGE_TRANSITION_LINK);
-  navigate_params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  navigate_params.disposition = WindowOpenDisposition::kNewForegroundTab;
   ui_test_utils::NavigateToURL(&navigate_params);
   popup_closed_observer.Wait();
   EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(),
             original_browser_count);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        RejectNonHttpOauthLoginSpoofing) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -1039,10 +1100,10 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   // (e.g. data:). It should NOT be recognized as OAuth start and should not
   // trigger oauth_in_progress.
   content::TestNavigationObserver nav_observer(
-      boca_app_browser->tab_strip_model()->GetActiveWebContents(), 1);
+      boca_app_browser->GetTabStripModel()->GetActiveWebContents(), 1);
 
   ASSERT_TRUE(content::ExecJs(
-      boca_app_browser->tab_strip_model()->GetActiveWebContents(),
+      boca_app_browser->GetTabStripModel()->GetActiveWebContents(),
       "window.location.href = 'data:text/html,hello?client_id=123';"));
 
   nav_observer.Wait();
@@ -1050,17 +1111,75 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   EXPECT_FALSE(window_tracker->oauth_in_progress());
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+                       RejectStatelessOauthMarkers) {
+  base::test::TestFuture<bool> launch_future;
+  system_web_app_manager()->LaunchSystemWebAppAsync(
+      launch_future.GetCallback());
+  ASSERT_TRUE(launch_future.Get());
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
+  ASSERT_THAT(boca_app_browser, NotNull());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
+
+  const SessionID window_id = boca_app_browser->GetSessionID();
+  ASSERT_TRUE(window_id.is_valid());
+  system_web_app_manager()->SetWindowTrackerForSystemWebAppWindow(
+      window_id, /*observers=*/{});
+
+  const GURL assigned_url =
+      embedded_test_server()->GetURL(kTabUrl1Host, "/title1.html");
+  CreateBackgroundTabAndWait(window_id, assigned_url,
+                             ::boca::LockedNavigationOptions::BLOCK_NAVIGATION);
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
+  ASSERT_EQ(tab_strip_model->count(), 2);
+  tab_strip_model->ActivateTabAt(1);
+  WaitForUrlBlocklistUpdate();
+
+  // Ordinary cross-domain URL is blocked.
+  const GURL blocked_control_url =
+      embedded_test_server()->GetURL(kTabUrl2Host, "/title2.html");
+  ASSERT_TRUE(
+      ui_test_utils::NavigateToURL(boca_app_browser, blocked_control_url));
+  EXPECT_EQ(tab_strip_model->GetActiveWebContents()->GetLastCommittedURL(),
+            assigned_url);
+
+  auto* const window_tracker =
+      LockedSessionWindowTrackerFactory::GetInstance()->GetForBrowserContext(
+          profile());
+  ASSERT_FALSE(window_tracker->oauth_in_progress());
+
+  // Supplying completion query keys without an active OAuth flow must be
+  // blocked.
+  const GURL completion_marker_url = embedded_test_server()->GetURL(
+      kTabUrl2Host, "/title2.html?code=x&access_token=x&id_token=x");
+  ASSERT_TRUE(
+      ui_test_utils::NavigateToURL(boca_app_browser, completion_marker_url));
+  EXPECT_EQ(tab_strip_model->GetActiveWebContents()->GetLastCommittedURL(),
+            assigned_url);
+  EXPECT_FALSE(window_tracker->oauth_in_progress());
+
+  // Supplying a bare client_id without required OAuth start parameters
+  // (response_type) must be blocked and must not set oauth_in_progress.
+  const GURL start_marker_url = embedded_test_server()->GetURL(
+      kTabUrl2Host, "/title2.html?client_id=not-an-oauth-flow");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(boca_app_browser, start_marker_url));
+  EXPECT_EQ(tab_strip_model->GetActiveWebContents()->GetLastCommittedURL(),
+            assigned_url);
+  EXPECT_FALSE(window_tracker->oauth_in_progress());
+}
+
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        AllowOauthPopups) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -1075,7 +1194,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   const GURL url_1 = embedded_test_server()->GetURL(kTabUrl1Host, "/");
   CreateBackgroundTabAndWait(
       window_id, url_1, ::boca::LockedNavigationOptions::DOMAIN_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -1108,11 +1227,10 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
           kTabUrlRedirectHost,
           "/authenticate?client_id=123&response_type=code"),
       ui::PAGE_TRANSITION_LINK);
-  navigate_params.disposition = WindowOpenDisposition::NEW_POPUP;
+  navigate_params.disposition = WindowOpenDisposition::kNewPopup;
   navigate_params.window_action = NavigateParams::WindowAction::kShowWindow;
   ui_test_utils::NavigateToURL(&navigate_params);
-  Browser* const popup_browser =
-      navigate_params.browser->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* const popup_browser = navigate_params.browser;
 
   ui_test_utils::BrowserActivationWaiter popup_activation_waiter(popup_browser);
   popup_activation_waiter.WaitForActivation();
@@ -1131,22 +1249,22 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
       popup_browser,
       embedded_test_server()->GetURL(kTabUrlRedirectHost,
                                      "/redirect?code=secret"),
-      WindowOpenDisposition::CURRENT_TAB, ui_test_utils::BROWSER_TEST_NO_WAIT);
+      WindowOpenDisposition::kCurrentTab, ui_test_utils::BROWSER_TEST_NO_WAIT);
   popup_closed_observer.Wait();
   EXPECT_TRUE(window_tracker->CanOpenNewPopup());
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        AllowFedCmOauthPopups) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -1161,7 +1279,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   const GURL url_1 = embedded_test_server()->GetURL(kTabUrl1Host, "/");
   CreateBackgroundTabAndWait(
       window_id, url_1, ::boca::LockedNavigationOptions::DOMAIN_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -1183,11 +1301,10 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
       boca_app_browser,
       embedded_test_server()->GetURL(kTabUrl1Host, "/title2.html"),
       ui::PAGE_TRANSITION_LINK);
-  navigate_params.disposition = WindowOpenDisposition::NEW_POPUP;
+  navigate_params.disposition = WindowOpenDisposition::kNewPopup;
   navigate_params.window_action = NavigateParams::WindowAction::kShowWindow;
   ui_test_utils::NavigateToURL(&navigate_params);
-  Browser* const popup_browser =
-      navigate_params.browser->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* const popup_browser = navigate_params.browser;
   ui_test_utils::BrowserActivationWaiter popup_activation_waiter(popup_browser);
   popup_activation_waiter.WaitForActivation();
   ASSERT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(),
@@ -1206,17 +1323,17 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   window_tracker->SetIdentityCredentialSourceForTesting(nullptr);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        AllowFedCmOAuthInSameWindow) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -1240,7 +1357,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
       boca_app_browser,
       embedded_test_server()->GetURL(kTabUrl1Host, "/title2.html"),
       ui::PAGE_TRANSITION_LINK);
-  navigate_params.disposition = WindowOpenDisposition::CURRENT_TAB;
+  navigate_params.disposition = WindowOpenDisposition::kCurrentTab;
   ui_test_utils::NavigateToURL(&navigate_params);
 
   // While we do not explicitly track this oauth request, we can verify that the
@@ -1258,17 +1375,17 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   window_tracker->SetIdentityCredentialSourceForTesting(nullptr);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        CloseUnauthorizedPopupsDuringOAuth) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -1283,7 +1400,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   const GURL url_1 = embedded_test_server()->GetURL(kTabUrl1Host, "/");
   CreateBackgroundTabAndWait(
       window_id, url_1, ::boca::LockedNavigationOptions::DOMAIN_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -1311,11 +1428,10 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
           kTabUrlRedirectHost,
           "/authenticate?client_id=123&response_type=code"),
       ui::PAGE_TRANSITION_LINK);
-  navigate_params.disposition = WindowOpenDisposition::NEW_POPUP;
+  navigate_params.disposition = WindowOpenDisposition::kNewPopup;
   navigate_params.window_action = NavigateParams::WindowAction::kShowWindow;
   ui_test_utils::NavigateToURL(&navigate_params);
-  Browser* const popup_browser =
-      navigate_params.browser->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* const popup_browser = navigate_params.browser;
 
   ui_test_utils::BrowserActivationWaiter popup_activation_waiter(popup_browser);
   popup_activation_waiter.WaitForActivation();
@@ -1329,12 +1445,12 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   NavigateParams unauthorized_nav_params(
       boca_app_browser, embedded_test_server()->GetURL(kTabUrl2Host, "/"),
       ui::PAGE_TRANSITION_LINK);
-  unauthorized_nav_params.disposition = WindowOpenDisposition::NEW_POPUP;
+  unauthorized_nav_params.disposition = WindowOpenDisposition::kNewPopup;
   unauthorized_nav_params.window_action =
       NavigateParams::WindowAction::kShowWindow;
   ui_test_utils::NavigateToURL(&unauthorized_nav_params);
-  Browser* const unauthorized_popup =
-      unauthorized_nav_params.browser->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* const unauthorized_popup =
+      unauthorized_nav_params.browser;
   ui_test_utils::BrowserDestroyedObserver unauthorized_popup_closed_observer(
       unauthorized_popup);
   unauthorized_popup_closed_observer.Wait();
@@ -1346,17 +1462,17 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   window_tracker->set_oauth_in_progress(false, nullptr);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        CloseUnauthorizedRegularWindowsDuringOAuth) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -1392,11 +1508,10 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
           kTabUrlRedirectHost,
           "/authenticate?client_id=123&response_type=code"),
       ui::PAGE_TRANSITION_LINK);
-  navigate_params.disposition = WindowOpenDisposition::NEW_POPUP;
+  navigate_params.disposition = WindowOpenDisposition::kNewPopup;
   navigate_params.window_action = NavigateParams::WindowAction::kShowWindow;
   ui_test_utils::NavigateToURL(&navigate_params);
-  Browser* const popup_browser =
-      navigate_params.browser->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* const popup_browser = navigate_params.browser;
 
   ui_test_utils::BrowserActivationWaiter popup_activation_waiter(popup_browser);
   popup_activation_waiter.WaitForActivation();
@@ -1407,11 +1522,10 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
 
   // Spawn a regular browser window and verify it gets closed because it's not
   // authorized.
-  Browser* const unauthorized_regular_browser =
+  BrowserWindowInterface* const unauthorized_regular_browser =
       CreateBrowserWindow(
           BrowserWindowCreateParams(BrowserWindowInterface::TYPE_NORMAL,
-                                    profile(), /*from_user_gesture=*/true))
-          ->GetBrowserForMigrationOnly();
+                                    profile(), /*from_user_gesture=*/true));
   ui_test_utils::BrowserDestroyedObserver destroyed_observer(
       unauthorized_regular_browser);
 
@@ -1434,22 +1548,22 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
       popup_browser,
       embedded_test_server()->GetURL(kTabUrlRedirectHost,
                                      "/redirect?code=secret"),
-      WindowOpenDisposition::CURRENT_TAB, ui_test_utils::BROWSER_TEST_NO_WAIT);
+      WindowOpenDisposition::kCurrentTab, ui_test_utils::BROWSER_TEST_NO_WAIT);
   popup_closed_observer.Wait();
   EXPECT_TRUE(window_tracker->CanOpenNewPopup());
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        OAuthStartedInTheMiddleOfAnotherOauthProcess) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -1464,7 +1578,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   const GURL url_1 = embedded_test_server()->GetURL(kTabUrl1Host, "/");
   CreateBackgroundTabAndWait(
       window_id, url_1, ::boca::LockedNavigationOptions::DOMAIN_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -1500,11 +1614,10 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
           kTabUrlRedirectHost,
           "/authenticate?client_id=123&response_type=code"),
       ui::PAGE_TRANSITION_LINK);
-  navigate_params.disposition = WindowOpenDisposition::NEW_POPUP;
+  navigate_params.disposition = WindowOpenDisposition::kNewPopup;
   navigate_params.window_action = NavigateParams::WindowAction::kShowWindow;
   ui_test_utils::NavigateToURL(&navigate_params);
-  Browser* const popup_browser =
-      navigate_params.browser->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* const popup_browser = navigate_params.browser;
 
   ui_test_utils::BrowserActivationWaiter popup_activation_waiter(popup_browser);
   popup_activation_waiter.WaitForActivation();
@@ -1522,22 +1635,22 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
       popup_browser,
       embedded_test_server()->GetURL(kTabUrlRedirectHost,
                                      "/redirect?code=secret"),
-      WindowOpenDisposition::CURRENT_TAB, ui_test_utils::BROWSER_TEST_NO_WAIT);
+      WindowOpenDisposition::kCurrentTab, ui_test_utils::BROWSER_TEST_NO_WAIT);
   popup_closed_observer.Wait();
   EXPECT_TRUE(window_tracker->CanOpenNewPopup());
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        SuccessNavigationProceedsWithRedirects) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -1549,7 +1662,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   const GURL url_1 = embedded_test_server()->GetURL(kTabUrl1Host, "/");
   CreateBackgroundTabAndWait(
       window_id, url_1, ::boca::LockedNavigationOptions::DOMAIN_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -1566,17 +1679,17 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
             url_1_front_subdomain);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        SuccessNavigationProceedsWithClientRedirects) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -1588,7 +1701,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   const GURL url_1 = embedded_test_server()->GetURL(kTabUrl1Host, "/");
   CreateBackgroundTabAndWait(
       window_id, url_1, ::boca::LockedNavigationOptions::DOMAIN_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -1604,17 +1717,17 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
             url_1_front_subdomain);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        CloseNewTabWhenUrlNavigationBlocked) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -1626,7 +1739,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   const GURL url_1 = embedded_test_server()->GetURL(kTabUrl1Host, "/");
   CreateBackgroundTabAndWait(window_id, url_1,
                              ::boca::LockedNavigationOptions::BLOCK_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -1643,17 +1756,17 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   VerifyUrlBlockedToastShown(/*was-toast_shown=*/true);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        BackForwardReloadNavigationSuccess) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -1666,7 +1779,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
       embedded_test_server()->GetURL(kTabUrl1Host, "/title1.html");
   CreateBackgroundTabAndWait(
       window_id, url_1, ::boca::LockedNavigationOptions::DOMAIN_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -1696,12 +1809,12 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   // Reload navigation.
   ASSERT_TRUE(chrome::CanReload(boca_app_browser));
   content::TestNavigationObserver navigation_observer(active_web_contents);
-  chrome::Reload(boca_app_browser, WindowOpenDisposition::CURRENT_TAB);
+  chrome::Reload(boca_app_browser, WindowOpenDisposition::kCurrentTab);
   navigation_observer.WaitForNavigationFinished();
   EXPECT_EQ(active_web_contents->GetLastCommittedURL(), url_1_front_subdomain);
 }
 
-IN_PROC_BROWSER_TEST_F(
+IN_PROC_BROWSER_TEST_P(
     OnTaskLockedSessionNavigationThrottleInteractiveUITest,
     BackForwardReloadNavigationWithOneLevelDeepNavRestriction) {
   // Launch OnTask SWA.
@@ -1709,10 +1822,10 @@ IN_PROC_BROWSER_TEST_F(
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -1725,7 +1838,7 @@ IN_PROC_BROWSER_TEST_F(
       embedded_test_server()->GetURL(kTabUrl1Host, "/title1.html");
   CreateBackgroundTabAndWait(
       window_id, url_1, ::boca::LockedNavigationOptions::LIMITED_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -1755,22 +1868,22 @@ IN_PROC_BROWSER_TEST_F(
   // Reload navigation.
   ASSERT_TRUE(chrome::CanReload(boca_app_browser));
   content::TestNavigationObserver navigation_observer(active_web_contents);
-  chrome::Reload(boca_app_browser, WindowOpenDisposition::CURRENT_TAB);
+  chrome::Reload(boca_app_browser, WindowOpenDisposition::kCurrentTab);
   navigation_observer.WaitForNavigationFinished();
   EXPECT_EQ(active_web_contents->GetLastCommittedURL(), url_1_front_subdomain);
 }
 
-IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+IN_PROC_BROWSER_TEST_P(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
                        BlockPostMethodNavigationRequests) {
   // Launch OnTask SWA.
   base::test::TestFuture<bool> launch_future;
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -1782,7 +1895,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
   const GURL url_1 = embedded_test_server()->GetURL(kTabUrl1Host, "/");
   CreateBackgroundTabAndWait(
       window_id, url_1, ::boca::LockedNavigationOptions::DOMAIN_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -1792,7 +1905,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskLockedSessionNavigationThrottleInteractiveUITest,
       boca_app_browser,
       embedded_test_server()->GetURL(kTabUrl1Host, "/echotitle"),
       ui::PAGE_TRANSITION_LINK);
-  navigate_params.disposition = WindowOpenDisposition::CURRENT_TAB;
+  navigate_params.disposition = WindowOpenDisposition::kCurrentTab;
   navigate_params.post_data =
       network::ResourceRequestBody::CreateFromCopyOfBytes(
           base::as_byte_span("TestContent"));
@@ -1825,7 +1938,7 @@ class OnTaskLockedSessionNavigationThrottleWorkspaceNavigationInteractiveUITest
       net::test_server::EmbeddedTestServer::TYPE_HTTPS};
 };
 
-IN_PROC_BROWSER_TEST_F(
+IN_PROC_BROWSER_TEST_P(
     OnTaskLockedSessionNavigationThrottleWorkspaceNavigationInteractiveUITest,
     AllowAndBlockUrlsForWorkspaceNavRestriction) {
   // Launch OnTask SWA.
@@ -1833,10 +1946,10 @@ IN_PROC_BROWSER_TEST_F(
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -1848,7 +1961,7 @@ IN_PROC_BROWSER_TEST_F(
   CreateBackgroundTabAndWait(
       window_id, embedded_test_server()->GetURL(kTabGoogleHost, "/"),
       ::boca::LockedNavigationOptions::WORKSPACE_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -1880,7 +1993,7 @@ IN_PROC_BROWSER_TEST_F(
   VerifyUrlBlockedToastShown(/*toast_was_shown=*/true);
 }
 
-IN_PROC_BROWSER_TEST_F(
+IN_PROC_BROWSER_TEST_P(
     OnTaskLockedSessionNavigationThrottleWorkspaceNavigationInteractiveUITest,
     AllowAndBlockUrlsForWorkspaceNavRestrictionOnNewTab) {
   // Launch OnTask SWA.
@@ -1888,10 +2001,10 @@ IN_PROC_BROWSER_TEST_F(
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -1903,7 +2016,7 @@ IN_PROC_BROWSER_TEST_F(
   CreateBackgroundTabAndWait(
       window_id, embedded_test_server()->GetURL(kTabGoogleHost, "/"),
       ::boca::LockedNavigationOptions::WORKSPACE_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -1929,7 +2042,7 @@ IN_PROC_BROWSER_TEST_F(
   VerifyUrlBlockedToastShown(/*toast_was_shown=*/true);
 }
 
-IN_PROC_BROWSER_TEST_F(
+IN_PROC_BROWSER_TEST_P(
     OnTaskLockedSessionNavigationThrottleWorkspaceNavigationInteractiveUITest,
     BlockWorkspaceUrlsForOtherNavRestriction) {
   // Launch OnTask SWA.
@@ -1937,10 +2050,10 @@ IN_PROC_BROWSER_TEST_F(
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -1952,7 +2065,7 @@ IN_PROC_BROWSER_TEST_F(
   CreateBackgroundTabAndWait(
       window_id, embedded_test_server()->GetURL(kTabUrl1Host, "/"),
       ::boca::LockedNavigationOptions::DOMAIN_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -1981,7 +2094,7 @@ IN_PROC_BROWSER_TEST_F(
   VerifyUrlBlockedToastShown(/*toast_was_shown=*/true);
 }
 
-IN_PROC_BROWSER_TEST_F(
+IN_PROC_BROWSER_TEST_P(
     OnTaskLockedSessionNavigationThrottleWorkspaceNavigationInteractiveUITest,
     BlockRedirectsCreatedAsSeparateNavigationRequests) {
   // Launch OnTask SWA.
@@ -1989,10 +2102,10 @@ IN_PROC_BROWSER_TEST_F(
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -2004,7 +2117,7 @@ IN_PROC_BROWSER_TEST_F(
   CreateBackgroundTabAndWait(
       window_id, embedded_test_server()->GetURL(kTabUrl1Host, "/"),
       ::boca::LockedNavigationOptions::LIMITED_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -2024,7 +2137,7 @@ IN_PROC_BROWSER_TEST_F(
   VerifyUrlBlockedToastShown(/*toast_was_shown=*/true);
 }
 
-IN_PROC_BROWSER_TEST_F(
+IN_PROC_BROWSER_TEST_P(
     OnTaskLockedSessionNavigationThrottleWorkspaceNavigationInteractiveUITest,
     AllowOneLevelDeepNavigationWithGoogleCaptcha) {
   // Launch OnTask SWA.
@@ -2032,10 +2145,10 @@ IN_PROC_BROWSER_TEST_F(
   system_web_app_manager()->LaunchSystemWebAppAsync(
       launch_future.GetCallback());
   ASSERT_TRUE(launch_future.Get());
-  Browser* const boca_app_browser = FindBocaSystemWebAppBrowser();
+  BrowserWindowInterface* const boca_app_browser =
+      FindBocaSystemWebAppBrowser();
   ASSERT_THAT(boca_app_browser, NotNull());
-  ASSERT_TRUE(boca::OnTaskLockedController::From(boca_app_browser)
-                  ->is_locked_for_on_task());
+  ASSERT_TRUE(IsLockedForOnTask(boca_app_browser));
 
   // Set up window tracker to track the app window.
   const SessionID window_id = boca_app_browser->GetSessionID();
@@ -2047,7 +2160,7 @@ IN_PROC_BROWSER_TEST_F(
   CreateBackgroundTabAndWait(
       window_id, embedded_test_server()->GetURL(kTabUrl1Host, "/"),
       ::boca::LockedNavigationOptions::LIMITED_NAVIGATION);
-  auto* const tab_strip_model = boca_app_browser->tab_strip_model();
+  auto* const tab_strip_model = boca_app_browser->GetTabStripModel();
   ASSERT_EQ(tab_strip_model->count(), 2);
   tab_strip_model->ActivateTabAt(1);
   WaitForUrlBlocklistUpdate();
@@ -2068,6 +2181,15 @@ IN_PROC_BROWSER_TEST_F(
             google_captcha_url);
   VerifyUrlBlockedToastShown(/*toast_was_shown=*/false);
 }
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         OnTaskLockedSessionNavigationThrottleInteractiveUITest,
+                         testing::Bool());
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    OnTaskLockedSessionNavigationThrottleWorkspaceNavigationInteractiveUITest,
+    testing::Bool());
 
 }  // namespace
 }  // namespace ash

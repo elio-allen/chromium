@@ -9,13 +9,11 @@
 #import <vector>
 
 #import "base/functional/callback_helpers.h"
-#import "base/ios/block_types.h"
 #import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
 #import "base/scoped_observation.h"
 #import "components/keyed_service/core/keyed_service.h"
 #import "components/pref_registry/pref_registry_syncable.h"
-#import "components/signin/ios/browser/account_consistency_service.h"
 #import "components/signin/ios/browser/signin_enabled_datasource.h"
 #import "components/signin/public/base/signin_metrics.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
@@ -26,7 +24,6 @@ namespace syncer {
 class SyncService;
 }
 
-class AuthenticationServiceDelegate;
 class AuthenticationServiceObserver;
 class FakeAuthenticationService;
 class PrefService;
@@ -76,7 +73,7 @@ class AuthenticationService : public KeyedService,
   bool initialized() const { return initialized_; }
 
   // Initializes the AuthenticationService.
-  void Initialize(std::unique_ptr<AuthenticationServiceDelegate> delegate);
+  void Initialize();
 
   // KeyedService implementation.
   void Shutdown() override;
@@ -112,10 +109,6 @@ class AuthenticationService : public KeyedService,
   // Virtual for testing.
   virtual bool HasPrimaryIdentityManaged() const;
 
-  // Returns true if data from the signed-in period should be cleared on
-  // sign-out.
-  virtual bool ShouldClearDataForSignedInPeriodOnSignOut() const;
-
   // Retrieves the identity of the currently authenticated user or `nil` if
   // the user is not authenticated.
   // Virtual for testing.
@@ -130,17 +123,17 @@ class AuthenticationService : public KeyedService,
   // Signs the authenticated user out of Chrome. This method only works for
   // the personal profile. This method should only be used by the sign-in team.
   // Sync consent is automatically removed from all signed-out accounts.
-  // `completion` is then executed asynchronously.
   // Virtual for testing.
-  virtual void SignOut(signin_metrics::ProfileSignout signout_source,
-                       ProceduralBlock completion);
+  virtual void SignOut(signin_metrics::ProfileSignout signout_source);
 
   // Returns whether there is a cached associated MDM error for `identity`.
   bool HasCachedMDMErrorForIdentity(id<SystemIdentity> identity);
 
   // Shows the MDM Error dialog for `identity` if it has an associated MDM
   // error. Returns true if `identity` had an associated error, false otherwise.
-  bool ShowMDMErrorDialogForIdentity(id<SystemIdentity> identity);
+  bool ShowMDMErrorDialogForIdentity(
+      id<SystemIdentity> identity,
+      base::OnceCallback<void(bool)> callback = base::NullCallback());
 
   // Returns a weak pointer of this.
   base::WeakPtr<AuthenticationService> GetWeakPtr();
@@ -209,9 +202,7 @@ class AuthenticationService : public KeyedService,
   id<RefreshAccessTokenError> GetCachedMDMError(id<SystemIdentity> identity);
 
   // Handles an MDM error `error` associated with `identity`.
-  // Returns whether the notification associated with `user_info` was fully
-  // handled.
-  bool HandleMDMError(id<SystemIdentity> identity,
+  void HandleMDMError(id<SystemIdentity> identity,
                       id<RefreshAccessTokenError> error);
 
   // Invoked when the MDM error associated with `identity` has been handled.
@@ -220,16 +211,12 @@ class AuthenticationService : public KeyedService,
   // Verifies that the authenticated user is still associated with a valid
   // SystemIdentity. This method must only be called when the user is
   // authenticated with the shared authentication library. If there is no valid
-  // SystemIdentity associated with the currently authenticated user, or the
-  // identity is `invalid_identity`, this method will sign the user out.
-  //
-  // `invalid_identity` is an additional identity to consider invalid. It can be
-  // nil if there is no such additional identity to ignore.
+  // SystemIdentity associated with the currently authenticated user, this
+  // method will sign the user out.
   //
   // `device_restore` should be true only when called from `Initialize()` and
   // Chrome is started after a device restore.
-  void HandleForgottenIdentity(id<SystemIdentity> invalid_identity,
-                               bool device_restore);
+  void HandleForgottenIdentity(bool device_restore);
   void HandleForgottenIdentityCallback(const CoreAccountInfo account_info);
 
   // Checks if the authenticated identity was removed by calling
@@ -240,6 +227,7 @@ class AuthenticationService : public KeyedService,
   // signin::IdentityManager::Observer implementation.
   void OnPrimaryAccountChanged(
       const signin::PrimaryAccountChangeEvent& event_details) override;
+  void OnExtendedAccountInfoUpdated(const AccountInfo& info) override;
 
   // ChromeAccountManagerService::Observer implementation.
   void OnIdentitiesInProfileChanged() override;
@@ -270,13 +258,12 @@ class AuthenticationService : public KeyedService,
   // does not contains any managed account).
   bool IsPersonalProfile();
 
+  // Grants device signals consent if the profile or primary account is
+  // managed, clears it otherwise.
+  void SyncDeviceSignalsConsentWithManagementState();
+
   // Returns the active identities for MDM.
   NSArray<id<SystemIdentity>>* ActiveIdentities();
-
-  // The delegate for this AuthenticationService. It is invalid to call any
-  // method on this object except Initialize() or Shutdown() if this pointer
-  // is null.
-  std::unique_ptr<AuthenticationServiceDelegate> delegate_;
 
   // The profile associated to this service.
   raw_ptr<ProfileIOS> profile_;
@@ -285,7 +272,12 @@ class AuthenticationService : public KeyedService,
   raw_ptr<ChromeAccountManagerService> account_manager_service_ = nullptr;
   raw_ptr<signin::IdentityManager> identity_manager_ = nullptr;
   raw_ptr<syncer::SyncService> sync_service_ = nullptr;
-  base::ObserverList<AuthenticationServiceObserver, true> observer_list_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      AuthenticationServiceObserver,
+      true,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+      observer_list_;
   // Whether Initialize() has been called.
   bool initialized_ = false;
 

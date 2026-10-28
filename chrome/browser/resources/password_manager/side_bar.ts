@@ -3,10 +3,10 @@
 // found in the LICENSE file.
 
 import 'chrome://resources/cr_elements/cr_menu_selector/cr_menu_selector.js';
-import 'chrome://resources/cr_elements/cr_nav_menu_item_style.css.js';
 import 'chrome://resources/cr_elements/cr_ripple/cr_ripple.js';
 import 'chrome://resources/cr_elements/icons.html.js';
 import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
+import './cr_nav_menu_item_style.css.js';
 import './icons.html.js';
 
 import {HelpBubbleMixin} from 'chrome://resources/cr_components/help_bubble/help_bubble_mixin.js';
@@ -26,18 +26,24 @@ import {getTemplate} from './side_bar.html.js';
  *
  * These values are persisted to logs. Entries should not be renumbered and
  * numeric values should never be reused.
- *
- * Needs to stay in sync with PasswordCheckReferrer in enums.xml and
- * password_check_referrer.h.
  */
+// LINT.IfChange(PasswordCheckReferrer)
 enum PasswordCheckReferrer {
-  SAFETY_CHECK = 0,            // Web UI, recorded in JavaScript.
-  PASSWORD_SETTINGS = 1,       // Web UI, recorded in JavaScript.
-  PHISH_GUARD_DIALOG = 2,      // Native UI, recorded in C++.
-  PASSWORD_BREACH_DIALOG = 3,  // Native UI, recorded in C++.
+  SAFETY_CHECK = 0,               // Web UI, recorded in JavaScript.
+  PASSWORD_SETTINGS = 1,          // Web UI, recorded in JavaScript.
+  PHISH_GUARD_DIALOG = 2,         // Native UI, recorded in C++.
+  PASSWORD_BREACH_DIALOG = 3,     // Native UI, recorded in C++.
+  MORE_TO_FIX_BUBBLE = 4,         // Native UI, recorded in C++.
+  // UNSAFE_STATE_BUBBLE = 5,     // Deprecated.
+  SAFETY_CHECK_MAGIC_STACK = 6,   // Native UI, recorded in C++.
+  SAFETY_CHECK_NOTIFICATION = 7,  // Native UI, recorded in C++.
   // Must be last.
-  COUNT = 4,
+  COUNT = 8,
 }
+// LINT.ThenChange(
+//   //components/password_manager/core/browser/ui/password_check_referrer.h:PasswordCheckReferrer,
+//   //tools/metrics/histograms/metadata/password/enums.xml:PasswordCheckReferrer
+// )
 
 export interface PasswordManagerSideBarElement {
   $: {

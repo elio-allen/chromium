@@ -70,7 +70,8 @@ class ProcessRankPolicyAndroid
   void OnIsVisibleChanged(const PageNode* page_node) override;
   void OnIsAudibleChanged(const PageNode* page_node) override;
   void OnHasPictureInPictureChanged(const PageNode* page_node) override;
-  void OnMainFrameUrlChanged(const PageNode* page_node) override;
+  void OnMainFrameUrlChanged(const PageNode* page_node,
+                             const GURL& previous_url) override;
   // Change on GetContentsMimeType() is notified by
   // OnMainFrameDocumentChanged().
   void OnMainFrameDocumentChanged(const PageNode* page_node) override;
@@ -90,6 +91,7 @@ class ProcessRankPolicyAndroid
 
   // PageLiveStateObserver implementation:
   void OnIsActiveTabChanged(const PageNode* page_node) override;
+  void OnIsDiscardedChanged(const PageNode* page_node) override;
   void OnIsAutoDiscardableChanged(const PageNode* page_node) override;
   void OnIsCapturingVideoChanged(const PageNode* page_node) override;
   void OnIsCapturingAudioChanged(const PageNode* page_node) override;

@@ -150,32 +150,32 @@ class ExtensionActionPopup implements Destroyable {
                         .setSelectionDropdownMenuDelegate(selectionDropdownMenuDelegate)
                         .build());
 
-        mPopupWindow =
-                new AnchoredPopupWindow(
-                        activity,
-                        activity.getWindow().getDecorView(),
-                        new ColorDrawable(Color.WHITE),
-                        mThinWebView.getView(),
-                        new ViewRectProvider(anchorView));
-
-        mPopupWindow.setHorizontalOverlapAnchor(true);
-
-        // The popup should close on focus loss only if it's not being inspected. Otherwise,
-        // opening the devtools window would automatically close the popup.
-        // Note: calling setDismissOnTouchInteraction() implicitly also calls setOutsideTouchable().
-        mPopupWindow.setDismissOnTouchInteraction(!inspectWithDevTools);
-        mPopupWindow.setDismissOnScreenSizeChange(!inspectWithDevTools);
-        mPopupWindow.setAllowNonTouchableSize(true);
-
         Resources resources = mActivity.getResources();
-        mPopupWindow.setElevation(
-                resources.getDimensionPixelSize(R.dimen.extension_action_popup_elevation));
-
-        // Set the content size to the minimum initially.
-        mPopupWindow.setDesiredContentSize(
-                resources.getDimensionPixelSize(R.dimen.extension_action_popup_min_width),
-                resources.getDimensionPixelSize(R.dimen.extension_action_popup_min_height));
-        mPopupWindow.setFocusable(!inspectWithDevTools);
+        mPopupWindow =
+                new AnchoredPopupWindow.Builder(
+                                activity,
+                                activity.getWindow().getDecorView(),
+                                new ColorDrawable(Color.WHITE),
+                                () -> mThinWebView.getView(),
+                                new ViewRectProvider(anchorView))
+                        .setHorizontalOverlapAnchor(true)
+                        // The popup should close on focus loss only if it's not being inspected.
+                        // Otherwise, opening the devtools window would automatically close the
+                        // popup.
+                        .setOutsideTouchable(!inspectWithDevTools)
+                        .setDismissOnScreenSizeChange(!inspectWithDevTools)
+                        .setAllowNonTouchableSize(true)
+                        .setElevation(
+                                resources.getDimensionPixelSize(
+                                        R.dimen.extension_action_popup_elevation))
+                        // Set the content size to the minimum initially.
+                        .setDesiredContentSize(
+                                resources.getDimensionPixelSize(
+                                        R.dimen.extension_action_popup_min_width),
+                                resources.getDimensionPixelSize(
+                                        R.dimen.extension_action_popup_min_height))
+                        .setFocusable(!inspectWithDevTools)
+                        .build();
 
         mTabModelSelector = tabModelSelector;
         mCurrentTabObserver =
@@ -230,30 +230,26 @@ class ExtensionActionPopup implements Destroyable {
                         .setCanPlayMoveAnimation(false);
             }
 
-            mPopupWindow.setDesiredContentSize(
-                    ViewUtils.dpToPx(mActivity, width), ViewUtils.dpToPx(mActivity, height));
+            int targetWidthPx = ViewUtils.dpToPx(mActivity, width);
+            int targetHeightPx = ViewUtils.dpToPx(mActivity, height);
+
+            View decorView = mActivity.getWindow().getDecorView();
+            int maxAvailableWidthPx = decorView.getWidth();
+            int maxAvailableHeightPx = decorView.getHeight();
+
+            if (maxAvailableWidthPx > 0) {
+                targetWidthPx = Math.min(targetWidthPx, maxAvailableWidthPx);
+            }
+            if (maxAvailableHeightPx > 0) {
+                targetHeightPx = Math.min(targetHeightPx, maxAvailableHeightPx);
+            }
+
+            mPopupWindow.setDesiredContentSize(targetWidthPx, targetHeightPx);
         }
 
         @Override
-        public boolean handleKeyboardEvent(WebContents webContents, KeyEvent event) {
-            if (mActivity == null) return false;
-
-            if (mActivity instanceof KeyboardShortcutsDelegate) {
-                KeyboardShortcutsDelegate delegate = (KeyboardShortcutsDelegate) mActivity;
-                if (delegate.handleKeyboardEvent(event)) {
-                    return true;
-                }
-            }
-
-            // If the delegate didn't consume the event (e.g., if the Universal Keyboard
-            // Handling feature flag is disabled), we need to prevent the dispatchKeyEvent
-            // infinite loop. We prevent space and backspace events from being dispatched
-            // to the Activity.
-            if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                return mActivity.onKeyDown(event.getKeyCode(), event);
-            }
-
-            return false;
+        public boolean handleKeyboardEvent(@Nullable KeyEvent event) {
+            return ExtensionActionPopup.handleKeyboardEvent(mActivity, event);
         }
 
         @Override
@@ -266,5 +262,26 @@ class ExtensionActionPopup implements Destroyable {
         public void onClose() {
             mPopupWindow.dismiss();
         }
+    }
+
+    static boolean handleKeyboardEvent(@Nullable Activity activity, @Nullable KeyEvent event) {
+        if (activity == null || event == null) return false;
+
+        if (activity instanceof KeyboardShortcutsDelegate) {
+            KeyboardShortcutsDelegate delegate = (KeyboardShortcutsDelegate) activity;
+            if (delegate.handleKeyboardEvent(event)) {
+                return true;
+            }
+        }
+
+        // If the delegate didn't consume the event (e.g., if the Universal Keyboard
+        // Handling feature flag is disabled), we need to prevent the dispatchKeyEvent
+        // infinite loop. We prevent space and backspace events from being dispatched
+        // to the Activity.
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            return activity.onKeyDown(event.getKeyCode(), event);
+        }
+
+        return false;
     }
 }

@@ -132,8 +132,6 @@ V8RequestDestination::Enum DestinationToV8Enum(
       return V8RequestDestination::Enum::kServiceworker;
     case network::mojom::RequestDestination::kWebBundle:
       return V8RequestDestination::Enum::kWebbundle;
-    case network::mojom::RequestDestination::kSharedStorageWorklet:
-      return V8RequestDestination::Enum::kSharedstorageworklet;
     // Requests with these destinations must be fetched from the browser
     // process.
     case network::mojom::RequestDestination::kWebIdentity:
@@ -174,7 +172,6 @@ FetchRequestData* CreateCopyOfFetchRequestDataForFetch(
   request->SetFetchPriorityHint(original->FetchPriorityHint());
   request->SetPriority(original->Priority());
   request->SetKeepalive(original->Keepalive());
-  request->SetSharedStorageWritable(original->SharedStorageWritable());
   request->SetIsHistoryNavigation(original->IsHistoryNavigation());
   request->SetIsReloadNavigation(original->IsReloadNavigation());
   if (original->URLLoaderFactory()) {
@@ -212,9 +209,8 @@ static bool AreAnyMembersPresent(const RequestInit* init) {
          init->hasTargetAddressSpace() || init->hasCredentials() ||
          init->hasCache() || init->hasRedirect() || init->hasIntegrity() ||
          init->hasKeepalive() || init->hasAdAuctionHeaders() ||
-         init->hasSharedStorageWritable() || init->hasPriority() ||
-         init->hasSignal() || init->hasDuplex() || init->hasPrivateToken() ||
-         init->hasRetryOptions();
+         init->hasPriority() || init->hasSignal() || init->hasDuplex() ||
+         init->hasPrivateToken() || init->hasRetryOptions();
 }
 
 static BodyStreamBuffer* ExtractBody(ScriptState* script_state,
@@ -680,7 +676,7 @@ Request* Request::CreateRequestWithRequestOrString(
     options.max_attempts = retry_options->maxAttempts();
     if (retry_options->hasInitialDelay()) {
       options.initial_delay =
-          base::Milliseconds(retry_options->initialDelay().value());
+          base::Milliseconds(retry_options->initialDelay());
     }
     if (retry_options->hasBackoffFactor()) {
       options.backoff_factor = retry_options->backoffFactor();
@@ -705,28 +701,6 @@ Request* Request::CreateRequestWithRequestOrString(
     }
   }
 
-  if (init->hasSharedStorageWritable()) {
-    if (!execution_context->IsSecureContext()) {
-      exception_state.ThrowTypeError(
-          "sharedStorageWritable: sharedStorage operations are only available"
-          " in secure contexts.");
-      return nullptr;
-    }
-    if (SecurityOrigin::Create(request->Url())->IsOpaque()) {
-      exception_state.ThrowTypeError(
-          "sharedStorageWritable: sharedStorage operations are not available"
-          " for opaque origins.");
-      return nullptr;
-    }
-    request->SetSharedStorageWritable(init->sharedStorageWritable());
-    if (init->sharedStorageWritable()) {
-      UseCounter::Count(
-          execution_context,
-          mojom::blink::WebFeature::kSharedStorageAPI_Fetch_Attribute);
-      Deprecation::CountDeprecation(
-          execution_context, mojom::blink::WebFeature::kSharedStorageAPIAll);
-    }
-  }
 
   // "If |init|'s method member is present, let |method| be it and run these
   // substeps:"
@@ -924,28 +898,28 @@ Request* Request::CreateRequestWithRequestOrString(
     return nullptr;
   }
 
-  // "Set |this|'s request's body to |body|.
+  // "Let |finalBody| be |inputOrInitBody|."
+  // "If |initBody| is null and |inputBody| is non-null, then:"
+  //   "If |inputBody| is unusable, then throw a TypeError." (checked above)
+  //   "Set |finalBody| to the result of creating a proxy for |inputBody|."
+  // Creating a proxy leaves |inputBody|'s stream in place -- same object,
+  // now locked and disturbed -- and hands the new request a new stream. Note
+  // this runs only when |init| did not supply a body; otherwise |input|'s
+  // body is left untouched. See https://github.com/whatwg/fetch/pull/959.
+  if (body && body == input_body) {
+    body = input_body->CreateProxy(exception_state);
+    if (exception_state.HadException()) {
+      return nullptr;
+    }
+  }
+
+  // "Set |this|'s request's body to |finalBody|."
   if (body)
     r->request_->SetBuffer(body, body_byte_length);
 
   // "Set |r|'s MIME type to the result of extracting a MIME type from |r|'s
   // request's header list."
   r->request_->SetMimeType(r->request_->HeaderList()->ExtractMIMEType());
-
-  // "If |input| is a Request object and |input|'s request's body is
-  // non-null, run these substeps:"
-  if (input_request && input_request->BodyBuffer()) {
-    // "Let |dummyStream| be an empty ReadableStream object."
-    auto* dummy_stream =
-        BodyStreamBuffer::Create(script_state, BytesConsumer::CreateClosed(),
-                                 nullptr, /*cached_metadata_handler=*/nullptr);
-    // "Set |input|'s request's body to a new body whose stream is
-    // |dummyStream|."
-    input_request->request_->SetBuffer(dummy_stream);
-    // "Let |reader| be the result of getting reader from |dummyStream|."
-    // "Read all bytes from |dummyStream| with |reader|."
-    input_request->BodyBuffer()->CloseAndLockAndDisturb(exception_state);
-  }
 
   // "Return |r|."
   return r;
@@ -1316,7 +1290,7 @@ mojom::blink::FetchAPIRequestPtr Request::CreateFetchAPIRequest() const {
 }
 
 String Request::MimeType() const {
-  return request_->MimeType();
+  return request_->HeaderList()->ExtractMIMEType();
 }
 
 String Request::ContentType() const {

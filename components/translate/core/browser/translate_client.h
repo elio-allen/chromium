@@ -70,6 +70,15 @@ class TranslateClient {
 
   // Returns true if the URL can be translated.
   virtual bool IsTranslatableURL(const GURL& url) = 0;
+
+  // Triggers PDF translation.
+  virtual void TriggerPdfTranslation() {}
+
+  // Reverts PDF translation.
+  virtual void RevertPdfTranslation() {}
+
+  // Returns true if Reading Mode is open.
+  virtual bool IsReadingModeOpen() const = 0;
 };
 
 }  // namespace translate

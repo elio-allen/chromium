@@ -5,13 +5,10 @@
 #ifndef COMPONENTS_BROWSER_ACTUATOR_INTERNAL_BROWSER_ACTUATOR_SERVICE_IMPL_H_
 #define COMPONENTS_BROWSER_ACTUATOR_INTERNAL_BROWSER_ACTUATOR_SERVICE_IMPL_H_
 
-#include <memory>
-
+#include "base/sequence_checker.h"
 #include "components/browser_actuator/public/browser_actuator_service.h"
 
 namespace browser_actuator {
-
-class TransportChannelImpl;
 
 class BrowserActuatorServiceImpl : public BrowserActuatorService {
  public:
@@ -22,12 +19,11 @@ class BrowserActuatorServiceImpl : public BrowserActuatorService {
   BrowserActuatorServiceImpl& operator=(const BrowserActuatorServiceImpl&) =
       delete;
 
-  // BrowserActuatorService implementation.
+  // BrowserActuatorService:
   bool IsInitialized() const override;
-  TransportChannel* GetChannel() override;
 
  private:
-  std::unique_ptr<TransportChannelImpl> channel_;
+  SEQUENCE_CHECKER(sequence_checker_);
 };
 
 }  // namespace browser_actuator

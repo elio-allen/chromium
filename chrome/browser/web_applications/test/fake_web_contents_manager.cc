@@ -24,6 +24,7 @@
 #include "chrome/browser/web_applications/web_contents/web_app_icon_downloader.h"
 #include "components/webapps/browser/web_contents/web_app_url_loader.h"
 #include "components/webapps/common/web_page_metadata.mojom.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
 #include "third_party/blink/public/mojom/manifest/manifest_manager.mojom.h"
@@ -37,8 +38,8 @@ bool EqualsWithComparison(
     const GURL& a,
     const GURL& b,
     webapps::WebAppUrlLoader::UrlComparison url_comparison) {
-  DCHECK(a.is_valid());
-  DCHECK(b.is_valid());
+  CHECK(a.is_valid(), base::NotFatalUntil::M162);
+  CHECK(b.is_valid(), base::NotFatalUntil::M162);
   if (a == b) {
     return true;
   }

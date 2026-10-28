@@ -7,8 +7,10 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 
+#include "base/auto_reset.h"
 #include "base/callback_list.h"
 #include "base/files/file_path.h"
 #include "base/files/scoped_temp_dir.h"
@@ -16,17 +18,12 @@
 #include "base/run_loop.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "components/feature_engagement/test/scoped_iph_feature_list.h"
 #include "content/public/test/browser_test_base.h"
+#include "extensions/buildflags/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/page_transition_types.h"
-
-#if defined(TOOLKIT_VIEWS)
-// TODO(crbug.com/421758609): Remove this and forward declare
-// BrowserWindowInterface only once all clients are converted to passing
-// BrowserWindowInterface rather than Browser.
-#include "chrome/browser/ui/browser.h"
-#endif  // defined(TOOLKIT_VIEWS)
 
 #if BUILDFLAG(IS_MAC)
 #include <optional>
@@ -34,6 +31,10 @@
 #include "base/apple/scoped_nsautorelease_pool.h"
 #include "base/memory/stack_allocated.h"
 #include "ui/base/test/scoped_fake_full_keyboard_access.h"
+
+namespace ui::test {
+class ScopedFakeNSWindowFocus;
+}
 #endif
 
 namespace base {
@@ -73,8 +74,6 @@ class ScopedLaunchBrowserForTesting;
 }  // namespace ash::full_restore
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-class Browser;
-class BrowserWindowInterface;
 class PrefService;
 class Profile;
 class TabListInterface;
@@ -189,11 +188,10 @@ class InProcessBrowserTest : public content::BrowserTestBase {
   // Returns the browser created by BrowserMain(). If no browser is created in
   // BrowserMain(), this will return nullptr unless another browser instance is
   // created at a later time and `SetBrowser()` is called.
-  Browser* browser() const { return browser_; }
+  BrowserWindowInterface* browser() const { return browser_; }
 
 #if !BUILDFLAG(IS_ANDROID)
-  // Similar to browser(), but it returns BrowserWindowInterface, instead.
-  // On Android platform, the compatible API is defined in AndroidBrowserTest.
+  // Deprecated synonym for browser(). Prefer browser().
   BrowserWindowInterface* GetBrowserWindowInterface() const {
     return browser_.get();
   }
@@ -297,31 +295,33 @@ class InProcessBrowserTest : public content::BrowserTestBase {
   // |profile|, blocking until the navigation finishes. This will create a new
   // browser if a browser with the incognito profile does not exist. Returns the
   // incognito window Browser.
-  Browser* OpenURLOffTheRecord(Profile* profile, const GURL& url);
+  BrowserWindowInterface* OpenURLOffTheRecord(Profile* profile,
+                                              const GURL& url);
 
   // Creates a browser with a single tab (about:blank), waits for the tab to
   // finish loading and shows the browser.
-  Browser* CreateBrowser(Profile* profile);
+  BrowserWindowInterface* CreateBrowser(Profile* profile);
 
   // Similar to |CreateBrowser|, but creates an incognito browser. If |profile|
   // is omitted, the currently active profile will be used.
-  Browser* CreateIncognitoBrowser(Profile* profile = nullptr);
+  BrowserWindowInterface* CreateIncognitoBrowser(Profile* profile = nullptr);
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
   // Similar to |CreateBrowser|, but creates a Guest browser.
   // To create a ChromeOS Guest user session, you need to add proper switches to
   // commandline while setting up the test. For an example see
   // AppListClientGuestModeBrowserTest::SetUpCommandLine.
-  Browser* CreateGuestBrowser();
+  BrowserWindowInterface* CreateGuestBrowser();
 #endif
 
   // Creates a browser for a popup window with a single tab (about:blank), waits
   // for the tab to finish loading, and shows the browser.
-  Browser* CreateBrowserForPopup(Profile* profile);
+  BrowserWindowInterface* CreateBrowserForPopup(Profile* profile);
 
   // Creates a browser for an application and waits for it to load and shows
   // the browser.
-  Browser* CreateBrowserForApp(const std::string& app_name, Profile* profile);
+  BrowserWindowInterface* CreateBrowserForApp(const std::string& app_name,
+                                              Profile* profile);
 
   // Called from the various CreateBrowser methods to add a blank tab, wait for
   // the navigation to complete, and show the browser's window.
@@ -329,7 +329,8 @@ class InProcessBrowserTest : public content::BrowserTestBase {
   // browser activation happens, which should be true in most of the case unless
   // the caller knows that it won't happen (e.g. when the browser is created
   // with minimized window).
-  void AddBlankTabAndShow(Browser* browser, bool wait_for_activation = true);
+  void AddBlankTabAndShow(BrowserWindowInterface* browser,
+                          bool wait_for_activation = true);
 
 #if !BUILDFLAG(IS_MAC)
   // Return a CommandLine object that is used to relaunch the browser_test
@@ -353,6 +354,10 @@ class InProcessBrowserTest : public content::BrowserTestBase {
 
   void set_open_about_blank_on_browser_launch(bool value) {
     open_about_blank_on_browser_launch_ = value;
+  }
+
+  void set_force_in_process_storage_service(bool value) {
+    force_in_process_storage_service_ = value;
   }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -394,7 +399,8 @@ class InProcessBrowserTest : public content::BrowserTestBase {
   // Usually references the browser created in BrowserMain().
   // If no browser is created in BrowserMain(), then `browser_` will remain
   // nullptr unless `SetBrowser()` is called at a later time.
-  raw_ptr<Browser, AcrossTasksDanglingUntriaged> browser_ = nullptr;
+  raw_ptr<BrowserWindowInterface, AcrossTasksDanglingUntriaged> browser_ =
+      nullptr;
 
   // Used to run the process until the BrowserProcess signals the test to quit.
   std::unique_ptr<base::RunLoop> run_loop_;
@@ -408,6 +414,10 @@ class InProcessBrowserTest : public content::BrowserTestBase {
 
   // True if the about:blank tab should be opened when the browser is launched.
   bool open_about_blank_on_browser_launch_ = true;
+
+  // True if the StorageService should be forced to run in-process in fast test
+  // builds (!EXPENSIVE_TEST_LOGIC_IS_ON()).
+  bool force_in_process_storage_service_ = true;
 
   // Use a default download directory to make sure downloads don't end up in the
   // system default location.
@@ -435,6 +445,7 @@ class InProcessBrowserTest : public content::BrowserTestBase {
   // more consistent with other platforms, where most views are focusable by
   // default.
   ui::test::ScopedFakeFullKeyboardAccess faked_full_keyboard_access_;
+  std::unique_ptr<ui::test::ScopedFakeNSWindowFocus> fake_window_focus_;
 #endif  // BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(IS_WIN)
@@ -448,6 +459,10 @@ class InProcessBrowserTest : public content::BrowserTestBase {
   // Used to set up test factories for each browser context.
   base::CallbackListSubscription create_services_subscription_;
 
+  // Makes the omnibox popups create their WebUI content only when needed,
+  // unless `--disable-omnibox-popup-on-demand-creation` is passed.
+  std::optional<base::AutoReset<bool>> create_popup_webui_on_demand_;
+
 #if BUILDFLAG(IS_CHROMEOS)
   // ChromeOS does not create a browser by default when the full restore feature
   // is enabled. However almost all existing browser tests assume a browser is
@@ -455,6 +470,10 @@ class InProcessBrowserTest : public content::BrowserTestBase {
   // testing, when the full restore feature is enabled.
   std::unique_ptr<ash::full_restore::ScopedLaunchBrowserForTesting>
       launch_browser_for_testing_;
+#endif
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  std::optional<base::AutoReset<bool>> allow_unpacked_without_developer_mode_;
 #endif
 };
 

@@ -32,6 +32,7 @@ import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.CriteriaNotSatisfiedException;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -39,7 +40,6 @@ import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.RequiresRestart;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.omnibox.LocationBarCoordinator;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper;
@@ -59,10 +59,7 @@ import org.chromium.content_public.common.ContentSwitches;
     ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1",
     "ignore-certificate-errors"
 })
-@DisableFeatures({ChromeFeatureList.SETTINGS_MULTI_COLUMN})
-@EnableFeatures({
-    PermissionsAndroidFeatureList.PERMISSIONS_ANDROID_CLAPPER_LOUD
-})
+@EnableFeatures({PermissionsAndroidFeatureList.PERMISSIONS_ANDROID_CLAPPER_LOUD})
 @Batch(Batch.PER_CLASS)
 public class PermissionClapperQuietTest {
 
@@ -689,6 +686,7 @@ public class PermissionClapperQuietTest {
     @Test
     @MediumTest
     @Feature({"Permissions"})
+    @DisabledTest(message = "crbug.com/550361665")
     public void testQuietClapperPreemptionWhilePageInfoOpenReset() throws Exception {
         HistogramWatcher histogramWatcher = expectAction(PermissionTestRule.PromptAction.IGNORED);
 

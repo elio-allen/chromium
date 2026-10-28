@@ -29,10 +29,10 @@ DecorationIconTitle::DecorationIconTitle(ui::ResourceManager* resource_manager,
                       is_incognito,
                       is_rtl),
       layer_icon_(cc::slim::UIResourceLayer::Create()),
+      transform_(new gfx::Transform()),
       icon_resource_id_(icon_resource_id),
       icon_start_padding_(icon_start_padding),
-      icon_end_padding_(icon_end_padding),
-      transform_(new gfx::Transform()) {
+      icon_end_padding_(icon_end_padding) {
   layer_->AddChild(layer_icon_);
 }
 
@@ -70,9 +70,7 @@ gfx::Size DecorationIconTitle::calculateSize(int icon_width) {
 
 void DecorationIconTitle::handleIconResource(
     ui::AndroidResourceType resource_type) {
-  if (!icon_needs_refresh_ &&
-      base::FeatureList::IsEnabled(
-          chrome::android::kReloadTabUiResourcesIfChanged)) {
+  if (!icon_needs_refresh_) {
     return;
   }
   if (icon_resource_id_ != ui::Resource::kInvalidResourceId) {

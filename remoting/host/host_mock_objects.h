@@ -23,6 +23,7 @@
 #include "remoting/base/session_policies.h"
 #include "remoting/host/action_executor.h"
 #include "remoting/host/active_display_monitor.h"
+#include "remoting/host/agent_integration_configurator.h"
 #include "remoting/host/audio_capturer.h"
 #include "remoting/host/audio_injector.h"
 #include "remoting/host/base/desktop_environment_options.h"
@@ -46,6 +47,7 @@
 #include "remoting/host/webauthn/remote_webauthn_state_change_notifier.h"
 #include "remoting/proto/control.pb.h"
 #include "remoting/proto/event.pb.h"
+#include "remoting/proto/terminal.pb.h"
 #include "remoting/protocol/clipboard_stub.h"
 #include "remoting/protocol/mouse_cursor_monitor.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -107,6 +109,10 @@ class MockDesktopEnvironment : public DesktopEnvironment {
               CreateUrlForwarderConfigurator,
               (),
               (override));
+  MOCK_METHOD(std::unique_ptr<AgentIntegrationConfigurator>,
+              CreateAgentIntegrationConfigurator,
+              (),
+              (override));
   MOCK_METHOD(std::unique_ptr<RemoteWebAuthnStateChangeNotifier>,
               CreateRemoteWebAuthnStateChangeNotifier,
               (),
@@ -150,8 +156,6 @@ class MockClientSessionControl : public ClientSessionControl {
               (const protocol::MicrophoneControl&),
               (override));
 };
-
-
 
 class MockClientSessionEvents : public ClientSessionEvents {
  public:
@@ -356,6 +360,28 @@ class MockUrlForwarderConfigurator final : public UrlForwarderConfigurator {
               (override));
 };
 
+class MockAgentIntegrationConfigurator final
+    : public AgentIntegrationConfigurator {
+ public:
+  MockAgentIntegrationConfigurator();
+
+  MockAgentIntegrationConfigurator(const MockAgentIntegrationConfigurator&) =
+      delete;
+  MockAgentIntegrationConfigurator& operator=(
+      const MockAgentIntegrationConfigurator&) = delete;
+
+  ~MockAgentIntegrationConfigurator() override;
+
+  MOCK_METHOD(void,
+              IsAgentIntegrationEnabled,
+              (IsAgentIntegrationEnabledCallback callback),
+              (override));
+  MOCK_METHOD(void,
+              SetAgentIntegrationEnabled,
+              (bool enabled, SetAgentIntegrationEnabledCallback callback),
+              (override));
+};
+
 class MockChromotingSessionServices : public mojom::ChromotingSessionServices {
  public:
   MockChromotingSessionServices();
@@ -380,6 +406,12 @@ class MockChromotingSessionServices : public mojom::ChromotingSessionServices {
               (mojo::PendingReceiver<mojom::SecurityKeyForwarder> receiver),
               (override));
 #endif
+  MOCK_METHOD(void,
+              SetAgentStatus,
+              (int32_t terminal_id,
+               const protocol::TerminalControl::AgentInfo& agent_status,
+               SetAgentStatusCallback callback),
+              (override));
 };
 
 class MockChromotingHostServicesProvider
@@ -418,7 +450,6 @@ class MockPeerSession : public PeerSession {
               (EventHandler * event_handler,
                std::string_view client_jid,
                const DesktopEnvironmentOptions& desktop_environment_options,
-               const std::vector<HostExtension*>& extensions,
                const SessionPolicies& session_policies,
                const SessionOptions& session_options),
               (override));
@@ -433,7 +464,7 @@ class MockPeerSession : public PeerSession {
       OnSessionServicesClientConnected,
       (mojo::PendingReceiver<mojom::ChromotingSessionServices> receiver),
       (override));
-  MOCK_METHOD(protocol::Transport*, transport, (), (const, override));
+  MOCK_METHOD(protocol::Transport*, transport, (), (override));
 };
 
 class MockPeerSessionFactory : public PeerSessionFactory {
@@ -446,6 +477,10 @@ class MockPeerSessionFactory : public PeerSessionFactory {
   ~MockPeerSessionFactory() override;
 
   MOCK_METHOD(std::unique_ptr<PeerSession>, Create, (), (override));
+  MOCK_METHOD(void,
+              set_request_pairing_callback,
+              (const RequestPairingCallback&),
+              (override));
 };
 
 }  // namespace remoting

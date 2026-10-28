@@ -27,8 +27,8 @@
 #include "components/autofill/core/browser/foundations/test_autofill_driver.h"
 #include "components/autofill/core/browser/foundations/test_browser_autofill_manager.h"
 #include "components/autofill/core/browser/foundations/with_test_autofill_client_driver_manager.h"
-#include "components/autofill/core/browser/test_utils/autofill_form_test_utils.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/form_data_test_api.h"
 #include "components/autofill/core/common/form_field_data.h"
@@ -76,7 +76,8 @@ class ProfileTokenQualityTest : public testing::Test,
     autofill_manager().FillOrPreviewForm(
         mojom::ActionPersistence::kFill, form.global_id(),
         form.fields()[triggering_field_index].global_id(), &profile,
-        AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+        AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+        /*blocked_fields=*/{});
   }
 
   TestAddressDataManager& adm() { return adm_; }

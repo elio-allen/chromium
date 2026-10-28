@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "build/branding_buildflags.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_test_utils.h"
 #include "components/browser_apis/ui_controllers/toolbar/toolbar_ui_api_data_model.mojom.h"
@@ -450,29 +451,100 @@ TEST_F(IconTableTest, AllSecurityIconsAreMapped) {
   };
 
   for (auto level : levels) {
-    security_state::VisibleSecurityState state;
-
     // Standard icon
-    const gfx::VectorIcon& standard_icon =
-        location_bar_model::GetSecurityVectorIcon(level, &state);
-    EXPECT_TRUE(icon_table_.RegisterVectorIcon(standard_icon).has_value())
-        << "Missing standard icon for SecurityLevel: " << level;
+    {
+      security_state::VisibleSecurityState state;
+      const gfx::VectorIcon& standard_icon =
+          location_bar_model::GetSecurityVectorIcon(level, &state);
+      EXPECT_TRUE(icon_table_.RegisterVectorIcon(standard_icon).has_value())
+          << "Missing standard icon for SecurityLevel: " << level;
+    }
 
     // HTTPS Upgraded (WARNING triggers no_encryption)
-    state.is_https_only_mode_upgraded = true;
-    const gfx::VectorIcon& https_upgraded_icon =
-        location_bar_model::GetSecurityVectorIcon(level, &state);
-    EXPECT_TRUE(icon_table_.RegisterVectorIcon(https_upgraded_icon).has_value())
-        << "Missing HTTPS upgraded icon for SecurityLevel: " << level;
+    {
+      security_state::VisibleSecurityState state;
+      state.is_https_only_mode_upgraded = true;
+      const gfx::VectorIcon& https_upgraded_icon =
+          location_bar_model::GetSecurityVectorIcon(level, &state);
+      EXPECT_TRUE(
+          icon_table_.RegisterVectorIcon(https_upgraded_icon).has_value())
+          << "Missing HTTPS upgraded icon for SecurityLevel: " << level;
+    }
 
     // Enterprise block (DANGEROUS triggers domain/business)
-    state.malicious_content_status =
-        security_state::MALICIOUS_CONTENT_STATUS_MANAGED_POLICY_BLOCK;
-    const gfx::VectorIcon& enterprise_icon =
-        location_bar_model::GetSecurityVectorIcon(level, &state);
-    EXPECT_TRUE(icon_table_.RegisterVectorIcon(enterprise_icon).has_value())
-        << "Missing enterprise block icon for SecurityLevel: " << level;
+    {
+      security_state::VisibleSecurityState state;
+      state.malicious_content_status =
+          security_state::MALICIOUS_CONTENT_STATUS_MANAGED_POLICY_BLOCK;
+      const gfx::VectorIcon& enterprise_icon =
+          location_bar_model::GetSecurityVectorIcon(level, &state);
+      EXPECT_TRUE(icon_table_.RegisterVectorIcon(enterprise_icon).has_value())
+          << "Missing enterprise block icon for SecurityLevel: " << level;
+    }
+
+    // Suspicious site (DANGEROUS triggers shield_question)
+    {
+      security_state::VisibleSecurityState state;
+      state.malicious_content_status =
+          security_state::MALICIOUS_CONTENT_STATUS_WARNABLE_SUSPICIOUS_SITE;
+      const gfx::VectorIcon& suspicious_site_icon =
+          location_bar_model::GetSecurityVectorIcon(level, &state);
+      EXPECT_TRUE(
+          icon_table_.RegisterVectorIcon(suspicious_site_icon).has_value())
+          << "Missing suspicious site icon for SecurityLevel: " << level;
+    }
   }
+}
+
+TEST_F(IconTableTest, ExtensionIconsAreMapped) {
+  const gfx::VectorIcon* extension_icons[] = {
+      &omnibox::kExtensionFilledIcon,
+      &omnibox::kExtensionAppOldIcon,
+      &vector_icons::kExtensionFilledIcon,
+      &vector_icons::kExtensionOldIcon,
+      &vector_icons::kExtensionChromeRefreshOldIcon,
+      &vector_icons::kChromeExtensionIcon,
+      &vector_icons::kChromeExtensionCheckIcon,
+      &vector_icons::kChromeExtensionOffIcon,
+      &vector_icons::kExtensionOffOldIcon,
+      &vector_icons::kExtensionOnOldIcon,
+  };
+
+  for (const gfx::VectorIcon* icon : extension_icons) {
+    EXPECT_TRUE(icon_table_.RegisterVectorIcon(*icon).has_value())
+        << "Missing mapping for extension icon: "
+        << (icon->name ? icon->name : "(null)");
+  }
+}
+
+TEST_F(IconTableTest, PinnedToolbarActionIconsAreMapped) {
+  const gfx::VectorIcon* pinned_action_icons[] = {
+      &vector_icons::kMicFilledIcon,           &vector_icons::kMicOldIcon,
+      &vector_icons::kMicChromeRefreshOldIcon, &vector_icons::kScienceIcon,
+      &vector_icons::kScienceOldIcon,
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+      &vector_icons::kAudioSparkIcon,
+#endif
+  };
+
+  for (const gfx::VectorIcon* icon : pinned_action_icons) {
+    EXPECT_TRUE(icon_table_.RegisterVectorIcon(*icon).has_value())
+        << "Missing mapping for pinned action icon: "
+        << (icon->name ? icon->name : "(null)");
+  }
+
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  IconTable audio_spark_table(this);
+  std::optional<toolbar_ui_api::IconHandle> handle =
+      audio_spark_table.RegisterVectorIcon(vector_icons::kAudioSparkIcon);
+  ASSERT_TRUE(handle.has_value());
+  auto expected = toolbar_ui_api::mojom::IconUpdate::New(
+      1u, "internal-icons:audio_spark", IconType::kIconSet,
+      /*color=*/std::nullopt);
+  EXPECT_THAT(
+      audio_spark_table.GetFullState(),
+      testing::UnorderedElementsAre(MatchesIconUpdate(std::ref(expected))));
+#endif
 }
 
 }  // namespace

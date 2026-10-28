@@ -4,11 +4,8 @@
 
 #include "chrome/browser/actor/site_policy.h"
 
-#include <string>
-
 #include "base/feature_list.h"
 #include "base/functional/callback.h"
-#include "base/notimplemented.h"
 #include "base/types/expected.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
@@ -38,9 +35,7 @@ bool ShouldContinueFromOptimizationGuideDecision(
 
 void InitActionBlocklist(Profile* profile) {
   if (auto* optimization_guide_decider =
-          OptimizationGuideKeyedServiceFactory::GetForProfile(profile);
-      optimization_guide_decider &&
-      base::FeatureList::IsEnabled(kGlicActionUseOptimizationGuide)) {
+          OptimizationGuideKeyedServiceFactory::GetForProfile(profile)) {
     optimization_guide_decider->RegisterOptimizationTypes(
         {optimization_guide::proto::GLIC_ACTION_PAGE_BLOCK});
   }
@@ -54,8 +49,7 @@ MaybeCheckOptimizationGuideForSensitiveUrl(const GURL& url,
   // missing, for example, if the user has very recently installed chrome and
   // the component updater has not yet run. We don't want to reject every URL,
   // so we check for this and fail open.
-  if (!base::FeatureList::IsEnabled(kGlicActionUseOptimizationGuide) ||
-      !optimization_guide::OptimizationHintsComponentUpdateListener::
+  if (!optimization_guide::OptimizationHintsComponentUpdateListener::
            GetInstance()
                ->hints_component_info()
                .has_value()) {
@@ -85,13 +79,6 @@ mojom::ActionResultCode BlockReasonToResultCode(MayActOnUrlBlockReason reason,
       for_navigation ? ActionResultCode::kTriggeredNavigationBlocked
                      : ActionResultCode::kUrlBlocked;
 
-  auto maybe_granular = [generic_block_code](
-                            mojom::ActionResultCode specific_code) {
-    return base::FeatureList::IsEnabled(kGlicGranularBlockingActionResultCodes)
-               ? specific_code
-               : generic_block_code;
-  };
-
   switch (reason) {
     case MayActOnUrlBlockReason::kAllowed:
       return ActionResultCode::kOk;
@@ -103,22 +90,22 @@ mojom::ActionResultCode BlockReasonToResultCode(MayActOnUrlBlockReason reason,
     }
     case MayActOnUrlBlockReason::kLookalikeDomain:
     case MayActOnUrlBlockReason::kBlockedByStaticList:
-      return maybe_granular(ActionResultCode::kActionsBlockedForSiteRisk);
+      return ActionResultCode::kActionsBlockedForSiteRisk;
     case MayActOnUrlBlockReason::kSafeBrowsing:
-      return maybe_granular(
-          ActionResultCode::kActionsBlockedSafeBrowsingDisabled);
+      return ActionResultCode::kActionsBlockedSafeBrowsingDisabled;
     case MayActOnUrlBlockReason::kEnterprisePolicy:
-      return maybe_granular(
-          ActionResultCode::kActionsBlockedByEnterprisePolicy);
+      return ActionResultCode::kActionsBlockedByEnterprisePolicy;
     case MayActOnUrlBlockReason::kWrongScheme:
-      return maybe_granular(ActionResultCode::kActionsBlockedForScheme);
+      return ActionResultCode::kActionsBlockedForScheme;
     case MayActOnUrlBlockReason::kTabIsErrorDocument:
-      return maybe_granular(ActionResultCode::kActionsBlockedOnErrorPage);
+      return ActionResultCode::kActionsBlockedOnErrorPage;
+    case MayActOnUrlBlockReason::kDangerousMimeType:
     case MayActOnUrlBlockReason::kIpAddress:
     case MayActOnUrlBlockReason::kOptimizationGuideBlock:
-    case MayActOnUrlBlockReason::kUrlNotInAllowlist:
     case MayActOnUrlBlockReason::kBlockedByContainerConfig:
       return generic_block_code;
+    case MayActOnUrlBlockReason::kTaskCancelled:
+      return ActionResultCode::kTaskWentAway;
   }
 }
 

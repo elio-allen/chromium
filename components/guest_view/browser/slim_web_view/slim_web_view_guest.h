@@ -16,6 +16,7 @@
 #include "components/guest_view/browser/slim_web_view/request_utils.h"
 #include "components/guest_view/browser/slim_web_view/slim_web_view_permission_helper.h"
 #include "net/base/net_errors.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 class GURL;
 
@@ -57,6 +58,9 @@ class SlimWebViewGuest : public GuestView<SlimWebViewGuest> {
 
   // Returns true if an origin allowlist was provided at creation time.
   bool HasAllowedOrigins() const;
+  // Returns true if an origin allowlist was provided at creation time for the
+  // specified resource type.
+  bool HasAllowedOrigins(RequestResourceType resource_type) const;
 
   // Returns an error message if the URL is not allowed, based on scheme and
   // allowed origins.
@@ -86,10 +90,10 @@ class SlimWebViewGuest : public GuestView<SlimWebViewGuest> {
       const GURL& opener_url,
       const std::string& frame_name,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       const content::StoragePartitionConfig& partition_config,
-      content::SessionStorageNamespace* session_storage_namespace) final;
+      content::SessionStorageNamespaceHandle* session_storage_namespace) final;
   void RendererUnresponsive(
       content::WebContents* source,
       content::RenderWidgetHost* render_widget_host,

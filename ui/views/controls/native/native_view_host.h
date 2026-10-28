@@ -8,6 +8,8 @@
 #include <memory>
 #include <optional>
 
+#include "base/memory/raw_ptr.h"
+#include "build/build_config.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/views/view.h"
 
@@ -26,10 +28,6 @@ class NativeViewHostTestBase;
 }
 
 class NativeViewHostWrapper;
-
-// If a NativeViewHost's native view is a Widget, this native window
-// property is set on the widget, pointing to the owning NativeViewHost.
-inline constexpr char kWidgetNativeViewHostKey[] = "WidgetNativeViewHost";
 
 // A View type that hosts a gfx::NativeView. The bounds of the native view are
 // kept in sync with the bounds of this view as it is moved and sized.
@@ -65,13 +63,6 @@ class VIEWS_EXPORT NativeViewHost : public View {
   bool SetNativeViewCornerRadii(const gfx::RoundedCornersF& corner_radii);
   gfx::RoundedCornersF GetNativeViewCornerRadii() const;
 
-
-  // Sets the height of the top region where the gfx::NativeView shouldn't be
-  // targeted. This will be used when another view is covering there
-  // temporarily, like the immersive fullscreen mode of ChromeOS.
-  void SetHitTestTopInset(int top_inset);
-  int GetHitTestTopInset() const;
-
   // Sets the size for the NativeView that may or may not match the size of this
   // View when it is being captured. If the size does not match, scaling will
   // occur. Pass an empty size to revert to the default behavior, where the
@@ -103,18 +94,23 @@ class VIEWS_EXPORT NativeViewHost : public View {
   void set_fast_resize(bool fast_resize) { fast_resize_ = fast_resize; }
   bool fast_resize() const { return fast_resize_; }
 
+#if BUILDFLAG(IS_CHROMEOS)
+  // TODO(crbug.com/578734908): Remove these APIs when ARC issue is fixed or
+  // ARC support is dropped.
   // Set whether the native view's layer should be managed by views.
   // If set to true, NativeViewHost will manually manage the layer.
   // If set to false, the native view's layer will be managed by its parent
-  // window's layer.
+  // window's layer. This is used for a special use case on ChromeOS.
   void SetLayerManagedByViews(bool managed);
   bool layer_managed_by_views() const { return layer_managed_by_views_; }
 
   // Set whether NativeViewHost should create a layer for views management.
   // This only has effect when layer_managed_by_views() is true.
-  // If set to false, the host view must already have a layer.
+  // If set to false, the host view must already have a layer. This is used
+  // for a special use case on ChromeOS.
   void SetCreateLayer(bool create_layer);
   bool create_layer() const { return create_layer_; }
+#endif
 
   gfx::NativeView native_view() const { return native_view_; }
 
@@ -128,6 +124,13 @@ class VIEWS_EXPORT NativeViewHost : public View {
   // DEPRECATED: Use layer() or native_view()->layer() instead.
   ui::Layer* GetUILayer();
 
+  // Normally, all events relevant to here are routed to the corresponding
+  // native view directly, and no handling needs to be done at Views level.
+  // Some applications, however, forward events at Views layer, at which point
+  // they would normally end up ignored here. This method provides a way of
+  // intercepting mouse events with these circumstances.
+  void SetMouseEventFallback(ui::EventHandler* handler);
+
   // Overridden from View:
   void Layout(PassKey) override;
   void OnPaint(gfx::Canvas* canvas) override;
@@ -136,7 +139,8 @@ class VIEWS_EXPORT NativeViewHost : public View {
   gfx::NativeViewAccessible GetNativeViewAccessible() override;
   ui::Cursor GetCursor(const ui::MouseEvent& event) override;
   void SetVisible(bool visible) override;
-  bool OnMousePressed(const ui::MouseEvent& event) override;
+  void OnMouseMoved(const ui::MouseEvent& event) override;
+  void OnMouseEvent(ui::MouseEvent* event) override;
 
  protected:
   bool GetNeedsNotificationWhenVisibleBoundsChange() const override;
@@ -167,11 +171,13 @@ class VIEWS_EXPORT NativeViewHost : public View {
   // in the setter/accessor above.
   bool fast_resize_ = false;
 
+#if BUILDFLAG(IS_CHROMEOS)
   // True if the native view's layer is managed by views.
-  bool layer_managed_by_views_;
+  bool layer_managed_by_views_ = true;
 
   // True if NativeViewHost should create a layer for views management.
   bool create_layer_ = true;
+#endif
 
   // The color to use for repainting the background when the view is clipped.
   std::optional<SkColor> background_color_when_clipped_;
@@ -180,9 +186,10 @@ class VIEWS_EXPORT NativeViewHost : public View {
   // attached gfx::NativeView.
   // This must be declared last because its destructor (which destroys the
   // wrapper) depends on other members of NativeViewHost (like
-  // `layer_managed_by_views_` and `native_view_`) which must not be destroyed
-  // yet.
+  // `native_view_`) which must not be destroyed yet.
   std::unique_ptr<NativeViewHostWrapper> native_wrapper_;
+
+  raw_ptr<ui::EventHandler> mouse_event_fallback_ = nullptr;
 };
 
 }  // namespace views

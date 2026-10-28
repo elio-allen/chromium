@@ -5,21 +5,26 @@
 #ifndef IOS_CHROME_BROWSER_ENTERPRISE_DATA_CONTROLS_MODEL_DATA_CONTROLS_TAB_HELPER_H_
 #define IOS_CHROME_BROWSER_ENTERPRISE_DATA_CONTROLS_MODEL_DATA_CONTROLS_TAB_HELPER_H_
 
+#import "base/containers/flat_map.h"
 #import "base/functional/callback.h"
 #import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
 #import "base/scoped_observation.h"
+#import "base/timer/timer.h"
 #import "components/enterprise/common/proto/connectors.pb.h"
+#import "components/enterprise/connectors/core/analysis_settings.h"
 #import "components/enterprise/data_controls/core/browser/verdict.h"
 #import "ios/chrome/browser/enterprise/data_controls/model/data_controls_pasteboard_manager.h"
 #import "ios/chrome/browser/enterprise/data_controls/model/data_controls_pasteboard_manager_observer.h"
 #import "ios/chrome/browser/enterprise/data_controls/utils/clipboard_utils.h"
 #import "ios/chrome/browser/enterprise/enterprise_dialog/model/warning_dialog.h"
 #import "ios/chrome/browser/shared/public/commands/enterprise_commands.h"
+#import "ios/web/public/web_state_observer.h"
 #import "ios/web/public/web_state_user_data.h"
 #import "url/gurl.h"
 
 @protocol SnackbarCommands;
+@protocol BrowserCommands;
 
 namespace enterprise_connectors {
 struct RequestHandlerResult;
@@ -30,6 +35,8 @@ namespace web {
 class WebState;
 }
 
+class OverlayResponse;
+
 namespace data_controls {
 
 class DataControlsPasteboardManager;
@@ -39,9 +46,17 @@ class DataControlsPasteboardManager;
 // (copying, pasting), are permitted. Such restrictions only apply to managed
 // profiles; for all other profiles, these actions are unrestricted.
 class DataControlsTabHelper
-    : public web::WebStateUserData<DataControlsTabHelper>,
+    : public web::WebStateObserver,
+      public web::WebStateUserData<DataControlsTabHelper>,
       public DataControlsPasteboardManagerObserver {
  public:
+  // Max number for simultaneous non-blocking scan requests.
+  static constexpr size_t kMaxAuditPasteEvents = 100;
+
+  // Delay before showing the spinning overlay for paste analysis.
+  static constexpr base::TimeDelta kSpinnerOverlayDelay =
+      base::Milliseconds(500);
+
   DataControlsTabHelper(const DataControlsTabHelper&) = delete;
   DataControlsTabHelper& operator=(const DataControlsTabHelper&) = delete;
   ~DataControlsTabHelper() override;
@@ -81,6 +96,9 @@ class DataControlsTabHelper
   // Sets the snackbar handler.
   void SetSnackbarHandler(id<SnackbarCommands> snackbar_handler);
 
+  // Sets the browser handler.
+  void SetBrowserHandler(id<BrowserCommands> browser_handler);
+
   // Called after the clipboard has been read from.
   void DidFinishClipboardRead();
 
@@ -88,20 +106,35 @@ class DataControlsTabHelper
   // content is changed.
   void OnPasteboardContentChanged() override;
 
+  // Mark the current blocking paste as invalid and change the
+  // `paste_event_state_` accordingly.
+  void InvalidateCurrentPaste();
+
+  // web::WebStateObserver:
+  void WasHidden(web::WebState* web_state) override;
+  void WebStateDestroyed(web::WebState* web_state) override;
+  void DidStartNavigation(web::WebState* web_state,
+                          web::NavigationContext* navigation_context) override;
+
  private:
   friend class web::WebStateUserData<DataControlsTabHelper>;
   explicit DataControlsTabHelper(web::WebState* web_state);
 
   // An enum class that keeps track of the state of the current paste event for
-  // each tab. More event states will be added in the future for the Pasted
-  // Content DLP Rules feature.
-  //
-  // TODO(crbug.com/531672160): Add event states for pasted content DLP Rules.
+  // each tab.
   enum class PasteEventState {
     // No ongoing paste event.
     kIdle,
     // Waiting for users to make a decision from Warning Dialog.
     kDisplayingWarningDialog,
+    // Waiting for scan result from WebProtect.
+    kWaitingScanDecision,
+    // Displaying the spinner, this means that we are still waiting for scan
+    // decision.
+    kDisplayingSpinner,
+    // User initiated a new copy action while waiting for the scan result for
+    // the paste, making the paste event stale.
+    kPasteEventStale,
   };
 
   // Returns true if clipboard data controls are enabled.
@@ -120,18 +153,40 @@ class DataControlsTabHelper
       base::OnceCallback<void(bool)> callback,
       bool bypassed);
 
+  // Allow the paste immediately if it is a non-blocking scan, then try to get
+  // the pasteboard content and start the analysis.
+  void PasteIfNonBlockingAnalysis(const GURL& destination_url,
+                                  const GURL& source_url,
+                                  base::WeakPtr<ProfileIOS> profile,
+                                  base::WeakPtr<ProfileIOS> source_profile,
+                                  base::WeakPtr<ProfileIOS> destination_profile,
+                                  base::OnceCallback<void(bool)> callback);
+
   // Allow or block the paste or show a warning dialog based on the `result`.
   void PasteIfAllowedByContentAnalysis(
       base::OnceCallback<void(bool)> callback,
       enterprise_connectors::RequestHandlerResult result);
 
   // Run the pasted content analysis using the `PastedContentHandlerIOS` with
-  // the info from the parameters.
-  void RunPastedContentAnalysis(
+  // the info from the parameters. A callback to
+  // `PasteIfAllowedByContentAnalysis` will be created and the scan result will
+  // be provided by the handler.
+  void RunBlockingPastedContentAnalysis(
       const GURL& destination_url,
       base::WeakPtr<ProfileIOS> profile,
+      std::optional<enterprise_connectors::AnalysisSettings> settings,
       enterprise_connectors::ContentMetaData::CopiedTextSource copied_source,
       base::OnceCallback<void(bool)> callback,
+      std::optional<PasteboardContentDLP> pasteboard_content);
+
+  // Run the non-blocking version of the Content Analysis. A callback to
+  // `OnReceiveAuditOnlyPasteResult` will be created and scan result will be
+  // ignored.
+  void RunNonBlockingPastedContentAnalysis(
+      const GURL& destination_url,
+      base::WeakPtr<ProfileIOS> profile,
+      std::optional<enterprise_connectors::AnalysisSettings> settings,
+      enterprise_connectors::ContentMetaData::CopiedTextSource copied_source,
       std::optional<PasteboardContentDLP> pasteboard_content);
 
   // Finalizes the copy action invoking the callback.
@@ -169,12 +224,31 @@ class DataControlsTabHelper
                          std::string_view org_domain,
                          base::OnceCallback<void(bool)> on_bypassed_callback);
 
+  // Shows the loading spinner overlay for Pasteboard Content Analysis. This
+  // should only be called if `wait_until_verdict` is true in `AnalysisSetting`.
+  void ShowPasteSpinner(const GURL& destination_url);
+
+  // Dismisses the spinner overlay for Pasteboard Content Analysis if
+  // presented, and stops the delay timer.
+  void DismissPasteSpinnerIfPresented();
+
+  // Called after the paste spinner is dismissed. The spinner can be dismissed
+  // from this tab helper or other places that want to cancel the current
+  // overlay and show their own overlay.
+  void OnPasteSpinnerDismissed(OverlayResponse* response);
+
   // Shows a snackbar message to inform the user that an action was blocked by
   // policy or content analysis.
   void ShowRestrictSnackbar(NSString* title);
 
   // Returns the management domain for the given `profile`.
   std::string GetManagementDomain(ProfileIOS* profile);
+
+  // Releases the handler stored in the map `audit_paste_events_` at key
+  // `index`.
+  void OnReceiveAuditOnlyPasteResult(
+      size_t index,
+      enterprise_connectors::RequestHandlerResult result);
 
   // Unowned pointer to the WebState owning `this`. `web_state_` will always
   // outlive `this`.
@@ -186,9 +260,29 @@ class DataControlsTabHelper
   // The snackbar command handler.
   __weak id<SnackbarCommands> snackbar_handler_ = nil;
 
+  // The browser command handler.
+  __weak id<BrowserCommands> browser_handler_ = nil;
+
   // The handler for pasteboard content analysis.
   std::unique_ptr<enterprise_connectors::PasteboardContentHandlerIOS>
       pasteboard_content_handler_;
+
+  // Timer used to show a spinner if content analysis takes too long.
+  base::OneShotTimer paste_spinner_timer_;
+
+  // The index we used as the key of the `audit_paste_events_`, increments by
+  // one as each new request comes in.
+  size_t audit_paste_event_index_ = 0;
+
+  // A map to keep track of the `PasteboardContentHandlerIOS` for handling
+  // non-blocking pasteboard scan requests.
+  base::flat_map<
+      // The index as the key for the map.
+      size_t,
+      // The handler responsible for sending the non-blocking scan request and
+      // receiving the result.
+      std::unique_ptr<enterprise_connectors::PasteboardContentHandlerIOS>>
+      audit_paste_events_;
 
   PasteEventState paste_event_state_ = PasteEventState::kIdle;
 

@@ -29,7 +29,6 @@ source_set("password_store_interface") {
     "//components/keyed_service/core",
     "//url",
   ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
 source_set("password_store_impl") {
@@ -53,8 +52,8 @@ source_set("password_store_impl") {
     "//components/affiliations/core/browser:affiliations",
     "//components/affiliations/core/browser:sql_builder",
     "//components/autofill/core/common",
-    "//components/os_crypt/async/browser",
-    "//components/os_crypt/async/common",
+    "//components/os_crypt/browser",
+    "//components/os_crypt/common",
     "//components/password_manager/core/browser:metrics_util",
     "//components/password_manager/core/browser:password_manager_buildflags",
     "//components/password_manager/core/browser:password_switches",
@@ -115,7 +114,6 @@ source_set("password_store_impl") {
       sources += [ "login_database_win.cc" ]
     }
   }
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
 static_library("test_support") {
@@ -143,7 +141,6 @@ static_library("test_support") {
     "//components/sync/model",
     "//testing/gmock",
   ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
 source_set("unit_tests") {
@@ -178,7 +175,7 @@ source_set("unit_tests") {
     "//components/affiliations/core/browser:affiliations",
     "//components/affiliations/core/browser:test_support",
     "//components/autofill/core/common",
-    "//components/os_crypt/async/browser:test_support",
+    "//components/os_crypt/browser:test_support",
     "//components/password_manager/core/browser:password_manager_buildflags",
     "//components/password_manager/core/browser:test_support",
     "//components/password_manager/core/browser/affiliation:affiliation_match_helper",
@@ -198,5 +195,4 @@ source_set("unit_tests") {
     "//testing/gtest",
     "//url",
   ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }

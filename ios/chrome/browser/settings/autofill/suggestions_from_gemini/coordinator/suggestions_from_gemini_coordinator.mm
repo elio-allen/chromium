@@ -6,29 +6,28 @@
 
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
-#import "components/personal_context/core/personal_context_prefs.h"
 #import "components/prefs/pref_service.h"
+#import "ios/chrome/browser/settings/autofill/suggestions_from_gemini/coordinator/suggestions_from_gemini_help_improve_coordinator.h"
 #import "ios/chrome/browser/settings/autofill/suggestions_from_gemini/coordinator/suggestions_from_gemini_mediator.h"
-#import "ios/chrome/browser/settings/autofill/suggestions_from_gemini/ui/suggestions_from_gemini_help_improve_table_view_controller.h"
 #import "ios/chrome/browser/settings/autofill/suggestions_from_gemini/ui/suggestions_from_gemini_table_view_controller.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/prefs/pref_backed_boolean.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
-#import "ios/web/public/navigation/referrer.h"
 #import "url/gurl.h"
 
 @interface SuggestionsFromGeminiCoordinator () <
-    SuggestionsFromGeminiMediatorDelegate>
+    SuggestionsFromGeminiMediatorDelegate,
+    SuggestionsFromGeminiTableViewControllerDelegate>
 
 @end
 
 @implementation SuggestionsFromGeminiCoordinator {
   SuggestionsFromGeminiTableViewController* _viewController;
   SuggestionsFromGeminiMediator* _mediator;
+  SuggestionsFromGeminiHelpImproveCoordinator* _helpImproveCoordinator;
 }
 
 @synthesize baseNavigationController = _baseNavigationController;
@@ -46,15 +45,12 @@
 
 - (void)start {
   _viewController = [[SuggestionsFromGeminiTableViewController alloc] init];
+  _viewController.delegate = self;
 
   PrefService* prefService = self.browser->GetProfile()->GetPrefs();
-  PrefBackedBoolean* personalContextSwitchEnabled = [[PrefBackedBoolean alloc]
-      initWithPrefService:prefService
-                 prefName:personal_context::prefs::
-                              kPersonalContextInAutofillSettingsToggleStatus];
 
-  _mediator = [[SuggestionsFromGeminiMediator alloc]
-      initWithPrefBackedBoolean:personalContextSwitchEnabled];
+  _mediator =
+      [[SuggestionsFromGeminiMediator alloc] initWithPrefService:prefService];
 
   _viewController.mutator = _mediator;
   _mediator.consumer = _viewController;
@@ -63,13 +59,24 @@
   [_baseNavigationController pushViewController:_viewController animated:YES];
 }
 
+#pragma mark - SuggestionsFromGeminiTableViewControllerDelegate
+
+- (void)suggestionsFromGeminiTableViewControllerDidRemove:
+    (SuggestionsFromGeminiTableViewController*)controller {
+  CHECK_EQ(_viewController, controller);
+  [self.delegate suggestionsFromGeminiCoordinatorDidRemove:self];
+}
+
 - (void)stop {
   [super stop];
   _mediator.consumer = nil;
   [_mediator disconnect];
   _mediator = nil;
+  _viewController.delegate = nil;
   _viewController.mutator = nil;
   _viewController = nil;
+  [_helpImproveCoordinator stop];
+  _helpImproveCoordinator = nil;
 }
 
 #pragma mark - SuggestionsFromGeminiMediatorDelegate
@@ -77,11 +84,7 @@
 - (void)suggestionsFromGeminiMediatorDidSelectConnectedApps:
     (SuggestionsFromGeminiMediator*)mediator {
   OpenNewTabCommand* command =
-      [[OpenNewTabCommand alloc] initWithURL:GURL(kGeminiExtensionsURL)
-                                    referrer:web::Referrer()
-                                 inIncognito:NO
-                                inBackground:NO
-                                    appendTo:OpenPosition::kLastTab];
+      [OpenNewTabCommand commandWithURLFromChrome:GURL(kGeminiExtensionsURL)];
   id<SceneCommands> sceneHandler =
       HandlerForProtocol(self.browser->GetCommandDispatcher(), SceneCommands);
   [sceneHandler closePresentedViewsAndOpenURL:command];
@@ -91,9 +94,11 @@
     (SuggestionsFromGeminiMediator*)mediator {
   base::RecordAction(
       base::UserMetricsAction("Settings.SuggestionsFromGeminiHelpImprove"));
-  SuggestionsFromGeminiHelpImproveTableViewController* viewController =
-      [[SuggestionsFromGeminiHelpImproveTableViewController alloc] init];
-  [_baseNavigationController pushViewController:viewController animated:YES];
+  [_helpImproveCoordinator stop];
+  _helpImproveCoordinator = [[SuggestionsFromGeminiHelpImproveCoordinator alloc]
+      initWithBaseNavigationController:_baseNavigationController
+                               browser:self.browser];
+  [_helpImproveCoordinator start];
 }
 
 @end

@@ -16,23 +16,51 @@
 
 namespace context_hub {
 
-// Data for Gmail-based AutoTodos.
-struct FirstPartyData {
-  // Source URLs (e.g., Gmail message URLs) where the AutoTodo was generated
-  // from.
-  std::vector<GURL> source_references;
+// Gmail reference from which an AutoTodo was generated.
+struct GmailReference {
+  GURL url;
+  std::string subject;
+};
 
-  // Actionable URL where the user can complete the todo.
-  GURL actionable_url;
+// Chrome history entry reference from which an AutoTodo was generated.
+struct ChromeHistoryEntry {
+  GURL url;
+  std::string title;
+  base::Time visit_timestamp;
+};
+
+// Source reference from which an AutoTodo was generated.
+using SourceReference = std::variant<GmailReference, ChromeHistoryEntry>;
+
+// Data for first-party AutoTodos.
+struct FirstPartyData {
+  // Source references where the AutoTodo was generated from.
+  std::vector<SourceReference> source_references;
+
+  // Actionable URL where the user can complete the todo. `std::nullopt` if
+  // using source references instead.
+  std::optional<GURL> actionable_url;
 };
 
 // Data for Browser tab-based AutoTodos.
 struct ThirdPartyData {
+  enum class GroupType {
+    kNoMatch,
+    kNudgeToClose,
+    kReadingList,
+    kUnfinishedAction,
+    kShoppingCart,
+    kMaxValue = kShoppingCart,
+  };
+
   // Associated tab Session ID.
   int64_t tab_id = 0;
 
   // Timestamp when the associated tab was last active.
   base::Time last_active_timestamp;
+
+  // Type of todo group.
+  GroupType group_type = GroupType::kNoMatch;
 };
 
 // Structure representing an AutoTodo entry stored in the store.
@@ -57,6 +85,9 @@ struct AutoTodoEntry {
   // Type specific payload.
   std::variant<FirstPartyData, ThirdPartyData> data;
 
+  // Timestamp when the todo was last modified, used for TTL.
+  base::Time last_modified_timestamp;
+
   // Helper methods to inspect variant data.
   bool is_third_party() const {
     return std::holds_alternative<ThirdPartyData>(data);
@@ -72,6 +103,21 @@ struct AutoTodoEntry {
     }
     return std::nullopt;
   }
+
+  std::optional<ThirdPartyData::GroupType> group_type() const {
+    if (const auto* third_party = std::get_if<ThirdPartyData>(&data)) {
+      return third_party->group_type;
+    }
+    return std::nullopt;
+  }
+};
+
+// Metadata regarding the generation of Auto Todos.
+struct AutoTodosGenerationMetadata {
+  // Timestamp of the last successful generation.
+  base::Time last_generation_time;
+  // Whether the last generation attempt failed.
+  bool has_error = false;
 };
 
 }  // namespace context_hub

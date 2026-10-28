@@ -24,7 +24,6 @@
 #include "net/url_request/referrer_policy.h"
 #include "services/network/public/cpp/cookie_manager_shared_mojom_traits.h"
 #include "services/network/public/cpp/data_element.h"
-#include "services/network/public/cpp/network_isolation_key_mojom_traits.h"
 #include "services/network/public/cpp/permissions_policy/permissions_policy_mojom_traits.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/resource_request_body.h"
@@ -203,11 +202,6 @@ struct COMPONENT_EXPORT(NETWORK_CPP_BASE)
     return trusted_params.expected_response_headers_for_synthetic_response;
   }
 
-  static bool is_ad_auction_trusted_signals_request(
-      const network::ResourceRequest::TrustedParams& trusted_params) {
-    return trusted_params.is_ad_auction_trusted_signals_request;
-  }
-
   static bool Read(network::mojom::TrustedUrlRequestParamsDataView data,
                    network::ResourceRequest::TrustedParams* out);
 };
@@ -263,7 +257,7 @@ struct COMPONENT_EXPORT(NETWORK_CPP_BASE)
       const network::ResourceRequest& request) {
     return request.request_initiator;
   }
-  static const std::vector<GURL> navigation_redirect_chain(
+  static const std::vector<GURL>& navigation_redirect_chain(
       const network::ResourceRequest& request) {
     return request.navigation_redirect_chain;
   }

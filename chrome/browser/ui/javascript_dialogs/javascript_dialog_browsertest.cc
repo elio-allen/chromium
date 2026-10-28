@@ -12,7 +12,6 @@
 #include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
@@ -27,6 +26,7 @@
 #include "components/javascript_dialogs/app_modal_dialog_manager.h"
 #include "components/javascript_dialogs/tab_modal_dialog_manager.h"
 #include "components/ukm/test_ukm_recorder.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/isolated_world_ids.h"
@@ -109,9 +109,8 @@ IN_PROC_BROWSER_TEST_F(JavaScriptDialogTest,
   runner->Run();
 
   // Tab two is closed while the dialog is up.
-  int tab2_index = browser()->tab_strip_model()->GetIndexOfWebContents(tab2);
-  browser()->tab_strip_model()->CloseWebContentsAt(tab2_index,
-                                                   TabCloseTypes::CLOSE_NONE);
+  browser()->tab_strip_model()->CloseWebContents(tab2,
+                                                 TabCloseTypes::CLOSE_NONE);
 
   // Try reloading tab one.
   tab1->GetController().Reload(content::ReloadType::NORMAL, false);
@@ -144,9 +143,8 @@ IN_PROC_BROWSER_TEST_F(JavaScriptDialogTest,
   runner->Run();
 
   // The tab is closed while the dialog is up.
-  int tab_index = browser()->tab_strip_model()->GetIndexOfWebContents(tab);
-  browser()->tab_strip_model()->CloseWebContentsAt(tab_index,
-                                                   TabCloseTypes::CLOSE_NONE);
+  browser()->tab_strip_model()->CloseWebContents(tab,
+                                                 TabCloseTypes::CLOSE_NONE);
 
   // No crash is good news.
 }

@@ -16,8 +16,10 @@ import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 
 import androidx.annotation.CallSuper;
 import androidx.annotation.ColorInt;
@@ -41,6 +43,7 @@ import org.chromium.build.annotations.MonotonicNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.back_press.BackPressHelper;
 import org.chromium.chrome.browser.browser_controls.BrowserStateBrowserControlsVisibilityDelegate;
 import org.chromium.chrome.browser.customtabs.CustomTabActivity;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
@@ -50,8 +53,8 @@ import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
-import org.chromium.chrome.browser.signin.SigninCheckerProvider;
 import org.chromium.chrome.browser.signin.SigninFirstRunFragment;
+import org.chromium.chrome.browser.sync.SyncErrorNotifier;
 import org.chromium.chrome.browser.ui.default_browser_promo.DefaultBrowserPromoUtils;
 import org.chromium.chrome.browser.ui.desktop_windowing.AppHeaderCoordinator;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils;
@@ -59,11 +62,16 @@ import org.chromium.chrome.browser.ui.signin.DialogWhenLargeContentLayout;
 import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninMediator;
 import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncHelper;
 import org.chromium.chrome.browser.ui.system.StatusBarColorController;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerFactory;
+import org.chromium.components.browser_ui.bottomsheet.ManagedBottomSheetController;
 import org.chromium.components.browser_ui.desktop_windowing.AppHeaderState;
 import org.chromium.components.browser_ui.desktop_windowing.AppHeaderStateProvider;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager.AppHeaderObserver;
 import org.chromium.components.browser_ui.modaldialog.AppModalPresenter;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
+import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
+import org.chromium.components.browser_ui.widget.scrim.ScrimManager.ScrimClient;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.metrics.LowEntropySource;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
@@ -100,7 +108,7 @@ public class FirstRunActivity extends FirstRunActivityBase
      * A simple page transformer for transitions between successive Fragment, aiming to be as close
      * as possible to inter-Activity transitions.
      */
-    class FirstRunPageTransformer implements ViewPager2.PageTransformer {
+    static class FirstRunPageTransformer implements ViewPager2.PageTransformer {
         // The exiting page fades out, then tne entering page fades in. This is the alpha boundary
         // expressed as fraction of total animation duration.
         private static final float ALPHA_BOUNDARY_FRAC = 100f / 450f;
@@ -236,6 +244,8 @@ public class FirstRunActivity extends FirstRunActivityBase
 
     private final List<FirstRunPage> mPages = new ArrayList<>();
     private final List<Integer> mFreProgressStates = new ArrayList<>();
+    private final SafetyPromoFirstRunState mSafetyPromoFirstRunState =
+            new SafetyPromoFirstRunState();
 
     private FirstRunPageTransformer mPageTransformer;
     private ViewPager2 mPager;
@@ -253,6 +263,8 @@ public class FirstRunActivity extends FirstRunActivityBase
 
     private @Nullable AppHeaderCoordinator mAppHeaderCoordinator;
     private @Nullable View mContentView;
+    private @Nullable ScrimManager mScrimManager;
+    private @Nullable ManagedBottomSheetController mBottomSheetController;
 
     private boolean isFlowKnown() {
         return mFreProperties != null;
@@ -260,6 +272,9 @@ public class FirstRunActivity extends FirstRunActivityBase
 
     @Override
     public void onSaveInstanceState(Bundle outState) {
+        // TODO(crbug.com/534388538): Resume the FRE where the user left off, including the
+        // carousel card. Returning from the launcher creates a new activity, so this bundle is
+        // dropped and progress has to be persisted outside the activity.
         if (ChromeFeatureList.sDefaultBrowserPromoFre.isEnabled()) {
             // Called by Android right before the First Run Activity is destroyed (toggle dark mode,
             // etc.). Before activity recreation, store which page the user was looking at.
@@ -291,6 +306,16 @@ public class FirstRunActivity extends FirstRunActivityBase
         mHistorySyncStepCompleted = val;
     }
 
+    @Override
+    public SafetyPromoFirstRunState getSafetyPromoFirstRunState() {
+        return mSafetyPromoFirstRunState;
+    }
+
+    @Override
+    public BottomSheetController getBottomSheetController() {
+        return assumeNonNull(mBottomSheetController);
+    }
+
     /** Creates first page and sets up adapter. Should result UI being shown on the screen. */
     private void createFirstPage() {
         BooleanSupplier showWelcomePage = () -> !FirstRunStatus.shouldSkipWelcomePage();
@@ -315,13 +340,11 @@ public class FirstRunActivity extends FirstRunActivityBase
         assert !mPostNativeAndPolicyPagesCreated;
         assert areNativeAndPoliciesInitialized();
 
-        // Initialize SigninChecker, to kick off sign-in for child accounts as early as possible.
-        //
-        // TODO(b/245912657): explicitly sign in supervised users in {@link
-        // FullscreenSigninMediator#handleContinueWithNative} rather than relying on SigninChecker.
+        // SyncErrorNotifier must be explicitly initialized.
+        // TODO(crbug.com/40736034): Move the initializations elsewhere.
         Profile originalProfile =
                 assumeNonNull(getProfileProviderSupplier().get()).getOriginalProfile();
-        SigninCheckerProvider.get(originalProfile);
+        SyncErrorNotifier.getForProfile(originalProfile);
 
         assumeNonNull(mFreProperties);
         mFirstRunFlowSequencer.updateFirstRunProperties(mFreProperties);
@@ -391,6 +414,19 @@ public class FirstRunActivity extends FirstRunActivityBase
 
         if (FirstRunUtils.shouldShowSafetyFrePromo()) {
             mPages.add(new FirstRunPage<>(SafetyPromoFirstRunFragment.class, () -> true));
+            mFreProgressStates.add(MobileFreProgress.SAFETY_PROMO_SHOWN);
+
+            // Only show the carousel detail page if the user clicked a specific promo card on the
+            // preceding overview page. If the user clicked "Start browsing", the carousel is
+            // skipped.
+            mPages.add(
+                    new FirstRunPage<>(
+                            SafetyPromoCarouselFirstRunFragment.class,
+                            () ->
+                                    FirstRunUtils.shouldShowSafetyFrePromoCarousel()
+                                            && mSafetyPromoFirstRunState.hasSelectedItem()));
+            // TODO(crbug.com/543028748): Introduce and log a dedicated MobileFreProgress state for
+            // the carousel page instead of reusing SAFETY_PROMO_SHOWN.
             mFreProgressStates.add(MobileFreProgress.SAFETY_PROMO_SHOWN);
         }
 
@@ -481,6 +517,42 @@ public class FirstRunActivity extends FirstRunActivityBase
         return mContentView;
     }
 
+    /**
+     * Creates the {@link BottomSheetController} for the First Run Experience, and adds the sheet
+     * container on top of the content view so that the sheets are shown over the whole activity.
+     *
+     * @param contentView The content view of the activity.
+     */
+    private void createBottomSheetController(ViewGroup contentView) {
+        ViewGroup sheetContainer =
+                (ViewGroup)
+                        LayoutInflater.from(this)
+                                .inflate(
+                                        R.layout.bottom_sheet_container,
+                                        contentView,
+                                        /* attachToRoot= */ false);
+        ScrimManager scrimManager =
+                new ScrimManager(this, contentView, ScrimClient.FIRST_RUN_ACTIVITY);
+        mScrimManager = scrimManager;
+        mBottomSheetController =
+                BottomSheetControllerFactory.createBottomSheetController(
+                        () -> scrimManager,
+                        getWindow(),
+                        assumeNonNull(getWindowAndroid()).getKeyboardDelegate(),
+                        () -> sheetContainer,
+                        () -> 0,
+                        /* desktopWindowStateManager= */ null,
+                        getInsetObserver(),
+                        /* enableLargeFormFactorUi= */ ChromeFeatureList
+                                .sBottomSheetOnDesktopWindowing
+                                .isEnabled());
+        contentView.addView(sheetContainer);
+        BackPressHelper.create(
+                this,
+                getOnBackPressedDispatcher(),
+                mBottomSheetController.getBottomSheetBackPressHandler());
+    }
+
     @Override
     @Initializer
     public void triggerLayoutInflation() {
@@ -491,9 +563,9 @@ public class FirstRunActivity extends FirstRunActivityBase
                 "MobileFre.FromLaunch.TriggerLayoutInflation",
                 SystemClock.elapsedRealtime() - mIntentCreationElapsedRealtimeMs);
 
-        setFinishOnTouchOutside(true);
-
-        setContentView(createContentView());
+        View contentView = createContentView();
+        setContentView(contentView);
+        createBottomSheetController((ViewGroup) contentView);
 
         // SigninFirstRunFragment doesn't use getProperties() and can be shown right away, without
         // waiting for FirstRunFlowSequencer.
@@ -550,13 +622,10 @@ public class FirstRunActivity extends FirstRunActivityBase
 
         assert FeatureList.isNativeInitialized()
                 : "Expected feature list to be initialized during FRE.";
-        if (ChromeFeatureList.sXplatSyncedSetup.isEnabled()) {
-            SharedPreferencesManager prefManager = ChromeSharedPreferences.getInstance();
-            prefManager.writeBoolean(
-                    ChromePreferenceKeys.CROSS_DEVICE_IMPORTED_BOTTOM_OMNIBOX, false);
-            prefManager.writeBoolean(
-                    ChromePreferenceKeys.CROSS_DEVICE_IMPORTED_ALL_SETTINGS, false);
-        }
+        SharedPreferencesManager prefManager = ChromeSharedPreferences.getInstance();
+        prefManager.writeBoolean(
+                ChromePreferenceKeys.CROSS_DEVICE_IMPORTED_NON_NTP_SETTINGS, false);
+        prefManager.writeBoolean(ChromePreferenceKeys.CROSS_DEVICE_IMPORTED_ALL_SETTINGS, false);
     }
 
     private void onNativeDependenciesFullyInitialized() {
@@ -604,8 +673,8 @@ public class FirstRunActivity extends FirstRunActivityBase
     }
 
     /**
-     * @param {boolean} smoothScroll Whether to animate transition. This should be true for user
-     *     triggered transition, and false for quick skips by software.
+     * @param smoothScroll Whether to animate transition. This should be true for user triggered
+     *     transition, and false for quick skips by software.
      * @return Whether advancing to the next page succeeded.
      */
     private boolean advanceToNextPageInternal(boolean smoothScroll) {
@@ -700,8 +769,7 @@ public class FirstRunActivity extends FirstRunActivityBase
 
     @VisibleForTesting(otherwise = PRIVATE)
     boolean shouldPreventTouch() {
-        if (ApplicationStatus.getStateForActivity(this) == ActivityState.RESUMED) return false;
-        return true;
+        return ApplicationStatus.getStateForActivity(this) != ActivityState.RESUMED;
     }
 
     // FirstRunPageDelegate:
@@ -739,6 +807,9 @@ public class FirstRunActivity extends FirstRunActivityBase
         // This is important because the first run, when completed, will re-launch the original
         // intent. The re-launched intent will still need to know to avoid the FRE.
         FirstRunStatus.setFirstRunSkippedByPolicy(true);
+        // The ToS were accepted as part of this flow, so subsequent full FREs (e.g. launched from
+        // the launcher, where the policy skip above doesn't apply) should skip the welcome page.
+        FirstRunStatus.setSkipWelcomePage(true);
 
         launchPendingIntentAndFinish();
     }
@@ -751,7 +822,7 @@ public class FirstRunActivity extends FirstRunActivityBase
                     new ActivityStateListener() {
                         @Override
                         public void onActivityStateChange(Activity activity, int newState) {
-                            boolean shouldFinish = false;
+                            boolean shouldFinish;
                             if (activity == FirstRunActivity.this) {
                                 shouldFinish =
                                         (newState == ActivityState.STOPPED
@@ -785,7 +856,6 @@ public class FirstRunActivity extends FirstRunActivityBase
                 "MobileFre.FromLaunch.TosAccepted",
                 SystemClock.elapsedRealtime() - mIntentCreationElapsedRealtimeMs);
         FirstRunUtils.acceptTermsOfService(allowMetricsAndCrashUploading);
-        FirstRunStatus.setSkipWelcomePage(true);
         flushPersistentData();
 
         if (sObserver != null) sObserver.onAcceptTermsOfService(this);
@@ -817,8 +887,15 @@ public class FirstRunActivity extends FirstRunActivityBase
         }
     }
 
-    private boolean isRtl() {
+    private static boolean isRtl() {
         return LocalizationUtils.isLayoutRtl();
+    }
+
+    /** Returns whether {@code position} is a valid index pointing to the welcome page. */
+    private boolean isWelcomePage(int position) {
+        return position >= 0
+                && position < mPages.size()
+                && mPages.get(position).getFragmentClass() == SigninFirstRunFragment.class;
     }
 
     /** Returns whether the set attempt will lead to transition to an existing Fragment. */
@@ -827,6 +904,11 @@ public class FirstRunActivity extends FirstRunActivityBase
         if (mAnimator != null) return false;
 
         if (sObserver != null) sObserver.onJumpToPage(this, position);
+
+        // The welcome page can only be skipped on subsequent launches once the user has moved past
+        // it. Going back to it means it should be shown again. This is done before the completion
+        // check below so that it's also set when there are no pages after the welcome page.
+        FirstRunStatus.setSkipWelcomePage(!isWelcomePage(position));
 
         if (position >= mPagerAdapter.getItemCount()) {
             completeFirstRunExperience();
@@ -864,7 +946,7 @@ public class FirstRunActivity extends FirstRunActivityBase
 
                 @Override
                 public void onAnimationUpdate(ValueAnimator animation) {
-                    float frac = ((Float) animation.getAnimatedValue()).floatValue();
+                    float frac = (Float) animation.getAnimatedValue();
                     // Get the up-to-date width, which is subject to user change, e.g., by
                     // orientation changes or window resize.
                     int width = mPager.getWidth();
@@ -972,6 +1054,12 @@ public class FirstRunActivity extends FirstRunActivityBase
     }
 
     @Override
+    public void showInfoPage(String url) {
+        assert url.startsWith("https://");
+        CustomTabActivity.showInfoPage(this, url);
+    }
+
+    @Override
     public Promise<@Nullable Void> getNativeInitializationPromise() {
         return mNativeInitializationPromise;
     }
@@ -1012,7 +1100,7 @@ public class FirstRunActivity extends FirstRunActivityBase
                         assumeNonNull(getEdgeToEdgeStateProvider()),
                         /* windowIdSupplier= */ null);
         mAppHeaderCoordinator.addObserver(this);
-        mAppHeaderCoordinator.updateForegroundColor(
+        mAppHeaderCoordinator.onBackgroundColorChanged(
                 SemanticColorUtils.getColorSurfaceContainerLow(this));
         if (mAppHeaderCoordinator.getAppHeaderState() != null) {
             setCaptionBarHeight(mAppHeaderCoordinator.getAppHeaderState().getAppHeaderHeight());
@@ -1043,6 +1131,14 @@ public class FirstRunActivity extends FirstRunActivityBase
                 mAppHeaderCoordinator.destroy();
                 mAppHeaderCoordinator = null;
             }
+        }
+        if (mBottomSheetController != null) {
+            mBottomSheetController.destroy();
+            mBottomSheetController = null;
+        }
+        if (mScrimManager != null) {
+            mScrimManager.destroy();
+            mScrimManager = null;
         }
         super.onDestroy();
     }

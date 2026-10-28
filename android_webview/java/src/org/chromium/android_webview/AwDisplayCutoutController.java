@@ -43,7 +43,9 @@ public class AwDisplayCutoutController {
 
     /** This is a delegate that the embedder needs to implement. */
     public interface Delegate {
-        /** @return The DIP scale. */
+        /**
+         * @return The DIP scale.
+         */
         float getDipScale();
 
         /**
@@ -109,6 +111,9 @@ public class AwDisplayCutoutController {
     // position.
     private int mVisualViewportBottomInset;
 
+    // Whether to inset the visual viewport when the container view extends below the window.
+    private boolean mInsetViewportBelowWindow = true;
+
     /**
      * Constructor for AwDisplayCutoutController.
      *
@@ -151,6 +156,17 @@ public class AwDisplayCutoutController {
                         return insets;
                     }
                 });
+    }
+
+    /**
+     * Unregister a container view to listen to window insets.
+     *
+     * @param containerView A container View, such as fullscreen view.
+     */
+    public void unregisterContainerView(View containerView) {
+        if (DEBUG) Log.i(TAG, "unregisterContainerView");
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return;
+        containerView.setOnApplyWindowInsetsListener(null);
     }
 
     /**
@@ -226,6 +242,17 @@ public class AwDisplayCutoutController {
         return mVisualViewportBottomInset;
     }
 
+    /**
+     * Sets whether to inset the visual viewport when the container view extends below the bottom of
+     * the window.
+     */
+    void setInsetViewportBelowWindow(boolean insetViewportBelowWindow) {
+        if (mInsetViewportBelowWindow == insetViewportBelowWindow) return;
+        mInsetViewportBelowWindow = insetViewportBelowWindow;
+        recalculateBottomImeInset();
+        mDelegate.bottomImeInsetChanged();
+    }
+
     @VisibleForTesting
     public void recalculateBottomImeInset() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || !mContainerView.isAttachedToWindow()) {
@@ -252,6 +279,11 @@ public class AwDisplayCutoutController {
                         pos[0] + mContainerView.getWidth(),
                         pos[1] + mContainerView.getHeight());
 
+        if (!mInsetViewportBelowWindow && viewRectInWindow.bottom > windowBounds.height()) {
+            mVisualViewportBottomInset = 0;
+            return;
+        }
+
         // This is the positive difference between the bottom of the WebView and the top of the IME.
         // For cases where the bottom of the WebView is higher than the top of the IME, return 0.
         // Otherwise, calculate the overlap by taking the bottom of the WebView (regardless of
@@ -274,13 +306,17 @@ public class AwDisplayCutoutController {
         mContainerView.requestApplyInsets();
     }
 
-    /** @see View#onSizeChanged(int, int, int, int) */
+    /**
+     * @see View#onSizeChanged(int, int, int, int)
+     */
     public void onSizeChanged() {
         if (DEBUG) Log.i(TAG, "onSizeChanged");
         onUpdateWindowInsets();
     }
 
-    /** @see View#onAttachedToWindow() */
+    /**
+     * @see View#onAttachedToWindow()
+     */
     public void onAttachedToWindow() {
         if (DEBUG) Log.i(TAG, "onAttachedToWindow");
         onUpdateWindowInsets();

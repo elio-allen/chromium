@@ -25,7 +25,7 @@
 #include "components/autofill/core/browser/foundations/test_autofill_manager_waiter.h"
 #include "components/autofill/core/browser/foundations/with_test_autofill_client_driver_manager.h"
 #include "components/autofill/core/browser/ml_model/field_classification_model_handler.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_constants.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/form_data_test_api.h"
@@ -79,6 +79,7 @@ class MockAutofillDriver : public TestAutofillDriver {
               TriggerFormExtractionInAllFrames,
               (base::OnceCallback<void(bool)>),
               ());
+  MOCK_METHOD(void, ClearFormCacheInAllFrames, (), (override));
 };
 
 class MockFieldClassificationModelHandler
@@ -901,6 +902,12 @@ TEST_F(AutofillManagerTest, TriggerFormExtractionInAllFrames) {
   autofill_manager().TriggerFormExtractionInAllFrames(base::DoNothing());
 }
 
+TEST_F(AutofillManagerTest, ReparseKnownForms) {
+  EXPECT_CALL(autofill_driver(), ClearFormCacheInAllFrames);
+  EXPECT_CALL(autofill_driver(), TriggerFormExtractionInAllFrames);
+  autofill_manager().ReparseKnownForms();
+}
+
 // Ensure that `FieldClassificationModelHandler`s are called when parsing the
 // form in `ParseFormsAsync()`. These tests intentionally don't associate
 // predictions to the `FormStructure`, they only verify that
@@ -1128,9 +1135,6 @@ TEST_F(AutofillManagerTest, GetHeuristicPredictionForForm) {
 // OnLoadedServerPredictions() adds a new form structure to the cache.
 TEST_F(AutofillManagerTest,
        EarlyServerPredictions_QueryServerPredictions_StartQueryRequestCalled) {
-  base::test::ScopedFeatureList feature_list{
-      features::kAutofillServerQueryPredictionsEarly};
-
   std::vector<FormData> forms = CreateTestForms(1);
   std::vector<FormSignature> form_signatures = {
       CalculateFormSignature(forms[0])};
@@ -1159,9 +1163,6 @@ TEST_F(AutofillManagerTest,
 // same form ID but different form signature and lower version.
 TEST_F(AutofillManagerTest,
        EarlyServerPredictions_QueryServerPredictions_UpdatesExistingFormId) {
-  base::test::ScopedFeatureList feature_list{
-      features::kAutofillServerQueryPredictionsEarly};
-
   // Create a form and add it to the form cache via OnFormsSeen().
   EXPECT_CALL(autofill_manager(), ShouldParseForms).WillOnce(Return(true));
   TestAutofillManagerWaiter waiter(autofill_manager());
@@ -1212,9 +1213,6 @@ TEST_F(AutofillManagerTest,
 TEST_F(
     AutofillManagerTest,
     EarlyServerPredictions_QueryServerPredictions_UpdatesExistingFormIdWithSameSignature) {
-  base::test::ScopedFeatureList feature_list{
-      features::kAutofillServerQueryPredictionsEarly};
-
   // Create a form and add it to the form cache via OnFormsSeen().
   EXPECT_CALL(autofill_manager(), ShouldParseForms).WillOnce(Return(true));
   TestAutofillManagerWaiter waiter(autofill_manager());
@@ -1271,9 +1269,6 @@ TEST_F(
 TEST_F(
     AutofillManagerTest,
     EarlyServerPredictions_QueryServerPredictions_DoesNotOverridesExistingFormIdWithHigherVersion) {
-  base::test::ScopedFeatureList feature_list{
-      features::kAutofillServerQueryPredictionsEarly};
-
   // Create a form and add it to the form cache via OnFormsSeen().
   EXPECT_CALL(autofill_manager(), ShouldParseForms).WillOnce(Return(true));
   TestAutofillManagerWaiter waiter(autofill_manager());
@@ -1321,9 +1316,6 @@ TEST_F(
 // their signature is not part of the query response.
 TEST_F(AutofillManagerTest,
        EarlyServerPredictions_QueryServerPredictions_MissingSignature) {
-  base::test::ScopedFeatureList feature_list{
-      features::kAutofillServerQueryPredictionsEarly};
-
   std::vector<FormData> forms = {
       test::CreateTestAddressFormData(/*unique_id=*/"0"),
       test::CreateTestAddressFormData(/*unique_id=*/"1")};
@@ -1353,9 +1345,6 @@ TEST_F(AutofillManagerTest,
 TEST_F(
     AutofillManagerTest,
     EarlyServerPredictions_OnLoadedServerPredictions_QueryServerPredictions_RespectsCacheSize) {
-  base::test::ScopedFeatureList feature_list{
-      features::kAutofillServerQueryPredictionsEarly};
-
   std::vector<FormData> forms;
   for (size_t i = 0; i < kAutofillManagerMaxFormCacheSize + 1; ++i) {
     forms.push_back(test::CreateTestAddressFormData(

@@ -12,7 +12,7 @@
 #include "base/containers/flat_map.h"
 #include "base/notreached.h"
 #include "components/autofill/core/browser/field_types.h"
-#include "components/autofill/core/browser/form_parsing/autofill_parsing_utils.h"
+#include "components/autofill/core/browser/form_parsing/autofill_parsing_util.h"
 #include "components/autofill/core/common/dense_set.h"
 #include "components/autofill/core/common/is_required.h"
 #include "components/autofill/core/common/unique_ids.h"
@@ -44,8 +44,8 @@ enum class HeuristicParser {
 struct FieldCandidatePriority {
   FieldCandidatePriority(bool is_name_or_high_quality_label_match,
                          HeuristicParser parser_type);
-  bool is_name_or_high_quality_label_match;
-  size_t parser_priority;
+  bool is_name_or_high_quality_label_match = false;
+  size_t parser_priority = 0;
   auto operator<=>(const FieldCandidatePriority&) const = default;
 };
 

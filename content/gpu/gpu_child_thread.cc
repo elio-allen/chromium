@@ -43,7 +43,7 @@
 #include "services/metrics/public/mojom/ukm_interface.mojom.h"
 #include "services/service_manager/public/cpp/binder_registry.h"
 #include "services/viz/privileged/mojom/gl/gpu_service.mojom.h"
-#include "services/viz/public/cpp/crash_keys.h"
+#include "services/webnn/public/mojom/webnn_browser_host.mojom.h"
 #include "third_party/skia/include/core/SkGraphics.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -70,7 +70,6 @@ void HandleBadMessage(const std::string& error) {
   LOG(ERROR) << "Mojo error in GPU process: " << error;
   mojo::debug::ScopedMessageErrorCrashKey crash_key_value(error);
   base::debug::DumpWithoutCrashing();
-  viz::ClearDeserializationCrashKeys();
 }
 
 ChildThreadImpl::Options GetOptions(
@@ -110,6 +109,17 @@ viz::VizMainImpl::ExternalDependencies CreateVizMainDependencies() {
   mojo::Remote<ukm::mojom::UkmRecorderFactory> factory;
   ChildThread::Get()->BindHostReceiver(factory.BindNewPipeAndPassReceiver());
   deps.ukm_recorder = ukm::MojoUkmRecorder::Create(*factory);
+
+  // Provide a callback that binds the interface the WebNN service uses to
+  // broker operations through the browser process (see
+  // webnn::mojom::WebNNBrowserHost). It is invoked on demand when WebNN is
+  // first used, rather than at process startup, so the browser only creates a
+  // content::WebNNBrowserHostImpl (in GpuProcessHost::BindHostReceiver) for GPU
+  // processes that actually use WebNN.
+  deps.bind_webnn_browser_host = base::BindOnce(
+      [](mojo::PendingReceiver<webnn::mojom::WebNNBrowserHost> receiver) {
+        ChildThread::Get()->BindHostReceiver(std::move(receiver));
+      });
   return deps;
 }
 

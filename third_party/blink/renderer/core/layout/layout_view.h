@@ -49,10 +49,6 @@ struct VariableLengthTransformResult {
   TextOffsetMap offset_map;
 };
 
-using SVGTextDescendantsMap =
-    HeapHashMap<WeakMember<const LayoutBlock>,
-                Member<GCedHeapHashSet<Member<LayoutSVGText>>>>;
-
 // LayoutView is the root of the layout tree and the Document's LayoutObject.
 //
 // It corresponds to the CSS concept of 'initial containing block' (or ICB).
@@ -75,7 +71,11 @@ class CORE_EXPORT LayoutView : public LayoutBlockFlow {
   void Trace(Visitor*) const override;
 
   void LayoutRoot();
-  void WillBeDestroyed() override;
+
+  // Make RecalcScrollableOverflow public to trigger calculation from root.
+  using LayoutBlockFlow::RecalcScrollableOverflow;
+
+  void WillBeDestroyed(const ComputedStyle*) override;
 
   // hitTest() will update layout, style and compositing first while
   // hitTestNoLifecycleUpdate() does not.
@@ -150,7 +150,8 @@ class CORE_EXPORT LayoutView : public LayoutBlockFlow {
 
   void QuadsInAncestorInternal(Vector<gfx::QuadF>&,
                                const LayoutBoxModelObject* ancestor,
-                               MapCoordinatesFlags) const override;
+                               MapCoordinatesFlags,
+                               BoxQuadType) const override;
 
   PhysicalRect ViewRect() const override;
   using LayoutBlockFlow::OverflowClipRect;
@@ -207,6 +208,16 @@ class CORE_EXPORT LayoutView : public LayoutBlockFlow {
   AtomicString NamedPageAtIndex(wtf_size_t page_index) const;
 
   PhysicalRect DocumentRect() const;
+
+  const std::optional<PhysicalRect>& ScrollableOverflowWithoutPaddingBox()
+      const {
+    NOT_DESTROYED();
+    return scrollable_overflow_without_padding_box_;
+  }
+  void SetScrollableOverflowWithoutPaddingBox(const PhysicalRect& rect) {
+    NOT_DESTROYED();
+    scrollable_overflow_without_padding_box_ = rect;
+  }
 
   // FIXME: This is a work around because the current implementation of counters
   // requires walking the entire tree repeatedly and most pages don't actually
@@ -341,11 +352,6 @@ class CORE_EXPORT LayoutView : public LayoutBlockFlow {
 
   PhysicalSize InitialContainingBlockSize() const;
 
-  SVGTextDescendantsMap& SvgTextDescendantsMap() {
-    NOT_DESTROYED();
-    return svg_text_descendants_;
-  }
-
   // Manage rare data of LayoutText.
   void RegisterVariableLengthTransformResult(
       const LayoutText& text,
@@ -362,6 +368,7 @@ class CORE_EXPORT LayoutView : public LayoutBlockFlow {
  private:
   void StyleDidChange(StyleDifference,
                       const ComputedStyle* old_style,
+                      const ComputedStyle& new_style,
                       const StyleChangeContext&) override;
 
   // Set if laying out with a new initial containing block size, and populated
@@ -403,12 +410,6 @@ class CORE_EXPORT LayoutView : public LayoutBlockFlow {
   unsigned layout_counter_count_ = 0;
   unsigned layout_list_item_count_ = 0;
 
-  // This map keeps track of SVG <text> descendants.
-  // LayoutSVGText needs to do re-layout on transform changes of any ancestor
-  // because LayoutSVGText's layout result depends on scaling factors
-  // computed with ancestor transforms.
-  SVGTextDescendantsMap svg_text_descendants_;
-
   HeapHashMap<WeakMember<const LayoutText>, VariableLengthTransformResult>
       text_to_variable_length_transform_result_;
 
@@ -434,6 +435,7 @@ class CORE_EXPORT LayoutView : public LayoutBlockFlow {
   std::optional<CachedScrollDimensions> cached_scroll_dimensions_;
 
   mutable PhysicalRect previous_background_rect_;
+  std::optional<PhysicalRect> scrollable_overflow_without_padding_box_;
 
   int vertical_scrollbar_width_for_viewport_units_ = 0;
   int horizontal_scrollbar_height_for_viewport_units_ = 0;

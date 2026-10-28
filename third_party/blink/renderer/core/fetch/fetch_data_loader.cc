@@ -76,14 +76,21 @@ class FetchDataLoaderAsBlobHandle final : public FetchDataLoader,
     load_canceled_ = true;
     blob_handle_.reset();
     consumer_->Cancel();
+    NotifyDrainedPipeClient(nullptr);
   }
 
   void DidFetchDataStartedDataPipe(
-      mojo::ScopedDataPipeConsumerHandle handle) override {
-    DCHECK(BlobDataHandle::GetBlobRegistry());
-    BlobDataHandle::GetBlobRegistry()->RegisterFromStream(
-        mime_type_ ? mime_type_ : "", /*content_disposition=*/"",
-        /*length_hint=*/0, std::move(handle),
+      mojo::ScopedDataPipeConsumerHandle handle,
+      DrainedDataPipeClient* drained_pipe_client) override {
+    CHECK(!drained_pipe_client_);
+    drained_pipe_client_ = drained_pipe_client;
+    if (drained_pipe_client_) {
+      drained_pipe_client_->WillCreateBlobFromDrainedDataPipe();
+    }
+    mojom::blink::BlobRegistry* registry = BlobDataHandle::GetBlobRegistry();
+    CHECK(registry);
+    registry->RegisterFromStream(
+        mime_type_ ? mime_type_ : "", /*length_hint=*/0, std::move(handle),
         mojo::PendingAssociatedRemote<mojom::blink::ProgressClient>(),
         blink::BindOnce(
             &FetchDataLoaderAsBlobHandle::FinishedCreatingFromDataPipe,
@@ -105,15 +112,23 @@ class FetchDataLoaderAsBlobHandle final : public FetchDataLoader,
     visitor->Trace(consumer_);
     visitor->Trace(client_);
     visitor->Trace(data_pipe_loader_);
+    visitor->Trace(drained_pipe_client_);
     FetchDataLoader::Trace(visitor);
     FetchDataLoader::Client::Trace(visitor);
   }
 
  private:
+  void NotifyDrainedPipeClient(const scoped_refptr<BlobDataHandle>& blob) {
+    if (DrainedDataPipeClient* client = drained_pipe_client_.Release()) {
+      client->DidCreateBlobFromDrainedDataPipe(blob);
+    }
+  }
+
   void FinishedCreatingFromDataPipe(
       const scoped_refptr<BlobDataHandle>& blob_handle) {
     if (load_canceled_)
       return;
+    NotifyDrainedPipeClient(blob_handle);
     if (!blob_handle) {
       DidFetchDataLoadFailed();
       return;
@@ -128,6 +143,8 @@ class FetchDataLoaderAsBlobHandle final : public FetchDataLoader,
   Member<BytesConsumer> consumer_;
   Member<FetchDataLoader::Client> client_;
   Member<FetchDataLoader> data_pipe_loader_;
+  // Set while a blob notification is owed to the drained pipe's client.
+  Member<DrainedDataPipeClient> drained_pipe_client_;
 
   const String mime_type_;
   const scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
@@ -161,10 +178,9 @@ class FetchDataLoaderAsArrayBuffer final : public FetchDataLoader,
         return;
       if (result == BytesConsumer::Result::kOk) {
         if (!buffer.empty()) {
-          bool ok = Append(buffer);
-          if (!ok) {
-            [[maybe_unused]] auto unused = consumer_->EndRead(0);
-            consumer_->Cancel();
+          if (!Append(buffer)) {
+            std::ignore = consumer_->EndRead(0);
+            Cancel();
             client_->DidFetchDataLoadFailed();
             return;
           }
@@ -203,7 +219,7 @@ class FetchDataLoaderAsArrayBuffer final : public FetchDataLoader,
 
  private:
   // Appending empty data is not allowed. Returns false upon buffer overflow.
-  bool Append(base::span<const char> data) {
+  [[nodiscard]] bool Append(base::span<const char> data) {
     DCHECK(!data.empty());
     buffer_->Append(data);
     if (buffer_->size() >
@@ -484,7 +500,7 @@ class FetchDataLoaderAsString final : public FetchDataLoader,
         if (!buffer.empty()) {
           if (!Append(decoder_->Decode(base::as_bytes(buffer)))) {
             std::ignore = consumer_->EndRead(buffer.size());
-            consumer_->Cancel();
+            Cancel();
             client_->DidFetchDataLoadFailed();
             return;
           }
@@ -498,7 +514,7 @@ class FetchDataLoaderAsString final : public FetchDataLoader,
           NOTREACHED();
         case BytesConsumer::Result::kDone:
           if (!Append(decoder_->Flush())) {
-            consumer_->Cancel();
+            Cancel();
             client_->DidFetchDataLoadFailed();
             return;
           }
@@ -568,8 +584,9 @@ class FetchDataLoaderAsDataPipe final : public FetchDataLoader,
     // First, try to drain the underlying mojo::DataPipe from the consumer
     // directly.  If this succeeds, all we need to do here is watch for
     // the pipe to be closed to signal completion.
+    DrainedDataPipeClient* drained_pipe_client = nullptr;
     mojo::ScopedDataPipeConsumerHandle pipe_consumer =
-        consumer->DrainAsDataPipe();
+        consumer->DrainAsDataPipe(&drained_pipe_client);
     if (!pipe_consumer.is_valid()) {
       // If we cannot drain the pipe from the consumer then we must copy
       // data from the consumer into a new pipe.
@@ -606,7 +623,8 @@ class FetchDataLoaderAsDataPipe final : public FetchDataLoader,
 
     // Give the resulting pipe consumer handle to the client.
     DCHECK(pipe_consumer.is_valid());
-    client_->DidFetchDataStartedDataPipe(std::move(pipe_consumer));
+    client_->DidFetchDataStartedDataPipe(std::move(pipe_consumer),
+                                         drained_pipe_client);
 
     // Its possible that the consumer changes state immediately after
     // calling DrainDataPipe.  In this case we call OnStateChange()
@@ -616,7 +634,7 @@ class FetchDataLoaderAsDataPipe final : public FetchDataLoader,
       OnStateChange();
   }
 
-  void OnPeerClosed(MojoResult result, const mojo::HandleSignalsState& state) {
+  void OnPeerClosed(MojoResult, const mojo::HandleSignalsState&) {
     StopInternal();
     client_->DidFetchDataLoadFailed();
   }
@@ -719,8 +737,8 @@ FetchDataLoader* FetchDataLoader::CreateLoaderAsFailure() {
 }
 
 FetchDataLoader* FetchDataLoader::CreateLoaderAsFormData(
-    const String& multipartBoundary) {
-  return MakeGarbageCollected<FetchDataLoaderAsFormData>(multipartBoundary);
+    const String& multipart_boundary) {
+  return MakeGarbageCollected<FetchDataLoaderAsFormData>(multipart_boundary);
 }
 
 FetchDataLoader* FetchDataLoader::CreateLoaderAsString(

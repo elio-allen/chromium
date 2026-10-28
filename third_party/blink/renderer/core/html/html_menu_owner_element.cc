@@ -6,64 +6,172 @@
 
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
+#include "third_party/blink/renderer/core/dom/node_traversal.h"
 #include "third_party/blink/renderer/core/dom/popover_data.h"
 #include "third_party/blink/renderer/core/event_type_names.h"
 #include "third_party/blink/renderer/core/events/keyboard_event.h"
 #include "third_party/blink/renderer/core/events/mouse_event.h"
+#include "third_party/blink/renderer/core/execution_context/agent.h"
 #include "third_party/blink/renderer/core/html/html_hr_element.h"
 #include "third_party/blink/renderer/core/html/html_menu_bar_element.h"
-#include "third_party/blink/renderer/core/html/html_menu_item_element.h"
+#include "third_party/blink/renderer/core/html/html_menu_item_element_base.h"
 #include "third_party/blink/renderer/core/html/html_menu_list_element.h"
 #include "third_party/blink/renderer/core/html/html_sub_menu_element.h"
 #include "third_party/blink/renderer/core/html/menu_mutation_observer.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/scheduler/public/event_loop.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
+
+namespace {
+HTMLMenuOwnerElement* FindMenuRoot(Node* node) {
+  HTMLMenuOwnerElement* root = nullptr;
+  for (Node* ancestor = node; ancestor; ancestor = ancestor->parentNode()) {
+    if (auto* menu = DynamicTo<HTMLMenuOwnerElement>(ancestor)) {
+      root = menu;
+    }
+  }
+  return root;
+}
+}  // namespace
 
 HTMLMenuOwnerElement::HTMLMenuOwnerElement(HTMLQualifiedName tag_name,
                                            Document& document)
     : HTMLElement(tag_name, document), type_ahead_(this) {
   DCHECK(RuntimeEnabledFeatures::MenuElementsEnabled());
-  menu_mutation_observer_ = MakeGarbageCollected<MenuMutationObserver>(*this);
 }
 
-bool HTMLMenuOwnerElement::IsInDialogMode() const {
-  return content_model_violations_count_ > 0U;
+bool HTMLMenuOwnerElement::IsInViolationMode() const {
+  return is_in_violation_mode_;
+}
+
+void HTMLMenuOwnerElement::ScheduleViolationModeUpdate() {
+  HTMLMenuOwnerElement* root = FindMenuRoot(this);
+  DCHECK(root);
+  if (root->is_violation_mode_update_scheduled_) {
+    return;
+  }
+  root->is_violation_mode_update_scheduled_ = true;
+  GetDocument().GetAgent().event_loop()->EnqueueMicrotask(
+      BindOnce(&HTMLMenuOwnerElement::UpdateViolationModeForMenuHierarchy,
+               WrapWeakPersistent(root)));
+}
+
+void HTMLMenuOwnerElement::UpdateViolationModeForMenuHierarchy() {
+  is_violation_mode_update_scheduled_ = false;
+
+  if (!menu_mutation_observer_) {
+    // If our observer has been destroyed, that means we are no longer the root
+    // menu. The new root menu will set the ARIA roles for its descendant menus,
+    // including |this|.
+    return;
+  }
+  DCHECK_EQ(this, FindMenuRoot(this))
+      << "We only intend for the root menu to update its subtrees.";
+
+  const bool is_content_model_violated = total_violations_in_tree_ > 0;
+
+  if (!is_content_model_violated && !is_in_violation_mode_) {
+#if EXPENSIVE_DCHECKS_ARE_ON()
+    for (Node* node = this; node; node = NodeTraversal::Next(*node, this)) {
+      if (auto* menu = DynamicTo<HTMLMenuOwnerElement>(node)) {
+        DCHECK(!menu->is_in_violation_mode_)
+            << "Invariant failed: Root is not in violation mode, target is "
+               "not in violation mode, but a descendant menu is.";
+      }
+    }
+#endif
+    // We don't have to update anything if the tree has never had any
+    // violations.
+    return;
+  }
+
+  for (Node* node = this; node; node = NodeTraversal::Next(*node, this)) {
+    if (auto* menu = DynamicTo<HTMLMenuOwnerElement>(node)) {
+      if (menu->is_in_violation_mode_ != is_content_model_violated) {
+        menu->is_in_violation_mode_ = is_content_model_violated;
+        if (AXObjectCache* cache = GetDocument().ExistingAXObjectCache()) {
+          cache->HandleAttributeChanged(html_names::kRoleAttr, menu);
+        }
+      }
+    }
+  }
 }
 
 void HTMLMenuOwnerElement::IncreaseContentModelViolationCount() {
-  bool dialog_mode_changed = !content_model_violations_count_;
-  ++content_model_violations_count_;
-  if (dialog_mode_changed) {
-    if (AXObjectCache* cache = GetDocument().ExistingAXObjectCache()) {
-      // Unlike <select>, which keeps its internal role as kComboBoxSelect and
-      // relies on an accessor adjustment in AXObject::RoleValue() to expose
-      // kDialog, <menu> and <menubar> change their internal role to kDialog.
-      // Because the role changes here, we must use
-      // HandleAttributeChanged(kRoleAttr) to force the accessibility object to
-      // be destroyed and recreated, rather than just using MarkElementDirty()
-      // to refresh its properties.
-      cache->HandleAttributeChanged(html_names::kRoleAttr, this);
-    }
+  ++total_violations_in_tree_;
+  if (total_violations_in_tree_ == 1) {
+    ScheduleViolationModeUpdate();
   }
 }
 
 void HTMLMenuOwnerElement::DecreaseContentModelViolationCount() {
-  DCHECK_GT(content_model_violations_count_, 0U);
-  bool dialog_mode_changed = content_model_violations_count_ == 1;
-  --content_model_violations_count_;
-  if (dialog_mode_changed) {
-    if (AXObjectCache* cache = GetDocument().ExistingAXObjectCache()) {
-      cache->HandleAttributeChanged(html_names::kRoleAttr, this);
-    }
+  DCHECK_GT(total_violations_in_tree_, 0);
+  --total_violations_in_tree_;
+  if (total_violations_in_tree_ == 0) {
+    ScheduleViolationModeUpdate();
   }
+}
+
+Node::InsertionNotificationRequest HTMLMenuOwnerElement::InsertedInto(
+    ContainerNode& insertion_point) {
+  auto result = HTMLElement::InsertedInto(insertion_point);
+  if (!isConnected()) {
+    // We don't need an observer until this subtree is in the document.
+    return result;
+  }
+
+  DCHECK(!is_in_violation_mode_)
+      << "Before attaching we haven't been checking for violations";
+
+  HTMLMenuOwnerElement* root = FindMenuRoot(parentNode());
+  if (root) {
+    if (root->is_in_violation_mode_) {
+      // A menu in our hierarchy has a violation, so we are going to
+      // violation mode.
+      is_in_violation_mode_ = true;
+      if (AXObjectCache* cache = GetDocument().ExistingAXObjectCache()) {
+        cache->HandleAttributeChanged(html_names::kRoleAttr, this);
+      }
+    }
+    // We are a submenu, and our root already has the observer.
+    return result;
+  }
+  // We are the topmost menu!
+  DCHECK(!menu_mutation_observer_);
+  total_violations_in_tree_ = 0;
+  menu_mutation_observer_ = MakeGarbageCollected<MenuMutationObserver>(*this);
+  HeapHashSet<Member<Node>> visited_nodes;
+  menu_mutation_observer_->CheckNodeAndDescendantsForViolations(
+      this, visited_nodes, /*disconnected_parent=*/nullptr);
+
+  if (total_violations_in_tree_ > 0) {
+    DCHECK(is_violation_mode_update_scheduled_)
+        << "CheckNodeAndDescendantsForViolations should have scheduled an "
+           "update";
+  }
+
+  return result;
+}
+
+void HTMLMenuOwnerElement::RemovedFrom(ContainerNode& insertion_point) {
+  HTMLElement::RemovedFrom(insertion_point);
+  if (menu_mutation_observer_) {
+    menu_mutation_observer_->Disconnect();
+    menu_mutation_observer_ = nullptr;
+    total_violations_in_tree_ = 0;
+  }
+  is_in_violation_mode_ = false;
 }
 
 void HTMLMenuOwnerElement::Trace(Visitor* visitor) const {
   visitor->Trace(menu_mutation_observer_);
   visitor->Trace(last_mouseup_menu_item_);
+  visitor->Trace(type_ahead_);
   HTMLElement::Trace(visitor);
+  TypeAheadDataSource::Trace(visitor);
 }
 
 MenuItemList HTMLMenuOwnerElement::ItemList() const {
@@ -77,17 +185,17 @@ bool HTMLMenuOwnerElement::ShouldIgnoreDescendantsForElementTraversals(
          IsA<HTMLMenuListElement>(element) || IsA<HTMLHRElement>(element);
 }
 
-bool HTMLMenuOwnerElement::IsTopLevelOwner() const {
+bool HTMLMenuOwnerElement::IsTopLevelOwnerForClickHandling() const {
   return IsA<HTMLMenuBarElement>(this) ||
          (IsA<HTMLMenuListElement>(this) &&
           !IsA<HTMLSubMenuElement>(parentNode()));
 }
 
 void HTMLMenuOwnerElement::DefaultEventHandler(Event& event) {
-  auto menuitem_for_event = [this, &event]() -> HTMLMenuItemElement* {
+  auto menuitem_for_event = [this, &event]() -> HTMLMenuItemElementBase* {
     for (NodeEventContext& node_context : event.GetEventPath()) {
       Node& node = node_context.GetNode();
-      if (auto* menu_item = DynamicTo<HTMLMenuItemElement>(node)) {
+      if (auto* menu_item = DynamicTo<HTMLMenuItemElementBase>(node)) {
         return menu_item;
       }
       if (&node == this) {
@@ -97,7 +205,7 @@ void HTMLMenuOwnerElement::DefaultEventHandler(Event& event) {
     NOTREACHED();
   };
 
-  if (IsA<MouseEvent>(event) && IsTopLevelOwner()) {
+  if (IsA<MouseEvent>(event) && IsTopLevelOwnerForClickHandling()) {
     if (event.type() == event_type_names::kMousedown) {
       last_mouseup_menu_item_ = nullptr;
     } else if (event.type() == event_type_names::kMouseup) {
@@ -105,7 +213,7 @@ void HTMLMenuOwnerElement::DefaultEventHandler(Event& event) {
     } else if (event.type() == event_type_names::kClick) {
       if (!processing_click_ && last_mouseup_menu_item_ &&
           last_mouseup_menu_item_ != menuitem_for_event()) {
-        HTMLMenuItemElement* item_to_click = last_mouseup_menu_item_;
+        HTMLMenuItemElementBase* item_to_click = last_mouseup_menu_item_;
         last_mouseup_menu_item_ = nullptr;
         processing_click_ = true;
         item_to_click->DispatchSimulatedClick(&event);
@@ -138,13 +246,13 @@ void HTMLMenuOwnerElement::DefaultEventHandler(Event& event) {
 
 int HTMLMenuOwnerElement::IndexOfSelectedOption() const {
   auto* focused_menuitem =
-      DynamicTo<HTMLMenuItemElement>(GetDocument().FocusedElement());
+      DynamicTo<HTMLMenuItemElementBase>(GetDocument().FocusedElement());
   if (!focused_menuitem) {
     return -1;
   }
 
   int index = 0;
-  for (HTMLMenuItemElement& menuitem : ItemList()) {
+  for (HTMLMenuItemElementBase& menuitem : ItemList()) {
     if (menuitem == focused_menuitem) {
       return index;
     }

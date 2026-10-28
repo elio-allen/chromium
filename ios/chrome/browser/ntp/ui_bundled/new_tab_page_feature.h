@@ -5,7 +5,12 @@
 #ifndef IOS_CHROME_BROWSER_NTP_UI_BUNDLED_NEW_TAB_PAGE_FEATURE_H_
 #define IOS_CHROME_BROWSER_NTP_UI_BUNDLED_NEW_TAB_PAGE_FEATURE_H_
 
-#include "base/feature_list.h"
+#import <Foundation/Foundation.h>
+
+#import <string>
+
+#import "base/feature_list.h"
+#import "base/metrics/field_trial_params.h"
 
 class PrefService;
 
@@ -17,12 +22,35 @@ enum class FeedSwipeIPHVariation {
   kAnimated,
 };
 
-// Enum to represent arms of feature kNewTabPagePaddingUpdate.
-enum class NTPPaddingUpdateVariation {
+// Enum to represent arms of feature kNewTabPageUICleanup.
+enum class NTPUICleanupVariation {
   kDisabled,
   kTightPadding,
   kMediumPadding,
   kPreferredPadding,
+  kFakeboxBackgroundAndShadow,
+};
+
+// Defines the arms for the AIM Refactor Experiment.
+enum class AimButtonRefactorArm {
+  kDisabled = 0,
+  // Focuses the composebox with AI Mode enabled when the AIM Quick Action
+  // button is tapped.
+  kFocusComposeboxAimQuickAction = 1,
+  // Present AIM button in the Quick Actions row alongside an image generation
+  // mode chip.
+  kImageGenerationQuickAction = 2,
+  // Present AIM button in the Quick Actions row alongside an attach images
+  // chip.
+  kAttachImageQuickAction = 3,
+  // Present the AIM button as a standalone module beside the Most Visited
+  // Tiles. Remove the Quick Actions row from the NTP.
+  kAimAsModule = 4,
+  // Present the AIM button as a Most Visited Tile. Remove the Quick Actions row
+  // from the NTP.
+  kAimAsMvt = 5,
+  // Remove the AIM button and the Quick Actions row from the NTP.
+  kNoChips = 6,
 };
 
 #pragma mark - Feature declarations
@@ -35,12 +63,6 @@ BASE_DECLARE_FEATURE(kFeedHeaderSettings);
 // its own does nothing; relies on feature parameters.
 BASE_DECLARE_FEATURE(kOverrideFeedSettings);
 
-// Feature flag to enable transform-based animations for the NTP header.
-BASE_DECLARE_FEATURE(kNTPHeaderUseTransformsForAnimations);
-
-// Checks if transform-based animations are enabled for the NTP header.
-bool IsNTPHeaderTransformsForAnimationsEnabled();
-
 // Feature flag to enable in-product help for swipe action on the Feed.
 BASE_DECLARE_FEATURE(kFeedSwipeInProductHelp);
 
@@ -48,14 +70,27 @@ BASE_DECLARE_FEATURE(kFeedSwipeInProductHelp);
 // eligibility service instead of the new tab page mediator.
 BASE_DECLARE_FEATURE(kUseFeedEligibilityService);
 
-// Feature flag to enable the NTP background image cache.
-BASE_DECLARE_FEATURE(kEnableNTPBackgroundImageCache);
-
 // Feature flag to make the height of the NTP Logo and Doodle consistent.
 BASE_DECLARE_FEATURE(kConsistentLogoDoodleHeight);
 
-// Feature flag to enable the New Tab Page padding updates.
-BASE_DECLARE_FEATURE(kNewTabPagePaddingUpdate);
+// Feature flag to enable the New Tab Page UI cleanup. The refresh includes
+// padding and styling updates.
+BASE_DECLARE_FEATURE(kNewTabPageUICleanup);
+
+// Feature flag to place the Most Visited Tiles in the bottom sheet.
+BASE_DECLARE_FEATURE(kMVTInBottomSheet);
+
+// Checks if the Most Visited Tiles should be placed in the bottom sheet.
+bool IsMVTInBottomSheetEnabled();
+
+// Feature flag to enable custom ephemeral themes on the New Tab Page.
+BASE_DECLARE_FEATURE(kNewTabPageEphemeralTheme);
+
+// Checks if the New Tab Page ephemeral theme feature is enabled.
+bool IsNTPEphemeralThemeEnabled();
+
+// Enables the AimButtonRefactor feature.
+BASE_DECLARE_FEATURE(kAimButtonRefactor);
 
 #pragma mark - Feature parameters
 
@@ -80,9 +115,27 @@ extern const char kFeedSettingDiscoverReferrerParameter[];
 // enabled.
 extern const char kFeedSwipeInProductHelpArmParam[];
 
-// Parameter to indicate which arm of the feature kNewTabPagePaddingUpdate is
+// Parameter to indicate which arm of the feature kNewTabPageUICleanup is
 // enabled.
-extern const char kNewTabPagePaddingUpdateArmParam[];
+extern const char kNewTabPageUICleanupArmParam[];
+
+// Parameter to indicate which arm of the feature kAimButtonRefactor is enabled.
+extern const char kAimButtonRefactorArmParam[];
+
+// URL parameter for the ephemeral theme Lottie animation.
+BASE_DECLARE_FEATURE_PARAM(std::string,
+                           kNewTabPageEphemeralThemeAnimationUrlParam);
+
+// JSON string parameter for the ephemeral theme light/dark color mapping.
+BASE_DECLARE_FEATURE_PARAM(std::string,
+                           kNewTabPageEphemeralThemeAnimationColorMappingParam);
+
+// Seed color parameter for the ephemeral theme.
+BASE_DECLARE_FEATURE_PARAM(std::string,
+                           kNewTabPageEphemeralThemeSeedColorParam);
+
+// Version parameter for the ephemeral theme configuration.
+BASE_DECLARE_FEATURE_PARAM(int, kNewTabPageEphemeralThemeVersionParam);
 
 #pragma mark - Helpers
 
@@ -102,8 +155,8 @@ bool UseFeedEligibilityService();
 // Whether the AIM button is allowed in NTP.
 bool IsAimEnabledInNtp();
 
-// Whether the NTP background image cache is enabled.
-bool IsNTPBackgroundImageCacheEnabled();
+// Returns the active arm for the AimButtonRefactor feature.
+AimButtonRefactorArm GetAimButtonRefactorArm();
 
 // Whether the NTP Logo and Doodle should have a consistent height.
 bool IsConsistentLogoDoodleHeightEnabled();
@@ -114,7 +167,15 @@ BASE_DECLARE_FEATURE(kNewTabPageRedesign);
 // Whether the New Tab Page Redesign is enabled.
 bool IsNTPRedesignEnabled();
 
-// Returns the enabled variation of feature kNewTabPagePaddingUpdate.
-NTPPaddingUpdateVariation GetNTPPaddingUpdateVariation();
+// Whether the full New Tab Page UI cleanup is enabled. This cleanup includes
+// all color, sizing, and padding updates.
+bool IsNewTabPageUICleanupEnabled();
+
+// Returns whether the updated fakebox background color and shadow should be
+// applied.
+bool ShouldApplyFakeboxBackgroundAndShadow();
+
+// Returns the enabled variation of feature kNewTabPageUICleanup.
+NTPUICleanupVariation GetNewTabPageUICleanupVariation();
 
 #endif  // IOS_CHROME_BROWSER_NTP_UI_BUNDLED_NEW_TAB_PAGE_FEATURE_H_

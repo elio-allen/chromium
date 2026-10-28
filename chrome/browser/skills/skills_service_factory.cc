@@ -9,6 +9,7 @@
 #include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
@@ -21,6 +22,7 @@
 #include "components/skills/internal/enterprise_skills_provider.h"
 #include "components/skills/internal/skills_service_impl.h"
 #include "components/skills/public/skills_features.h"
+#include "components/skills/public/skills_prefs.h"
 #include "components/sync/model/data_type_store_service.h"
 #include "content/public/browser/storage_partition.h"
 
@@ -33,7 +35,8 @@ SkillsService* SkillsServiceFactory::GetForProfile(Profile* profile) {
 
 // static
 bool SkillsServiceFactory::IsSkillsEnabledForProfile(Profile* profile) {
-  return profile && skills::IsSkillsEnabled(profile->GetPrefs());
+  return profile && skills::IsSkillsEnabled(profile->GetPrefs()) &&
+         glic::GlicEnabling::IsEnabledForProfile(profile);
 }
 
 SkillsServiceFactory* SkillsServiceFactory::GetInstance() {

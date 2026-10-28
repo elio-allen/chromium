@@ -156,12 +156,8 @@ void CVDisplayLinkMac::TryRecordDisplayLinkCreation(
   auto [it, inserted] = globals.recorded_displays.insert(display_id);
   if (inserted) {
     UMA_HISTOGRAM_BOOLEAN("Viz.DisplayLink.Create.GPU.CVDisplayLink", success);
-
-    if (!SupportsDisplayLinkMacInBrowser()) {
-      // Avoid duplicate recording in
-      // 'Viz.ExternalBeginFrameSourceMac.DisplayLink.Create2' when
-      // CADisplayLink in the Browser process is supported and recorded there
-      // instead. This is the fallback path for DisplayLinkMacInBrowser.
+    // No metrics recording if in a fallback path.
+    if (!SupportsCADisplayLinkInGPU()) {
       RecordDisplayLinkCreation(success);
     }
   }
@@ -330,7 +326,7 @@ void CVDisplayLinkMac::RunCallbacks(const VSyncParamsMac& params) {
   // Make a local copy first because DisplayLink can be destroyed during the
   // callback.
   auto local_callbacks = callbacks_;
-  for (auto* callback : local_callbacks) {
+  for (VSyncCallbackMac* callback : local_callbacks) {
     callback->callback_for_displaylink_thread_.Run(params);
   }
 }

@@ -121,6 +121,10 @@ void WebView::SetWebContents(content::WebContents* replacement) {
   if (replacement == web_contents()) {
     return;
   }
+
+  GetViewAccessibility().RemoveChildTreeID();
+  SetNativeViewHostAccessibleParent(nullptr);
+
   TakeCrashedOverlayView(nullptr);
   DetachWebContentsNativeView();
   WebContentsObserver::Observe(replacement);
@@ -209,6 +213,14 @@ void WebView::EnableSizingFromWebContents(const gfx::Size& min_size,
       web_contents()->GetPrimaryMainFrame()->IsRenderFrameLive()) {
     MaybeEnableAutoResize(web_contents()->GetPrimaryMainFrame());
   }
+}
+
+const gfx::Size& WebView::AutoResizeMinSize() const {
+  return min_size_;
+}
+
+const gfx::Size& WebView::AutoResizeMaxSize() const {
+  return max_size_;
 }
 
 void WebView::TakeCrashedOverlayViewImpl(
@@ -334,7 +346,10 @@ void WebView::ViewHierarchyChanged(const ViewHierarchyChangedDetails& details) {
 }
 
 bool WebView::SkipDefaultKeyEventProcessing(const ui::KeyEvent& event) {
-  if (allow_accelerators_) {
+  if (allow_accelerators_deprecated_ ||
+      (web_contents() &&
+       GetAcceleratorHandlingFor(*web_contents()) ==
+           WebContentsAcceleratorHandling::kProcessBeforeRenderer)) {
     return FocusManager::IsTabTraversalKeyEvent(event);
   }
 
@@ -408,6 +423,8 @@ void WebView::AboutToRequestFocusFromTabTraversal(bool reverse) {
 }
 
 void WebView::AddedToWidget() {
+  // Track lifecycle even before WebContents is attached.
+  UpdateWidgetAXManagerObservation();
   if (!web_contents()) {
     return;
   }
@@ -418,17 +435,15 @@ void WebView::AddedToWidget() {
   // attached, update the accessible parent here to support reparenting the
   // WebView.
   if (holder_->native_view()) {
-    UpdateNativeViewHostAccessibleParent();
+    SetNativeViewHostAccessibleParent(parent());
   }
-
-  HandleWidgetAXManagerEnablement();
 }
 
 void WebView::RemovedFromWidget() {
   // Immediately clear the accessible parent upon being removed, as it's a
   // weak reference to an object that is about to be destroyed.
   if (holder_->native_view()) {
-    holder_->SetParentAccessible(gfx::NativeViewAccessible());
+    SetNativeViewHostAccessibleParent(nullptr);
   }
 
   widget_ax_manager_observation_.Reset();
@@ -490,7 +505,7 @@ void WebView::OnAXModeAdded(ui::AXMode mode) {
   // TODO(crbug.com/40672441): Remove when we enable ViewsAX by default.
   // `OnWidgetAXManagerEnabled` will take care of this instead.
   if (!::features::IsAccessibilityTreeForViewsEnabled()) {
-    UpdateNativeViewHostAccessibleParent();
+    SetNativeViewHostAccessibleParent(parent());
   }
 }
 
@@ -535,6 +550,18 @@ void WebView::RenderFrameHostChanged(content::RenderFrameHost* old_host,
   }
 
   SetUpNewMainFrame(new_host);
+}
+
+void WebView::PrimaryPageWillBeDeactivated(content::Page&) {
+  if (ViewAccessibility::IsViewsAccessibilityTreeEnabled()) {
+    SetNativeViewHostAccessibleParent(nullptr);
+  }
+}
+
+void WebView::PrimaryPageChanged(content::Page&) {
+  if (ViewAccessibility::IsViewsAccessibilityTreeEnabled()) {
+    NotifyAccessibilityWebContentsChanged();
+  }
 }
 
 void WebView::DidToggleFullscreenModeForTab(bool entered_fullscreen,
@@ -596,9 +623,9 @@ void WebView::AttachWebContentsNativeView() {
   holder_->Attach(view_to_attach);
 
   // We set the parent accessible of the native view to be our parent.
-  UpdateNativeViewHostAccessibleParent();
+  SetNativeViewHostAccessibleParent(parent());
 
-  HandleWidgetAXManagerEnablement();
+  UpdateWidgetAXManagerObservation();
 
   // The WebContents is not focused automatically when attached, so we need to
   // tell the WebContents it has focus if this has focus.
@@ -633,15 +660,31 @@ void WebView::UpdateCrashedOverlayView() {
   }
 }
 
-void WebView::UpdateNativeViewHostAccessibleParent() {
+void WebView::SetNativeViewHostAccessibleParent(View* parent) {
   // The NativeView needs the accessible of an ancestor that platform APIs
   // expose. That is never the web view itself, because its own accessible
   // belongs to the web contents.
-  View* parent = this->parent();
-  if (!parent) {
-    return;
+  gfx::NativeViewAccessible parent_accessible = gfx::NativeViewAccessible();
+  if (parent) {
+    bool expose_parent = !ViewAccessibility::IsViewsAccessibilityTreeEnabled();
+    if (!expose_parent &&
+        GetViewAccessibility().GetChildTreeID() != ui::AXTreeIDUnknown()) {
+      Widget* widget = GetWidget();
+      WidgetAXManager* manager = widget ? widget->ax_manager() : nullptr;
+      expose_parent = manager && manager->is_enabled();
+    }
+    if (expose_parent) {
+      parent_accessible = parent->GetNativeViewAccessible();
+    }
   }
-  holder_->SetParentAccessible(parent->GetNativeViewAccessible());
+
+  if (holder_->native_view()) {
+    holder_->SetParentAccessible(parent_accessible);
+  }
+
+  if (web_contents() && ::features::IsAccessibilityTreeForViewsEnabled()) {
+    web_contents()->NotifyAccessibilityParentChanged();
+  }
 }
 
 void WebView::NotifyAccessibilityWebContentsChanged() {
@@ -654,6 +697,14 @@ void WebView::NotifyAccessibilityWebContentsChanged() {
       GetViewAccessibility().SetChildTreeID(child_tree_id);
     } else {
       GetViewAccessibility().RemoveChildTreeID();
+    }
+
+    // The WebView is the ignored host of the web content accessibility tree.
+    // It shouldn't be exposed to platform APIs.
+    if (ViewAccessibility::IsViewsAccessibilityTreeEnabled()) {
+      GetViewAccessibility().SetIsIgnored(
+          GetViewAccessibility().GetChildTreeID() != ui::AXTreeIDUnknown());
+      SetNativeViewHostAccessibleParent(parent());
     }
   }
   NotifyAccessibilityEventDeprecated(ax::mojom::Event::kChildrenChanged, false);
@@ -682,6 +733,7 @@ void WebView::UpdateAccessibilityDisconnectState(bool disconnect) {
     // if the ChildTreeID bridge is still intact. We explicitly sever the
     // connection by removing the ChildTreeID.
     GetViewAccessibility().RemoveChildTreeID();
+    SetNativeViewHostAccessibleParent(parent());
 
     // The WebView listens for WebContents updates and automatically
     // reattaches the ChildTreeID when properties change. We must lock it to
@@ -706,17 +758,19 @@ void WebView::UpdateAccessibilityDisconnectState(bool disconnect) {
 
 void WebView::OnWidgetAXManagerEnabled() {
   if (holder_->native_view()) {
-    UpdateNativeViewHostAccessibleParent();
+    SetNativeViewHostAccessibleParent(parent());
   }
+}
 
-  widget_ax_manager_observation_.Reset();
+void WebView::OnWidgetAXManagerDisabled() {
+  SetNativeViewHostAccessibleParent(nullptr);
 }
 
 bool WebView::IsWebContentsAlive() const {
   return web_contents() && !web_contents()->IsCrashed();
 }
 
-void WebView::HandleWidgetAXManagerEnablement() {
+void WebView::UpdateWidgetAXManagerObservation() {
   if (!::features::IsAccessibilityTreeForViewsEnabled()) {
     return;
   }
@@ -727,20 +781,20 @@ void WebView::HandleWidgetAXManagerEnablement() {
   }
 
   WidgetAXManager* manager = widget->ax_manager();
+  if (widget_ax_manager_observation_.GetSource() != manager) {
+    widget_ax_manager_observation_.Reset();
+    if (manager) {
+      widget_ax_manager_observation_.Observe(manager);
+    }
+  }
   if (!manager) {
     return;
   }
 
   if (manager->is_enabled()) {
     if (holder_->native_view()) {
-      UpdateNativeViewHostAccessibleParent();
+      SetNativeViewHostAccessibleParent(parent());
     }
-    widget_ax_manager_observation_.Reset();
-    return;
-  }
-
-  if (!widget_ax_manager_observation_.IsObserving()) {
-    widget_ax_manager_observation_.Observe(manager);
   }
 }
 

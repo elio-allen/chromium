@@ -21,7 +21,6 @@
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
-#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/public/provider/chrome/browser/bwg/gemini_api.h"
@@ -29,12 +28,10 @@
 #import "ios/web/public/web_state.h"
 
 GeminiServiceImpl::GeminiServiceImpl(
-    ProfileIOS* profile,
     AuthenticationService* auth_service,
     signin::IdentityManager* identity_manager,
     PrefService* pref_service,
     OptimizationGuideService* optimization_guide) {
-  profile_ = profile;
   auth_service_ = auth_service;
   identity_manager_ = identity_manager;
   identity_manager_observation_.Observe(identity_manager_);
@@ -99,11 +96,11 @@ GeminiServiceImpl::GeminiIneligibilityForProfile() {
       gemini::HasGeminiInChromeCapability(account_info);
   const bool allowed_by_enterprise =
       gemini::GeminiAllowedByPolicy(pref_service_);
-  const bool authenticated =
-      !account_info.IsEmpty() &&
-      identity_manager_
-              ->GetErrorStateOfRefreshTokenForAccount(account_info.account_id)
-              .state() == GoogleServiceAuthError::NONE;
+  const bool authenticated = !account_info.IsEmpty() &&
+                             identity_manager_
+                                     ->GetErrorStateOfRefreshTokenForAccount(
+                                         account_info.GetAccountId())
+                                     .state() == GoogleServiceAuthError::NONE;
 
   // For managed accounts, we err on the side of caution and only show Gemini
   // entrypoints when we know whether they are eligible. Otherwise, we're OK
@@ -114,7 +111,7 @@ GeminiServiceImpl::GeminiIneligibilityForProfile() {
   const bool is_eligible =
       has_capabilities && allowed_by_enterprise &&
       !is_disabled_by_gemini_policy_.value_or(is_managed_account) &&
-      authenticated && !profile_->IsOffTheRecord();
+      authenticated;
   // We ignore the gemini workspace log until we actually get the response to
   // `is_disabled_by_gemini_policy_`.
   const gemini::IneligibilityReasons ineligibility_reasons =
@@ -171,7 +168,7 @@ void GeminiServiceImpl::OnRefreshTokenUpdatedForAccount(
 
 void GeminiServiceImpl::OnExtendedAccountInfoUpdated(
     const AccountInfo& account_info) {
-  if (account_info.account_id ==
+  if (account_info.GetAccountId() ==
       identity_manager_->GetPrimaryAccountId(signin::ConsentLevel::kSignin)) {
     // Account capabilities (like age/model execution) may have finished
     // loading from the server, changing overall eligibility.

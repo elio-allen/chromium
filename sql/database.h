@@ -630,6 +630,17 @@ class COMPONENT_EXPORT(SQL) Database {
   // value from `Raze()`.
   bool RazeAndPoison();
 
+  // Runs the `VACUUM` SQLite operation, rebuilding the database file and
+  // repacking it into a minimal amount of disk space. Only the main database is
+  // vacuumed, the attached databases (if any) are not.
+  //
+  // Returns `true` on success. `Vacuum` will fail if called while a
+  // `Transaction`, `Statement` or `StreamingBlobHandle` is active.
+  //
+  // Warning: `Vacuum` may change the ROWIDs of entries in any tables that do
+  // not have an explicit INTEGER PRIMARY KEY.
+  [[nodiscard]] bool Vacuum();
+
   // Delete the underlying database files associated with |path|. This should be
   // used on a database which is not opened by any Database instance. Open
   // Database instances pointing to the database can cause odd results or
@@ -670,15 +681,6 @@ class COMPONENT_EXPORT(SQL) Database {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     DCHECK_GE(transaction_nesting_, 0);
     return is_open() && transaction_nesting_ > 0;
-  }
-
-  // Deprecated in favor of HasActiveTransactions().
-  //
-  // Returns the current transaction nesting, which will be 0 if there are
-  // no open transactions.
-  int transaction_nesting() const {
-    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    return transaction_nesting_;
   }
 
   // Attached databases---------------------------------------------------------

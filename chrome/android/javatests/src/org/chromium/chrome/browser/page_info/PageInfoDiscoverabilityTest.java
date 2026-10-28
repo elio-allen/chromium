@@ -40,16 +40,18 @@ import org.chromium.chrome.browser.browsing_data.BrowsingDataType;
 import org.chromium.chrome.browser.browsing_data.TimePeriod;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.omnibox.LocationBarDataProvider;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxLayoutMode;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxState;
 import org.chromium.chrome.browser.omnibox.status.PageInfoIphController;
 import org.chromium.chrome.browser.omnibox.status.PermissionStatusHandler;
 import org.chromium.chrome.browser.omnibox.status.StatusMediator;
 import org.chromium.chrome.browser.omnibox.status.StatusProperties;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.permissions.PermissionTestRule;
 import org.chromium.chrome.browser.permissions.RuntimePermissionTestUtils;
-import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.chrome.test.batch.BlankCTATabInitialStateRule;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
@@ -227,7 +229,6 @@ public class PageInfoDiscoverabilityTest {
     }
 
     @Mock LocationBarDataProvider mLocationBarDataProvider;
-    @Mock Profile mProfile;
     @Mock TemplateUrlService mTemplateUrlService;
     @Mock PageInfoIphController mPageInfoIphController;
 
@@ -251,19 +252,20 @@ public class PageInfoDiscoverabilityTest {
                     TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
                     mMediator =
                             new StatusMediator(
+                                    new OmniboxResourceProvider(
+                                            mContext, BrandedColorScheme.APP_DEFAULT),
                                     mModel,
                                     mContext,
                                     mLocationBarDataProvider,
                                     mPermissionDialogController,
                                     mTemplateUrlServiceSupplier,
-                                    ObservableSuppliers.createNonNull(mProfile),
+                                    ObservableSuppliers.createNonNull(
+                                            ProfileManager.getLastUsedRegularProfile()),
                                     mPageInfoIphController,
                                     sPermissionTestRule.getActivity().getWindowAndroid(),
                                     /* pageInfoAction= */ null,
-                                    ObservableSuppliers.createNonNull(
-                                            FuseboxCoordinator.FuseboxState.DISABLED),
-                                    ObservableSuppliers.createNonNull(
-                                            FuseboxCoordinator.FuseboxLayoutMode.TOOLBAR),
+                                    ObservableSuppliers.createNonNull(FuseboxState.DISABLED),
+                                    ObservableSuppliers.createNonNull(FuseboxLayoutMode.TOOLBAR),
                                     CallbackUtils.emptyRunnable());
                     mPermissionStatusHandler = mMediator.getPermissionStatusHandlerForTesting();
                 });

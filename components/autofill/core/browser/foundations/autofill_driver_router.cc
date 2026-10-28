@@ -22,19 +22,15 @@
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/containers/to_vector.h"
-#include "base/debug/crash_logging.h"
 #include "base/functional/bind.h"
 #include "base/functional/function_ref.h"
 #include "base/memory/raw_ref.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/time/time.h"
-#include "build/buildflag.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/foundations/autofill_driver.h"
 #include "components/autofill/core/browser/foundations/form_forest.h"
 #include "components/autofill/core/common/aliases.h"
-#include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/form_data_predictions.h"
 #include "components/autofill/core/common/form_field_data_predictions.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
@@ -140,27 +136,10 @@ bool AutofillDriverRouter::IsSafeToFill(
 // TriggerFormExtractionExcept(source).
 void AutofillDriverRouter::TriggerFormExtractionExcept(
     AutofillDriver& exception) {
-#if BUILDFLAG(IS_IOS)
-  if (!base::FeatureList::IsEnabled(
-          features::kAutofillAcrossIframesIosTriggerFormExtraction)) {
-    return;
-  }
-#endif
-  // TODO(crbug.com/384874225): Cleanup that instrumentation once the feature is
-  // launched on iOS.
-  SCOPED_UMA_HISTOGRAM_TIMER_MICROS(
-      "Autofill.DriverRouter.TriggerFormExtractionExcept.Duration");
-  size_t frame_count = form_forest_.frame_datas().size();
-  base::UmaHistogramCounts10000(
-      "Autofill.DriverRouter.TriggerFormExtractionExcept.FrameCount",
-      frame_count);
-  SCOPED_CRASH_KEY_NUMBER("Autofill", "num_frame_extract_total", frame_count);
   base::flat_set<AutofillDriver*> already_triggered;
   ForEachFrame(form_forest_, [&](AutofillDriver& driver_ref) {
     AutofillDriver* driver = &driver_ref;
     do {
-      SCOPED_CRASH_KEY_NUMBER("Autofill", "num_frame_extract_so_far",
-                              already_triggered.size());
       if (driver == &exception) {
         continue;
       }
@@ -484,12 +463,12 @@ void AutofillDriverRouter::FormWithEmailVerificationTokenSubmitted(
     RoutedCallback<const FormData&, const FieldGlobalId&> callback,
     AutofillDriver& source,
     FormData form,
-    const FieldGlobalId& field_id) {
+    const FieldGlobalId& email_field_id) {
   FormGlobalId form_id = form.global_id();
   form_forest_.UpdateTreeOfRendererForm(std::move(form), source);
 
   const FormData& browser_form = form_forest_.GetBrowserForm(form_id);
-  if (!std::ranges::contains(browser_form.fields(), field_id,
+  if (!std::ranges::contains(browser_form.fields(), email_field_id,
                              &FormFieldData::global_id)) {
     // To avoid very large flattened forms, UpdateTreeOfRendererForm() may have
     // cut the tree into two and, as a result, may have lost some fields. We
@@ -498,17 +477,19 @@ void AutofillDriverRouter::FormWithEmailVerificationTokenSubmitted(
     return;
   }
   auto* target = DriverOfFrame(browser_form.host_frame());
-  callback(CHECK_DEREF(target), browser_form, field_id);
+  callback(CHECK_DEREF(target), browser_form, email_field_id);
 }
 
 void AutofillDriverRouter::DidDetectJavaScriptAutofill(
     RoutedCallback<const FormData&,
                    const FieldGlobalId&,
-                   const std::vector<JavaScriptFieldModification>&> callback,
+                   const std::vector<JavaScriptFieldModification>&,
+                   base::TimeTicks> callback,
     AutofillDriver& source,
     FormData form,
     FieldGlobalId trigger_field_id,
-    std::vector<JavaScriptFieldModification> field_modifications) {
+    std::vector<JavaScriptFieldModification> field_modifications,
+    base::TimeTicks detection_start_timestamp) {
   FormGlobalId form_id = form.global_id();
   form_forest_.UpdateTreeOfRendererForm(std::move(form), source);
 
@@ -523,7 +504,7 @@ void AutofillDriverRouter::DidDetectJavaScriptAutofill(
   }
   auto* target = DriverOfFrame(browser_form.host_frame());
   callback(CHECK_DEREF(target), browser_form, trigger_field_id,
-           field_modifications);
+           field_modifications, detection_start_timestamp);
 }
 
 void AutofillDriverRouter::SelectFieldOptionsDidChange(
@@ -765,27 +746,28 @@ void AutofillDriverRouter::RendererShouldTriggerSuggestions(
   }
 }
 
-void AutofillDriverRouter::SendEmailVerificationToken(
+void AutofillDriverRouter::GetNonceForEmailVerification(
     RoutedCallback<FieldRendererId,
-                   const std::string&,
-                   FieldRendererId,
-                   const std::string&> callback,
-    const FieldGlobalId& email_field_id,
-    const std::string& email,
-    const FieldGlobalId& token_field_id,
-    const std::string& token) {
-  if (AutofillDriver* target = DriverOfFrame(token_field_id.frame_token)) {
-    callback(*target, email_field_id.renderer_id, email,
-             token_field_id.renderer_id, token);
+                   base::OnceCallback<void(const std::optional<std::string>&)>>
+        callback,
+    const FieldGlobalId& field_id,
+    base::OnceCallback<void(const std::optional<std::string>&)>
+        browser_callback) {
+  if (auto* target = DriverOfFrame(field_id.frame_token)) {
+    callback(*target, field_id.renderer_id, std::move(browser_callback));
+  } else {
+    std::move(browser_callback).Run(std::nullopt);
   }
 }
 
-void AutofillDriverRouter::UpdateEmailVerificationState(
-    RoutedCallback<FieldRendererId, mojom::EmailVerificationState> callback,
+void AutofillDriverRouter::SendEmailVerificationToken(
+    RoutedCallback<FieldRendererId, const std::string&, const std::string&>
+        callback,
     const FieldGlobalId& email_field_id,
-    mojom::EmailVerificationState state) {
-  if (AutofillDriver* target = DriverOfFrame(email_field_id.frame_token)) {
-    callback(*target, email_field_id.renderer_id, state);
+    const std::string& email,
+    const std::string& token) {
+  if (auto* target = DriverOfFrame(email_field_id.frame_token)) {
+    callback(*target, email_field_id.renderer_id, email, token);
   }
 }
 

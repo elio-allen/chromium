@@ -35,12 +35,14 @@
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ssl/chrome_security_state_util.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -51,10 +53,13 @@
 #include "components/metrics/content/subprocess_metrics_provider.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/geolocation_header_service.h"
+#include "components/omnibox/browser/geolocation_header_service_test_api.h"
 #include "components/omnibox/common/omnibox_features.h"
+#include "components/policy/core/browser/browser_policy_connector.h"
+#include "components/policy/core/common/mock_configuration_policy_provider.h"
+#include "components/policy/policy_constants.h"
 #include "components/prefs/pref_service.h"
 #include "components/search_engines/template_url_service.h"
-#include "components/security_state/content/security_state_tab_helper.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
@@ -73,6 +78,8 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/url_loader_interceptor.h"
 #include "extensions/buildflags/buildflags.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
 #include "extensions/browser/background_script_executor.h"
@@ -87,7 +94,6 @@
 #include "services/device/public/cpp/test/scoped_geolocation_overrider.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
-#include "services/network/public/cpp/network_quality_tracker.h"
 #include "services/network/public/mojom/clear_data_filter.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/network_service.mojom.h"
@@ -461,7 +467,6 @@ class SearchPrefetchServiceEnabledBrowserTest
          {{"max_attempts_per_caching_duration", "3"},
           {"cache_size", "1"},
           {"device_memory_threshold_MB", "0"}}},
-        {kSuppressesSearchPrefetchOnSlowNetwork, {}},
         {features::kPreloadingRespectUserAgentOverride, {}},
         {features::kRespectUserAgentOverrideInSearchPrefetch, {}}};
     feature_list_.InitWithFeaturesAndParameters(enabled_features, {});
@@ -498,10 +503,6 @@ class SearchPrefetchServiceEnabledBrowserTest
   const content::test::PreloadingAttemptUkmEntryBuilder&
   attempt_entry_builder() {
     return *attempt_entry_builder_;
-  }
-
-  network::NetworkQualityTracker& GetNetworkQualityTracker() const {
-    return *g_browser_process->network_quality_tracker();
   }
 
  private:
@@ -563,7 +564,79 @@ class SearchPrefetchXGeoEnabledBrowserTest
     xgeo_feature_list_.InitWithFeaturesAndParameters(enabled_features, {});
   }
 
+  void SetUpInProcessBrowserTestFixture() override {
+    policy_provider_.SetDefaultReturns(
+        /*is_initialization_complete_return=*/true,
+        /*is_first_policy_load_complete_return=*/true);
+    policy::BrowserPolicyConnector::SetPolicyProviderForTesting(
+        &policy_provider_);
+    SearchPrefetchServiceEnabledBrowserTest::SetUpInProcessBrowserTestFixture();
+  }
+
+  void SetDefaultGeolocationPolicy(int setting_value) {
+    policy::PolicyMap policies;
+    policies.Set(policy::key::kDefaultGeolocationSetting,
+                 policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,
+                 policy::POLICY_SOURCE_CLOUD, base::Value(setting_value),
+                 nullptr);
+    policy_provider_.UpdateChromePolicy(policies);
+  }
+
+  void RunDefaultGeolocationPolicyTest(int policy_setting, bool expect_header) {
+    base::HistogramTester histogram_tester;
+    auto* search_prefetch_service =
+        SearchPrefetchServiceFactory::GetForProfile(browser()->GetProfile());
+    EXPECT_TRUE(search_prefetch_service);
+
+    std::string search_terms = "prefetch_content";
+
+    GURL prefetch_url = GetSearchServerQueryURL(search_terms);
+    GURL canonical_search_url = GetCanonicalSearchURL(prefetch_url);
+
+    // Setup: Mock location.
+    device::ScopedGeolocationOverrider geolocation_overrider(20.3, 155.8);
+
+    // Clear site-specific exception so the default setting applies.
+    HostContentSettingsMap* settings_map =
+        HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
+    settings_map->SetContentSettingDefaultScope(
+        prefetch_url, prefetch_url, ContentSettingsType::GEOLOCATION,
+        CONTENT_SETTING_DEFAULT);
+
+    // Set user default content setting to an intentionally conflicting value
+    // (e.g. ALLOW if policy is BLOCK/ASK, BLOCK if policy is ALLOW) to verify
+    // that the enterprise policy takes precedence over the user setting.
+    ContentSetting conflicting_user_setting = (policy_setting == 1 /* Allow */)
+                                                  ? CONTENT_SETTING_BLOCK
+                                                  : CONTENT_SETTING_ALLOW;
+    settings_map->SetDefaultContentSetting(ContentSettingsType::GEOLOCATION,
+                                           conflicting_user_setting);
+
+    SetDefaultGeolocationPolicy(policy_setting);
+
+    if (expect_header) {
+      GeolocationHeaderService* geo_service =
+          GeolocationHeaderServiceFactory::GetForProfile(
+              browser()->GetProfile());
+      ASSERT_TRUE(geo_service);
+      geo_service->PrimeLocation();
+      EXPECT_TRUE(base::test::RunUntil(
+          [&]() { return geo_service->HasCachedLocation(); }));
+    }
+
+    EXPECT_TRUE(search_prefetch_service->MaybePrefetchURL(prefetch_url,
+                                                          GetWebContents()));
+
+    WaitUntilStatusChangesTo(canonical_search_url,
+                             SearchPrefetchStatus::kComplete);
+
+    EXPECT_EQ(1u, search_server_requests().size());
+    auto headers = search_server_requests()[0].headers;
+    EXPECT_EQ(headers.contains("X-Geo"), expect_header);
+  }
+
  private:
+  testing::NiceMock<policy::MockConfigurationPolicyProvider> policy_provider_;
   base::test::ScopedFeatureList xgeo_feature_list_;
 };
 
@@ -652,11 +725,38 @@ IN_PROC_BROWSER_TEST_F(SearchPrefetchXGeoEnabledBrowserTest,
   ASSERT_FALSE(headers.contains("X-Geo"));
 }
 
+// Ensures that prefetch requests drop the X-Geo header if
+// DefaultGeolocationSetting policy is set to 2 (BLOCK).
+IN_PROC_BROWSER_TEST_F(SearchPrefetchXGeoEnabledBrowserTest,
+                       PrefetchNoXGeoHeader_DefaultGeolocationPolicyBlocked) {
+  RunDefaultGeolocationPolicyTest(2 /* Block */,
+                                  /*expect_header=*/false);
+}
+
+// Ensures that prefetch requests attach the X-Geo header if
+// DefaultGeolocationSetting policy is set to 1 (ALLOW) without requiring
+// origin-specific rules.
+IN_PROC_BROWSER_TEST_F(
+    SearchPrefetchXGeoEnabledBrowserTest,
+    PrefetchSendsXGeoHeader_DefaultGeolocationPolicyAllowed) {
+  RunDefaultGeolocationPolicyTest(1 /* Allow */,
+                                  /*expect_header=*/true);
+}
+
+// Ensures that prefetch requests drop the X-Geo header if
+// DefaultGeolocationSetting policy is set to 3 (ASK) without origin-specific
+// rules.
+IN_PROC_BROWSER_TEST_F(SearchPrefetchXGeoEnabledBrowserTest,
+                       PrefetchNoXGeoHeader_DefaultGeolocationPolicyAsk) {
+  RunDefaultGeolocationPolicyTest(3 /* Ask */,
+                                  /*expect_header=*/false);
+}
+
 // Validates that private browsing contexts (Incognito) suppress position state
 // dissemination, omitting the X-Geo header from prefetch payloads.
 IN_PROC_BROWSER_TEST_F(SearchPrefetchXGeoEnabledBrowserTest,
                        PrefetchNoXGeoHeader_Incognito) {
-  Browser* incognito_browser = CreateIncognitoBrowser();
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser();
   auto* search_prefetch_service = SearchPrefetchServiceFactory::GetForProfile(
       incognito_browser->GetProfile());
   EXPECT_TRUE(search_prefetch_service);
@@ -675,7 +775,7 @@ IN_PROC_BROWSER_TEST_F(SearchPrefetchXGeoEnabledBrowserTest,
 
   EXPECT_TRUE(search_prefetch_service->MaybePrefetchURL(
       prefetch_url,
-      incognito_browser->tab_strip_model()->GetActiveWebContents()));
+      incognito_browser->GetTabStripModel()->GetActiveWebContents()));
 
   // Custom wait loop for Incognito service.
   EXPECT_TRUE(base::test::RunUntil([&]() {
@@ -724,7 +824,7 @@ IN_PROC_BROWSER_TEST_F(SearchPrefetchXGeoEnabledBrowserTest,
       base::test::RunUntil([&]() { return geo_service->HasCachedLocation(); }));
 
   // Set stale location age.
-  geo_service->SetLocationAgeForTesting(base::Hours(25));
+  GeolocationHeaderServiceTestApi(geo_service).SetLocationAge(base::Hours(25));
 
   EXPECT_TRUE(search_prefetch_service->MaybePrefetchURL(prefetch_url,
                                                         GetWebContents()));
@@ -985,62 +1085,6 @@ IN_PROC_BROWSER_TEST_F(SearchPrefetchServiceEnabledBrowserTest,
       SearchPrefetchEligibilityReason::kThrottled, 1);
   EXPECT_FALSE(prefetch_status.has_value());
   content::SetBrowserClientForTesting(old_client);
-}
-
-IN_PROC_BROWSER_TEST_F(SearchPrefetchServiceEnabledBrowserTest, SlowNetwork) {
-  base::HistogramTester histogram_tester;
-  auto* search_prefetch_service =
-      SearchPrefetchServiceFactory::GetForProfile(browser()->GetProfile());
-  EXPECT_NE(nullptr, search_prefetch_service);
-
-  std::string search_terms = "prefetch_content";
-
-  GURL prefetch_url = GetSearchServerQueryURL(search_terms);
-
-  base::TimeDelta http_rtt = GetNetworkQualityTracker().GetHttpRTT();
-  int32_t downstream_throughput_kbps =
-      GetNetworkQualityTracker().GetDownstreamThroughputKbps();
-
-  // Emulate slow network.
-  GetNetworkQualityTracker().ReportRTTsAndThroughputForTesting(
-      base::Seconds(1), downstream_throughput_kbps);
-  EXPECT_FALSE(search_prefetch_service->MaybePrefetchURL(prefetch_url,
-                                                         GetWebContents()));
-
-  histogram_tester.ExpectUniqueSample(
-      "Omnibox.SearchPrefetch.PrefetchEligibilityReason2.SuggestionPrefetch",
-      SearchPrefetchEligibilityReason::kSlowNetwork, 1);
-
-  // Navigate to flush the metrics.
-  ASSERT_TRUE(content::NavigateToURL(GetWebContents(), prefetch_url));
-  {
-    ukm::SourceId ukm_source_id =
-        GetWebContents()->GetPrimaryMainFrame()->GetPageUkmSourceId();
-    auto attempt_ukm_entries = test_ukm_recorder()->GetEntries(
-        Preloading_Attempt::kEntryName,
-        content::test::kPreloadingAttemptUkmMetrics);
-    EXPECT_EQ(attempt_ukm_entries.size(), 1u);
-
-    // Check that we set the eligibility reason to kSlowNetwork when
-    // the network is slow.
-    std::vector<UkmEntry> expected_attempt_entries = {
-        attempt_entry_builder().BuildEntry(
-            ukm_source_id, content::PreloadingType::kPrefetch,
-            content::PreloadingEligibility::kSlowNetwork,
-            content::PreloadingHoldbackStatus::kUnspecified,
-            content::PreloadingTriggeringOutcome::kUnspecified,
-            content::PreloadingFailureReason::kUnspecified,
-            /*accurate=*/true),
-    };
-    EXPECT_THAT(attempt_ukm_entries,
-                testing::UnorderedElementsAreArray(expected_attempt_entries))
-        << content::test::ActualVsExpectedUkmEntriesToString(
-               attempt_ukm_entries, expected_attempt_entries);
-  }
-
-  // Reset to the original values.
-  GetNetworkQualityTracker().ReportRTTsAndThroughputForTesting(
-      http_rtt, downstream_throughput_kbps);
 }
 
 class HeaderObserverContentBrowserClient : public ChromeContentBrowserClient {
@@ -1563,7 +1607,6 @@ IN_PROC_BROWSER_TEST_F(SearchPrefetchServiceEnabledBrowserTest,
                attempt_ukm_entries, expected_attempt_entries);
   }
 }
-
 
 enum class NVSDiskCacheEnabled {
   kDisableAll = 0,
@@ -2508,8 +2551,6 @@ IN_PROC_BROWSER_TEST_F(SearchPrefetchServiceEnabledBrowserTest,
   EXPECT_TRUE(autocomplete_controller->done());
   GURL canonical_search_url = GetCanonicalSearchURL(
       autocomplete_controller->result().match_at(0).destination_url);
-  SecurityStateTabHelper* helper =
-      SecurityStateTabHelper::FromWebContents(GetWebContents());
   WaitUntilStatusChangesTo(canonical_search_url,
                            SearchPrefetchStatus::kCanBeServed);
   location_bar->GetOmniboxController()->edit_model()->OpenCurrentSelection();
@@ -2526,7 +2567,8 @@ IN_PROC_BROWSER_TEST_F(SearchPrefetchServiceEnabledBrowserTest,
   // Check we are on the prefetched page, and the security level is correct.
   EXPECT_FALSE(inner_html.contains("regular"));
   EXPECT_TRUE(inner_html.contains("prefetch"));
-  EXPECT_EQ(helper->GetSecurityLevel(), security_state::SECURE);
+  EXPECT_EQ(chrome_security_state::GetSecurityLevel(GetWebContents()),
+            security_state::SECURE);
 }
 
 IN_PROC_BROWSER_TEST_F(SearchPrefetchServiceEnabledBrowserTest,
@@ -2551,8 +2593,6 @@ IN_PROC_BROWSER_TEST_F(SearchPrefetchServiceEnabledBrowserTest,
   EXPECT_TRUE(autocomplete_controller->done());
   GURL canonical_search_url = GetCanonicalSearchURL(
       autocomplete_controller->result().match_at(0).destination_url);
-  SecurityStateTabHelper* helper =
-      SecurityStateTabHelper::FromWebContents(GetWebContents());
   WaitUntilStatusChangesTo(canonical_search_url,
                            SearchPrefetchStatus::kCanBeServed);
 
@@ -2575,7 +2615,8 @@ IN_PROC_BROWSER_TEST_F(SearchPrefetchServiceEnabledBrowserTest,
   // correct.
   EXPECT_TRUE(inner_html.contains("regular"));
   EXPECT_FALSE(inner_html.contains("prefetch"));
-  EXPECT_EQ(helper->GetSecurityLevel(), security_state::SECURE);
+  EXPECT_EQ(chrome_security_state::GetSecurityLevel(GetWebContents()),
+            security_state::SECURE);
 }
 
 IN_PROC_BROWSER_TEST_F(SearchPrefetchServiceEnabledBrowserTest,
@@ -2928,12 +2969,10 @@ IN_PROC_BROWSER_TEST_F(SearchPrefetchServiceEnabledBrowserTest,
   // Link click.
   content::TestNavigationManager navigation_manager(GetWebContents(),
                                                     search_url);
-  GetWebContents()->OpenURL(
-      content::OpenURLParams(search_url, content::Referrer(),
-                             WindowOpenDisposition::CURRENT_TAB,
-                             ui::PAGE_TRANSITION_LINK,
-                             /*is_renderer_initiated=*/false),
-      /*navigation_handle_callback=*/{});
+  GetWebContents()->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                                search_url, WindowOpenDisposition::kCurrentTab,
+                                ui::PAGE_TRANSITION_LINK),
+                            /*navigation_handle_callback=*/{});
   ASSERT_TRUE(navigation_manager.WaitForNavigationFinished());
 
   EXPECT_EQ(2u, search_server_request_count());
@@ -3017,11 +3056,10 @@ IN_PROC_BROWSER_TEST_F(SearchPrefetchServiceEnabledBrowserTest, NoServePost) {
   // Post request.
   content::TestNavigationManager navigation_manager(GetWebContents(),
                                                     search_url);
-  content::OpenURLParams params(search_url, content::Referrer(),
-                                WindowOpenDisposition::CURRENT_TAB,
-                                ui::PAGE_TRANSITION_TYPED,
-
-                                /*is_renderer_initiated=*/false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          search_url, WindowOpenDisposition::kCurrentTab,
+          ui::PAGE_TRANSITION_TYPED);
   std::string post_data = "test=body";
   params.post_data = network::ResourceRequestBody::CreateFromCopyOfBytes(
       base::as_byte_span(post_data));
@@ -3867,7 +3905,6 @@ class SearchPrefetchServiceNavigationPrefetchBrowserTest
   base::test::ScopedFeatureList feature_list_;
   std::unique_ptr<ukm::TestAutoSetUkmRecorder> test_ukm_recorder_;
 };
-
 
 IN_PROC_BROWSER_TEST_F(SearchPrefetchServiceNavigationPrefetchBrowserTest,
                        NavigationPrefetchIsServedMouseDown) {
@@ -4782,7 +4819,7 @@ IN_PROC_BROWSER_TEST_F(SearchPrefetchUnsupportedModeBrowserTest,
 
   // Create an AIM suggestion.
   AutocompleteMatch match(nullptr, 0, false,
-                          AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED);
+                          omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
   match.destination_url = GetSearchServerQueryURL(search_terms);
   match.search_terms_args = std::make_unique<TemplateURLRef::SearchTermsArgs>(
       base::UTF8ToUTF16(search_terms));

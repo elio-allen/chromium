@@ -8,8 +8,8 @@
 #include "chrome/browser/sync/test/integration/sync_datatype_helper.h"
 #include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
-#include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager_test_utils.h"
-#include "components/autofill/core/browser/test_utils/entity_data_test_utils.h"
+#include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager_test_util.h"
+#include "components/autofill/core/browser/test_utils/entity_data_test_util.h"
 #include "components/autofill/core/browser/webdata/autofill_ai/entity_sync_util.h"
 #include "components/sync/base/features.h"
 #include "components/sync/protocol/autofill_valuable_metadata_specifics.pb.h"
@@ -71,6 +71,7 @@ class FakeServerValuableMetadataChecker
       : matcher_(matcher) {}
 
   bool IsExitConditionSatisfied(std::ostream* os) override {
+    *os << "Waiting for server valuable metadata to match: ";
     std::vector<sync_pb::AutofillValuableMetadataSpecifics> specifics;
     for (const sync_pb::SyncEntity& entity :
          fake_server()->GetSyncEntitiesByDataType(

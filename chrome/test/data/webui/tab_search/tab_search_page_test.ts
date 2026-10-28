@@ -6,8 +6,8 @@ import 'chrome://tab-search.top-chrome/tab_search.js';
 
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {MetricsReporterImpl} from 'chrome://resources/js/metrics_reporter/metrics_reporter.js';
-import type {ProfileData, RecentlyClosedTab, Tab, TabSearchItemElement, TabSearchPageElement} from 'chrome://tab-search.top-chrome/tab_search.js';
-import {SEARCH_QUERY_MAX_LENGTH, SplitTabLayout, SplitViewData, TabGroupColor, TabSearchApiProxyImpl, TabSearchUserAction} from 'chrome://tab-search.top-chrome/tab_search.js';
+import type {PageRemote, ProfileData, RecentlyClosedTab, Tab, TabSearchItemElement, TabSearchPageElement} from 'chrome://tab-search.top-chrome/tab_search.js';
+import {browserProxyFactory, SEARCH_QUERY_MAX_LENGTH, SearchApiProxyImpl, SplitTabLayout, SplitViewData, TabGroupColor, TabSearchApiProxyImpl, TabSearchUserAction} from 'chrome://tab-search.top-chrome/tab_search.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertGT, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {keyDownOn} from 'chrome://webui-test/keyboard_mock_interactions.js';
 import {fakeMetricsPrivate} from 'chrome://webui-test/metrics_test_support.js';
@@ -16,11 +16,13 @@ import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.
 
 import {createProfileData, createTab, generateSampleDataFromSiteNames, generateSampleRecentlyClosedTabs, generateSampleRecentlyClosedTabsFromSiteNames, generateSampleTabsFromSiteNames, SAMPLE_RECENTLY_CLOSED_DATA, SAMPLE_WINDOW_HEIGHT, sampleToken} from './tab_search_test_data.js';
 import {initLoadTimeDataWithDefaults} from './tab_search_test_helper.js';
+import {TestSearchApiProxy} from './test_search_api_proxy.js';
 import {TestTabSearchApiProxy} from './test_tab_search_api_proxy.js';
 
 suite('TabSearchAppTest', () => {
   let tabSearchPage: TabSearchPageElement;
   let testProxy: TestTabSearchApiProxy;
+  let callbackRouterRemote: PageRemote;
 
   // http://crbug.com/40072096: Replace this function with
   // tabSearchPage.setValue() to be able to reproduce the bug.
@@ -59,7 +61,11 @@ suite('TabSearchAppTest', () => {
 
     testProxy = new TestTabSearchApiProxy();
     testProxy.setProfileData(sampleData);
+    const {instance, remote} = browserProxyFactory.createForTest(testProxy);
+    browserProxyFactory.setInstance(instance);
+    callbackRouterRemote = remote;
     TabSearchApiProxyImpl.setInstance(testProxy);
+    SearchApiProxyImpl.setInstance(new TestSearchApiProxy());
 
     tabSearchPage = document.createElement('tab-search-page');
     tabSearchPage.availableHeight = 500;
@@ -278,9 +284,10 @@ suite('TabSearchAppTest', () => {
     const tabSearchItem = tabSearchPage.$.tabsList.querySelector<HTMLElement>(
         'tab-search-item[id="100"]')!;
     tabSearchItem.click();
-    const [tabId, withSearch, isTab] =
-        await testProxy.whenCalled('openRecentlyClosedEntry');
+    const [tabId] = await testProxy.whenCalled('openRecentlyClosedEntry');
     assertEquals(tabData.tabId, tabId);
+    const [withSearch, isTab] =
+        await testProxy.whenCalled('recordRecentlyClosedItemOpenAction');
     assertFalse(withSearch);
     assertTrue(isTab);
   });
@@ -314,9 +321,10 @@ suite('TabSearchAppTest', () => {
     const tabSearchItem =
         tabSearchPage.$.tabsList.querySelector('tab-search-group-item')!;
     tabSearchItem.click();
-    const [id, withSearch, isTab] =
-        await testProxy.whenCalled('openRecentlyClosedEntry');
+    const [id] = await testProxy.whenCalled('openRecentlyClosedEntry');
     assertEquals(tabGroupData.sessionId, id);
+    const [withSearch, isTab] =
+        await testProxy.whenCalled('recordRecentlyClosedItemOpenAction');
     assertFalse(withSearch);
     assertFalse(isTab);
   });
@@ -416,8 +424,7 @@ suite('TabSearchAppTest', () => {
   test('refresh on tabs changed', async () => {
     await setupTest(createProfileData());
     verifyTabIds(queryRows(), [1, 5, 6, 2, 3, 4]);
-    testProxy.getCallbackRouterRemote().tabsChanged(
-        createProfileData({windows: []}));
+    callbackRouterRemote.tabsChanged(createProfileData({windows: []}));
     await microtasksFinished();
     verifyTabIds(queryRows(), []);
     assertEquals(-1, tabSearchPage.getSelectedTabIndex());
@@ -431,13 +438,13 @@ suite('TabSearchAppTest', () => {
     keyDownOn(searchField, 0, [], 'ArrowDown');
     assertEquals(1, tabSearchPage.getSelectedTabIndex());
 
-    testProxy.getCallbackRouterRemote().tabsChanged(createProfileData({
+    callbackRouterRemote.tabsChanged(createProfileData({
       windows: [testData.windows[0]!],
     }));
     await microtasksFinished();
     assertEquals(1, tabSearchPage.getSelectedTabIndex());
 
-    testProxy.getCallbackRouterRemote().tabsChanged(createProfileData({
+    callbackRouterRemote.tabsChanged(createProfileData({
       windows: [{
         active: true,
         isHostWindow: true,
@@ -465,7 +472,7 @@ suite('TabSearchAppTest', () => {
       inHostWindow: true,
       tab: updatedTab,
     };
-    testProxy.getCallbackRouterRemote().tabUpdated(tabUpdateInfo);
+    callbackRouterRemote.tabUpdated(tabUpdateInfo);
     await microtasksFinished();
     // tabIds are not changed after tab updated.
     verifyTabIds(queryRows(), [1, 5, 6, 2, 3, 4]);
@@ -496,7 +503,7 @@ suite('TabSearchAppTest', () => {
       inHostWindow: true,
       tab: updatedTab,
     };
-    testProxy.getCallbackRouterRemote().tabUpdated(tabUpdateInfo);
+    callbackRouterRemote.tabUpdated(tabUpdateInfo);
     await microtasksFinished();
     verifyTabIds(queryRows(), [2, 1]);
   });
@@ -508,7 +515,7 @@ suite('TabSearchAppTest', () => {
     await setupTest(createProfileData());
     verifyTabIds(queryRows(), [1, 5, 6, 2, 3, 4]);
 
-    testProxy.getCallbackRouterRemote().tabsRemoved({
+    callbackRouterRemote.tabsRemoved({
       tabIds: [1, 2],
       recentlyClosedTabs: [],
     });
@@ -516,7 +523,7 @@ suite('TabSearchAppTest', () => {
     verifyTabIds(queryRows(), [5, 6, 3, 4]);
 
     // Assert that on removing all items, we display the no-results div.
-    testProxy.getCallbackRouterRemote().tabsRemoved(
+    callbackRouterRemote.tabsRemoved(
         {tabIds: [3, 4, 5, 6], recentlyClosedTabs: []});
     await microtasksFinished();
     assertNotEquals(
@@ -535,12 +542,12 @@ suite('TabSearchAppTest', () => {
     }));
     verifyTabIds(queryRows(), [1, 2]);
 
-    testProxy.getCallbackRouterRemote().tabsRemoved({
+    callbackRouterRemote.tabsRemoved({
       tabIds: [1],
       recentlyClosedTabs: [{
         groupId: null,
         tabId: 3,
-        title: `SampleTab`,
+        title: 'SampleTab',
         url: 'https://www.sampletab.com',
         lastActiveTime: {internalValue: BigInt(3)},
         lastActiveElapsedText: '',
@@ -562,12 +569,15 @@ suite('TabSearchAppTest', () => {
     await microtasksFinished();
     assertEquals(1, testProxy.getCallCount('getProfileData'));
 
-    // When visible visibilitychange should trigger the data callback.
+    // When visible visibilitychange should trigger the data callback if
+    // optimizations are disabled, or rely on TabsChanged if enabled.
     Object.defineProperty(
         document, 'visibilityState', {value: 'visible', writable: true});
     document.dispatchEvent(new Event('visibilitychange'));
     await microtasksFinished();
-    assertEquals(2, testProxy.getCallCount('getProfileData'));
+    const expectedCalls =
+        loadTimeData.getBoolean('tabSearchPerformanceImprovements') ? 1 : 2;
+    assertEquals(expectedCalls, testProxy.getCallCount('getProfileData'));
   });
 
   test('Verify hiding document resets selection and search text', async () => {
@@ -680,15 +690,15 @@ suite('TabSearchAppTest', () => {
             TabSearchUserAction.IN_FILTERED_LIST_SWITCHED_TAB));
   });
 
-  test('Verify maybeShowUi() is called correctly', async () => {
+  test('Verify maybeShowUI() is called correctly', async () => {
     await setupTest(createProfileData());
 
     // Make sure that tab data has been received.
     verifyTabIds(queryRows(), [1, 5, 6, 2, 3, 4]);
 
-    // Ensure that maybeShowUi() has been called after the
+    // Ensure that maybeShowUI() has been called after the
     // initial data has been rendered.
-    await testProxy.whenCalled('maybeShowUi');
+    await testProxy.whenCalled('maybeShowUI');
 
     // Force a change to filtered tab data that would result in a
     // re-render.
@@ -696,8 +706,8 @@ suite('TabSearchAppTest', () => {
     await microtasksFinished();
     verifyTabIds(queryRows(), [2]);
 
-    // |maybeShowUi()| should still have only been called once.
-    assertEquals(1, testProxy.getCallCount('maybeShowUi'));
+    // |maybeShowUI()| should still have only been called once.
+    assertEquals(1, testProxy.getCallCount('maybeShowUI'));
   });
 
   test('Sort by most recent active tabs', async () => {
@@ -937,18 +947,14 @@ suite('TabSearchAppTest', () => {
       }),
     ];
 
-    await setupTest(
-        createProfileData({
-          windows: [{
-            active: true,
-            isHostWindow: true,
-            height: SAMPLE_WINDOW_HEIGHT,
-            tabs,
-          }],
-        }),
-        {
-          splitViewTabRestoreEnabled: true,
-        });
+    await setupTest(createProfileData({
+      windows: [{
+        active: true,
+        isHostWindow: true,
+        height: SAMPLE_WINDOW_HEIGHT,
+        tabs,
+      }],
+    }));
 
     assertEquals(2, queryRows().length);
 
@@ -972,23 +978,20 @@ suite('TabSearchAppTest', () => {
 
   test('process recently closed split view into a single row', async () => {
     const token = sampleToken(2n, 2n);
-    await setupTest(
-        createProfileData({
-          recentlyClosedSplitViews: [{
-            sessionId: 200,
-            id: token,
-            tabCount: 2,
-            lastActiveTime: {internalValue: 0n},
-            lastActiveElapsedText: '3 mins ago',
-            tabUrls: ['https://google.com', 'https://paypal.com'],
-            layout: SplitTabLayout.kSideBySide,
-            groupId: null,
-          }],
-          recentlyClosedSectionExpanded: true,
-        }),
-        {
-          splitViewTabRestoreEnabled: true,
-        });
+    await setupTest(createProfileData({
+      recentlyClosedSplitViews: [{
+        sessionId: 200,
+        id: token,
+        tabCount: 2,
+        lastActiveTime: {internalValue: 0n},
+        lastActiveElapsedText: '3 mins ago',
+        tabUrls: ['https://google.com', 'https://paypal.com'],
+        tabTitles: ['Google', 'PayPal'],
+        layout: SplitTabLayout.kSideBySide,
+        groupId: null,
+      }],
+      recentlyClosedSectionExpanded: true,
+    }));
 
     await tabSearchPage.$.tabsList.ensureAllDomItemsAvailable();
 
@@ -1040,19 +1043,15 @@ suite('TabSearchAppTest', () => {
       title: 'Work Group',
     }];
 
-    await setupTest(
-        createProfileData({
-          windows: [{
-            active: true,
-            isHostWindow: true,
-            height: SAMPLE_WINDOW_HEIGHT,
-            tabs,
-          }],
-          tabGroups,
-        }),
-        {
-          splitViewTabRestoreEnabled: true,
-        });
+    await setupTest(createProfileData({
+      windows: [{
+        active: true,
+        isHostWindow: true,
+        height: SAMPLE_WINDOW_HEIGHT,
+        tabs,
+      }],
+      tabGroups,
+    }));
 
     assertEquals(1, queryRows().length);
 
@@ -1074,7 +1073,7 @@ suite('TabSearchAppTest', () => {
       groupId: newGroupToken,
     });
 
-    testProxy.getCallbackRouterRemote().tabsChanged(createProfileData({
+    callbackRouterRemote.tabsChanged(createProfileData({
       windows: [{
         active: true,
         isHostWindow: true,
@@ -1117,18 +1116,14 @@ suite('TabSearchAppTest', () => {
       }),
     ];
 
-    await setupTest(
-        createProfileData({
-          windows: [{
-            active: true,
-            isHostWindow: true,
-            height: SAMPLE_WINDOW_HEIGHT,
-            tabs,
-          }],
-        }),
-        {
-          splitViewTabRestoreEnabled: true,
-        });
+    await setupTest(createProfileData({
+      windows: [{
+        active: true,
+        isHostWindow: true,
+        height: SAMPLE_WINDOW_HEIGHT,
+        tabs,
+      }],
+    }));
 
     assertEquals(1, queryRows().length);
 
@@ -1162,18 +1157,14 @@ suite('TabSearchAppTest', () => {
       }),
     ];
 
-    await setupTest(
-        createProfileData({
-          windows: [{
-            active: true,
-            isHostWindow: true,
-            height: SAMPLE_WINDOW_HEIGHT,
-            tabs,
-          }],
-        }),
-        {
-          splitViewTabRestoreEnabled: true,
-        });
+    await setupTest(createProfileData({
+      windows: [{
+        active: true,
+        isHostWindow: true,
+        height: SAMPLE_WINDOW_HEIGHT,
+        tabs,
+      }],
+    }));
 
     await tabSearchPage.$.tabsList.ensureAllDomItemsAvailable();
 

@@ -34,7 +34,6 @@ import org.robolectric.annotation.Config;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
-import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
@@ -44,14 +43,15 @@ import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.components.sync_device_info.FormFactor;
+import org.chromium.components.sync_device_info.OsType;
+import org.chromium.components.sync_device_info.RemoteDeviceInfo;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /** Unit tests for OtherDevicesShortcutController. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE, sdk = Build.VERSION_CODES.R)
-@Batch(Batch.UNIT_TESTS)
+@Config(sdk = Build.VERSION_CODES.R)
 @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_DYNAMIC_SHORTCUTS)
 public class OtherDevicesShortcutControllerTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -133,8 +133,10 @@ public class OtherDevicesShortcutControllerTest {
 
     @Test
     public void handleShareTargetIntent() {
-        List<TargetDeviceInfo> devices = new ArrayList<>();
-        devices.add(new TargetDeviceInfo("Device 1", DEVICE_GUID_1, FormFactor.PHONE, "Just now"));
+        List<RemoteDeviceInfo> devices = new ArrayList<>();
+        devices.add(
+                new RemoteDeviceInfo(
+                        "Device 1", DEVICE_GUID_1, FormFactor.PHONE, OsType.ANDROID, "Just now"));
         when(mNativeMock.getAllTargetDeviceInfos(mProfile)).thenReturn(devices);
 
         // Instantiate controller to populate shortcuts in ShortcutManager.
@@ -159,8 +161,91 @@ public class OtherDevicesShortcutControllerTest {
     }
 
     @Test
+    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_MULTI_TAB_SHARE)
+    public void handleShareTargetIntent_MultipleUrls() {
+        List<RemoteDeviceInfo> devices = new ArrayList<>();
+        devices.add(
+                new RemoteDeviceInfo(
+                        "Device 1", DEVICE_GUID_1, FormFactor.PHONE, OsType.ANDROID, "Just now"));
+        when(mNativeMock.getAllTargetDeviceInfos(mProfile)).thenReturn(devices);
+
+        // Instantiate controller to populate shortcuts in ShortcutManager.
+        OtherDevicesShortcutController controller = new OtherDevicesShortcutController(mProfile);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        Activity activity = Robolectric.buildActivity(Activity.class).create().get();
+        String url1 = "https://example1.com";
+        String url2 = "https://example2.com";
+        Intent intent = createShareTargetIntent(SHORTCUT_ID_1, url1 + " " + url2, TITLE);
+
+        OtherDevicesShortcutController.handleShareTargetIntent(activity, intent, mProfile);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        verify(mNativeMock)
+                .sendTabToDevice(
+                        eq(mProfile),
+                        eq(null),
+                        eq(DEVICE_GUID_1),
+                        eq(url1),
+                        eq(""),
+                        any(),
+                        eq(ShareEntryPoint.SHARE_SHEET_DIRECT_SHARE));
+        verify(mNativeMock)
+                .sendTabToDevice(
+                        eq(mProfile),
+                        eq(null),
+                        eq(DEVICE_GUID_1),
+                        eq(url2),
+                        eq(""),
+                        any(),
+                        eq(ShareEntryPoint.SHARE_SHEET_DIRECT_SHARE));
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_MULTI_TAB_SHARE)
+    public void handleShareTargetIntent_MultipleUrls_FeatureDisabled() {
+        List<RemoteDeviceInfo> devices = new ArrayList<>();
+        devices.add(
+                new RemoteDeviceInfo(
+                        "Device 1", DEVICE_GUID_1, FormFactor.PHONE, OsType.ANDROID, "Just now"));
+        when(mNativeMock.getAllTargetDeviceInfos(mProfile)).thenReturn(devices);
+
+        // Instantiate controller to populate shortcuts in ShortcutManager.
+        OtherDevicesShortcutController controller = new OtherDevicesShortcutController(mProfile);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        Activity activity = Robolectric.buildActivity(Activity.class).create().get();
+        String url1 = "https://example1.com";
+        String url2 = "https://example2.com";
+        Intent intent = createShareTargetIntent(SHORTCUT_ID_1, url1 + " " + url2, TITLE);
+
+        OtherDevicesShortcutController.handleShareTargetIntent(activity, intent, mProfile);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        // When the feature is disabled, only a single URL is extracted via getUrlFromIntent.
+        verify(mNativeMock)
+                .sendTabToDevice(
+                        eq(mProfile),
+                        eq(null),
+                        eq(DEVICE_GUID_1),
+                        eq(url2),
+                        eq(TITLE),
+                        any(),
+                        eq(ShareEntryPoint.SHARE_SHEET_DIRECT_SHARE));
+        verify(mNativeMock, never())
+                .sendTabToDevice(
+                        any(),
+                        any(),
+                        any(),
+                        eq(url1),
+                        any(),
+                        any(),
+                        anyInt());
+    }
+
+    @Test
     public void handleShareTargetIntent_RejectUnknownDevice() {
-        List<TargetDeviceInfo> devices = new ArrayList<>();
+        List<RemoteDeviceInfo> devices = new ArrayList<>();
         // No devices synced.
         when(mNativeMock.getAllTargetDeviceInfos(mProfile)).thenReturn(devices);
 
@@ -193,9 +278,14 @@ public class OtherDevicesShortcutControllerTest {
 
     @Test
     public void testHandleLauncherShortcutIntent_RelaunchesAsTrusted() {
-        List<TargetDeviceInfo> devices = new ArrayList<>();
+        List<RemoteDeviceInfo> devices = new ArrayList<>();
         devices.add(
-                new TargetDeviceInfo(DEVICE_NAME_1, DEVICE_GUID_1, FormFactor.PHONE, "Just now"));
+                new RemoteDeviceInfo(
+                        DEVICE_NAME_1,
+                        DEVICE_GUID_1,
+                        FormFactor.PHONE,
+                        OsType.ANDROID,
+                        "Just now"));
         when(mNativeMock.getAllTargetDeviceInfos(mProfile)).thenReturn(devices);
 
         Activity activity = Robolectric.buildActivity(Activity.class).create().get();
@@ -258,11 +348,21 @@ public class OtherDevicesShortcutControllerTest {
 
     @Test
     public void testUpdateShortcuts() {
-        List<TargetDeviceInfo> devices = new ArrayList<>();
+        List<RemoteDeviceInfo> devices = new ArrayList<>();
         devices.add(
-                new TargetDeviceInfo(DEVICE_NAME_1, DEVICE_GUID_1, FormFactor.PHONE, "Just now"));
+                new RemoteDeviceInfo(
+                        DEVICE_NAME_1,
+                        DEVICE_GUID_1,
+                        FormFactor.PHONE,
+                        OsType.ANDROID,
+                        "Just now"));
         devices.add(
-                new TargetDeviceInfo(DEVICE_NAME_2, DEVICE_GUID_2, FormFactor.DESKTOP, "Just now"));
+                new RemoteDeviceInfo(
+                        DEVICE_NAME_2,
+                        DEVICE_GUID_2,
+                        FormFactor.DESKTOP,
+                        OsType.WINDOWS,
+                        "Just now"));
 
         when(mNativeMock.getAllTargetDeviceInfos(mProfile)).thenReturn(devices);
         when(mNativeMock.addDeviceInfoObserver(any(), any())).thenReturn(123L);
@@ -296,9 +396,14 @@ public class OtherDevicesShortcutControllerTest {
     public void testUpdateShortcuts_WithGivenName() {
         when(mIdentityManager.getPrimaryAccountInfo()).thenReturn(TestAccounts.ACCOUNT1);
 
-        List<TargetDeviceInfo> devices = new ArrayList<>();
+        List<RemoteDeviceInfo> devices = new ArrayList<>();
         devices.add(
-                new TargetDeviceInfo(DEVICE_NAME_1, DEVICE_GUID_1, FormFactor.PHONE, "Just now"));
+                new RemoteDeviceInfo(
+                        DEVICE_NAME_1,
+                        DEVICE_GUID_1,
+                        FormFactor.PHONE,
+                        OsType.ANDROID,
+                        "Just now"));
 
         when(mNativeMock.getAllTargetDeviceInfos(mProfile)).thenReturn(devices);
 
@@ -318,9 +423,14 @@ public class OtherDevicesShortcutControllerTest {
         when(mIdentityManager.getPrimaryAccountInfo())
                 .thenReturn(TestAccounts.TEST_ACCOUNT_NO_NAME);
 
-        List<TargetDeviceInfo> devices = new ArrayList<>();
+        List<RemoteDeviceInfo> devices = new ArrayList<>();
         devices.add(
-                new TargetDeviceInfo(DEVICE_NAME_1, DEVICE_GUID_1, FormFactor.PHONE, "Just now"));
+                new RemoteDeviceInfo(
+                        DEVICE_NAME_1,
+                        DEVICE_GUID_1,
+                        FormFactor.PHONE,
+                        OsType.ANDROID,
+                        "Just now"));
 
         when(mNativeMock.getAllTargetDeviceInfos(mProfile)).thenReturn(devices);
 
@@ -338,9 +448,14 @@ public class OtherDevicesShortcutControllerTest {
     @Test
     @DisableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_DYNAMIC_SHORTCUTS)
     public void testFeatureDisabled_NoShortcutsRegistered() {
-        List<TargetDeviceInfo> devices = new ArrayList<>();
+        List<RemoteDeviceInfo> devices = new ArrayList<>();
         devices.add(
-                new TargetDeviceInfo(DEVICE_NAME_1, DEVICE_GUID_1, FormFactor.PHONE, "Just now"));
+                new RemoteDeviceInfo(
+                        DEVICE_NAME_1,
+                        DEVICE_GUID_1,
+                        FormFactor.PHONE,
+                        OsType.ANDROID,
+                        "Just now"));
 
         when(mNativeMock.getAllTargetDeviceInfos(mProfile)).thenReturn(devices);
 

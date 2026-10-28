@@ -13,7 +13,7 @@
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -151,6 +151,18 @@ IN_PROC_BROWSER_TEST_F(ChromeURLDataManagerTest, LargeResourceScale) {
             observer.navigation_result());
   // The presence of net error means that navigation did not commit to the
   // original url.
+  EXPECT_NE(net::OK, observer.net_error());
+}
+
+// Makes sure resources registered for chrome: are not serviced under other
+// schemes.
+IN_PROC_BROWSER_TEST_F(ChromeURLDataManagerTest, DifferentSchemeNotServiced) {
+  NavigationObserver observer(
+      browser()->tab_strip_model()->GetActiveWebContents());
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), GURL("devtools://theme/IDR_SETTINGS_FAVICON")));
+  EXPECT_EQ(NavigationObserver::Result::kErrorPage,
+            observer.navigation_result());
   EXPECT_NE(net::OK, observer.net_error());
 }
 

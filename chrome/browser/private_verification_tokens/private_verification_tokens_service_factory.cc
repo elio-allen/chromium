@@ -5,8 +5,11 @@
 #include "chrome/browser/private_verification_tokens/private_verification_tokens_service_factory.h"
 
 #include "base/feature_list.h"
+#include "base/json/json_reader.h"
+#include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/no_destructor.h"
+#include "base/values.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/private_verification_tokens/private_verification_tokens_service.h"
 #include "chrome/browser/profiles/profile.h"
@@ -16,11 +19,38 @@
 namespace {
 
 scoped_refptr<
+    const private_verification_tokens::PrivateVerificationTokensIssuerConfig>
+MergeCommandLineCustomIssuerConfig(
+    scoped_refptr<const private_verification_tokens::
+                      PrivateVerificationTokensIssuerConfig> base_config) {
+  std::string custom_issuer_json =
+      net::features::kPrivateVerificationTokensCustomIssuer.Get();
+  if (!custom_issuer_json.empty()) {
+    auto parsed =
+        base::JSONReader::ReadAndReturnValueWithError(custom_issuer_json, 0);
+    if (!parsed.has_value()) {
+      LOG(WARNING) << "Failed to parse command-line custom PVT issuer JSON: "
+                   << parsed.error().message;
+    } else if (!parsed->is_dict()) {
+      LOG(WARNING) << "Failed to parse command-line custom PVT issuer JSON: "
+                   << "Root value is not a dictionary.";
+    } else {
+      VLOG(1) << "Successfully parsed and will use custom PVT issuer config "
+              << "from command line: " << custom_issuer_json;
+      return private_verification_tokens::
+          PrivateVerificationTokensIssuerConfig::CreateWithCustomIssuer(
+              std::move(base_config), std::move(*parsed).TakeDict());
+    }
+  }
+  return base_config;
+}
+
+scoped_refptr<
     const private_verification_tokens::PrivateVerificationTokensIssuerConfig>&
 GetGlobalIssuerConfigStorage() {
   static base::NoDestructor<scoped_refptr<
       const private_verification_tokens::PrivateVerificationTokensIssuerConfig>>
-      config;
+      config(MergeCommandLineCustomIssuerConfig(nullptr));
   return *config;
 }
 
@@ -30,7 +60,8 @@ GetGlobalIssuerConfigStorage() {
 void PrivateVerificationTokensServiceFactory::SetGlobalIssuerConfig(
     scoped_refptr<const private_verification_tokens::
                       PrivateVerificationTokensIssuerConfig> config) {
-  GetGlobalIssuerConfigStorage() = std::move(config);
+  GetGlobalIssuerConfigStorage() =
+      MergeCommandLineCustomIssuerConfig(std::move(config));
 }
 
 // static

@@ -120,9 +120,12 @@ Vector<String> FileInputType::FilesFromFormControlState(
 }
 
 FormControlState FileInputType::SaveFormControlState() const {
-  if (file_list_->IsEmpty() ||
-      GetElement().GetDocument().GetFormController().DropReferencedFilePaths())
+  if (file_list_->IsEmpty() || GetElement()
+                                   .GetDocument()
+                                   .EnsureFormController()
+                                   .DropReferencedFilePaths()) {
     return FormControlState();
+  }
   FormControlState state;
   unsigned num_files = file_list_->length();
   for (unsigned i = 0; i < num_files; ++i)
@@ -183,9 +186,7 @@ void FileInputType::HandleDOMActivateEvent(Event& event) {
         mojom::ConsoleMessageLevel::kWarning, message));
     return;
   }
-  if (RuntimeEnabledFeatures::FileColorPickerConsumeActivationEnabled()) {
-    LocalFrame::ConsumeTransientUserActivation(document.GetFrame());
-  }
+  LocalFrame::ConsumeTransientUserActivation(document.GetFrame());
 
   OpenPopupView();
   event.SetDefaultHandled();
@@ -642,6 +643,14 @@ String FileInputType::FileStatusText() const {
 void FileInputType::UpdateView() {
   if (auto* span = FileStatusElement())
     span->setTextContent(FileStatusText());
+}
+
+bool FileInputType::SupportsBaseAppearance(
+    Element::BaseAppearanceValue value) const {
+  if (!RuntimeEnabledFeatures::AppearanceBaseEnabled()) {
+    return false;
+  }
+  return value == Element::BaseAppearanceValue::kBase;
 }
 
 }  // namespace blink

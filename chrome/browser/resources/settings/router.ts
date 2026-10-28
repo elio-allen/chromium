@@ -30,11 +30,14 @@ export interface SettingsRoutes {
   CONTACT_INFO: Route;
   COOKIES: Route;
   DEFAULT_BROWSER: Route;
+  DICTATION: Route;
   DOWNLOADS: Route;
   EDIT_DICTIONARY: Route;
   FONTS: Route;
   GEMINI: Route;
   GEMINI_LOGIN: Route;
+  GEMINI_ENTERPRISE: Route;
+  GENERAL: Route;
   GLIC_SECTION: Route;
   HISTORY_SEARCH: Route;
   IDENTITY_DOCS: Route;
@@ -112,7 +115,6 @@ export interface SettingsRoutes {
   SITE_SETTINGS_ZOOM_LEVELS: Route;
   SITE_SETTINGS_WEB_PRINTING: Route;
   SKILLS: Route;
-  SPELL_CHECK: Route;
   SUGGESTIONS_FROM_GEMINI: Route;
   SYNC: Route;
   SYNC_ADVANCED: Route;
@@ -237,6 +239,8 @@ export class Router {
 
   private wasLastRouteChangePopstate_: boolean = false;
 
+  private previousRoute_: Route|null = null;
+
   private initializeRouteFromUrlCalled_: boolean = false;
 
   private routeObservers_: Set<RouteObserverMixinInterface> = new Set();
@@ -289,6 +293,7 @@ export class Router {
     this.recordMetrics(route.path);
 
     const oldRoute = this.currentRoute;
+    this.previousRoute_ = oldRoute;
     this.currentRoute = route;
     this.currentQueryParameters_ = queryParameters;
     this.wasLastRouteChangePopstate_ = isPopstate;
@@ -320,6 +325,10 @@ export class Router {
 
   getCurrentRoute(): Route {
     return this.currentRoute;
+  }
+
+  getPreviousRoute(): Route|null {
+    return this.previousRoute_;
   }
 
   getQueryParameters(): URLSearchParams {
@@ -472,6 +481,7 @@ export class Router {
   resetRouteForTesting() {
     this.initializeRouteFromUrlCalled_ = false;
     this.wasLastRouteChangePopstate_ = false;
+    this.previousRoute_ = null;
     this.currentRoute = this.routes_.BASIC;
     this.currentQueryParameters_ = new URLSearchParams();
   }

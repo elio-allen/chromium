@@ -55,19 +55,21 @@ class OmniboxAutofillDelegate : public AutofillManager::Observer,
   bool OnFilterChanged(const std::u16string& filter) override;
   bool OnSearchSubmitted(const std::u16string& filter) override;
   bool IsSearching() const override;
-  std::variant<AutofillDriver*, password_manager::PasswordManagerDriver*>
-  GetDriver_DoNotUse() override;
   void OnSuggestionsShown(base::span<const Suggestion> suggestions,
-                          base::optional_ref<const SuggestionMetadata>
-                              parent_suggestion_metadata) override;
+                          const SuggestionUiMetadata& metadata) override;
   void OnSuggestionsHidden(SuggestionHidingReason reason) override;
-  void DidSelectSuggestion(const Suggestion& suggestion) override;
+  void DidSelectSuggestion(const Suggestion& suggestion,
+                           const FormGlobalId& form_id,
+                           const FieldGlobalId& field_id) override;
   void DidAcceptSuggestion(const Suggestion& suggestion,
-                           const SuggestionMetadata& metadata) override;
+                           const SuggestionMetadata& metadata,
+                           const FormGlobalId& form_id,
+                           const FieldGlobalId& field_id) override;
   bool RemoveSuggestion(const Suggestion& suggestion) override;
   void ClearPreviewedForm() override;
   FillingProduct GetMainFillingProduct() const override;
   void OnTabSelected(TabbedPaneTabType tab_type) override;
+  FieldGlobalId GetQueriedFieldId() const override;
 
   // mojom::AutofillVisibilityObserver:
   void OnFieldBecameVisible() override;
@@ -80,6 +82,14 @@ class OmniboxAutofillDelegate : public AutofillManager::Observer,
   // is not embedded. Returns `false` otherwise. Most OmniboxAutofillDelegate
   // functionality only wants to run on the outermost, main frame, active BAM.
   bool IsOutermostMainFrameActiveAutofillManager(AutofillManager& manager);
+
+  // Returns `true` if `field` is a credit card number field and is considered
+  // visible in the DOM.
+  //
+  // Note: This refers to static DOM visibility and should not be confused with
+  // viewport visibility, which is tracked asynchronously by
+  // `ObserveFieldVisibility()` and reported via `OnFieldBecameVisible()`.
+  bool IsVisibleCreditCardNumberField(const AutofillField& field) const;
 
   // Checks if the given `field` is in the main frame.
   bool IsFieldInMainFrame(AutofillManager& manager,

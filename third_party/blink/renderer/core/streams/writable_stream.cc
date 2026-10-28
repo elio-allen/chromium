@@ -384,6 +384,8 @@ ScriptPromise<IDLUndefined> WritableStream::Abort(ScriptState* script_state,
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
 
+  resolver->SuppressDetachCheck();
+
   // 10. Set stream.[[pendingAbortRequest]] to a new pending abort request
   //     whose promise is promise, reason is reason, and was already erroring is
   //     wasAlreadyErroring.
@@ -884,9 +886,8 @@ v8::Local<v8::String> WritableStream::CreateCannotActionOnStateStreamMessage(
     v8::Isolate* isolate,
     const char* action,
     const char* state_name) {
-  return V8String(isolate,
-                  UNSAFE_TODO(String::Format("Cannot %s a %s writable stream",
-                                             action, state_name)));
+  return V8String(isolate, StrCat({"Cannot ", action, " a ", state_name,
+                                   " writable stream"}));
 }
 
 // static

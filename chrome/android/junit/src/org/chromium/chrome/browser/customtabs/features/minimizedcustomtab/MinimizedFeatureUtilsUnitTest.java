@@ -28,18 +28,18 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.SysUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
+import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.CustomTabsUiType;
 import org.chromium.chrome.browser.customtabs.features.minimizedcustomtab.MinimizedFeatureUtils.MinimizedFeatureAvailability;
+import org.chromium.chrome.browser.util.BrowserUiUtils;
 
 /** Unit tests for {@link MinimizedFeatureUtils}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class MinimizedFeatureUtilsUnitTest {
     private static final String NAME = "Chrome";
     private static final int UID = 101;
@@ -73,6 +73,12 @@ public class MinimizedFeatureUtilsUnitTest {
     @After
     public void tearDown() {
         SysUtils.setIsLowEndDeviceForTesting(false);
+    }
+
+    @Test
+    public void testAndroidAutoProjected() {
+        BrowserUiUtils.setIsAndroidAutoProjectedForTesting(true);
+        assertFalse(MinimizedFeatureUtils.isMinimizedCustomTabAvailable(mContext));
     }
 
     @Test
@@ -146,6 +152,11 @@ public class MinimizedFeatureUtilsUnitTest {
         when(mIntent.getIntExtra(eq(IntentHandler.EXTRA_FEDCM_ID), anyInt())).thenReturn(-1);
         when(mIntentDataProvider.isTrustedIntent()).thenReturn(false);
         when(mIntentDataProvider.isAuthTab()).thenReturn(true);
+        assertFalse(MinimizedFeatureUtils.shouldEnableMinimizedCustomTabs(mIntentDataProvider));
+        when(mIntentDataProvider.isAuthTab()).thenReturn(false);
+
+        // False for POPUP
+        when(mIntentDataProvider.getUiType()).thenReturn(CustomTabsUiType.POPUP);
         assertFalse(MinimizedFeatureUtils.shouldEnableMinimizedCustomTabs(mIntentDataProvider));
     }
 }

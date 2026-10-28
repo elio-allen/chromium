@@ -17,33 +17,13 @@ const char kFeaturesScriptName[] = "autofill_form_features";
 web::JavaScriptFeature::FeatureScript::PlaceholderReplacements
 GetReplacements() {
   return @{
-    @"gCrWebPlaceholderAutofillAcrossIframesEnabled" :
-            base::FeatureList::IsEnabled(
-                autofill::features::kAutofillAcrossIframesIos)
-        ? @"true"
-        : @"false",
-    @"gCrWebPlaceholderAutofillAcrossIframesThrottling" :
-            base::FeatureList::IsEnabled(
-                autofill::features::kAutofillAcrossIframesIosThrottling)
-        ? @"true"
-        : @"false",
     @"gCrWebPlaceholderAutofillDisallowMoreHyphenLikeLabels" :
             base::FeatureList::IsEnabled(
                 autofill::features::kAutofillDisallowMoreHyphenLikeLabels)
         ? @"true"
         : @"false",
-    @"gCrWebPlaceholderAutofillIgnoreCheckableElements" :
-            base::FeatureList::IsEnabled(
-                autofill::features::kAutofillIgnoreCheckableElements)
-        ? @"true"
-        : @"false",
     @"gCrWebPlaceholderAutofillSupportDateInput" :
             base::FeatureList::IsEnabled(::kAutofillSupportDateInput)
-        ? @"true"
-        : @"false",
-    @"gCrWebPlaceholderAutofillCorrectUserEditedBitInParsedField" :
-            base::FeatureList::IsEnabled(
-                ::kAutofillCorrectUserEditedBitInParsedField)
         ? @"true"
         : @"false",
     @"gCrWebPlaceholderAutofillAllowDefaultPreventedSubmission" :
@@ -70,6 +50,15 @@ GetReplacements() {
         : @"false",
     @"gCrWebPlaceholderAutofillTrackPasswordFieldsIos" :
             base::FeatureList::IsEnabled(::kAutofillTrackPasswordFieldsIos)
+        ? @"true"
+        : @"false",
+    @"gCrWebPlaceholderAutofillSupportContentEditable" :
+            base::FeatureList::IsEnabled(::kAutofillSupportContentEditableIos)
+        ? @"true"
+        : @"false",
+    @"gCrWebPlaceholderAutofillIgnoreTabIndexForFocusability" :
+            base::FeatureList::IsEnabled(
+                ::kAutofillIgnoreTabIndexForFocusabilityIos)
         ? @"true"
         : @"false",
   };

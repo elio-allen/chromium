@@ -43,6 +43,7 @@
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/ref_counted.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_utf8_adaptor.h"
@@ -460,6 +461,8 @@ class GetCacheKeysForRequestData {
       callback_wrapper_;
 };
 
+}  // namespace
+
 class CachedResponseFileReaderLoaderClient final
     : public GarbageCollected<CachedResponseFileReaderLoaderClient>,
       public FileReaderClient {
@@ -494,8 +497,8 @@ class CachedResponseFileReaderLoaderClient final
 
   void DidFail(FileErrorCode error) override {
     callback_wrapper_->SendFailure(ProtocolResponse::ServerError(
-        String::Format("Unable to read the cached response, error code: %d",
-                       static_cast<int>(error))
+        Format("Unable to read the cached response, error code: {}",
+               static_cast<int>(error))
             .Utf8()));
     dispose();
   }
@@ -518,7 +521,7 @@ class CachedResponseFileReaderLoaderClient final
       : loader_(MakeGarbageCollected<FileReaderLoader>(this,
                                                        std::move(task_runner))),
         callback_wrapper_(callback_wrapper),
-        keep_alive_(this) {
+        keep_alive_({}, this) {
     loader_->Start(std::move(blob));
   }
 
@@ -536,8 +539,6 @@ class CachedResponseFileReaderLoaderClient final
   SegmentedBuffer data_;
   SelfKeepAlive<CachedResponseFileReaderLoaderClient> keep_alive_;
 };
-
-}  // namespace
 
 InspectorCacheStorageAgent::InspectorCacheStorageAgent(InspectedFrames* frames)
     : frames_(frames) {}

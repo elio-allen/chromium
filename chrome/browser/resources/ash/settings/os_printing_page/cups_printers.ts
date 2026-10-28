@@ -52,7 +52,7 @@ import type {RouteObserverMixinInterface} from '../common/route_observer_mixin.j
 import {RouteObserverMixin} from '../common/route_observer_mixin.js';
 import type {Constructor} from '../common/types.js';
 import {Setting} from '../mojom-webui/setting.mojom-webui.js';
-import type {Route} from '../router.js';
+import type {Route} from '../os_settings_routes.js';
 import {routes} from '../router.js';
 
 import type {PrinterListEntry} from './cups_printer_types.js';
@@ -71,21 +71,23 @@ import type {SettingsCupsAddPrinterDialogElement} from './cups_settings_add_prin
  * change one without changing the other).
  * These values are persisted to logs. Entries should not be renumbered and
  * numeric values should never be reused.
- * @enum {number}
  */
+// LINT.IfChange(PrinterSettingsUserAction)
 export enum PrinterSettingsUserAction {
   ADD_PRINTER_MANUALLY = 0,
   SAVE_PRINTER = 1,
   EDIT_PRINTER = 2,
   REMOVE_PRINTER = 3,
   CLICK_HELP_LINK = 4,
+  COUNT = CLICK_HELP_LINK + 1,
 }
+// LINT.ThenChange(//tools/metrics/histograms/metadata/printing/enums.xml:PrinterSettingsUserAction)
 
 export function recordPrinterSettingsUserAction(
     userAction: PrinterSettingsUserAction): void {
   chrome.metricsPrivate.recordEnumerationValue(
       'Printing.CUPS.SettingsUserAction', userAction,
-      Object.keys(PrinterSettingsUserAction).length);
+      PrinterSettingsUserAction.COUNT);
 }
 
 const SettingsCupsPrintersElementBase =
@@ -220,6 +222,11 @@ export class SettingsCupsPrintersElement extends
         computed: 'computeNearbyPrintersEmpty_(nearbyPrinterCount_)',
         reflectToAttribute: true,
       },
+
+      addPrintServerResultText_: {
+        type: String,
+        value: '',
+      },
     };
   }
 
@@ -235,7 +242,7 @@ export class SettingsCupsPrintersElement extends
     Setting.kPrintJobs,
   ]);
 
-  private addPrintServerResultText_: string;
+  declare private addPrintServerResultText_: string;
   declare private addPrinterResultText_: string;
   declare private attemptedLoadingPrinters_: boolean;
   private browserProxy_: CupsPrintersBrowserProxy;
@@ -264,8 +271,6 @@ export class SettingsCupsPrintersElement extends
 
 
     this.entryManager_ = CupsPrintersEntryManager.getInstance();
-
-    this.addPrintServerResultText_ = '';
 
     this.browserProxy_ = CupsPrintersBrowserProxyImpl.getInstance();
 

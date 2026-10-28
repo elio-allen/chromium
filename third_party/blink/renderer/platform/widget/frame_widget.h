@@ -22,6 +22,7 @@
 #include "third_party/blink/public/platform/web_text_input_info.h"
 #include "third_party/blink/public/platform/web_text_input_type.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "ui/base/ime/mojom/text_input_state.mojom-blink.h"
 #include "ui/base/ime/mojom/virtual_keyboard_types.mojom-blink.h"
 #include "ui/base/mojom/window_show_state.mojom-blink-forward.h"
@@ -245,9 +246,9 @@ class PLATFORM_EXPORT FrameWidget {
   // Returns information about available screens and the current screen.
   virtual const display::ScreenInfos& GetScreenInfos() = 0;
 
-  // Returns information about the screen that would be showing the widget
-  // without DevTools emulation applied.
-  virtual const display::ScreenInfo& GetOriginalScreenInfo() = 0;
+  // Returns the device scale factor of the screen that would be showing the
+  // widget without DevTools emulation applied.
+  virtual float GetOriginalDeviceScaleFactor() = 0;
 
   // Called to get the position of the widget's window in screen
   // coordinates. Note, the window includes any decorations such as borders,
@@ -316,6 +317,11 @@ class PLATFORM_EXPORT FrameWidget {
   // this widget, taking into account its transform to main frame space.
   virtual float GetCompositingScaleFactor() = 0;
 
+  // Returns inherited pinch zoom, which scales scrolling in child widgets but
+  // is not part of their local visual viewport. Returns 1 for the top-level
+  // widget, whose pinch zoom is already included in input-event transforms.
+  virtual float GetExternalPageScaleFactor() const = 0;
+
   // Get and set the configuration for the debugging overlay managed by the
   // underlying LayerTreeHost. This may return null if the widget does not
   // composite.
@@ -358,6 +364,10 @@ class PLATFORM_EXPORT FrameWidget {
   // https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/main/ConditionalTracing/explainer-for-loaf.md
   virtual void MarkConditional(const AtomicString& name,
                                base::TimeTicks start_time) = 0;
+  virtual void MeasureConditional(const AtomicString& name,
+                                  const AtomicString& start_mark,
+                                  const AtomicString& end_mark,
+                                  base::TimeTicks end_time) = 0;
 
   virtual void OnFirstContentfulPaint() = 0;
 

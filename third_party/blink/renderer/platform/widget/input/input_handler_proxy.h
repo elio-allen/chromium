@@ -281,8 +281,6 @@ class PLATFORM_EXPORT InputHandlerProxy : public cc::InputHandlerClient,
   // Returns the ElementId of the currently latched scroller, or invalid id.
   cc::ElementId LatchedScrollerElementId() const;
 
-  bool HandlingFlingForTesting() const { return handling_fling_; }
-
  private:
   friend class test::TestInputHandlerProxy;
   friend class test::InputHandlerProxyTest;
@@ -345,12 +343,18 @@ class PLATFORM_EXPORT InputHandlerProxy : public cc::InputHandlerClient,
   // InputHandlerProxy instance.
   void SetTickClockForTesting(const base::TickClock* tick_clock);
 
+  struct HitTestTouchEventResult {
+    EventDisposition disposition = DROP_EVENT;
+    // The touch_action we are sure will be allowed for the given touch event.
+    // Only populated for `touch_start_or_first_touch_move` events.
+    std::optional<cc::TouchAction> allowed_touch_action = std::nullopt;
+  };
+
   // |is_touching_scrolling_layer| indicates if one of the points that has
-  // been touched hits a currently scrolling layer. |allowed_touch_action| is
-  // the touch_action we are sure will be allowed for the given touch event.
-  EventDisposition HitTestTouchEvent(const blink::WebTouchEvent& touch_event,
-                                     bool* is_touching_scrolling_layer,
-                                     cc::TouchAction* allowed_touch_action);
+  // been touched hits a currently scrolling layer.
+  HitTestTouchEventResult HitTestTouchEvent(
+      const blink::WebTouchEvent& touch_event,
+      bool* is_touching_scrolling_layer);
 
   EventDisposition RouteToTypeSpecificHandler(
       EventWithCallback* event_with_callback);
@@ -359,10 +363,11 @@ class PLATFORM_EXPORT InputHandlerProxy : public cc::InputHandlerClient,
     event_attribution_enabled_ = enabled;
   }
 
-  void RecordScrollBegin(blink::WebGestureDevice device,
-                         uint32_t main_thread_hit_tested_reasons,
-                         uint32_t main_thread_repaint_reasons,
-                         bool raster_inducing = false);
+  void RecordScrollBegin(
+      blink::WebGestureDevice device,
+      cc::MainThreadHitTestReasons main_thread_hit_tested_reasons,
+      cc::MainThreadRepaintReasons main_thread_repaint_reasons,
+      bool raster_inducing = false);
 
   bool HasQueuedEventsReadyForDispatch(
       bool frame_aligned,
@@ -484,8 +489,7 @@ class PLATFORM_EXPORT InputHandlerProxy : public cc::InputHandlerClient,
   // will come by calling ContinueScrollBeginAfterMainThreadHitTest where the
   // queue will be flushed and this bit cleared. Used only in scroll
   // unification.
-  uint32_t scroll_begin_main_thread_hit_test_reasons_ =
-      cc::MainThreadScrollingReason::kNotScrollingOnMain;
+  cc::MainThreadHitTestReasons scroll_begin_main_thread_hit_test_reasons_;
 
   // This bit can be used to disable event attribution in cases where the
   // hit test information is unnecessary (e.g. tests).
@@ -514,14 +518,7 @@ class PLATFORM_EXPORT InputHandlerProxy : public cc::InputHandlerClient,
   // Cached value of the kUpdateScrollPredictorInputMapping feature flag.
   const bool update_scroll_predictor_;
 
-  // Cached value of the kFlingSchedulingImprovements feature flag.
-  const bool fling_scheduling_improvements_;
 
-  // Tracks whether a fling is currently in progress. This is only set to true
-  // if `fling_scheduling_improvements_` is enabled. When true, input events
-  // are processed up to the current |frame_time| instead of using resampling
-  // offset.
-  bool handling_fling_ = false;
 
   // `cc::InputHandlerClient::ScrollEventDispatchMode::kEnqueueScrollEvents`:
   // Scroll events arriving in `HandleInputEventWithLatencyInfo` will be

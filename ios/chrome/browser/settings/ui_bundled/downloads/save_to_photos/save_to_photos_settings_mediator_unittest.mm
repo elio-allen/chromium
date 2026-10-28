@@ -19,6 +19,7 @@
 #import "ios/chrome/browser/signin/model/avatar/avatar_provider.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
+#import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
@@ -239,8 +240,7 @@ class SaveToPhotosSettingsMediatorTest : public PlatformTest {
 
 // Tests that invoking the SaveToPhotosSettingsMutator interface on the mediator
 // leads to the expected changes in the preferences.
-// TODO(crbug.com/451601299): Re-enable the test.
-TEST_F(SaveToPhotosSettingsMediatorTest, DISABLED_CanMutateSelectedIdentity) {
+TEST_F(SaveToPhotosSettingsMediatorTest, CanMutateSelectedIdentity) {
   SaveToPhotosSettingsMediator* mediator = CreateSaveToPhotosSettingsMediator();
 
   profile_->GetPrefs()->SetString(prefs::kIosSaveToPhotosDefaultGaiaId,
@@ -273,9 +273,7 @@ TEST_F(SaveToPhotosSettingsMediatorTest, DISABLED_CanMutateSelectedIdentity) {
 
 // Tests that external changes in preferences leads to expected changes in the
 // consumer.
-// TODO(crbug.com/451601299): Re-enable the test.
-TEST_F(SaveToPhotosSettingsMediatorTest,
-       DISABLED_ExternalPrefChangeUpdatesConsumers) {
+TEST_F(SaveToPhotosSettingsMediatorTest, ExternalPrefChangeUpdatesConsumers) {
   SaveToPhotosSettingsMediator* mediator = CreateSaveToPhotosSettingsMediator();
 
   profile_->GetPrefs()->SetString(prefs::kIosSaveToPhotosDefaultGaiaId,
@@ -305,9 +303,8 @@ TEST_F(SaveToPhotosSettingsMediatorTest,
 
 // Tests that external changes in the list of accounts authenticated on the
 // device leads to expected changes in the consumer.
-// TODO(crbug.com/451601299): Re-enable the test.
 TEST_F(SaveToPhotosSettingsMediatorTest,
-       DISABLED_ExternalAccountsChangeUpdatesConsumers) {
+       ExternalAccountsChangeUpdatesConsumers) {
   SaveToPhotosSettingsMediator* mediator = CreateSaveToPhotosSettingsMediator();
 
   profile_->GetPrefs()->SetString(prefs::kIosSaveToPhotosDefaultGaiaId,

@@ -28,6 +28,7 @@
 
 #include <utility>
 
+#include "base/memory/scoped_refptr.h"
 #include "base/types/pass_key.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "services/network/public/mojom/url_loader_factory.mojom-blink-forward.h"
@@ -48,8 +49,8 @@ class Blob;
 class ExecutionContext;
 class GlobalStorageAccessHandle;
 class KURL;
-class URLRegistry;
-class URLRegistrable;
+class MediaSourceAttachment;
+class MediaSourceRegistry;
 
 class CORE_EXPORT PublicURLManager final
     : public GarbageCollected<PublicURLManager>,
@@ -63,10 +64,10 @@ class CORE_EXPORT PublicURLManager final
 
   // Returns a serialized new Blob URL and registers the Blob with the
   // BlobURLStore.
-  String RegisterURL(Blob*);
-  // Returns a serialized new Blob URL and registers the URLRegistrable with its
-  // URLRegistry.
-  String RegisterURL(URLRegistrable*);
+  String RegisterUrl(Blob*);
+  // Returns a serialized new Blob URL and registers the MediaSourceAttachment
+  // with its MediaSourceRegistry.
+  String RegisterUrl(scoped_refptr<MediaSourceAttachment>);
   // Revokes the given URL.
   void Revoke(const KURL&);
   // Resolves the provided URL to a factory capable of creating loaders for
@@ -96,12 +97,11 @@ class CORE_EXPORT PublicURLManager final
   mojom::blink::BlobURLStore& GetBlobURLStore();
 
  private:
-  KURL GenerateURL() const;
   String CompleteRegistration(const KURL&);
 
   typedef String URLString;
-  // Map from URLs to the URLRegistry they are registered with.
-  typedef HashMap<URLString, URLRegistry*> URLToRegistryMap;
+  // Map from URLs to the MediaSourceRegistry they are registered with.
+  typedef HashMap<URLString, MediaSourceRegistry*> URLToRegistryMap;
   URLToRegistryMap url_to_registry_;
   HashSet<URLString> mojo_urls_;
 

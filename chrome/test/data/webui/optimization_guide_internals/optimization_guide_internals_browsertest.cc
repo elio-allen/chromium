@@ -11,22 +11,24 @@
 #include "base/task/thread_pool.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
 #include "chrome/browser/optimization_guide/browser_test_util.h"
 #include "chrome/browser/optimization_guide/optimization_guide_internals_ui.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/base/web_ui_mocha_browser_test.h"
 #include "components/optimization_guide/core/delivery/model_util.h"
 #include "components/optimization_guide/core/delivery/prediction_model_override.h"
+#include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
+#include "components/optimization_guide/core/model_quality/model_quality_logs_uploader_service.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_logger.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/optimization_guide_internals/webui/url_constants.h"
 #include "components/prefs/pref_service.h"
 #include "components/webui/chrome_urls/pref_names.h"
@@ -81,6 +83,33 @@ IN_PROC_BROWSER_TEST_F(OptimizationGuideInternalsLoggerBrowserTest,
   RunTestCase("EmptyTest");
 }
 
+IN_PROC_BROWSER_TEST_F(OptimizationGuideInternalsBrowserTest,
+                       FilterUrlParamsReflection) {
+  RunTestCase("FilterUrlParamsReflection");
+}
+
+IN_PROC_BROWSER_TEST_F(OptimizationGuideInternalsBrowserTest,
+                       FilterUrlParamsPopstate) {
+  RunTestCase("FilterUrlParamsPopstate");
+}
+
+IN_PROC_BROWSER_TEST_F(OptimizationGuideInternalsBrowserTest,
+                       FilterUrlParamsInitial) {
+  g_browser_process->local_state()->SetBoolean(
+      chrome_urls::kInternalOnlyUisEnabled, true);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), GURL("chrome://optimization-guide-internals/"
+                      "?include=init_inc&exclude=init_exc")));
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  ASSERT_TRUE(RunTestOnWebContents(
+      web_contents,
+      "optimization_guide_internals/optimization_guide_internals_test.js",
+      "runMochaTest('OptimizationGuideInternalsTest', "
+      "'FilterUrlParamsInitial')",
+      /*skip_test_loader=*/true));
+}
+
 class OptimizationGuideInternalsLogMessageBrowserTest
     : public OptimizationGuideInternalsBrowserTest {
  protected:
@@ -112,7 +141,7 @@ class OptimizationGuideInternalsModelsPageBrowserTest
     base::PathService::Get(chrome::DIR_TEST_DATA, &src_dir);
 
     base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
-        optimization_guide::switches::kModelOverride,
+        optimization_guide::kModelOverrideSwitch,
         base::StrCat({
             "OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD",
             optimization_guide::ModelOverrideSeparator(),
@@ -180,6 +209,10 @@ class OptimizationGuideInternalsMqlsLogsBrowserTest
     : public OptimizationGuideInternalsBrowserTest {
  protected:
   void SetUpOnMainThread() override {
+    bool consent = false;
+    ChromeMetricsServiceAccessor::SetMetricsAndCrashReportingForTesting(
+        &consent);
+
     auto* model_quality_logs_uploader_service =
         OptimizationGuideKeyedServiceFactory::GetForProfile(
             browser()->GetProfile())
@@ -201,6 +234,10 @@ class OptimizationGuideInternalsMqlsLogsBrowserTest
     *(compose_logging_data.mutable_quality()) = quality;
     *(log_entry->log_ai_data_request()->mutable_compose()) =
         compose_logging_data;
+    log_entry.reset();
+
+    ChromeMetricsServiceAccessor::SetMetricsAndCrashReportingForTesting(
+        nullptr);
 
     WebUIMochaBrowserTest::SetUpOnMainThread();
   }

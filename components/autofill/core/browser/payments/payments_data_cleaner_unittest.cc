@@ -15,9 +15,9 @@
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager_test_base.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
-#include "components/autofill/core/browser/data_manager/personal_data_manager_test_utils.h"
+#include "components/autofill/core/browser/data_manager/personal_data_manager_test_util.h"
 #include "components/autofill/core/browser/suggestions/payments/payments_suggestion_generator_util.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_constants.h"
 #include "components/autofill/core/common/credit_card_network_identifiers.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -39,7 +39,7 @@ class PaymentsDataCleanerTest : public PaymentsDataManagerTestBase,
                                 sync_service_);
     personal_data_ = std::make_unique<PersonalDataManager>(
         profile_database_service_, account_database_service_, prefs_.get(),
-        prefs_.get(), identity_test_env_.identity_manager(),
+        identity_test_env_.identity_manager(),
         /*history_service=*/nullptr, &sync_service_,
         /*strike_database=*/nullptr,
         /*image_fetcher=*/nullptr, "en-US", "US",

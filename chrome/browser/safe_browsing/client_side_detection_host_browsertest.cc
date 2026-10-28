@@ -5,6 +5,7 @@
 #include "components/safe_browsing/content/browser/client_side_detection_host.h"
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
@@ -16,7 +17,7 @@
 #include "chrome/browser/safe_browsing/chrome_safe_browsing_blocking_page_factory.h"
 #include "chrome/browser/safe_browsing/chrome_ui_manager_delegate.h"
 #include "chrome/browser/safe_browsing/safe_browsing_service.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_test.h"
@@ -49,6 +50,7 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/http/http_status_code.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
@@ -135,9 +137,9 @@ class FakeClientSideDetectionService : public ClientSideDetectionService {
 
   // This is a fake CSD service which will have no thresholds due to no TfLite
   // models.
-  const std::vector<TfLiteModelMetadata::Threshold>&
+  base::span<const TfLiteModelMetadata::Threshold>
   GetVisualTfLiteModelThresholds() const override {
-    return thresholds_;
+    return {};
   }
 
   void SetRequestCallback(const base::RepeatingClosure& closure) {
@@ -155,7 +157,6 @@ class FakeClientSideDetectionService : public ClientSideDetectionService {
   std::string access_token_;
   std::string client_side_model_;
   base::File visual_tflite_model_;
-  std::vector<TfLiteModelMetadata::Threshold> thresholds_;
   base::RepeatingClosure request_callback_;
   base::WeakPtrFactory<ClientSideDetectionService> weak_factory_{this};
 };
@@ -307,7 +308,7 @@ class ClientSideDetectionHostPrerenderBrowserTest
   }
 
   content::WebContents* GetWebContents() {
-    return browser()->tab_strip_model()->GetActiveWebContents();
+    return browser()->GetTabStripModel()->GetActiveWebContents();
   }
 
   std::string client_side_model() { return flatbuffer_model_str_; }
@@ -354,7 +355,7 @@ class ClientSideDetectionHostPrerenderExclusiveAccessBrowserTest
   }
 
   content::WebContents* GetWebContents() {
-    return browser()->tab_strip_model()->GetActiveWebContents();
+    return browser()->GetTabStripModel()->GetActiveWebContents();
   }
 
   std::string client_side_model() { return flatbuffer_model_str_; }
@@ -383,7 +384,7 @@ IN_PROC_BROWSER_TEST_F(ClientSideDetectionHostPrerenderBrowserTest,
 
   std::unique_ptr<ClientSideDetectionHost> csd_host =
       ChromeClientSideDetectionHostDelegate::CreateHost(
-          browser()->tab_strip_model()->GetActiveWebContents());
+          browser()->GetTabStripModel()->GetActiveWebContents());
   csd_host->set_client_side_detection_service_for_testing(
       fake_csd_service.GetWeakPtr());
   csd_host->set_ui_manager(mock_ui_manager.get());
@@ -451,7 +452,7 @@ IN_PROC_BROWSER_TEST_F(ClientSideDetectionHostPrerenderBrowserTest,
   FakeClientSideDetectionService fake_csd_service;
   fake_csd_service.SetModel(client_side_model());
 
-  auto* web_contents = browser()->tab_strip_model()->GetActiveWebContents();
+  auto* web_contents = browser()->GetTabStripModel()->GetActiveWebContents();
   std::unique_ptr<ClientSideDetectionHost> csd_host =
       ChromeClientSideDetectionHostDelegate::CreateHost(web_contents);
   csd_host->set_client_side_detection_service_for_testing(
@@ -528,7 +529,7 @@ IN_PROC_BROWSER_TEST_F(ClientSideDetectionHostPrerenderBrowserTest,
 
   std::unique_ptr<ClientSideDetectionHost> csd_host =
       ChromeClientSideDetectionHostDelegate::CreateHost(
-          browser()->tab_strip_model()->GetActiveWebContents());
+          browser()->GetTabStripModel()->GetActiveWebContents());
   csd_host->set_client_side_detection_service_for_testing(
       fake_csd_service.GetWeakPtr());
   csd_host->set_ui_manager(mock_ui_manager.get());
@@ -589,7 +590,7 @@ class ClientSideDetectionHostPrerenderBrowserTest_Screenshot
 
     std::unique_ptr<ClientSideDetectionHost> csd_host =
         ChromeClientSideDetectionHostDelegate::CreateHost(
-            browser()->tab_strip_model()->GetActiveWebContents());
+            browser()->GetTabStripModel()->GetActiveWebContents());
     csd_host->set_client_side_detection_service_for_testing(
         fake_csd_service.GetWeakPtr());
 
@@ -741,7 +742,7 @@ IN_PROC_BROWSER_TEST_F(
 
   std::unique_ptr<ClientSideDetectionHost> csd_host =
       ChromeClientSideDetectionHostDelegate::CreateHost(
-          browser()->tab_strip_model()->GetActiveWebContents());
+          browser()->GetTabStripModel()->GetActiveWebContents());
   csd_host->set_client_side_detection_service_for_testing(
       fake_csd_service.GetWeakPtr());
   csd_host->set_ui_manager(mock_ui_manager.get());
@@ -826,7 +827,7 @@ IN_PROC_BROWSER_TEST_F(
 
   std::unique_ptr<ClientSideDetectionHost> csd_host =
       ChromeClientSideDetectionHostDelegate::CreateHost(
-          browser()->tab_strip_model()->GetActiveWebContents());
+          browser()->GetTabStripModel()->GetActiveWebContents());
   csd_host->set_client_side_detection_service_for_testing(
       fake_csd_service.GetWeakPtr());
   csd_host->set_ui_manager(mock_ui_manager.get());
@@ -911,7 +912,7 @@ IN_PROC_BROWSER_TEST_F(
 
   std::unique_ptr<ClientSideDetectionHost> csd_host =
       ChromeClientSideDetectionHostDelegate::CreateHost(
-          browser()->tab_strip_model()->GetActiveWebContents());
+          browser()->GetTabStripModel()->GetActiveWebContents());
   csd_host->set_client_side_detection_service_for_testing(
       fake_csd_service.GetWeakPtr());
   csd_host->set_ui_manager(mock_ui_manager.get());
@@ -961,7 +962,7 @@ IN_PROC_BROWSER_TEST_F(
 
   std::unique_ptr<ClientSideDetectionHost> csd_host =
       ChromeClientSideDetectionHostDelegate::CreateHost(
-          browser()->tab_strip_model()->GetActiveWebContents());
+          browser()->GetTabStripModel()->GetActiveWebContents());
   csd_host->set_client_side_detection_service_for_testing(
       fake_csd_service.GetWeakPtr());
   csd_host->set_ui_manager(mock_ui_manager.get());
@@ -1052,7 +1053,7 @@ class ClientSideDetectionHostVibrateTest : public InProcessBrowserTest {
   }
 
   content::WebContents* GetWebContents() {
-    return browser()->tab_strip_model()->GetActiveWebContents();
+    return browser()->GetTabStripModel()->GetActiveWebContents();
   }
 
  protected:
@@ -1110,7 +1111,7 @@ IN_PROC_BROWSER_TEST_F(ClientSideDetectionHostVibrateTest,
 
   std::unique_ptr<ClientSideDetectionHost> csd_host =
       ChromeClientSideDetectionHostDelegate::CreateHost(
-          browser()->tab_strip_model()->GetActiveWebContents());
+          browser()->GetTabStripModel()->GetActiveWebContents());
   csd_host->set_client_side_detection_service_for_testing(
       fake_csd_service.GetWeakPtr());
   csd_host->set_ui_manager(mock_ui_manager.get());
@@ -1173,7 +1174,7 @@ IN_PROC_BROWSER_TEST_F(ClientSideDetectionHostVibrateTest,
 
   std::unique_ptr<ClientSideDetectionHost> csd_host =
       ChromeClientSideDetectionHostDelegate::CreateHost(
-          browser()->tab_strip_model()->GetActiveWebContents());
+          browser()->GetTabStripModel()->GetActiveWebContents());
   csd_host->set_client_side_detection_service_for_testing(
       fake_csd_service.GetWeakPtr());
   csd_host->set_ui_manager(mock_ui_manager.get());
@@ -1254,7 +1255,7 @@ class ClientSideDetectionHostClipboardTest
   std::string client_side_model() { return flatbuffer_model_str_; }
 
   content::WebContents* GetWebContents() {
-    return browser()->tab_strip_model()->GetActiveWebContents();
+    return browser()->GetTabStripModel()->GetActiveWebContents();
   }
 
   // This script uses the Clipboard API to write text to the clipboard.
@@ -1342,7 +1343,7 @@ IN_PROC_BROWSER_TEST_P(ClientSideDetectionHostClipboardTest,
 
   std::unique_ptr<ClientSideDetectionHost> csd_host =
       ChromeClientSideDetectionHostDelegate::CreateHost(
-          browser()->tab_strip_model()->GetActiveWebContents());
+          browser()->GetTabStripModel()->GetActiveWebContents());
   csd_host->set_client_side_detection_service_for_testing(
       fake_csd_service.GetWeakPtr());
   csd_host->set_ui_manager(mock_ui_manager.get());
@@ -1396,7 +1397,7 @@ IN_PROC_BROWSER_TEST_P(ClientSideDetectionHostClipboardTest,
 
   std::unique_ptr<ClientSideDetectionHost> csd_host =
       ChromeClientSideDetectionHostDelegate::CreateHost(
-          browser()->tab_strip_model()->GetActiveWebContents());
+          browser()->GetTabStripModel()->GetActiveWebContents());
   csd_host->set_client_side_detection_service_for_testing(
       fake_csd_service.GetWeakPtr());
   csd_host->set_ui_manager(mock_ui_manager.get());
@@ -1608,7 +1609,7 @@ class ClientSideDetectionHostCreditCardFormTest : public InProcessBrowserTest {
   std::string client_side_model() { return flatbuffer_model_str_; }
 
   content::WebContents* GetWebContents() {
-    return browser()->tab_strip_model()->GetActiveWebContents();
+    return browser()->GetTabStripModel()->GetActiveWebContents();
   }
 
  protected:
@@ -1725,7 +1726,7 @@ IN_PROC_BROWSER_TEST_F(ClientSideDetectionHostCreditCardFormTest,
 
   std::unique_ptr<ClientSideDetectionHost> csd_host =
       ChromeClientSideDetectionHostDelegate::CreateHost(
-          browser()->tab_strip_model()->GetActiveWebContents());
+          browser()->GetTabStripModel()->GetActiveWebContents());
   csd_host->set_client_side_detection_service_for_testing(
       fake_csd_service.GetWeakPtr());
   csd_host->set_ui_manager(mock_ui_manager.get());
@@ -1768,7 +1769,7 @@ IN_PROC_BROWSER_TEST_F(ClientSideDetectionHostCreditCardFormTriggerDisabledTest,
 
   std::unique_ptr<ClientSideDetectionHost> csd_host =
       ChromeClientSideDetectionHostDelegate::CreateHost(
-          browser()->tab_strip_model()->GetActiveWebContents());
+          browser()->GetTabStripModel()->GetActiveWebContents());
   csd_host->set_client_side_detection_service_for_testing(
       fake_csd_service.GetWeakPtr());
   csd_host->set_ui_manager(mock_ui_manager.get());
@@ -1821,7 +1822,7 @@ IN_PROC_BROWSER_TEST_F(ClientSideDetectionHostCreditCardFormDetectionOnlyTest,
 
   std::unique_ptr<ClientSideDetectionHost> csd_host =
       ChromeClientSideDetectionHostDelegate::CreateHost(
-          browser()->tab_strip_model()->GetActiveWebContents());
+          browser()->GetTabStripModel()->GetActiveWebContents());
   csd_host->set_client_side_detection_service_for_testing(
       fake_csd_service.GetWeakPtr());
   csd_host->set_ui_manager(mock_ui_manager.get());
@@ -1861,7 +1862,7 @@ IN_PROC_BROWSER_TEST_F(
 
   std::unique_ptr<ClientSideDetectionHost> csd_host =
       ChromeClientSideDetectionHostDelegate::CreateHost(
-          browser()->tab_strip_model()->GetActiveWebContents());
+          browser()->GetTabStripModel()->GetActiveWebContents());
   csd_host->set_client_side_detection_service_for_testing(
       fake_csd_service.GetWeakPtr());
   csd_host->set_ui_manager(mock_ui_manager.get());
@@ -1923,7 +1924,7 @@ IN_PROC_BROWSER_TEST_F(ClientSideDetectionHostCreditCardFormTest,
 
   std::unique_ptr<ClientSideDetectionHost> csd_host =
       ChromeClientSideDetectionHostDelegate::CreateHost(
-          browser()->tab_strip_model()->GetActiveWebContents());
+          browser()->GetTabStripModel()->GetActiveWebContents());
   csd_host->set_client_side_detection_service_for_testing(
       fake_csd_service.GetWeakPtr());
   csd_host->set_ui_manager(mock_ui_manager.get());
@@ -2002,7 +2003,7 @@ IN_PROC_BROWSER_TEST_F(
 
   std::unique_ptr<ClientSideDetectionHost> csd_host =
       ChromeClientSideDetectionHostDelegate::CreateHost(
-          browser()->tab_strip_model()->GetActiveWebContents());
+          browser()->GetTabStripModel()->GetActiveWebContents());
   csd_host->set_client_side_detection_service_for_testing(
       fake_csd_service.GetWeakPtr());
   csd_host->set_ui_manager(mock_ui_manager.get());
@@ -2068,7 +2069,7 @@ class ClientSideDetectionHostGeminiAntiscamProtectionTest
   }
 
   content::WebContents* GetWebContents() {
-    return browser()->tab_strip_model()->GetActiveWebContents();
+    return browser()->GetTabStripModel()->GetActiveWebContents();
   }
 
   std::string client_side_model() { return flatbuffer_model_str_; }
@@ -2094,7 +2095,7 @@ IN_PROC_BROWSER_TEST_F(ClientSideDetectionHostGeminiAntiscamProtectionTest,
 
   std::unique_ptr<ClientSideDetectionHost> csd_host =
       ChromeClientSideDetectionHostDelegate::CreateHost(
-          browser()->tab_strip_model()->GetActiveWebContents());
+          browser()->GetTabStripModel()->GetActiveWebContents());
   csd_host->set_client_side_detection_service_for_testing(
       fake_csd_service.GetWeakPtr());
 

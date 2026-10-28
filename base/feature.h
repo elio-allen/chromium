@@ -54,14 +54,16 @@ class FeatureListTest;
 // state is fixed at initialization time, and one for runtime mutable features,
 // whose state may be updated at runtime as new Variations seeds are received.
 //
-// TODO: http://crbug.com/482450632 - Runtime mutable features are not fully
-// implemented or supported; they are not yet ready for general use. Update
-// documentation when they are ready for general use.
+// TODO(crbug.com/482450632): Runtime mutable features are currently only
+// supported in the browser process (see crbug.com/536851532 for child-process
+// support).
 //
 // The feature state of runtime mutable features, and any related parameters,
-// may only be queried from the main thread. Additionally, runtime mutable
+// may only be queried from the main sequence. Additionally, runtime mutable
 // features must have their runtime mutability explicitly enabled via the
-// `FeatureList::EnableRuntimeMutability()` function call.
+// `FeatureList::EnableRuntimeMutability()` function call (see
+// `PlatformFieldTrials::EnableRuntimeMutableFeatures()` and its
+// platform-specific overrides).
 //
 // This macro can be used in two ways:
 //
@@ -123,7 +125,8 @@ class FeatureListTest;
   extern constinit const base::FeatureParam<T> feature_object_name
 
 // Provides a definition for `feature_object_name` with `T`, `feature`, `name`
-// and `default_value`, with an internal parsed value cache.
+// and `default_value`, with an internal parsed value cache (bypassed if
+// `feature` is defined with `BASE_RUNTIME_MUTABLE_FEATURE`).
 //
 // This macro can be used in two ways:
 //
@@ -146,7 +149,8 @@ class FeatureListTest;
 //                         "my_feature_param", 0);
 //
 // `T` is a parameter type, one of bool, int, size_t, double, std::string, and
-// base::TimeDelta. Enum types are not supported for now.
+// base::TimeDelta. Enum types are not supported for now. Note that size_t is
+// backed by int in the underlying API, and thus should not exceed INT_MAX.
 //
 // It should *not* be defined in header files; do not use this macro in header
 // files.
@@ -202,7 +206,7 @@ constexpr bool IsCountrySpecificFeatureState(FeatureState state) {
 // above, as there are some subtleties involved.
 //
 // Feature constants are internally mutable, as this allows them to contain a
-// mutable member to cache their override state, while still remaining declared
+// mutable member to cache their resolved state, while still remaining declared
 // as const. This cache member allows for significantly faster IsEnabled()
 // checks.
 //
@@ -218,9 +222,9 @@ constexpr bool IsCountrySpecificFeatureState(FeatureState state) {
 // https://crsrc.org/c/docs/speed/binary_size/android_binary_size_trybot.md#Mutable-Constants
 struct BASE_EXPORT LOGICALLY_CONST Feature {
   // The type used to store the cached state of a feature. This is a uint32_t
-  // that is packed with the override state, logging and mutability flags, and
-  // a caching context ID. See the comments on `cached_value` below for more
-  // details.
+  // that is packed with the resolved enabled state, explicit-override marker,
+  // logging and mutability flags, and a caching context ID. See the comments
+  // on `cached_value` below for more details.
   using FeatureStateCache = uint32_t;
 
   constexpr Feature(const char* name,
@@ -235,15 +239,12 @@ struct BASE_EXPORT LOGICALLY_CONST Feature {
 
   // Non-copyable since:
   // - there should be only one `Feature` instance per unique name.
-  // - a `Feature` contains internal cached state about the override state.
+  // - a `Feature` contains internal cached state about its resolved state.
   Feature(const Feature&) = delete;
   Feature& operator=(const Feature&) = delete;
 
   // Returns true if this feature is a runtime mutable feature.
   bool IsRuntimeMutable() const;
-
-  // Returns true if this feature has runtime mutability disabled.
-  bool HasRuntimeMutabilityDisabled() const;
 
   // Returns true if this feature was accessed before the FeatureList was
   // initialized.
@@ -255,10 +256,10 @@ struct BASE_EXPORT LOGICALLY_CONST Feature {
   // "MyGreatFeature".
   const char* const name;
 
-  // The default state (i.e. enabled or disabled) for this feature.
+  // Returns the default state (i.e. enabled or disabled) for this feature.
   // NOTE: The actual runtime state may be different, due to a field trial or a
   // command line switch.
-  const FeatureState default_state;
+  FeatureState GetDefaultState() const { return default_state_; }
 
  protected:
   // Base constructor that performs initialization and checks, with an option to
@@ -269,7 +270,7 @@ struct BASE_EXPORT LOGICALLY_CONST Feature {
                     internal::FeatureMacroHandshake handshake,
                     bool is_country_specific)
       : name(name),
-        default_state(default_state),
+        default_state_(default_state),
         cached_value(is_runtime_mutable ? kRuntimeMutabilityMask : 0) {
     if (is_country_specific != IsCountrySpecificFeatureState(default_state)) {
       LOG(FATAL) << "Pass a country-specific default state if and only if you "
@@ -291,25 +292,27 @@ struct BASE_EXPORT LOGICALLY_CONST Feature {
   // Keep this in sync with base/feature_list_internal.h:kRuntimeMutabilityMask
   enum { kRuntimeMutabilityMask = 1 << 18 };
 
-  // A packed value where the first 8 bits represent the `OverrideState` of this
-  // feature, the next 8 bits are reserved for flags (e.g. logging, runtime
-  // mutability, etc.), and the last 16 bits are a caching context ID used to
-  // allow ScopedFeatureLists to invalidate these cached values in testing. A
-  // value of 0 in the caching context ID field indicates that this value has
-  // never been looked up and cached, a value of 1 indicates this value contains
-  // the cached `OverrideState` that was looked up via `base::FeatureList`,
-  // and any other value indicate that this cached value is only valid for a
+  const FeatureState default_state_;
+
+  // A packed value where bits 24 and 25 hold the resolved enabled state and
+  // whether the feature was explicitly overridden, bits 16 through 23 hold
+  // flags (e.g. logging and runtime mutability), and the last 16 bits are a
+  // caching context ID used to allow ScopedFeatureLists to invalidate these
+  // cached values in testing. A value of 0 in the caching context ID field
+  // indicates that this value has never been looked up and cached, a value of 1
+  // indicates this value contains a state cached via `base::FeatureList`, and
+  // any other value indicates that this cached value is only valid for a
   // particular ScopedFeatureList instance.
   //
   // Packing these values into a uint32_t makes it so that atomic operations
   // performed on this fields can be lock free.
   //
-  // The override state stored in this field is only used if the current
+  // The cached state is only used if the current
   // `FeatureList::caching_context_` field is equal to the lower 16 bits of the
-  // packed cached value. Otherwise, the override state is looked up in the
-  // feature list and the cache is updated.
-  // The logging bits (16 and 17) are used to ensure that we only log the
-  // feature access once per session, even if the cached value is invalidated.
+  // packed cached value. Otherwise, the state is looked up in the feature list
+  // and the cache is updated. The logging bits (16 and 17) are used to ensure
+  // that we only log the feature access once per session, even if the cached
+  // value is invalidated.
   mutable std::atomic<FeatureStateCache> cached_value;
 };
 

@@ -42,6 +42,7 @@
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/session_crashed_bubble.h"
 #include "chrome/browser/ui/startup/profile_launch_observer.h"
 #include "chrome/browser/ui/startup/startup_browser_creator.h"
@@ -58,11 +59,13 @@
 #include "components/sessions/core/command_storage_manager.h"
 #include "components/sessions/core/session_command.h"
 #include "components/sessions/core/session_constants.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sessions/core/session_types.h"
 #include "components/sessions/core/tab_restore_service.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "content/public/browser/navigation_details.h"
 #include "content/public/browser/navigation_entry.h"
-#include "content/public/browser/session_storage_namespace.h"
+#include "content/public/browser/session_storage_namespace_handle.h"
 #include "content/public/browser/web_contents.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -116,6 +119,19 @@ class InstanceTracker : public base::SupportsUserData::Data {
   int session_service_count_ = 0;
 };
 
+bool ShouldTriggerSessionRestoreForBrowser(BrowserWindowInterface* browser) {
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
+  if (base::FeatureList::IsEnabled(
+          features::kRespectShouldTriggerSessionRestoreOnDesktop) &&
+      browser) {
+    if (const auto* init_state = BrowserInitState::From(browser)) {
+      return init_state->should_trigger_session_restore();
+    }
+  }
+#endif
+  return true;
+}
+
 }  // namespace
 
 SessionService::SessionService(Profile* profile)
@@ -164,7 +180,7 @@ bool SessionService::IsRelevantWindowType(
          (window_type == sessions::SessionWindow::TYPE_POPUP);
 }
 
-bool SessionService::ShouldRestore(Browser* browser) {
+bool SessionService::ShouldRestore(BrowserWindowInterface* browser) {
 #if BUILDFLAG(IS_CHROMEOS)
   // Do not restore browser window in the kiosk session.
   if (chromeos::IsKioskSession()) {
@@ -209,7 +225,7 @@ bool SessionService::ShouldRestore(Browser* browser) {
 
   // If the browser does not have a `restore_id`, then we restore the session.
   return BrowserInitState::From(browser)->create_params().restore_id ==
-         Browser::kDefaultRestoreId;
+         BrowserWindowCreateParams::kDefaultRestoreId;
 #else
   if (!has_open_trackable_browsers_ &&
       !StartupBrowserCreator::InSynchronousProfileLaunch() &&
@@ -400,7 +416,7 @@ void SessionService::TabClosed(SessionID window_id, SessionID tab_id) {
   }
 }
 
-void SessionService::WindowOpened(Browser* browser) {
+void SessionService::WindowOpened(BrowserWindowInterface* browser) {
   if (!ShouldTrackBrowser(browser)) {
     return;
   }
@@ -490,7 +506,8 @@ void SessionService::WindowClosed(SessionID window_id) {
   }
 }
 
-void SessionService::SetWindowType(SessionID window_id, Browser::Type type) {
+void SessionService::SetWindowType(SessionID window_id,
+                                   BrowserWindowInterface::Type type) {
   sessions::SessionWindow::WindowType window_type =
       WindowTypeForBrowserType(type);
   if (!ShouldRestoreWindowOfType(window_type)) {
@@ -548,8 +565,9 @@ void SessionService::SetTabUserAgentOverride(
       tab_id, user_agent_override));
 }
 
-Browser::Type SessionService::GetDesiredBrowserTypeForWebContents() {
-  return Browser::Type::TYPE_NORMAL;
+BrowserWindowInterface::Type
+SessionService::GetDesiredBrowserTypeForWebContents() {
+  return BrowserWindowInterface::Type::TYPE_NORMAL;
 }
 
 void SessionService::DidScheduleCommand() {
@@ -574,7 +592,7 @@ bool SessionService::ShouldRestoreWindowOfType(
 }
 
 bool SessionService::RestoreIfNecessary(const StartupTabs& startup_tabs,
-                                        Browser* browser,
+                                        BrowserWindowInterface* browser,
                                         bool restore_apps) {
   if (ShouldRestore(browser)) {
     // We're going from no tabbed browsers to a tabbed browser (and not in
@@ -588,7 +606,9 @@ bool SessionService::RestoreIfNecessary(const StartupTabs& startup_tabs,
         *base::CommandLine::ForCurrentProcess(), profile());
     sessions::TabRestoreService* tab_restore_service =
         TabRestoreServiceFactory::GetForProfileIfExisting(profile());
-    if (pref.ShouldRestoreLastSession() &&
+
+    if (ShouldTriggerSessionRestoreForBrowser(browser) &&
+        pref.ShouldRestoreLastSession() &&
         (!tab_restore_service || !tab_restore_service->IsRestoring())) {
       SessionRestore::RestoreSession(
           profile(), browser,
@@ -613,7 +633,7 @@ bool SessionService::RestoreIfNecessary(const StartupTabs& startup_tabs,
     } else {
       // If 'browser' is not null, show the crash bubble in the current browser
       // instance.
-      SessionCrashedBubble::ShowIfNotOffTheRecordProfile(
+      ShowSessionCrashedBubbleIfNotOffTheRecordProfile(
           browser, /*skip_tab_checking=*/true);
       ProfileLaunchObserver::AddLaunched(profile());
     }
@@ -706,7 +726,7 @@ bool SessionService::IsOnlyOneTabLeft() const {
       [this, &is_only_one_tab_left,
        &window_count](BrowserWindowInterface* browser) {
         const SessionID window_id = browser->GetSessionID();
-        if (ShouldTrackBrowser(browser->GetBrowserForMigrationOnly()) &&
+        if (ShouldTrackBrowser(browser) &&
             !window_closing_ids_.contains(window_id)) {
           if (++window_count > 1) {
             is_only_one_tab_left = false;
@@ -735,7 +755,7 @@ bool SessionService::HasOpenTrackableBrowsers(SessionID window_id) const {
         const SessionID browser_id = browser->GetSessionID();
         if (browser_id != window_id &&
             !window_closing_ids_.contains(browser_id)) {
-          if (ShouldTrackBrowser(browser->GetBrowserForMigrationOnly())) {
+          if (ShouldTrackBrowser(browser)) {
             has_open_trackable = true;
           }
         }
@@ -749,6 +769,13 @@ void SessionService::RebuildCommandsIfRequired() {
       is_saving_enabled()) {
     ScheduleResetCommands();
   }
+}
+
+bool SessionService::ShouldDeleteSessionStorageOnTabClosing(
+    SessionID window_id) const {
+  // If the window is closing, then the tab's sessionStorage should be kept
+  // around for session restore.
+  return !pending_window_close_ids_.contains(window_id);
 }
 
 void SessionService::OnClosingAllBrowsersChanged(bool closing) {

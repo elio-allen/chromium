@@ -33,13 +33,14 @@
 #include "third_party/blink/renderer/core/layout/adjust_for_absolute_zoom.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/core/layout/layout_box_model_object.h"
+#include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/layout/layout_view_transition_root.h"
 #include "third_party/blink/renderer/core/page/chrome_client.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/resize_observer/resize_observer_utilities.h"
-#include "third_party/blink/renderer/core/route_matching/route_map.h"
+#include "third_party/blink/renderer/core/route_matching/navigation_state.h"
 #include "third_party/blink/renderer/core/view_transition/dom_view_transition.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_pseudo_element_base.h"
 #include "third_party/blink/renderer/platform/graphics/compositing/paint_artifact_compositor.h"
@@ -156,9 +157,13 @@ ViewTransition* ViewTransition::CreateFromScript(
 ViewTransition* ViewTransition::CreateSkipped(
     Element* element,
     V8ViewTransitionCallback* callback,
+    PromiseResponse response,
+    ViewTransitionSkipReason reason,
     const std::optional<Vector<String>>& types) {
-  return MakeGarbageCollected<ViewTransition>(PassKey(), element, callback,
-                                              types);
+  auto* transition =
+      MakeGarbageCollected<ViewTransition>(PassKey(), element, callback, types);
+  transition->SkipTransition(response, reason);
+  return transition;
 }
 
 ViewTransition::ViewTransition(PassKey,
@@ -195,15 +200,14 @@ ViewTransition::ViewTransition(PassKey,
                                const std::optional<Vector<String>>& types)
     : ExecutionContextLifecycleObserver(element->GetExecutionContext()),
       creation_type_(CreationType::kScript),
-      document_(element->GetDocument()),
-      scope_(element->IsDocumentElement() ? nullptr : element),
+      document_(&element->GetDocument()),
+      scope_(element),
       has_document_scope_(element->IsDocumentElement()),
       script_delegate_(MakeGarbageCollected<DOMViewTransition>(
           element->GetExecutionContext(),
           *this,
           update_dom_callback)) {
   InitTypes(types.value_or(Vector<String>()));
-  SkipTransition();
 }
 
 // static
@@ -238,9 +242,12 @@ ViewTransition::ViewTransition(PassKey,
       has_document_scope_(true),
       delegate_(delegate),
       transition_token_(transition_token),
-      style_tracker_(
-          MakeGarbageCollected<ViewTransitionStyleTracker>(*document_,
-                                                           transition_token_)),
+      style_tracker_(MakeGarbageCollected<ViewTransitionStyleTracker>(
+          *document_,
+          transition_token_,
+          /*generates_pseudo_element_tree=*/
+          !RuntimeEnabledFeatures::
+              ViewTransitionSkipPseudoTreeForNavigationCaptureEnabled())),
       transition_state_callback_(std::move(callback)),
       script_delegate_(MakeGarbageCollected<DOMViewTransition>(
           document_->GetExecutionContext(),
@@ -293,9 +300,10 @@ ViewTransition::ViewTransition(PassKey,
       document_(document),
       has_document_scope_(true),
       delegate_(delegate),
-      style_tracker_(
-          MakeGarbageCollected<ViewTransitionStyleTracker>(*document_,
-                                                           transition_token_)),
+      style_tracker_(MakeGarbageCollected<ViewTransitionStyleTracker>(
+          *document_,
+          transition_token_,
+          /*generates_pseudo_element_tree=*/true)),
       script_delegate_(MakeGarbageCollected<DOMViewTransition>(
           document_->GetExecutionContext(),
           *this)) {
@@ -303,12 +311,19 @@ ViewTransition::ViewTransition(PassKey,
   ProcessCurrentState();
 }
 
-void ViewTransition::SkipTransition(PromiseResponse response) {
+void ViewTransition::SkipTransition(PromiseResponse response,
+                                    ViewTransitionSkipReason reason) {
   DCHECK_NE(response, PromiseResponse::kResolve);
   pending_skip_view_transitions_ = false;
+  pending_skip_reason_ = ViewTransitionSkipReason::kExpected;
   if (IsTerminalState(state_)) {
     return;
   }
+
+  TRACE_EVENT1("blink", "ViewTransition::SkipTransition", "reason",
+               SkipReasonToString(reason));
+
+  UMA_HISTOGRAM_ENUMERATION("Blink.ViewTransitions.SkipReason", reason);
 
   // If we already started processing the transition (i.e. we're beyond capture
   // tag discovery), then send a release directive. We don't do this, if we're
@@ -333,8 +348,7 @@ void ViewTransition::SkipTransition(PromiseResponse response) {
   }
 
   // Resume rendering, and finalize the rest of the state.
-  if (RuntimeEnabledFeatures::ViewTransitionDelayUnpauseOnTeardownEnabled() &&
-      creation_type_ == CreationType::kForSnapshot && document_->hidden()) {
+  if (creation_type_ == CreationType::kForSnapshot && document_->hidden()) {
     if (rendering_paused_scope_) {
       rendering_paused_scope_->SetDelayUntilVisibilityChange();
     }
@@ -355,7 +369,7 @@ void ViewTransition::SkipTransition(PromiseResponse response) {
   // down and script specific callbacks don't need to be dispatched in that
   // case.
   if (script_delegate_) {
-    script_delegate_->DidSkipTransition(response);
+    script_delegate_->DidSkipTransition(response, reason);
   }
 
   // This should be the last call in this function to avoid erroneously checking
@@ -363,8 +377,11 @@ void ViewTransition::SkipTransition(PromiseResponse response) {
   AdvanceTo(State::kAborted);
 }
 
-void ViewTransition::SkipTransitionSoon() {
+void ViewTransition::SkipTransitionSoon(PromiseResponse response,
+                                        ViewTransitionSkipReason reason) {
   pending_skip_view_transitions_ = true;
+  pending_skip_response_ = response;
+  pending_skip_reason_ = reason;
 }
 
 bool ViewTransition::AdvanceTo(State state) {
@@ -490,16 +507,14 @@ bool ViewTransition::StateRunsInViewTransitionStepsDuringMainFrame(
     case State::kPreview:
     case State::kAnimateTagDiscovery:
     case State::kAnimateRequestPending:
-      return false;
-    case State::kAnimating:
-      return true;
     case State::kPendingDone:
-      return !RuntimeEnabledFeatures::ViewTransitionAsyncFinishedEnabled();
     case State::kFinished:
     case State::kAborted:
     case State::kTimedOut:
     case State::kTransitionStateCallbackDispatched:
       return false;
+    case State::kAnimating:
+      return true;
   }
   NOTREACHED();
 }
@@ -511,8 +526,7 @@ bool ViewTransition::WaitsForNotification(State state) {
          state == State::kWaitForRenderBlock ||
          state == State::kWaitingForCaptureRects ||
          state == State::kTransitionStateCallbackDispatched ||
-         (RuntimeEnabledFeatures::ViewTransitionAsyncFinishedEnabled() &&
-          state == State::kPendingDone);
+         state == State::kPendingDone;
 }
 
 // static
@@ -576,7 +590,8 @@ void ViewTransition::ProcessCurrentState() {
         }
 
         if (UnsupportedCapture()) {
-          SkipTransition(PromiseResponse::kRejectInvalidState);
+          SkipTransition(PromiseResponse::kRejectInvalidState,
+                         ViewTransitionSkipReason::kUnsupportedCapture);
           break;
         }
 
@@ -597,13 +612,27 @@ void ViewTransition::ProcessCurrentState() {
         // If we're capturing during a navigation, browser controls will be
         // forced to show via animation. Ensure they're fully showing when
         // performing the capture.
+        //
+        // Skip this if there are no browser controls (e.g. on desktop):
+        // snapping zero-height controls has no effect on layout, but changing
+        // the shown ratio changes the frame's browser controls metadata, which
+        // forces the capture frame into a new LocalSurfaceId. Viz can then
+        // only draw the capture frame (and fulfill its copy requests) after
+        // the browser has embedded the new surface, which puts the browser
+        // main thread on the critical path of the navigation.
+        const BrowserControls& browser_controls =
+            document_->GetPage()->GetBrowserControls();
         bool snap_browser_controls =
             document_->GetFrame()->IsOutermostMainFrame() &&
-            document_->GetPage()->GetBrowserControls().PermittedState() !=
+            browser_controls.PermittedState() !=
                 cc::BrowserControlsState::kHidden &&
+            (browser_controls.TotalHeight() > 0 ||
+             !RuntimeEnabledFeatures::
+                 ViewTransitionSkipZeroHeightControlsSnapEnabled()) &&
             creation_type_ == CreationType::kForSnapshot;
         if (!style_tracker_->Capture(snap_browser_controls)) {
-          SkipTransition(PromiseResponse::kRejectInvalidState);
+          SkipTransition(PromiseResponse::kRejectInvalidState,
+                         ViewTransitionSkipReason::kCaptureFailed);
           break;
         }
 
@@ -651,6 +680,10 @@ void ViewTransition::ProcessCurrentState() {
           break;
         }
 
+        if (style_tracker_->IsOldSnapshotFrozen()) {
+          style_tracker_->CaptureResolved();
+        }
+
         switch (creation_type_) {
           case CreationType::kScript: {
             CHECK(script_delegate_);
@@ -677,12 +710,6 @@ void ViewTransition::ProcessCurrentState() {
             DCHECK(transition_state_callback_);
             CHECK(capture_rects_received_)
                 << "Capture rects must arrive before snapshot serialization!";
-            if (!RuntimeEnabledFeatures::
-                    SkipViewTransitionSnapshotResumeRenderingEnabled()) {
-              // TODO(crbug.com/502616235): Remove killswitch after verifying
-              // stability.
-              ResumeRendering();
-            }
 
             ViewTransitionState view_transition_state =
                 style_tracker_->GetViewTransitionState();
@@ -713,8 +740,8 @@ void ViewTransition::ProcessCurrentState() {
 
       case State::kPreview:
         CHECK(RuntimeEnabledFeatures::TwoPhaseViewTransitionEnabled());
-        if (RouteMap* route_map = RouteMap::Get(document_)) {
-          route_map->OnPreviewStart();
+        if (auto* state = NavigationState::Get(document_)) {
+          state->OnPreviewStart();
         }
         ResumeRendering();
         process_next_state = AdvanceTo(State::kAnimateTagDiscovery);
@@ -754,7 +781,8 @@ void ViewTransition::ProcessCurrentState() {
         // Animation and subsequent steps require us to have a view. If after
         // running the callbacks, we don't have a view, skip the transition.
         if (!document_->View()) {
-          SkipTransition();
+          SkipTransition(PromiseResponse::kRejectAbort,
+                         ViewTransitionSkipReason::kNoView);
           break;
         }
 
@@ -769,12 +797,21 @@ void ViewTransition::ProcessCurrentState() {
         DCHECK_GE(document_->Lifecycle().GetState(),
                   DocumentLifecycle::kPrePaintClean);
 
+        // Lifecycle update can cause the transition to abort (e.g. if the
+        // snapshot root changed size during layout).
+        if (IsTerminalState(state_) || UnsupportedCapture()) {
+          SkipTransition(PromiseResponse::kRejectInvalidState,
+                         ViewTransitionSkipReason::kUnsupportedCapture);
+          break;
+        }
+
         // Note: this happens after updating the lifecycle since the snapshot
         // root can depend on layout when using a mobile viewport (i.e.
         // horizontally overflowing element expanding the size of the frame
         // view). See also: https://crbug.com/1454207.
         if (style_tracker_->SnapshotRootDidChangeSize()) {
-          SkipTransition(PromiseResponse::kRejectInvalidState);
+          SkipTransition(PromiseResponse::kRejectInvalidState,
+                         ViewTransitionSkipReason::kSnapshotRootChangedSize);
           break;
         }
 
@@ -785,7 +822,8 @@ void ViewTransition::ProcessCurrentState() {
 
       case State::kAnimateRequestPending:
         if (UnsupportedCapture() || !style_tracker_->Start()) {
-          SkipTransition(PromiseResponse::kRejectInvalidState);
+          SkipTransition(PromiseResponse::kRejectInvalidState,
+                         ViewTransitionSkipReason::kStartFailed);
           break;
         }
 
@@ -798,11 +836,17 @@ void ViewTransition::ProcessCurrentState() {
               base::Microseconds(1), base::Seconds(1), 100);
         }
 
-        if (RuntimeEnabledFeatures::
-                ViewTransitionUpdateLifecycleBeforeReadyEnabled()) {
-          document_->View()->UpdateAllLifecyclePhasesExceptPaint(
-              DocumentUpdateReason::kViewTransition);
-          style_tracker_->RunPostPrePaintSteps();
+        document_->View()->UpdateAllLifecyclePhasesExceptPaint(
+            DocumentUpdateReason::kViewTransition);
+        // Lifecycle update can cause the transition to abort (e.g. if the
+        // snapshot root changed size during layout).
+        if (IsTerminalState(state_)) {
+          break;
+        }
+        if (!style_tracker_->RunPostPrePaintSteps()) {
+          SkipTransition(PromiseResponse::kRejectInvalidState,
+                         ViewTransitionSkipReason::kPostPrePaintFailed);
+          break;
         }
 
         ResumeRendering();
@@ -852,13 +896,11 @@ void ViewTransition::ProcessCurrentState() {
         // current lifecycle update since WaitsForNotification(kPendingDone)
         // is true.
         process_next_state = AdvanceTo(State::kPendingDone);
-        DCHECK(RuntimeEnabledFeatures::ViewTransitionAsyncFinishedEnabled() ==
-               !process_next_state);
+        DCHECK(!process_next_state);
         break;
       }
       case State::kPendingDone:
-        DCHECK(!RuntimeEnabledFeatures::ViewTransitionAsyncFinishedEnabled() ||
-               !in_main_lifecycle_update_);
+        DCHECK(!in_main_lifecycle_update_);
         style_tracker_->StartFinished();
 
         delegate_->AddPendingRequest(ViewTransitionRequest::CreateRelease(
@@ -912,6 +954,7 @@ void ViewTransition::Trace(Visitor* visitor) const {
   visitor->Trace(types_);
   visitor->Trace(blocked_on_);
   visitor->Trace(blocking_);
+  visitor->Trace(delegate_);
 
   ExecutionContextLifecycleObserver::Trace(visitor);
 }
@@ -956,7 +999,8 @@ void ViewTransition::ContextDestroyed() {
   script_delegate_.Clear();
 
   // TODO(khushalsagar): This needs to be called for pages entering BFCache.
-  SkipTransition(PromiseResponse::kRejectAbort);
+  SkipTransition(PromiseResponse::kRejectAbort,
+                 ViewTransitionSkipReason::kContextDestroyed);
 }
 
 void ViewTransition::NotifyCaptureFinished(
@@ -1042,8 +1086,20 @@ void ViewTransition::SaveRememberedSizeIfNeeded(State old_state,
       }
     }
   } else if (old_needs_containment && !new_needs_containment) {
-    scope_->SetLastRememberedInlineSize(std::nullopt);
-    scope_->SetLastRememberedBlockSize(std::nullopt);
+    // If the author style itself has `contain-intrinsic-size: auto` in an axis,
+    // then the last remembered size in that axis is also maintained by the
+    // intrinsic size resize observer, so we must not clear it: the observer
+    // only reports size changes, so it would not record it again if the size
+    // stays the same. Note that the size we saved is the size the element had
+    // when we started the containment, which is also what the observer would
+    // have recorded.
+    const auto* style = scope_->GetComputedStyle();
+    if (style && !style->ContainIntrinsicInlineSize().HasAuto()) {
+      scope_->SetLastRememberedInlineSize(std::nullopt);
+    }
+    if (style && !style->ContainIntrinsicBlockSize().HasAuto()) {
+      scope_->SetLastRememberedBlockSize(std::nullopt);
+    }
   }
 
   scope_->SetNeedsStyleRecalc(kLocalStyleChange,
@@ -1082,7 +1138,8 @@ void ViewTransition::NotifyDOMCallbackFinished(bool success) {
   bool process_next_state = AdvanceTo(State::kDOMCallbackFinished);
   DCHECK(process_next_state);
   if (!success) {
-    SkipTransition(PromiseResponse::kRejectAbort);
+    SkipTransition(PromiseResponse::kRejectAbort,
+                   ViewTransitionSkipReason::kUserSkipped);
   }
   ProcessCurrentState();
 
@@ -1196,10 +1253,12 @@ void ViewTransition::RunViewTransitionStepsOutsideMainFrame() {
     return;
   }
 
-  if (pending_skip_view_transitions_ ||
-      (state_ == State::kAnimating && style_tracker_ &&
-       !style_tracker_->RunPostPrePaintSteps())) {
-    SkipTransition(PromiseResponse::kRejectInvalidState);
+  if (pending_skip_view_transitions_) {
+    SkipTransition(pending_skip_response_, pending_skip_reason_);
+  } else if (state_ == State::kAnimating && style_tracker_ &&
+             !style_tracker_->RunPostPrePaintSteps()) {
+    SkipTransition(PromiseResponse::kRejectInvalidState,
+                   ViewTransitionSkipReason::kPostPrePaintFailed);
   }
 }
 
@@ -1220,11 +1279,14 @@ void ViewTransition::RunViewTransitionStepsDuringMainFrame() {
     ProcessCurrentState();
   }
 
-  if (pending_skip_view_transitions_ ||
-      (style_tracker_ &&
-       document_->Lifecycle().GetState() >= DocumentLifecycle::kPrePaintClean &&
-       !style_tracker_->RunPostPrePaintSteps())) {
-    SkipTransition(PromiseResponse::kRejectInvalidState);
+  if (pending_skip_view_transitions_) {
+    SkipTransition(pending_skip_response_, pending_skip_reason_);
+  } else if (!IsTerminalState(state_) && style_tracker_ &&
+             document_->Lifecycle().GetState() >=
+                 DocumentLifecycle::kPrePaintClean &&
+             !style_tracker_->RunPostPrePaintSteps()) {
+    SkipTransition(PromiseResponse::kRejectInvalidState,
+                   ViewTransitionSkipReason::kPostPrePaintFailed);
   }
 }
 
@@ -1297,24 +1359,33 @@ bool ViewTransition::HasActiveAnimations() const {
 }
 
 bool ViewTransition::HasIncompatibleStyle() const {
-  // Display: contents is not supported on the view-transition scope element.
-  // Not only does it produce no layout box, but it changes the layout
-  // hierarchy.
-  // Note that we can have a valid view-transition from or to display: none.
-  // These correspond to a fade in or fade out transition.
   const Element* source = Scope();
   if (!source) {
     return false;
   }
 
-  if (const ComputedStyle* style = source->GetComputedStyle()) {
-    if (style && style->Display() == EDisplay::kContents) {
+  const ComputedStyle* style = source->GetComputedStyle();
+  if (!style) {
+    return false;
+  }
+
+  if (style->Display() == EDisplay::kContents) {
+    return true;
+  }
+
+  bool is_element_scoped = scope_ && scope_ != document_->documentElement();
+  if (is_element_scoped) {
+    if (style->Display() == EDisplay::kNone) {
       return true;
+    }
+
+    if (const LayoutObject* layout_object = source->GetLayoutObject()) {
+      if (!layout_object->ShouldApplyLayoutContainment(*style)) {
+        return true;
+      }
     }
   }
 
-  // Further pruning based on the type of layout object can be found in
-  // ViewTransitionStyleTracker::RunPostPrePaintSteps().
   return false;
 }
 
@@ -1355,40 +1426,25 @@ void ViewTransition::OnRenderingPausedTimeout() {
   }
 
   ResumeRendering();
-  SkipTransition(PromiseResponse::kRejectTimeout);
+  SkipTransition(PromiseResponse::kRejectTimeout,
+                 ViewTransitionSkipReason::kTimeout);
   AdvanceTo(State::kTimedOut);
 }
 
 bool ViewTransition::UnsupportedCapture() {
-  CHECK(!scope_ || scope_ != scope_->GetDocument().documentElement());
-  if (scope_ && scope_->GetComputedStyle()) {
-    // TODO(crbug.com/429763389): image masks are not currently supported on the
-    // scoped element. This restriction may be resolved by making the
-    // view-transition's layout object a sibling of the scoped element's
-    // layout object.For now, skip the transition.
-    const ComputedStyle* style = scope_->GetComputedStyle();
-    if (style->HasMask()) {
-      LogMessageToConsole(
-          "Scoped view-transitions do not currently support mask-image.");
+  if (scope_) {
+    // We may have disconnected or moved documents, in which case we should
+    // skip.
+    if (!scope_->isConnected() || &scope_->GetDocument() != document_) {
       return true;
     }
-    // TODO(crbug.com/434891109): Various inline display types are not supported
-    // for scoped view transitions. The display type inline-block is an
-    // exception since having block characteristics in addition to inline.
-    // Depending on spec resolution, we may need to revisit the handling of
-    // inline elements.
-    if (style->IsDisplayInlineType() && !style->IsDisplayBlockContainer()) {
-      LogMessageToConsole(
-          "Scoped view-transitions do not currently support inline display "
-          "types.");
-      return true;
-    }
+    CHECK_NE(scope_, scope_->GetDocument().documentElement());
 
-    // TODO(crbug.com/436804019): These elements do not create a layout box.
-    if (style->InlinifiesChildren()) {
+    const LayoutObject* layout_object = scope_->GetLayoutObject();
+    if (!layout_object || !layout_object->ShouldApplyLayoutContainment()) {
       LogMessageToConsole(
-          "Scoped view-transitions do not currently support elements that "
-          "inline their children.");
+          "Scoped view-transitions require layout containment.");
+      return true;
     }
   }
 
@@ -1470,6 +1526,10 @@ bool ViewTransition::MaybeCrossFrameSink() const {
 bool ViewTransition::IsGeneratingPseudo(
     const ViewTransitionPseudoElementBase& pseudo_element) const {
   return pseudo_element.IsBoundTo(style_tracker_.Get());
+}
+
+bool ViewTransition::GeneratesPseudoElementTree() const {
+  return style_tracker_ && style_tracker_->GeneratesPseudoElementTree();
 }
 
 Element* ViewTransition::Scope() const {

@@ -146,10 +146,10 @@ TEST_F(ChromePermissionMessageProviderUnittest,
       new UsbDevicePermission(PermissionsInfo::GetInstance()->GetByID(
           mojom::APIPermissionID::kUsbDevice)));
   base::Value devices_list(base::Value::Type::LIST);
-  devices_list.GetList().Append(base::Value::FromUniquePtrValue(
-      UsbDevicePermissionData(0x02ad, 0x138c, -1, -1).ToValue()));
-  devices_list.GetList().Append(base::Value::FromUniquePtrValue(
-      UsbDevicePermissionData(0x02ad, 0x138d, -1, -1).ToValue()));
+  devices_list.GetList().Append(
+      UsbDevicePermissionData(0x02ad, 0x138c, -1, -1).ToValue());
+  devices_list.GetList().Append(
+      UsbDevicePermissionData(0x02ad, 0x138d, -1, -1).ToValue());
   ASSERT_TRUE(usb->FromValue(&devices_list, nullptr, nullptr));
   permissions.insert(std::move(usb));
 
@@ -299,11 +299,10 @@ TEST_F(ChromePermissionMessageProviderUnittest, BluetoothSocketEscalation) {
   ASSERT_TRUE(v2_permission);
 
   // Test serialization round-trip of V2 before comparing, to show it loses data
-  std::unique_ptr<base::Value> serialized = v2_permission->ToValue();
-  ASSERT_TRUE(serialized);
+  base::Value serialized = v2_permission->ToValue();
 
   auto restored = std::make_unique<BluetoothManifestPermission>();
-  ASSERT_TRUE(restored->FromValue(serialized.get()));
+  ASSERT_TRUE(restored->FromValue(&serialized));
   // This will fail before the fix because ToValue/FromValue is lossy
   EXPECT_TRUE(restored->CheckSocketPermitted(nullptr));
 

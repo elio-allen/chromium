@@ -87,9 +87,6 @@ constexpr base::TimeDelta kSyncDWAOperationsTimeout = base::Seconds(60);
 + (BOOL)UMALogHasBirthYear:(int)year
                     gender:(metrics::UserDemographicsProto::Gender)gender;
 
-// Returns YES if the UMA log has user demographics.
-+ (BOOL)UMALogHasUserDemographics;
-
 // Returns whether DWA recording is `enabled`.
 + (BOOL)checkDWARecordingEnabled:(BOOL)enabled;
 
@@ -110,24 +107,6 @@ constexpr base::TimeDelta kSyncDWAOperationsTimeout = base::Seconds(60);
 
 // Purges DWA recorder.
 + (void)clearDWARecorder;
-
-// Returns whether PUMA reporting is active.
-+ (BOOL)isPumaReportingEnabled;
-
-// Returns whether there are unsent PUMA logs.
-+ (BOOL)hasUnsentPumaLogs;
-
-// Purges unsent PUMA logs.
-+ (void)purgePumaLogs;
-
-// Records a test PUMA metric.
-+ (void)recordTestPumaMetric;
-
-// Flushes the PUMA service.
-+ (void)flushPumaService;
-
-// Returns the last PUMA RC profile as a dictionary.
-+ (NSDictionary*)lastPumaRcProfile;
 
 // Creates a chrome_test_util::HistogramTester that will record every histogram
 // sent during test.
@@ -170,6 +149,15 @@ constexpr base::TimeDelta kSyncDWAOperationsTimeout = base::Seconds(60);
 // Checks the count of the `userAction`.
 + (NSError*)expectCount:(int)expectedCount
           forUserAction:(NSString*)userAction [[nodiscard]];
+
+// Returns YES if advanced reporting migration is completed.
++ (BOOL)isAdvancedReportingProfileMigrationDone;
+
+// Returns YES if advanced reporting is enabled for the profile.
++ (BOOL)isAdvancedReportingEnabled;
+
+// Sets the advanced reporting enabled preference for the profile.
++ (void)setAdvancedReportingEnabledPref:(BOOL)enabled;
 
 @end
 

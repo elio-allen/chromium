@@ -22,6 +22,7 @@
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/frame_tree_node_id.h"
 #include "content/public/browser/navigation_throttle_registry.h"
+#include "content/public/common/child_process_id.h"
 #include "media/mojo/buildflags.h"
 #include "media/mojo/mojom/media_service.mojom.h"
 #include "media/mojo/mojom/renderer.mojom.h"
@@ -41,10 +42,6 @@ struct OnTaskRunnerDeleter;
 
 namespace breakpad {
 class CrashHandlerHostLinux;
-}
-
-namespace device {
-class BluetoothAdapterCast;
 }
 
 namespace media {
@@ -147,14 +144,6 @@ class CastContentBrowserClient
   bool OverridesAudioManager() override;
   media::MediaCapsImpl* media_caps();
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_FUCHSIA)
-  // Create a BluetoothAdapter for WebBluetooth support.
-  // TODO(slan): This further couples the browser to the Cast service. Remove
-  // this once the dedicated Bluetooth service has been implemented.
-  // (b/76155468)
-  virtual scoped_refptr<device::BluetoothAdapterCast> CreateBluetoothAdapter();
-#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_FUCHSIA)
-
   // chromecast::metrics::CastMetricsServiceDelegate implementation:
   void SetMetricsClientId(const std::string& client_id) override;
   void RegisterMetricsProviders(
@@ -164,16 +153,8 @@ class CastContentBrowserClient
   // on browser startup.
   virtual bool EnableRemoteDebuggingImmediately();
 
-  // Note: These were originally part of ContentBrowserClient, but have been
-  // lifted into this class as they're now only used by Chromecast. This is a
-  // transitional step to avoid breakage in the internal downstream repository.
-  virtual void RunServiceInstance(
-      const service_manager::Identity& identity,
-      mojo::PendingReceiver<service_manager::mojom::Service>* receiver);
   virtual std::optional<service_manager::Manifest> GetServiceManifestOverlay(
       std::string_view service_name);
-  std::vector<service_manager::Manifest> GetExtraServiceManifests();
-  std::vector<std::string> GetStartupServices();
 
   // content::ContentBrowserClient implementation:
   std::unique_ptr<content::BrowserMainParts> CreateBrowserMainParts(
@@ -186,7 +167,7 @@ class CastContentBrowserClient
   void OverrideWebPreferences(content::WebContents* web_contents,
                               content::SiteInstance& main_frame_site,
                               blink::web_pref::WebPreferences* prefs) override;
-  std::string GetApplicationLocale() override;
+  base::i18n::LanguageTag GetApplicationLocale() override;
   void AllowCertificateError(
       content::WebContents* web_contents,
       int cert_error,
@@ -198,7 +179,7 @@ class CastContentBrowserClient
       override;
   base::OnceClosure SelectClientCertificate(
       content::BrowserContext* browser_context,
-      int process_id,
+      content::ChildProcessId process_id,
       content::WebContents* web_contents,
       net::SSLCertRequestInfo* cert_request_info,
       net::ClientCertIdentityList client_certs,
@@ -241,6 +222,7 @@ class CastContentBrowserClient
   std::unique_ptr<content::NavigationUIData> GetNavigationUIData(
       content::NavigationHandle* navigation_handle) override;
   bool ShouldEnableStrictSiteIsolation() override;
+  bool ShouldIsolateErrorPage(bool in_main_frame) override;
   void RegisterNonNetworkSubresourceURLLoaderFactories(
       int render_process_id,
       int render_frame_id,

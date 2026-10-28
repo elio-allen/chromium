@@ -20,10 +20,10 @@ OmniboxPopupPresenter::OmniboxPopupPresenter(
     OmniboxPopupPresenterDelegate& presenter_delegate,
     OmniboxController* controller)
     : OmniboxPopupPresenterBase(location_bar, presenter_delegate, controller) {
-  SetWebUIContent(std::make_unique<OmniboxPopupWebUIContent>(
-      this, this->location_bar(), controller,
-      /*include_location_bar_cutout=*/true,
-      /*wants_focus=*/false));
+  // If the content is not created here, `Show()` creates it on demand.
+  // `OmniboxPopupViewWebUI` reads the content only while the popup is shown.
+  ApplyWebUIContentCreationStrategy(GetWebUIContentCreationStrategy(
+      omnibox::kOmniboxWebUIPopupDeferCreation));
 
   // By initializing `content_height_` to 1, we ensure the widget starts 1px
   // taller than the location bar on first show. This creates a tiny visible
@@ -42,6 +42,14 @@ OmniboxPopupPresenter::OmniboxPopupPresenter(
 
 OmniboxPopupPresenter::~OmniboxPopupPresenter() = default;
 
+std::unique_ptr<OmniboxPopupWebUIBaseContent>
+OmniboxPopupPresenter::CreateWebUIContent() {
+  return std::make_unique<OmniboxPopupWebUIContent>(
+      this, location_bar(), controller(),
+      /*include_location_bar_cutout=*/true,
+      /*wants_focus=*/false, /*set_content_url=*/true);
+}
+
 bool OmniboxPopupPresenter::ShouldHideForInitialLayout() const {
   return base::FeatureList::IsEnabled(
              omnibox::kOmniboxWebUIPopupStabilizeStartupShow) &&
@@ -51,7 +59,8 @@ bool OmniboxPopupPresenter::ShouldHideForInitialLayout() const {
 
 void OmniboxPopupPresenter::Hide() {
   OmniboxPopupPresenterBase::Hide();
-  if (!base::FeatureList::IsEnabled(
+  if (ShouldApplyHeightWorkarounds() &&
+      !base::FeatureList::IsEnabled(
           omnibox::kOmniboxWebUIDeferShowUntilVisualStateReady)) {
     // Reset the cached height to force a layout update when the popup is
     // reshown. This prevents the popup from temporarily using a stale size
@@ -66,9 +75,12 @@ std::string_view OmniboxPopupPresenter::GetPopupMetricPrefix() const {
 
 void OmniboxPopupPresenter::WidgetDestroyed() {
   // Update the popup state manager if widget was destroyed externally, e.g., by
-  // the OS. This ensures the popup state manager stays in sync.
-  if (controller()->popup_state_manager()->popup_state() ==
-      OmniboxPopupState::kClassic) {
+  // the OS. This ensures the popup state manager stays in sync. Skip this when
+  // `Hide()` is discarding the widget on purpose, since clearing the state here
+  // would re-enter `Hide()`.
+  if (!is_destroying_widget() &&
+      controller()->popup_state_manager()->popup_state() ==
+          OmniboxPopupState::kClassic) {
     controller()->popup_state_manager()->SetPopupState(
         OmniboxPopupState::kNone);
   }
@@ -92,7 +104,30 @@ OmniboxPopupPresenter::ShouldDeferUntilVisualStateReady() const {
       omnibox::kOmniboxWebUIDeferShowUntilVisualStateReadyTimeoutMs.Get());
 }
 
+bool OmniboxPopupPresenter::ShouldDebounceResize() const {
+  return base::FeatureList::IsEnabled(omnibox::kOmniboxWebUIDebounceResize);
+}
+
+bool OmniboxPopupPresenter::ShouldApplyHeightWorkarounds() const {
+  return base::FeatureList::IsEnabled(omnibox::kOmniboxWebUIHeightWorkarounds);
+}
+
 bool OmniboxPopupPresenter::ShouldDetachWebContentsOnHide() const {
   return base::FeatureList::IsEnabled(
       omnibox::kOmniboxWebUIDetachWebContentsOnHide);
+}
+
+bool OmniboxPopupPresenter::ShouldEvictOnHide() const {
+  return base::FeatureList::IsEnabled(omnibox::kOmniboxWebUIEvictOnHide);
+}
+
+bool OmniboxPopupPresenter::ShouldDestroyWidgetOnHide() const {
+  return base::FeatureList::IsEnabled(
+             omnibox::kOmniboxWebUIDestroyWidgetOnHide) ||
+         OmniboxPopupPresenterBase::ShouldDestroyWidgetOnHide();
+}
+
+bool OmniboxPopupPresenter::ShouldSizeWebViewToPreferredHeight() const {
+  return base::FeatureList::IsEnabled(
+      omnibox::kOmniboxWebUISizeWebViewToPreferredHeight);
 }

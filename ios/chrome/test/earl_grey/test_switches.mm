@@ -20,6 +20,12 @@ const char kSimulatePostDeviceRestore[] = "simulate-post-device-restore";
 const char kEnableFakeTabGroupSyncService[] =
     "enable-fake-tab-group-sync-service";
 
+// Enables FakeExtensionService.
+const char kEnableFakeExtensionService[] = "enable-fake-extension-service";
+
+// Enables FakeChromeLensViewFinderController.
+const char kEnableFakeLensViewFinder[] = "enable-fake-lens-view-finder";
+
 // Status of the Google Family fetch API call for the user.
 const char kFamilyStatus[] = "family-status";
 
@@ -33,5 +39,8 @@ const char kMockShoppingService[] = "mock-shopping-service";
 const char kLoadMinimalAppUI[] = "load-minimal-app-ui";
 
 const char kUseDefaultInfobarDuration[] = "use-default-infobar-duration";
+
+const char kPauseStartupAtBackgroundStage[] =
+    "pause-startup-at-background-stage";
 
 }  // namespace test_switches

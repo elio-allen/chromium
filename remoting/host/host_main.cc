@@ -13,27 +13,43 @@
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/files/file_path.h"
+#include "base/functional/bind.h"
 #include "base/i18n/icu_util.h"
+#include "base/location.h"
 #include "base/logging.h"
+#include "base/message_loop/message_pump_type.h"
+#include "base/run_loop.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringize_macros.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/single_thread_task_executor.h"
+#include "base/task/single_thread_task_runner.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "mojo/core/embedder/embedder.h"
+#include "mojo/core/embedder/scoped_ipc_support.h"
 #include "remoting/base/buildflags.h"
 #include "remoting/base/crash/crash_reporting_crashpad.h"
 #include "remoting/base/logging.h"
 
+#if !BUILDFLAG(IS_CHROMEOS)
+#include "remoting/host/chromoting_host_services_client.h"
+#include "remoting/host/mojom/chromoting_host_services.mojom.h"
+#include "remoting/proto/terminal.pb.h"
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
 #if BUILDFLAG(IS_LINUX)
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include "base/files/file_util.h"
 #include "base/posix/eintr_wrapper.h"
+#include "base/strings/string_number_conversions.h"
 #include "remoting/base/file_path_util_linux.h"
 #endif  // BUILDFLAG(IS_LINUX)
 
-#include "remoting/base/memory_consumer_registry.h"
+#include "base/memory_coordinator/dummy_memory_consumer_registry.h"
 #include "remoting/host/base/host_exit_codes.h"
 #include "remoting/host/base/switches.h"
 #include "remoting/host/evaluate_capability.h"
@@ -112,11 +128,6 @@ void Usage(const base::FilePath& program_name) {
       "\n"
       "Options:\n"
 
-#if BUILDFLAG(IS_LINUX)
-      "  --audio-pipe-name=<pipe> - Sets the pipe name to capture audio on "
-      "Linux.\n"
-#endif  // BUILDFLAG(IS_LINUX)
-
 #if BUILDFLAG(IS_APPLE)
       "  --list-audio-devices     - List all audio devices and their device "
       "UID.\n"
@@ -131,7 +142,12 @@ void Usage(const base::FilePath& program_name) {
       "  --evaluate-type=<type>   - Evaluates the capability of the host.\n"
       "  --enable-wtmpdb          - Enables recording to wtmpdb on Linux.\n"
       "  --webrtc-trace-event-file=<path> - Enables logging webrtc trace events"
-      " to a file.\n",
+      " to a file.\n"
+      "  --agent-status=<state>   - Reports the AI agent state to the running "
+      "host.\n"
+      "  --terminal-title=<title> - Sets the title for the terminal tab.\n"
+      "  --terminal-id=<id>       - Specifies the terminal ID for "
+      "--agent-status or --terminal-title.\n",
       program_name.MaybeAsASCII().c_str());
 }
 
@@ -217,10 +233,55 @@ MainRoutineFn SelectMainRoutine(const std::string& process_type) {
   return main_routine;
 }
 
+#if !BUILDFLAG(IS_CHROMEOS)
+constexpr base::TimeDelta kAgentStatusTimeout = base::Seconds(5);
+
+int SendAgentStatusMain(const base::CommandLine* command_line) {
+  auto parsed_args =
+      ChromotingHostServicesClient::ParseAgentStatusArgs(command_line);
+  if (!parsed_args.has_value()) {
+    Usage(command_line->GetProgram());
+    return kInvalidCommandLineExitCode;
+  }
+
+  base::SingleThreadTaskExecutor io_task_executor(base::MessagePumpType::IO);
+  mojo::core::Init();
+  mojo::core::ScopedIPCSupport ipc_support(
+      base::SingleThreadTaskRunner::GetCurrentDefault(),
+      mojo::core::ScopedIPCSupport::ShutdownPolicy::FAST);
+
+  ChromotingHostServicesClient client;
+  base::RunLoop run_loop;
+  bool succeeded = false;
+  client.set_disconnect_handler(run_loop.QuitClosure());
+
+  mojom::ChromotingSessionServices* session_services =
+      client.GetSessionServices();
+  if (!session_services) {
+    LOG(ERROR) << "Failed to connect to ChromotingSessionServices.";
+    return kInitializationFailed;
+  }
+
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE, run_loop.QuitClosure(), kAgentStatusTimeout);
+  session_services->SetAgentStatus(
+      parsed_args->terminal_id, std::move(parsed_args->status),
+      base::BindOnce(
+          [](bool* succeeded, base::OnceClosure quit_closure) {
+            *succeeded = true;
+            std::move(quit_closure).Run();
+          },
+          &succeeded, run_loop.QuitClosure()));
+  run_loop.Run();
+
+  return succeeded ? kSuccessExitCode : kInitializationFailed;
+}
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
 }  // namespace
 
 int HostMain(int argc, char** argv) {
-  base::ScopedMemoryConsumerRegistry<remoting::MemoryConsumerRegistry>
+  base::ScopedMemoryConsumerRegistry<base::DummyMemoryConsumerRegistry>
       memory_consumer_registry;
 
 #if BUILDFLAG(IS_APPLE)
@@ -256,6 +317,21 @@ int HostMain(int argc, char** argv) {
     process_type = command_line->GetSwitchValueASCII(kProcessTypeSwitchName);
   }
 
+#if BUILDFLAG(IS_LINUX)
+  if (process_type == kProcessTypePeerConnection) {
+    // The peer connection process handles untrusted network traffic, and all
+    // peer connection processes run as the same user. Make this process
+    // non-dumpable as early as possible in HostMain(), so that other processes
+    // running as the same user cannot inspect or modify it via ptrace or
+    // procfs. Note that execve() resets the dumpable flag, so this process is
+    // briefly dumpable before reaching this point; the sandbox restrictions
+    // applied to every peer connection process prevent them from exploiting
+    // that window. The Crashpad handler is launched by the root daemon process
+    // and keeps CAP_SYS_PTRACE, so it can still collect crash dumps.
+    PCHECK(prctl(PR_SET_DUMPABLE, 0) == 0) << "prctl(PR_SET_DUMPABLE) failed";
+  }
+#endif  // BUILDFLAG(IS_LINUX)
+
   if (process_type == kProcessTypeEvaluateCapability) {
     if (command_line->HasSwitch(kEvaluateCapabilitySwitchName)) {
       return EvaluateCapabilityLocally(
@@ -272,6 +348,13 @@ int HostMain(int argc, char** argv) {
   // Enable debug logs.
   InitHostLogging();
 
+#if !BUILDFLAG(IS_CHROMEOS)
+  if (command_line->HasSwitch(kAgentStatusSwitchName) ||
+      command_line->HasSwitch(kTerminalTitleSwitchName)) {
+    return SendAgentStatusMain(command_line);
+  }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
 #if BUILDFLAG(IS_LINUX)
   EnsureVarLibDirectory();
 #endif  // BUILDFLAG(IS_LINUX)
@@ -284,7 +367,35 @@ int HostMain(int argc, char** argv) {
   // the crash reports uploaded.
   if (IsUsageStatsAllowed()) {
 #if BUILDFLAG(IS_LINUX)
-    InitializeCrashpadReporting();
+    if (command_line->HasSwitch(kCrashpadHandlerSocketFd)) {
+      std::string fd_str =
+          command_line->GetSwitchValueASCII(kCrashpadHandlerSocketFd);
+      int fd = -1;
+      if (base::StringToInt(fd_str, &fd) && fd >= 0) {
+        pid_t pid = -1;
+        if (command_line->HasSwitch(kCrashpadHandlerPid)) {
+          std::string pid_str =
+              command_line->GetSwitchValueASCII(kCrashpadHandlerPid);
+          int pid_int = -1;
+          if (base::StringToInt(pid_str, &pid_int)) {
+            pid = static_cast<pid_t>(pid_int);
+          }
+        }
+        if (!InitializeCrashpadClient(base::ScopedFD(fd), pid)) {
+          LOG(ERROR) << "Failed to initialize Crashpad client.";
+        }
+      } else {
+        LOG(ERROR) << "Invalid Crashpad handler socket switch values.";
+      }
+    } else if (process_type == kProcessTypePeerConnection) {
+      // Never spawn a Crashpad handler from the peer connection process. The
+      // handler would run unsandboxed as the same user as other peer
+      // connection processes, and would outlive this process.
+      LOG(WARNING) << "Crashpad handler socket not provided. Crash reporting "
+                   << "is disabled for the peer connection process.";
+    } else {
+      InitializeCrashpadReporting();
+    }
 #elif BUILDFLAG(IS_WIN)
     // TODO: joedow - Enable crash reporting for the RDP process.
     if (process_type == kProcessTypeDaemon) {

@@ -63,6 +63,11 @@ constexpr uint32_t kWarmStartHardFaultCountThreshold = 5;
 // was 126MB).
 constexpr uint32_t kColdStartHardFaultCountThreshold = 3500;
 
+// Range and bucket count for the HardFaultBytes histograms.
+constexpr int kHardFaultBytesMin = 1024;
+constexpr int kHardFaultBytesMax = 1073741824;  // 1 GiB
+constexpr int kHardFaultBytesBucketCount = 50;
+
 }  // namespace
 #endif
 
@@ -108,14 +113,14 @@ startup_metric_utils::StartupTemperature g_startup_temperature =
 // temperature. |histogram_function| is the histogram type, and corresponds to
 // an UMA function like base::UmaHistogramLongTimes. It must itself be a
 // function that only takes two parameters.
-// |basename| is the basename of the histogram. A histogram of this name will
-// always be recorded to. If the startup temperature is known then a value
-// will also be recorded to the histogram with name |basename| and suffix
-// ".ColdStart", ".WarmStart" as appropriate.
-// |value_expr| is an expression evaluating to the value to be recorded. This
-// will be evaluated exactly once and cached, so side effects are not an
-// issue. A metric logged using this function must have an affected-histogram
-// entry in the definition of the StartupTemperature suffix in histograms.xml.
+// |histogram_basename| is the basename of the histogram. A histogram of this
+// name will always be recorded to. If the startup temperature is known then a
+// value will also be recorded to the histogram with name |histogram_basename|
+// and suffix ".ColdStartup", ".LukewarmStartup", or ".WarmStartup" as
+// appropriate.
+// |value| is the value to be recorded. A metric logged using this function
+// must have an affected-histogram entry in the definition of the
+// StartupTemperature variants in histograms.xml.
 // This function must only be used in code that runs after
 // |g_startup_temperature| has been initialized.
 template <typename T>
@@ -125,7 +130,7 @@ void EmitHistogramWithTemperature(void (*histogram_function)(std::string_view,
                                   T value) {
   // Always record to the base histogram.
   (*histogram_function)(histogram_basename, value);
-  // Record to the cold/warm suffixed histogram as appropriate.
+  // Record to the cold/warm/lukewarm suffixed histogram as appropriate.
   switch (g_startup_temperature) {
     case startup_metric_utils::COLD_STARTUP_TEMPERATURE:
       (*histogram_function)(base::StrCat({histogram_basename, ".ColdStartup"}),
@@ -136,7 +141,8 @@ void EmitHistogramWithTemperature(void (*histogram_function)(std::string_view,
                             value);
       break;
     case startup_metric_utils::LUKEWARM_STARTUP_TEMPERATURE:
-      // No suffix emitted for lukewarm startups.
+      (*histogram_function)(
+          base::StrCat({histogram_basename, ".LukewarmStartup"}), value);
       break;
     case startup_metric_utils::UNDETERMINED_STARTUP_TEMPERATURE:
       break;
@@ -211,7 +217,7 @@ BrowserStartupMetricRecorder::GetHardFaultCountForCurrentProcess() {
   // NOTE: The actual required size depends entirely on the number of
   // processes and threads running on the system. The initial guess suffices for
   // ~100s of processes and ~1000s of threads.
-  std::vector<uint8_t> buffer(base::KiBU(32).InBytes());
+  std::vector<uint8_t> buffer(base::KiB(32).InBytes());
   constexpr int kMaxNumBufferResize = 2;
   int num_buffer_resize = 0;
   for (;;) {
@@ -232,10 +238,10 @@ BrowserStartupMetricRecorder::GetHardFaultCountForCurrentProcess() {
       // to fill a large buffer just to record histograms.
 #if defined(_WIN64)
       constexpr ULONG kMaxLength =
-          base::MiBU(2).InBytes();  // 2 MB for 64-bit systems
+          base::MiB(2).InBytes();  // 2 MB for 64-bit systems
 #else
       constexpr ULONG kMaxLength =
-          base::KiBU(512).InBytes();  // 512 KB for 32-bit systems
+          base::KiB(512).InBytes();  // 512 KB for 32-bit systems
 #endif
       if (return_length >= kMaxLength) {
         return std::nullopt;
@@ -313,6 +319,7 @@ void BrowserStartupMetricRecorder::ResetSessionForTesting() {
   // tests run in the same process.
   main_window_startup_interrupted_ = false;
   message_loop_start_ticks_ = base::TimeTicks();
+  message_loop_start_no_sleep_timer_.reset();
   browser_window_display_ticks_ = base::TimeTicks();
   browser_window_first_paint_ticks_ = base::TimeTicks();
   is_privacy_sandbox_attestations_component_ready_recorded_ = false;
@@ -321,6 +328,7 @@ void BrowserStartupMetricRecorder::ResetSessionForTesting() {
   is_browser_window_display_metric_emitted_ = false;
   did_record_startup_fcp_ = false;
   did_record_startup_lcp_ = false;
+  did_record_startup_pdf_first_content_paint_ = false;
 }
 
 bool BrowserStartupMetricRecorder::WasMainWindowStartupInterrupted() const {
@@ -340,6 +348,7 @@ void BrowserStartupMetricRecorder::RecordMessageLoopStartTicks(
   DCHECK(message_loop_start_ticks_.is_null());
   message_loop_start_ticks_ = ticks;
   DCHECK(!message_loop_start_ticks_.is_null());
+  message_loop_start_no_sleep_timer_.emplace();
 }
 
 base::TimeTicks BrowserStartupMetricRecorder::GetWebContentsStartTicks() const {
@@ -469,6 +478,17 @@ void BrowserStartupMetricRecorder::RecordFirstWebContentsNonEmptyPaint(
       &base::UmaHistogramLongTimes100,
       "Startup.BrowserMessageLoopStart.To.NonEmptyPaint2",
       now - message_loop_start_ticks_);
+
+  DCHECK(message_loop_start_no_sleep_timer_.has_value());
+  // Only recorded when no system sleep was detected, so that the distribution
+  // can be compared to Startup.BrowserMessageLoopStart.To.NonEmptyPaint2.
+  if (std::optional<base::TimeDelta> elapsed_no_sleep =
+          message_loop_start_no_sleep_timer_->Elapsed()) {
+    EmitHistogramWithTemperature(
+        &base::UmaHistogramLongTimes100,
+        "Startup.BrowserMessageLoopStart.To.NonEmptyPaint2.NoSleep",
+        *elapsed_no_sleep);
+  }
 }
 
 void BrowserStartupMetricRecorder::
@@ -533,6 +553,29 @@ void BrowserStartupMetricRecorder::RecordFirstWebContentsLargestContentfulPaint(
       web_contents_start_ticks, lcp_ticks);
 }
 
+void BrowserStartupMetricRecorder::RecordFirstWebContentsPdfFirstContentPaint(
+    base::TimeTicks pdf_paint_ticks) {
+  if (did_record_startup_pdf_first_content_paint_) {
+    return;
+  }
+
+  const base::TimeTicks web_contents_start_ticks = GetWebContentsStartTicks();
+  if (web_contents_start_ticks.is_null()) {
+    return;
+  }
+
+  if (!ShouldLogStartupHistogram()) {
+    return;
+  }
+
+  did_record_startup_pdf_first_content_paint_ = true;
+
+  EmitHistogramWithTemperatureAndTraceEvent(
+      &base::UmaHistogramLongTimes100,
+      "Startup.FirstWebContents.PdfFirstContentPaint", web_contents_start_ticks,
+      pdf_paint_ticks);
+}
+
 void BrowserStartupMetricRecorder::RecordFirstWebContentsMainNavigationStart(
     base::TimeTicks ticks) {
   const base::TimeTicks web_contents_start_ticks = GetWebContentsStartTicks();
@@ -573,6 +616,23 @@ void BrowserStartupMetricRecorder::RecordBrowserWindowFirstPaint(
   }
   is_first_call = false;
   RecordBrowserWindowFirstPaintTicks(ticks);
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  // Mirror Startup.BrowserMessageLoopStartHardFault{Count,Bytes} at the first
+  // paint checkpoint (using a higher 1M cap for Count to avoid saturation).
+  // We record this unconditionally (even if ShouldLogStartupHistogram() is
+  // false) so experiments altering page-in behavior (e.g., MacFrameworkPreRead)
+  // can compare all launches. See histogram descriptions for details.
+  if (const std::optional<uint32_t> hard_fault_count =
+          GetHardFaultCountForCurrentProcess()) {
+    base::UmaHistogramCounts1M("Startup.BrowserWindowFirstPaintHardFaultCount",
+                               *hard_fault_count);
+    base::UmaHistogramCustomCounts(
+        "Startup.BrowserWindowFirstPaintHardFaultBytes",
+        base::saturated_cast<int>(static_cast<uint64_t>(*hard_fault_count) *
+                                  base::GetPageSize()),
+        kHardFaultBytesMin, kHardFaultBytesMax, kHardFaultBytesBucketCount);
+  }
+#endif
   if (!ShouldLogStartupHistogram()) {
     return;
   }
@@ -608,11 +668,11 @@ void BrowserStartupMetricRecorder::RecordHardFaultHistogram() {
     base::UmaHistogramCustomCounts(
         "Startup.BrowserMessageLoopStartHardFaultCount",
         hard_fault_count.value(), 1, 40000, 50);
-    int hard_fault_bytes = base::saturated_cast<int>(hard_fault_count.value() *
-                                                     base::GetPageSize());
+    int hard_fault_bytes = base::saturated_cast<int>(
+        static_cast<uint64_t>(hard_fault_count.value()) * base::GetPageSize());
     base::UmaHistogramCustomCounts(
-        "Startup.BrowserMessageLoopStartHardFaultBytes", hard_fault_bytes, 1024,
-        1073741824, 50);
+        "Startup.BrowserMessageLoopStartHardFaultBytes", hard_fault_bytes,
+        kHardFaultBytesMin, kHardFaultBytesMax, kHardFaultBytesBucketCount);
 
     // Determine the startup type based on the number of observed hard faults.
     if (hard_fault_count < kWarmStartHardFaultCountThreshold) {

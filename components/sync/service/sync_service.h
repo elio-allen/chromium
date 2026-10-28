@@ -10,6 +10,8 @@
 #include <string>
 
 #include "base/containers/enum_set.h"
+#include "base/containers/flat_set.h"
+#include "base/files/file_path.h"
 #include "base/functional/callback.h"
 #include "base/location.h"
 #include "base/time/time.h"
@@ -245,15 +247,18 @@ class SyncService : public KeyedService {
     // The number of bookmarks has exceeded the limit.
     kBookmarksLimitExceeded = 11,
 
-#if BUILDFLAG(IS_IOS)
+#if BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID)
     // Sync has encountered a Device Management error. The user should be
     // notified and depending on the type of error, may need to take action to
     // resolve it.
     kDeviceManagementError = 12,
     kMaxValue = kDeviceManagementError,
 #else
-    kMaxValue = kBookmarksLimitExceeded,
-#endif  // BUILDFLAG(IS_IOS)
+    // The user needs to take action in order to get access to encryption keys
+    // for passkeys.
+    kPasskeysLocked = 13,
+    kMaxValue = kPasskeysLocked,
+#endif  // BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID)
   };
   // LINT.ThenChange(/tools/metrics/histograms/metadata/sync/enums.xml:UserActionableError)
 
@@ -528,6 +533,10 @@ class SyncService : public KeyedService {
   // called for real data types only.
   virtual DataTypeDownloadStatus GetDownloadStatusFor(DataType type) const = 0;
 
+  // Returns the cache GUIDs for the current device across all Gaia IDs.
+  virtual base::flat_set<std::string> GetCurrentDeviceCacheGuidsForAllGaiaIds()
+      const = 0;
+
   //////////////////////////////////////////////////////////////////////////////
   // ACTIONS / STATE CHANGE REQUESTS
   //////////////////////////////////////////////////////////////////////////////
@@ -568,6 +577,7 @@ class SyncService : public KeyedService {
   // if the type's state didn't actually change.
   virtual void DataTypePreconditionChanged(DataType type) = 0;
 
+#if BUILDFLAG(IS_ANDROID)
   // Enables/disables invalidations for session sync related datatypes.
   // The session sync generates a lot of changes, which results in many
   // invalidations. This can negatively affect the battery life on Android. For
@@ -575,6 +585,11 @@ class SyncService : public KeyedService {
   // only when user is interested in session sync data, e.g. the history sync
   // page is opened.
   virtual void SetInvalidationsForSessionsEnabled(bool enabled) = 0;
+#endif  // BUILDFLAG(IS_ANDROID)
+
+  // Called when the value of `SyncClient::ArePasskeysLocked()` changes, so that
+  // `SyncService` can notify its observers.
+  virtual void PasskeysLockedChanged() = 0;
 
   // Shares the explicit passphrase content with layers outside of the browser
   // which have an independent sync client, and thus separate encryption
@@ -632,6 +647,8 @@ class SyncService : public KeyedService {
       const = 0;
 
   virtual const GURL& GetSyncServiceUrlForDebugging() const = 0;
+
+  virtual base::FilePath GetLocalSyncBackendFolderForDebugging() const = 0;
 
   virtual std::string GetUnrecoverableErrorMessageForDebugging() const = 0;
   virtual base::Location GetUnrecoverableErrorLocationForDebugging() const = 0;

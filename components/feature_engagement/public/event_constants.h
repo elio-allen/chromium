@@ -190,6 +190,9 @@ extern const char kLensButtonKeyboardUsed[];
 // The user has triggered the Lens button in the Composebox.
 extern const char kIOSLensButtonComposeboxUsed[];
 
+// Event fired when the Level Up promo is used once.
+extern const char kIOSLevelUpPromoUsed[];
+
 // The user has more than one gesture to refresh a page in iOS. This includes
 // but not limited to re-typing the URL in omnibox and refreshing from context
 // menu.
@@ -307,6 +310,9 @@ extern const char kHomeCustomizationMenuUsed[];
 // The user has opened the Home customization menu with background customization
 // enabled..
 extern const char kHomeBackgroundCustomizationMenuUsed[];
+
+// The user has opened the Home customization menu with ephemeral theme enabled.
+extern const char kEphemeralThemePromoUsed[];
 
 // The user has seen the `kIPHHomeCustomizationMenuFeature` iph.
 extern const char kHomeCustomizationPromoTriggered[];
@@ -448,6 +454,35 @@ extern const char kDefaultBrowserSettingsCardPromoUsed[];
 // Event fired when the Settings default browser cell promo is dismissed.
 extern const char kDefaultBrowserSettingsCellPromoUsed[];
 
+// Event fired when the Default Browser promo destination in the Overflow Menu
+// is used.
+extern const char kDefaultBrowserPromoOverflowMenuDestinationUsed[];
+
+// Event fired when the Default Browser promo shortcut in the Overflow Menu is
+// used.
+extern const char kDefaultBrowserPromoOverflowMenuShortcutsUsed[];
+
+// Event fired when the contextual default browser promo with Gemini is used
+// (displayed).
+extern const char kDefaultBrowserPromoContextualGeminiUsed[];
+
+// Event fired when a Gemini session terminates or disappears.
+extern const char kGeminiSessionTerminated[];
+
+// Event fired when the omnibox is moved to the bottom position.
+extern const char kIOSBottomOmniboxUsed[];
+
+// Event fired when the Account Switching promo is ignored without an explicit
+// accept or cancel action.
+extern const char kIOSAccountSwitchingPromoIgnored[];
+
+// Event fired when the Account Switching promo is explicitly dismissed via
+// the secondary action button ("Not now").
+extern const char kIOSAccountSwitchingPromoExplicitlyDismissed[];
+
+// Event fired when the user signs into or switches the primary account.
+extern const char kIOSAccountSwitchingPrimaryAccountChanged[];
+
 #endif  // BUILDFLAG(IS_IOS)
 
 // Android.
@@ -456,7 +491,9 @@ extern const char kDefaultBrowserSettingsCellPromoUsed[];
 extern const char kPwaInstallMenuSelected[];
 #endif  // BUILDFLAG(IS_ANDROID)
 
-extern const char kTabSearchComboButtonUsed[];
+// The user clicked on the Send Tab to Self entry point in the omnibox
+// long-press menu.
+extern const char kSendTabToSelfOmniboxUsed[];
 
 }  // namespace events
 

@@ -10,6 +10,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/cross_device_theme_tracker_factory.h"
 #include "third_party/jni_zero/default_conversions.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "third_party/jni_zero/system_jni/List_jni.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/color/color_provider_key.h"
@@ -20,14 +21,11 @@ using base::android::AttachCurrentThread;
 
 namespace themes {
 
-CrossDeviceThemeTrackerAndroid::CrossDeviceThemeTrackerAndroid(
-    syncer::DeviceInfoTracker* device_info_tracker)
-    : CrossDeviceThemeTracker<sync_pb::ThemeAndroidSpecifics>(
-          device_info_tracker) {
+CrossDeviceThemeTrackerAndroid::CrossDeviceThemeTrackerAndroid() {
   JNIEnv* env = AttachCurrentThread();
   // C++ creates and owns the Java counterpart.
-  java_object_.Reset(CrossDeviceThemeTrackerJni::create(
-      env, reinterpret_cast<intptr_t>(this)));
+  java_object_.Reset(
+      CrossDeviceThemeTrackerJni::create(env, jni_zero::MakeRaw(this)));
 
   AddObserver(this);
 }
@@ -66,6 +64,167 @@ ServiceStatus CrossDeviceThemeTrackerAndroid::GetServiceStatus(JNIEnv* env) {
       sync_pb::ThemeAndroidSpecifics>::GetServiceStatus();
 }
 
+jni_zero::ScopedJavaLocalRef<jobject>
+CrossDeviceThemeTrackerAndroid::CreateJavaTheme(
+    JNIEnv* env,
+    const jni_zero::JavaRef<JContext>& jcontext,
+    const DeviceThemeInfo<sync_pb::ThemeAndroidSpecifics>& theme_info) {
+  int32_t platform_type =
+      static_cast<int32_t>(MapToPlatformType(theme_info.data_type));
+
+  const sync_pb::ThemeAndroidSpecifics& specifics = theme_info.theme;
+
+  // 1. Extract background data if present.
+  bool has_background = specifics.has_ntp_background();
+  std::string bg_url;
+  std::string bg_collection_id;
+  bool is_bg_daily_refresh = false;
+  std::string bg_attribution_line_1;
+  std::string bg_attribution_line_2;
+  std::string bg_attribution_action_url;
+  if (has_background) {
+    const sync_pb::NtpCustomBackground& bg = specifics.ntp_background();
+    bg_url = bg.url();
+    bg_collection_id = bg.collection_id();
+    is_bg_daily_refresh = bg.has_refresh_timestamp_unix_epoch_seconds() &&
+                          bg.refresh_timestamp_unix_epoch_seconds() != 0;
+    bg_attribution_line_1 = bg.attribution_line_1();
+    bg_attribution_line_2 = bg.attribution_line_2();
+    bg_attribution_action_url = bg.attribution_action_url();
+  }
+
+  // 2. Extract color data if present.
+  bool has_chrome_color = specifics.has_chrome_color_info();
+  int32_t chrome_color_id = 0;
+  bool is_color_daily_refresh = false;
+
+  bool has_user_color = false;
+  SkColor primary_light = 0;
+  SkColor primary_dark = 0;
+  SkColor background_light = 0;
+  SkColor background_dark = 0;
+
+  if (has_chrome_color) {
+    const sync_pb::ChromeColorInfo& color_info = specifics.chrome_color_info();
+    chrome_color_id = color_info.theme_color_id();
+    is_color_daily_refresh =
+        color_info.has_last_daily_update_timestamp_unix_epoch_millis();
+  } else if (specifics.has_user_color_theme() &&
+             specifics.user_color_theme().has_color()) {
+    has_user_color = true;
+    // TODO(crbug.com/517615321): Refactor this palette generation logic to a
+    // shared helper function in chrome/browser/themes/theme_service_utils.h
+    // so it can be shared with other theme consumers.
+    const sync_pb::UserColorTheme& user_color = specifics.user_color_theme();
+    SkColor seed_color = static_cast<SkColor>(user_color.color());
+
+    ui::ColorProviderKey::SchemeVariant scheme_variant =
+        ui::ColorProviderKey::SchemeVariant::kTonalSpot;
+    bool is_baseline = false;
+    if (user_color.has_browser_color_variant()) {
+      switch (user_color.browser_color_variant()) {
+        case sync_pb::UserColorTheme_BrowserColorVariant_SYSTEM:
+        case sync_pb::
+            UserColorTheme_BrowserColorVariant_BROWSER_COLOR_VARIANT_UNSPECIFIED:
+          is_baseline = true;
+          break;
+        case sync_pb::UserColorTheme_BrowserColorVariant_NEUTRAL:
+          scheme_variant = ui::ColorProviderKey::SchemeVariant::kNeutral;
+          break;
+        case sync_pb::UserColorTheme_BrowserColorVariant_VIBRANT:
+          scheme_variant = ui::ColorProviderKey::SchemeVariant::kVibrant;
+          break;
+        case sync_pb::UserColorTheme_BrowserColorVariant_EXPRESSIVE:
+          scheme_variant = ui::ColorProviderKey::SchemeVariant::kExpressive;
+          break;
+        case sync_pb::UserColorTheme_BrowserColorVariant_TONAL_SPOT:
+        default:
+          scheme_variant = ui::ColorProviderKey::SchemeVariant::kTonalSpot;
+          break;
+      }
+    } else {
+      is_baseline = true;
+    }
+
+    std::unique_ptr<ui::Palette> palette =
+        ui::GeneratePalette(seed_color, scheme_variant);
+    primary_light = palette->primary().get(40);
+    primary_dark = palette->primary().get(80);
+    background_light =
+        is_baseline ? palette->neutral().get(100) : palette->neutral().get(98);
+    background_dark =
+        is_baseline ? palette->neutral().get(25) : palette->secondary().get(25);
+  }
+
+  // 3. Send extracted info up to Java.
+  if (has_background) {
+    return CrossDeviceThemeTrackerJni::createThemeCollectionData(
+        env, jcontext, platform_type, bg_url, bg_collection_id,
+        is_bg_daily_refresh, bg_attribution_line_1, bg_attribution_line_2,
+        bg_attribution_action_url, has_chrome_color, chrome_color_id,
+        has_user_color, static_cast<int32_t>(primary_light));
+  } else if (has_chrome_color) {
+    return CrossDeviceThemeTrackerJni::createColorData(
+        env, jcontext, platform_type, chrome_color_id, is_color_daily_refresh);
+  } else if (has_user_color) {
+    return CrossDeviceThemeTrackerJni::createCustomizedColorData(
+        env, jcontext, platform_type, static_cast<int32_t>(primary_light),
+        static_cast<int32_t>(primary_dark),
+        static_cast<int32_t>(background_light),
+        static_cast<int32_t>(background_dark));
+  }
+  return nullptr;
+}
+
+jni_zero::ScopedJavaLocalRef<jobject>
+CrossDeviceThemeTrackerAndroid::GetThemeForOsTypeAndFormFactor(
+    JNIEnv* env,
+    const jni_zero::JavaRef<JContext>& jcontext,
+    int32_t os_type_int,
+    int32_t form_factor_int) {
+  auto other_themes = GetOtherDevicesThemes();
+  if (other_themes.empty()) {
+    return nullptr;
+  }
+
+  auto os_type = static_cast<syncer::DeviceInfo::OsType>(os_type_int);
+  auto form_factor =
+      static_cast<syncer::DeviceInfo::FormFactor>(form_factor_int);
+
+  // 1. If a specific os_type is provided, only return the theme matching that
+  // platform's DataType (since theme sync uses a single entity per platform).
+  // If that platform does not have a theme (e.g. Themes sync was off or default
+  // theme was used), return nullptr rather than falling back to another
+  // platform's theme.
+  if (os_type != syncer::DeviceInfo::OsType::kUnknown) {
+    syncer::DataType target_type = OsTypeToDataType(os_type, form_factor);
+    if (target_type != syncer::UNSPECIFIED) {
+      for (const auto& theme_info : other_themes) {
+        if (theme_info.data_type == target_type) {
+          return CreateJavaTheme(env, jcontext, theme_info);
+        }
+      }
+    }
+    return nullptr;
+  }
+
+  // 2. If no os_type was specified (kUnknown) (i.e. no preferences are being
+  // imported from any device), select the best candidate theme across all
+  // available devices. Prefer Android (same platform) first: when Themes sync
+  // is enabled, Android devices continuously auto-sync their themes, so
+  // aligning with the existing Android theme allows the importer to recognize
+  // that local and remote themes are already identical, avoiding redundant
+  // snackbar prompts and minimizing churn in synced theme colors.
+  const auto* best_theme = &other_themes.front();
+  for (const auto& theme_info : other_themes) {
+    if (theme_info.data_type == syncer::THEMES_ANDROID) {
+      best_theme = &theme_info;
+      break;
+    }
+  }
+  return CreateJavaTheme(env, jcontext, *best_theme);
+}
+
 void CrossDeviceThemeTrackerAndroid::RecreateJavaThemes(
     JNIEnv* env,
     const jni_zero::JavaRef<JContext>& jcontext) {
@@ -74,106 +233,9 @@ void CrossDeviceThemeTrackerAndroid::RecreateJavaThemes(
   std::vector<jni_zero::ScopedJavaLocalRef<jobject>> java_themes_vector;
 
   for (const auto& theme_info : other_themes) {
-    int32_t platform_type = static_cast<int32_t>(
-        MapToPlatformType(theme_info.os_type, theme_info.form_factor));
-
-    const sync_pb::ThemeAndroidSpecifics& specifics = theme_info.theme;
-
-    // 1. Extract background data if present.
-    bool has_background = specifics.has_ntp_background();
-    std::string bg_url;
-    std::string bg_collection_id;
-    bool is_bg_daily_refresh = false;
-    if (has_background) {
-      const sync_pb::NtpCustomBackground& bg = specifics.ntp_background();
-      bg_url = bg.url();
-      bg_collection_id = bg.collection_id();
-      is_bg_daily_refresh = bg.has_refresh_timestamp_unix_epoch_seconds();
-    }
-
-    // 2. Extract color data if present.
-    bool has_chrome_color = specifics.has_chrome_color_info();
-    int32_t chrome_color_id = 0;
-    bool is_color_daily_refresh = false;
-
-    bool has_user_color = false;
-    SkColor primary_light = 0;
-    SkColor primary_dark = 0;
-    SkColor background_light = 0;
-    SkColor background_dark = 0;
-
-    if (has_chrome_color) {
-      const sync_pb::ChromeColorInfo& color_info =
-          specifics.chrome_color_info();
-      chrome_color_id = color_info.theme_color_id();
-      is_color_daily_refresh =
-          color_info.has_last_daily_update_timestamp_unix_epoch_millis();
-    } else if (specifics.has_user_color_theme() &&
-               specifics.user_color_theme().has_color()) {
-      has_user_color = true;
-      // TODO(crbug.com/517615321): Refactor this palette generation logic to a
-      // shared helper function in chrome/browser/themes/theme_service_utils.h
-      // so it can be shared with other theme consumers.
-      const sync_pb::UserColorTheme& user_color = specifics.user_color_theme();
-      SkColor seed_color = static_cast<SkColor>(user_color.color());
-
-      ui::ColorProviderKey::SchemeVariant scheme_variant =
-          ui::ColorProviderKey::SchemeVariant::kTonalSpot;
-      bool is_baseline = false;
-      if (user_color.has_browser_color_variant()) {
-        switch (user_color.browser_color_variant()) {
-          case sync_pb::UserColorTheme_BrowserColorVariant_SYSTEM:
-          case sync_pb::
-              UserColorTheme_BrowserColorVariant_BROWSER_COLOR_VARIANT_UNSPECIFIED:
-            is_baseline = true;
-            break;
-          case sync_pb::UserColorTheme_BrowserColorVariant_NEUTRAL:
-            scheme_variant = ui::ColorProviderKey::SchemeVariant::kNeutral;
-            break;
-          case sync_pb::UserColorTheme_BrowserColorVariant_VIBRANT:
-            scheme_variant = ui::ColorProviderKey::SchemeVariant::kVibrant;
-            break;
-          case sync_pb::UserColorTheme_BrowserColorVariant_EXPRESSIVE:
-            scheme_variant = ui::ColorProviderKey::SchemeVariant::kExpressive;
-            break;
-          case sync_pb::UserColorTheme_BrowserColorVariant_TONAL_SPOT:
-          default:
-            scheme_variant = ui::ColorProviderKey::SchemeVariant::kTonalSpot;
-            break;
-        }
-      } else {
-        is_baseline = true;
-      }
-
-      std::unique_ptr<ui::Palette> palette =
-          ui::GeneratePalette(seed_color, scheme_variant);
-      primary_light = palette->primary().get(40);
-      primary_dark = palette->primary().get(80);
-      background_light = is_baseline ? palette->neutral().get(100)
-                                     : palette->neutral().get(98);
-      background_dark = is_baseline ? palette->neutral().get(25)
-                                    : palette->secondary().get(25);
-    }
-
-    // 3. Send extracted info up to Java.
-    if (has_background) {
-      java_themes_vector.emplace_back(
-          CrossDeviceThemeTrackerJni::createThemeCollectionData(
-              env, jcontext, platform_type, bg_url, bg_collection_id,
-              is_bg_daily_refresh, has_chrome_color, chrome_color_id,
-              has_user_color, static_cast<int32_t>(primary_light)));
-    } else if (has_chrome_color) {
-      java_themes_vector.emplace_back(
-          CrossDeviceThemeTrackerJni::createColorData(
-              env, jcontext, platform_type, chrome_color_id,
-              is_color_daily_refresh));
-    } else if (has_user_color) {
-      java_themes_vector.emplace_back(
-          CrossDeviceThemeTrackerJni::createCustomizedColorData(
-              env, jcontext, platform_type, static_cast<int32_t>(primary_light),
-              static_cast<int32_t>(primary_dark),
-              static_cast<int32_t>(background_light),
-              static_cast<int32_t>(background_dark)));
+    auto java_theme = CreateJavaTheme(env, jcontext, theme_info);
+    if (java_theme) {
+      java_themes_vector.emplace_back(std::move(java_theme));
     }
   }
 
@@ -184,21 +246,13 @@ void CrossDeviceThemeTrackerAndroid::RecreateJavaThemes(
 }
 
 PlatformType CrossDeviceThemeTrackerAndroid::MapToPlatformType(
-    syncer::DeviceInfo::OsType os_type,
-    syncer::DeviceInfo::FormFactor form_factor) {
-  switch (os_type) {
-    case syncer::DeviceInfo::OsType::kAndroid:
-      if (form_factor == syncer::DeviceInfo::FormFactor::kDesktop) {
-        return PlatformType::kDesktop;
-      }
+    syncer::DataType data_type) {
+  switch (data_type) {
+    case syncer::THEMES_ANDROID:
       return PlatformType::kAndroid;
-    case syncer::DeviceInfo::OsType::kIOS:
+    case syncer::THEMES_IOS:
       return PlatformType::kIos;
-    case syncer::DeviceInfo::OsType::kWindows:
-    case syncer::DeviceInfo::OsType::kMac:
-    case syncer::DeviceInfo::OsType::kLinux:
-    case syncer::DeviceInfo::OsType::kChromeOsAsh:
-    case syncer::DeviceInfo::OsType::kChromeOsLacros:
+    case syncer::THEMES:
       return PlatformType::kDesktop;
     default:
       return PlatformType::kUnknown;

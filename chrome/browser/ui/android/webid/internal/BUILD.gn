@@ -32,7 +32,6 @@ android_library("java") {
     "//components/browser_ui/util/android:java",
     "//components/browser_ui/widget/android:java",
     "//components/content_relationship_verification/android:java",
-    "//components/embedder_support/android:simple_factory_key_java",
     "//components/embedder_support/android:util_java",
     "//components/favicon/android:java",
     "//components/image_fetcher:java",
@@ -112,7 +111,7 @@ robolectric_library("junit") {
     "java/src/org/chromium/chrome/browser/ui/android/webid/AccountSelectionViewTest.java",
     "java/src/org/chromium/chrome/browser/ui/android/webid/AccountSelectionWidgetModeControllerTest.java",
     "java/src/org/chromium/chrome/browser/ui/android/webid/AccountSelectionWidgetModeViewTest.java",
-    "java/src/org/chromium/chrome/browser/ui/android/webid/NativeAppContinueOnTest.java",
+    "java/src/org/chromium/chrome/browser/ui/android/webid/NativeAppTest.java",
   ]
 
   deps = [
@@ -121,6 +120,7 @@ robolectric_library("junit") {
     "//base:base_java",
     "//base:base_java_test_support",
     "//base:base_junit_test_support",
+    "//base:tristate_java",
     "//chrome/browser/android/browserservices/verification:java",
     "//chrome/browser/flags:java",
     "//chrome/browser/tab:java",

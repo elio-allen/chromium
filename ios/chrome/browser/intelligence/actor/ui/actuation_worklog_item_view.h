@@ -7,6 +7,7 @@
 
 #import <UIKit/UIKit.h>
 
+@class ActuationWorklogAccessoryItem;
 @class ActuationWorklogItem;
 
 // Defines the visibility of the connector lines for the item view.
@@ -21,21 +22,67 @@ enum class ActuationWorklogConnectorVisibility {
   kBoth,
 };
 
-// Unified view representing a step in the timeline. When no icon is provided,
-// we display a smaller dot view. The subtitle is hidden when nil. Optionally
-// links a connector above and below the icon.
+@class ActuationWorklogItemView;
+
+// Delegate protocol for user interaction events on ActuationWorklogItemView.
+@protocol ActuationWorklogItemViewDelegate <NSObject>
+// Notifies delegate when the item view is tapped.
+- (void)worklogItemViewDidTapItem:(ActuationWorklogItemView*)itemView;
+
+// Notifies delegate when an accessory card item inside the item view is tapped.
+- (void)worklogItemView:(ActuationWorklogItemView*)itemView
+    didTapAccessoryItem:(ActuationWorklogAccessoryItem*)accessoryItem;
+@end
+
+// Unified view representing an item in the worklog. Timeline styles
+// (`kSimple`, `kLabeled`, `kCard`) display an indicator in the leading gutter
+// (a small dot for `kSimple`, a large circle with an optional icon otherwise)
+// and can link connectors above and below it. The subtitle is hidden when nil.
 //
 // +------+  +--------------------+
 // | Icon |  | Title              |
 // +------+  |--------------------|
 //           | Subtitle           |
 //           +--------------------+
+// +------------------------------+
+// |     Overlay buffer area      |
+// +------------------------------+
+//
+// `kFreeform` items display text only, aligned with the leading edge of the
+// large circle, without any indicator or connectors. The overlay buffer area
+// is still reserved when `bottomBufferHeight` is non-zero.
+//
+// +------------------------------+
+// | Text                         |
+// +------------------------------+
+// +------------------------------+
+// |     Overlay buffer area      |
+// +------------------------------+
 @interface ActuationWorklogItemView : UIView
+
+// Delegate for user interaction events.
+@property(nonatomic, weak) id<ActuationWorklogItemViewDelegate> delegate;
 
 // Defines the visibility of the connector lines. Updating this property will
 // trigger a layout. Defaults to `ActuationWorklogConnectorVisibility::kNone`.
+// Ignored for `kFreeform` items, which never draw connectors.
 @property(nonatomic, assign)
     ActuationWorklogConnectorVisibility connectorVisibility;
+
+// Extra vertical space reserved at the bottom of the cell to accommodate
+// overlays (such as floating tool chips). Setting a non-zero height extends the
+// vertical dashed connector line on the left through the buffer area to ensure
+// visual continuity (except for `kFreeform` items). Defaults to 0.0.
+@property(nonatomic, assign) CGFloat bottomBufferHeight;
+
+// Controls whether the item is collapsible and displays a caret indicator.
+@property(nonatomic, assign, getter=isCollapsible) BOOL collapsible;
+
+// Reflects whether the item is collapsed. Updating rotates the caret icon.
+@property(nonatomic, assign) BOOL collapsed;
+
+// Read-only access to the underlying item model.
+@property(nonatomic, readonly) ActuationWorklogItem* item;
 
 // Designated initializer
 - (instancetype)init NS_DESIGNATED_INITIALIZER;
@@ -45,6 +92,9 @@ enum class ActuationWorklogConnectorVisibility {
 
 // Configures the view with a worklog item model.
 - (void)configureWithItem:(ActuationWorklogItem*)item;
+
+// Sets the collapsed state with optional rotation animation for the caret.
+- (void)setCollapsed:(BOOL)collapsed animated:(BOOL)animated;
 
 @end
 

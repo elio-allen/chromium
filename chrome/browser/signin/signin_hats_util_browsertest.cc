@@ -15,9 +15,11 @@
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/signin_browser_test_base.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/hats/hats_service_factory.h"
 #include "chrome/browser/ui/hats/mock_hats_service.h"
 #include "chrome/browser/ui/hats/survey_config.h"
+#include "chrome/common/channel_info.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/keep_alive_registry/keep_alive_types.h"
 #include "components/keep_alive_registry/scoped_keep_alive.h"
@@ -94,7 +96,8 @@ IN_PROC_BROWSER_TEST_F(SigninHatsUtilBrowserTest, LaunchHatsSurveyForProfile) {
   MakeAccountAvailable();
 
   const std::map<std::string, std::string> survey_data = {
-      {"Channel", "unknown"},
+      {"Channel",
+       std::string(version_info::GetChannelString(chrome::GetChannel()))},
       {"Chrome Version", version_info::GetVersion().GetString()},
       {"Number of Chrome Profiles", "1"},
       {"Number of Google Accounts", "1"},
@@ -112,7 +115,8 @@ IN_PROC_BROWSER_TEST_F(SigninHatsUtilBrowserTest, LaunchHatsSurveyForProfile) {
 IN_PROC_BROWSER_TEST_F(SigninHatsUtilBrowserTest,
                        LaunchHatsSurveyForProfileNoAccount) {
   const std::map<std::string, std::string> survey_data = {
-      {"Channel", "unknown"},
+      {"Channel",
+       std::string(version_info::GetChannelString(chrome::GetChannel()))},
       {"Chrome Version", version_info::GetVersion().GetString()},
       {"Number of Chrome Profiles", "1"},
       {"Number of Google Accounts", "0"},
@@ -158,8 +162,45 @@ IN_PROC_BROWSER_TEST_F(SigninHatsUtilBrowserTest,
   signin::LaunchHatsSurveyForProfile(trigger(), profile,
                                      /*defer_if_no_browser=*/true);
 
-  Browser* new_browser = CreateBrowser(profile);
+  BrowserWindowInterface* new_browser = CreateBrowser(profile);
   EXPECT_NE(new_browser, nullptr);
+}
+
+IN_PROC_BROWSER_TEST_F(SigninHatsUtilBrowserTest,
+                       DoNotLaunchHatsSurveyForOffTheRecordProfile) {
+  Profile* profile = CHECK_DEREF(browser()).GetProfile();
+  ASSERT_NE(profile, nullptr);
+  Profile* otr_profile =
+      profile->GetPrimaryOTRProfile(/*create_if_needed=*/true);
+
+  auto* otr_mock_hats_service = static_cast<MockHatsService*>(
+      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          otr_profile, base::BindRepeating(&BuildMockHatsService)));
+  ASSERT_NE(otr_mock_hats_service, nullptr);
+
+  EXPECT_CALL(*otr_mock_hats_service, LaunchDelayedSurvey).Times(0);
+  EXPECT_CALL(mock_hats_service(), LaunchDelayedSurvey).Times(0);
+
+  signin::LaunchHatsSurveyForProfile(trigger(), otr_profile);
+}
+
+IN_PROC_BROWSER_TEST_F(SigninHatsUtilBrowserTest,
+                       DoNotLaunchHatsSurveyWhenDeferredBrowserIsOffTheRecord) {
+  Profile* profile = CHECK_DEREF(browser()).GetProfile();
+  ASSERT_NE(profile, nullptr);
+  ScopedKeepAlive keep_alive(KeepAliveOrigin::BROWSER,
+                             KeepAliveRestartOption::DISABLED);
+  ScopedProfileKeepAlive profile_keep_alive(
+      profile, ProfileKeepAliveOrigin::kProfilePickerView);
+  CloseAllBrowsers();
+
+  EXPECT_CALL(mock_hats_service(), LaunchDelayedSurvey).Times(0);
+
+  signin::LaunchHatsSurveyForProfile(trigger(), profile,
+                                     /*defer_if_no_browser=*/true);
+
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser(profile);
+  EXPECT_NE(incognito_browser, nullptr);
 }
 
 IN_PROC_BROWSER_TEST_F(SigninHatsUtilBrowserTest,
@@ -194,7 +235,8 @@ class SigninHatsUtilPromoBubbleDismissedBrowserTest
 IN_PROC_BROWSER_TEST_P(SigninHatsUtilPromoBubbleDismissedBrowserTest,
                        LaunchHatsSurveyForProfile) {
   const std::map<std::string, std::string> survey_data = {
-      {"Channel", "unknown"},
+      {"Channel",
+       std::string(version_info::GetChannelString(chrome::GetChannel()))},
       {"Chrome Version", version_info::GetVersion().GetString()},
       {"Number of Chrome Profiles", "1"},
       {"Number of Google Accounts", "0"},
@@ -230,7 +272,7 @@ INSTANTIATE_TEST_SUITE_P(
             .expected_bubble_type = "Password Bubble"},
         PromoBubbleTestParams{
             .access_point =
-                signin_metrics::AccessPoint::kAvatarBubbleSignInWithSyncPromo,
+                signin_metrics::AccessPoint::kProfileMenuPrimaryButton,
             .expected_bubble_type = "Other"}),
     [](const testing::TestParamInfo<PromoBubbleTestParams>& info) {
       std::string test_suffix;

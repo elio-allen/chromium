@@ -30,10 +30,10 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/aura/window_occlusion_tracker.h"
-#include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animation_observer.h"
 #include "ui/compositor/layer_animation_sequence.h"
 #include "ui/compositor/layer_animator.h"
+#include "ui/compositor/layer_solid_color.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/compositor/test/begin_main_frame_waiter.h"
 #include "ui/compositor/test/layer_animator_test_controller.h"
@@ -406,13 +406,13 @@ TEST_F(ZAuraSurfaceTest,
 }
 
 TEST_F(ZAuraSurfaceTest, OcclusionIncludesOffScreenArea) {
-  UpdateDisplay("200x150");
+  UpdateDisplay("400x300");
 
   gfx::Size buffer_size(80, 100);
   auto buffer = test::ExoTestHelper::CreateBuffer(buffer_size);
-  // This is scaled by 1.5 - set the bounds to (-60, 75, 120, 150) in screen
+  // This is scaled by 1.5 - set the bounds to (-60, 225, 120, 150) in screen
   // coordinates so 75% of it is outside of the screen.
-  surface().window()->SetBounds(gfx::Rect(-40, 50, 80, 100));
+  surface().window()->SetBounds({-40, 150, 80, 100});
   surface().Attach(buffer.get());
   surface().Commit();
 

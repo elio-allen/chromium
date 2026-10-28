@@ -14,8 +14,16 @@
 #include "base/notreached.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/thread_annotations.h"
+#include "base/types/expected_macros.h"
+#include "base/types/pass_key.h"
+#include "components/origin_gating/core/decision.h"
+#include "components/origin_gating/core/decision_attribution.h"
+#include "components/origin_gating/core/decision_source.h"
+#include "components/origin_gating/core/gateable_event.h"
+#include "components/origin_gating/core/gating_decision.h"
 #include "components/origin_gating/core/origin_gating_cache.h"
-#include "components/origin_gating/core/types.h"
+#include "components/origin_gating/core/origin_gating_configuration.h"
+#include "components/origin_gating/core/task_policy_config_slot.h"
 #include "net/base/url_util.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "url/gurl.h"
@@ -55,14 +63,18 @@ Decision EvaluateAllowAboutBlank(const GURL& destination) {
                                     : Decision::kNoDecision;
 }
 
-Decision EvaluateForbidIpAddress(const GURL& destination) {
-  return destination.HostIsIPAddress() ? Decision::kBlocked
-                                       : Decision::kNoDecision;
+Decision EvaluateForbidNonLocalhostIpAddress(const GURL& destination) {
+  return destination.HostIsIPAddress() && !net::IsLocalhost(destination)
+             ? Decision::kBlocked
+             : Decision::kNoDecision;
 }
 
-Decision EvaluateRequireHttps(const GURL& destination) {
-  return destination.SchemeIs(url::kHttpsScheme) ? Decision::kNoDecision
-                                                 : Decision::kBlocked;
+Decision EvaluateRequireHttpsOrLocalhost(const GURL& destination) {
+  return destination.SchemeIs(url::kHttpsScheme) ||
+                 (net::IsLocalhost(destination) &&
+                  destination.SchemeIs(url::kHttpScheme))
+             ? Decision::kNoDecision
+             : Decision::kBlocked;
 }
 
 Decision EvaluateRequireHttpsOrHttp(const GURL& destination) {
@@ -97,13 +109,63 @@ bool ProcessDecision(std::unique_ptr<GatingDecisionContext>& context,
   NOTREACHED();
 }
 
+DecisionAttribution MakeAttribution(DecisionSource source) {
+  return DecisionAttribution(source);
+}
+
+DecisionAttribution MakeAttribution(const CustomPredicate& predicate) {
+  return DecisionAttribution(predicate.attribution());
+}
+
+Decision EvaluateTaskPolicyConfig(
+    const TaskPolicyConfigSlot& config_slot,
+    const GateableEvent& event,
+    const std::optional<url::Origin>& source_origin,
+    const url::Origin& destination_origin) {
+  if (!config_slot.has_value()) {
+    return Decision::kNoDecision;
+  }
+  const TaskPolicyConfig& config = config_slot.value();
+  if (const PageActionEvent* page_action = event.GetIfPageAction()) {
+    return config.IsActuationAllowed(destination_origin, page_action->tool)
+               ? Decision::kAllowed
+               : Decision::kBlocked;
+  }
+
+  CHECK(source_origin.has_value());
+  return config.IsNavigationAllowed(*source_origin, destination_origin)
+             ? Decision::kAllowed
+             : Decision::kBlocked;
+}
+
 }  // namespace
 
-OriginGatingChecker::OriginGatingChecker(Delegate& delegate,
+// static
+std::unique_ptr<OriginGatingChecker> OriginGatingChecker::CreateForTesting(
+    base::WeakPtr<Delegate> delegate,
+    OriginGatingConfiguration config) {
+  return std::make_unique<OriginGatingChecker>(
+      base::PassKey<OriginGatingChecker>(), delegate, std::move(config));
+}
+
+OriginGatingChecker::OriginGatingChecker(base::PassKey<OriginGatingChecker>,
+                                         base::WeakPtr<Delegate> delegate,
+                                         OriginGatingConfiguration config)
+    : OriginGatingChecker(delegate, std::move(config)) {}
+
+OriginGatingChecker::OriginGatingChecker(base::PassKey<OriginGatingService>,
+                                         base::WeakPtr<Delegate> delegate,
+                                         OriginGatingConfiguration config)
+    : OriginGatingChecker(delegate, std::move(config)) {}
+
+OriginGatingChecker::OriginGatingChecker(base::WeakPtr<Delegate> delegate,
                                          OriginGatingConfiguration config)
     : delegate_(delegate),
       config_(std::move(config)),
-      cache_(config_.use_site_keyed_cache()) {}
+      cache_(config_.cache_scope().transform(
+          [](OriginGatingCache::CacheScope scope) {
+            return OriginGatingCache(scope);
+          })) {}
 
 OriginGatingChecker::~OriginGatingChecker() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -112,17 +174,17 @@ OriginGatingChecker::~OriginGatingChecker() {
 void OriginGatingChecker::ComputeGatingDecision(
     std::unique_ptr<GatingDecisionContext> context,
     GateableEvent event,
-    const GURL& source,
-    const GURL& destination,
     GatingDecisionCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  std::optional<url::Origin> source_origin =
+      event.source() ? std::make_optional(url::Origin::Create(*event.source()))
+                     : std::nullopt;
+  url::Origin destination_origin = url::Origin::Create(event.destination());
   EvaluatePredicates(std::move(context), config_.predicates(),
                      DelegateInputs{
-                         .event = event,
-                         .source = source,
-                         .source_origin = url::Origin::Create(source),
-                         .destination = destination,
-                         .destination_origin = url::Origin::Create(destination),
+                         .event = std::move(event),
+                         .source_origin = std::move(source_origin),
+                         .destination_origin = std::move(destination_origin),
                          .requires_user_confirmation = std::nullopt,
                      },
                      std::move(callback));
@@ -135,155 +197,148 @@ void OriginGatingChecker::EvaluatePredicates(
     GatingDecisionCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
+  if (!delegate_) {
+    return;
+  }
+
   for (size_t i = 0; i < pending_predicates.size(); ++i) {
     const PredicateConfiguration& predicate_config = pending_predicates[i];
-    if (!predicate_config.AppliesTo(input.event)) {
+    if (!predicate_config.AppliesTo(input.event.type())) {
       continue;
     }
 
-    bool consumed = std::visit(
-        absl::Overload{
-            [&](DecisionSource source_enum) VALID_CONTEXT_REQUIRED(
-                sequence_checker_) {
-              Decision decision;
-              switch (source_enum) {
-                case DecisionSource::kAllowSameOrigin: {
-                  decision = EvaluateAllowSameOrigin(input.source_origin,
-                                                     input.destination_origin);
-                  break;
-                }
-                case DecisionSource::kAllowHttpLocalhost: {
-                  decision = EvaluateAllowHttpLocalhost(input.destination);
-                  break;
-                }
-                case DecisionSource::kAllowAboutBlank: {
-                  decision = EvaluateAllowAboutBlank(input.destination);
-                  break;
-                }
-                case DecisionSource::kCacheWithUserConfirmation: {
-                  decision =
-                      IsCachedWithUserConfirmation(input.destination_origin);
-                  break;
-                }
-                case DecisionSource::kCacheWithoutUserConfirmation: {
-                  return RunActionOrGetUserConfirmationInfo(
-                      context, pending_predicates.subspan(/*offset=*/i), input,
-                      callback,
-                      [&](std::unique_ptr<GatingDecisionContext>& context,
-                          DelegateInputs& input,
-                          GatingDecisionCallback& callback)
-                          VALID_CONTEXT_REQUIRED(sequence_checker_) {
-                            Decision decision =
-                                !input.requires_user_confirmation.value() &&
-                                        cache_.IsNavigationAllowed(
-                                            input.source_origin,
-                                            input.destination_origin)
-                                    ? Decision::kAllowed
-                                    : Decision::kNoDecision;
-                            return ProcessDecision(
-                                context, DecisionAttribution(source_enum),
-                                decision, callback);
-                          });
-                }
-                case DecisionSource::kEnterprisePolicy: {
-                  GURL destination = input.destination;
-                  delegate_->EvaluateEnterprisePolicy(
-                      destination,
-                      base::BindOnce(
-                          &OriginGatingChecker::OnEnterprisePolicyVerdict,
-                          weak_ptr_factory_.GetWeakPtr(), std::move(context),
-                          pending_predicates.subspan(/*offset=*/i + 1),
-                          DecisionAttribution(source_enum), std::move(input),
-                          std::move(callback)));
-                  return true;
-                }
-                case DecisionSource::kForbidIpAddress: {
-                  decision = EvaluateForbidIpAddress(input.destination);
-                  break;
-                }
-                case DecisionSource::kRequireHttps: {
-                  decision = EvaluateRequireHttps(input.destination);
-                  break;
-                }
-                case DecisionSource::kRequireHttpsOrHttp: {
-                  decision = EvaluateRequireHttpsOrHttp(input.destination);
-                  break;
-                }
-                case DecisionSource::kActorContainerConfig: {
-                  decision = EvaluateActorContainerConfig(
-                      input.event, input.source_origin,
-                      input.destination_origin);
-                  break;
-                }
-                case DecisionSource::kNoVerdict:
-                  // This is an internal/fallback decision source and is not an
-                  // executable predicate. OriginGatingConfiguration's
-                  // constructor guarantees that this is never present in the
-                  // predicates list, making this block unreachable.
-                  NOTREACHED();
-              }
-              return ProcessDecision(context, DecisionAttribution(source_enum),
-                                     decision, callback);
+    ASSIGN_OR_RETURN(
+        Decision decision,
+        std::visit(
+            [&](auto&& predicate) VALID_CONTEXT_REQUIRED(sequence_checker_) {
+              return EvaluateSinglePredicate(context,
+                                             pending_predicates.subspan(i),
+                                             predicate, input, callback);
             },
-            [&](const CustomPredicate& custom_predicate)
-                VALID_CONTEXT_REQUIRED(sequence_checker_) {
-                  GatingDecisionContext* raw_context = context.get();
-                  DecisionAttribution attribution(custom_predicate.name());
-                  return std::visit(
-                      absl::Overload{
-                          [&](const CustomPredicate::AsyncPredicate& predicate)
-                              VALID_CONTEXT_REQUIRED(sequence_checker_) {
-                                GURL source = input.source;
-                                GURL destination = input.destination;
-                                predicate.Run(
-                                    raw_context, source, destination,
-                                    base::BindOnce(
-                                        &OriginGatingChecker::
-                                            OnEvaluatedAsyncPredicate,
-                                        weak_ptr_factory_.GetWeakPtr(),
-                                        std::move(context),
-                                        pending_predicates.subspan(
-                                            /*offset=*/i + 1),
-                                        std::move(attribution),
-                                        std::move(input), std::move(callback)));
-                                return true;
-                              },
-                          [&](const CustomPredicate::SyncPredicate& predicate) {
-                            return ProcessDecision(
-                                context, std::move(attribution),
-                                predicate.Run(raw_context, input.source,
-                                              input.destination),
-                                callback);
-                          },
-                      },
-                      custom_predicate.predicate());
-                }},
-        predicate_config.predicate());
-    if (consumed) {
+            predicate_config.predicate()),
+        [] {});
+
+    DecisionAttribution attribution =
+        std::visit([](auto&& predicate) { return MakeAttribution(predicate); },
+                   predicate_config.predicate());
+    if (ProcessDecision(context, attribution, decision, callback)) {
       return;
     }
   }
 
   RunActionOrGetUserConfirmationInfo(
       context, /*pending_predicates=*/{}, input, callback,
-      [&](std::unique_ptr<GatingDecisionContext>& context,
-          DelegateInputs& input, GatingDecisionCallback& callback)
-          VALID_CONTEXT_REQUIRED(sequence_checker_) {
-            GatingDecisionContext* raw_context = context.get();
-            GateableEvent event = input.event;
-            GURL source = input.source;
-            GURL destination = input.destination;
-            bool requires_user_confirmation =
-                input.requires_user_confirmation.value();
-            delegate_->OnNoVerdict(
-                raw_context, event, source, destination,
-                requires_user_confirmation,
-                base::BindOnce(&OriginGatingChecker::OnNoVerdictAnswer,
-                               weak_ptr_factory_.GetWeakPtr(),
-                               std::move(context), std::move(input),
-                               std::move(callback)));
-            return true;
+      [&]() VALID_CONTEXT_REQUIRED(sequence_checker_) {
+        if (!delegate_) {
+          return;
+        }
+        GatingDecisionContext* raw_context = context.get();
+        GateableEvent event = input.event;
+        bool requires_user_confirmation =
+            input.requires_user_confirmation.value();
+        delegate_->OnNoVerdict(
+            raw_context, event, requires_user_confirmation,
+            base::BindOnce(&OriginGatingChecker::OnNoVerdictAnswer,
+                           weak_ptr_factory_.GetWeakPtr(), std::move(context),
+                           std::move(input), std::move(callback)));
+      });
+}
+
+std::optional<Decision> OriginGatingChecker::EvaluateSinglePredicate(
+    std::unique_ptr<GatingDecisionContext>& context,
+    base::span<const PredicateConfiguration> current_and_rest,
+    DecisionSource decision_source,
+    DelegateInputs& input,
+    GatingDecisionCallback& callback) {
+  switch (decision_source) {
+    case DecisionSource::kAllowSameOrigin:
+      CHECK(input.source_origin.has_value());
+      return EvaluateAllowSameOrigin(*input.source_origin,
+                                     input.destination_origin);
+    case DecisionSource::kAllowHttpLocalhost:
+      return EvaluateAllowHttpLocalhost(input.event.destination());
+    case DecisionSource::kAllowAboutBlank:
+      return EvaluateAllowAboutBlank(input.event.destination());
+    case DecisionSource::kCacheWithUserConfirmation:
+      return IsCachedWithUserConfirmation(input.destination_origin);
+    case DecisionSource::kCacheWithoutUserConfirmation: {
+      std::optional<Decision> decision;
+      RunActionOrGetUserConfirmationInfo(
+          context, current_and_rest, input, callback,
+          [&]() VALID_CONTEXT_REQUIRED(sequence_checker_) {
+            decision = !input.requires_user_confirmation.value() && cache_ &&
+                               cache_->IsNavigationAllowed(
+                                   input.source_origin.value_or(url::Origin()),
+                                   input.destination_origin)
+                           ? Decision::kAllowed
+                           : Decision::kNoDecision;
           });
+      return decision;
+    }
+    case DecisionSource::kEnterprisePolicy: {
+      GURL destination = input.event.destination();
+      delegate_->EvaluateEnterprisePolicy(
+          destination,
+          base::BindOnce(&OriginGatingChecker::OnEnterprisePolicyVerdict,
+                         weak_ptr_factory_.GetWeakPtr(), std::move(context),
+                         current_and_rest.subspan(1U),
+                         DecisionAttribution(decision_source), std::move(input),
+                         std::move(callback)));
+      return std::nullopt;
+    }
+    case DecisionSource::kForbidNonLocalhostIpAddress:
+      return EvaluateForbidNonLocalhostIpAddress(input.event.destination());
+    case DecisionSource::kRequireHttpsOrLocalhost:
+      return EvaluateRequireHttpsOrLocalhost(input.event.destination());
+    case DecisionSource::kRequireHttpsOrHttp:
+      return EvaluateRequireHttpsOrHttp(input.event.destination());
+    case DecisionSource::kBlockByTaskPolicyConfig:
+      return EvaluateTaskPolicyConfigWithCache(input) == Decision::kBlocked
+                 ? Decision::kBlocked
+                 : Decision::kNoDecision;
+    case DecisionSource::kAllowByTaskPolicyConfig:
+      return EvaluateTaskPolicyConfigWithCache(input) == Decision::kAllowed
+                 ? Decision::kAllowed
+                 : Decision::kNoDecision;
+    case DecisionSource::kNoVerdict:
+      // This is an internal/fallback decision source and is not an
+      // executable predicate. OriginGatingConfiguration's
+      // constructor guarantees that this is never present in the
+      // predicates list, making this block unreachable.
+      NOTREACHED();
+  }
+  NOTREACHED();
+}
+
+std::optional<Decision> OriginGatingChecker::EvaluateSinglePredicate(
+    std::unique_ptr<GatingDecisionContext>& context,
+    base::span<const PredicateConfiguration> current_and_rest,
+    const CustomPredicate& custom_predicate,
+    DelegateInputs& input,
+    GatingDecisionCallback& callback) {
+  GatingDecisionContext* raw_context = context.get();
+  return std::visit(
+      absl::Overload{
+          [&](const CustomPredicate::AsyncPredicate& predicate)
+              VALID_CONTEXT_REQUIRED(
+                  sequence_checker_) -> std::optional<Decision> {
+                GateableEvent event = input.event;
+                predicate.Run(
+                    raw_context, event,
+                    base::BindOnce(
+                        &OriginGatingChecker::OnEvaluatedAsyncPredicate,
+                        weak_ptr_factory_.GetWeakPtr(), std::move(context),
+                        current_and_rest.subspan(1U),
+                        MakeAttribution(custom_predicate), std::move(input),
+                        std::move(callback)));
+                return std::nullopt;
+              },
+          [&](const CustomPredicate::SyncPredicate& predicate)
+              -> std::optional<Decision> {
+            return predicate.Run(raw_context, input.event);
+          },
+      },
+      custom_predicate.predicate());
 }
 
 void OriginGatingChecker::OnEvaluatedAsyncPredicate(
@@ -350,53 +405,45 @@ void OriginGatingChecker::OnNoVerdictAnswer(
       });
 }
 
-bool OriginGatingChecker::RunActionOrGetUserConfirmationInfo(
+void OriginGatingChecker::RunActionOrGetUserConfirmationInfo(
     std::unique_ptr<GatingDecisionContext>& context,
     base::span<const PredicateConfiguration> pending_predicates,
     DelegateInputs& input,
     GatingDecisionCallback& callback,
-    base::FunctionRef<bool(std::unique_ptr<GatingDecisionContext>& context,
-                           DelegateInputs& input,
-                           GatingDecisionCallback& callback)> action) {
+    base::FunctionRef<void()> action) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (input.requires_user_confirmation.has_value()) {
-    return action(context, input, callback);
+    return action();
+  }
+  if (!delegate_) {
+    return;
   }
   GatingDecisionContext* raw_context = context.get();
   GateableEvent event = input.event;
-  GURL source = input.source;
-  GURL destination = input.destination;
   delegate_->DoesOriginRequireUserConfirmation(
-      raw_context, event, source, destination,
+      raw_context, event,
       base::BindOnce(&OriginGatingChecker::OnUserConfirmationRequiredAnswer,
                      weak_ptr_factory_.GetWeakPtr(), std::move(context),
                      pending_predicates, std::move(input),
                      std::move(callback)));
-  return true;
 }
 
 Decision OriginGatingChecker::IsCachedWithUserConfirmation(
     const url::Origin& origin) const {
-  return cache_.IsNavigationConfirmedByUser(origin) ? Decision::kAllowed
-                                                    : Decision::kNoDecision;
+  return cache_ && cache_->IsNavigationConfirmedByUser(origin)
+             ? Decision::kAllowed
+             : Decision::kNoDecision;
 }
 
-Decision OriginGatingChecker::EvaluateActorContainerConfig(
-    GateableEvent event,
-    const url::Origin& source,
-    const url::Origin& destination) const {
-  if (!actor_container_config_slot_.has_value()) {
-    return Decision::kNoDecision;
+Decision OriginGatingChecker::EvaluateTaskPolicyConfigWithCache(
+    DelegateInputs& input) const {
+  if (!input.task_policy_config_decision.has_value()) {
+    input.task_policy_config_decision =
+        EvaluateTaskPolicyConfig(task_policy_config_slot_, input.event,
+                                 input.source_origin, input.destination_origin);
   }
-  const ActorContainerConfig& config = actor_container_config_slot_.value();
-  if (event == GateableEvent::kPageAction) {
-    return config.IsActuationAllowed(destination) ? Decision::kAllowed
-                                                  : Decision::kBlocked;
-  }
-
-  return config.IsNavigationAllowed(source, destination) ? Decision::kAllowed
-                                                         : Decision::kBlocked;
+  return input.task_policy_config_decision.value();
 }
 
 }  // namespace origin_gating

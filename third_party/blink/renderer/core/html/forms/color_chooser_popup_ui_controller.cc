@@ -32,13 +32,16 @@
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/strings/grit/blink_strings.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser.h"
+#include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/html/forms/chooser_resource_loader.h"
 #include "third_party/blink/renderer/core/html/forms/color_chooser_client.h"
+#include "third_party/blink/renderer/core/html/forms/html_form_control_element.h"
 #include "third_party/blink/renderer/core/page/chrome_client.h"
 #include "third_party/blink/renderer/core/page/color_page_popup_controller.h"
+#include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/page/page_popup.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
 #include "ui/base/ui_base_features.h"
@@ -216,7 +219,7 @@ void ColorChooserPopupUIController::WriteColorSuggestionPickerDocument(
 }
 
 Locale& ColorChooserPopupUIController::GetLocale() {
-  return locale_;
+  return *locale_;
 }
 
 void ColorChooserPopupUIController::SetValueAndClosePopup(
@@ -240,7 +243,20 @@ void ColorChooserPopupUIController::SetValue(const String& value) {
 
 void ColorChooserPopupUIController::DidClosePopup() {
   popup_ = nullptr;
-  eye_dropper_chooser_.reset();
+  To<HTMLFormControlElement>(OwnerElement()).SetFreezeHoverForOpenPopup(false);
+
+  if (frame_ && frame_->GetPage() &&
+      frame_->GetPage()
+          ->GetRendererPreferences()
+          .system_color_chooser_is_modal) {
+    if (eye_dropper_chooser_.is_bound()) {
+      // The eye dropper is a system dialog that stole focus, causing the popup
+      // to close. Don't end the chooser yet!
+      return;
+    }
+  } else {
+    eye_dropper_chooser_.reset();
+  }
 
   if (!chooser_)
     EndChooser();
@@ -257,6 +273,9 @@ ChromeClient& ColorChooserPopupUIController::GetChromeClient() {
 void ColorChooserPopupUIController::OpenPopup() {
   DCHECK(!popup_);
   popup_ = chrome_client_->OpenPagePopup(this);
+  if (popup_) {
+    To<HTMLFormControlElement>(OwnerElement()).SetFreezeHoverForOpenPopup(true);
+  }
 }
 
 void ColorChooserPopupUIController::CancelPopup() {
@@ -275,8 +294,15 @@ void ColorChooserPopupUIController::EyeDropperResponseHandler(bool success,
                                                               uint32_t color) {
   eye_dropper_chooser_.reset();
 
-  if (!popup_)
+  if (!popup_) {
+    if (success) {
+      client_->DidChooseColor(Color::FromRGBA32(color));
+    }
+    if (!chooser_) {
+      EndChooser();
+    }
     return;
+  }
   // Notify the popup that there is a response from the eye dropper.
   SegmentedBuffer data;
   PagePopupClient::AddLiteral("window.updateData = {\n", data);

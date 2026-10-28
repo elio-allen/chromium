@@ -58,6 +58,13 @@ void RegisterBrowserPrefs(PrefRegistrySimple* registry) {
   registry->RegisterBooleanPref(
       installer_downloader::prefs::kInstallerDownloaderBypassEligibilityCheck,
       false);
+  registry->RegisterIntegerPref(
+      installer_downloader::prefs::kInstallerDownloaderCycleCount, 0);
+  registry->RegisterBooleanPref(
+      installer_downloader::prefs::kInstallerDownloaderDownloadCompleted,
+      false);
+  registry->RegisterIntegerPref(
+      installer_downloader::prefs::kInstallerDownloaderTotalShowCount, 0);
 #endif  // BUILDFLAG(IS_WIN) && BUILDFLAG(GOOGLE_CHROME_BRANDING)
 
 #if BUILDFLAG(IS_MAC)
@@ -188,6 +195,10 @@ void RegisterBrowserUserPrefs(user_prefs::PrefRegistrySyncable* registry) {
 
 #if BUILDFLAG(IS_CHROMEOS)
   registry->RegisterBooleanPref(prefs::kForceMaximizeOnFirstRun, false);
+#endif
+
+#if BUILDFLAG(IS_ANDROID)
+  registry->RegisterBooleanPref(prefs::kAllowFileSelectionDialogs, true);
 #endif
 
   registry->RegisterBooleanPref(prefs::kEnterpriseHardwarePlatformAPIEnabled,

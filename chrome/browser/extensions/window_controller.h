@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/values.h"
 #include "chrome/common/extensions/api/tabs.h"
 #include "chrome/common/extensions/api/windows.h"
@@ -23,10 +24,6 @@ static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 class BrowserWindowInterface;
 class GURL;
 class Profile;
-
-#if !BUILDFLAG(IS_ANDROID)
-class Browser;  // TODO(stevenjb) eliminate this dependency.
-#endif
 
 namespace content {
 class WebContents;
@@ -79,6 +76,14 @@ class WindowController {
 
   Profile* profile() const { return profile_; }
 
+  // Returns a WeakPtr for synchronous liveness checks across re-entrant
+  // platform window operations (e.g., `SetFullscreenMode()`). Because
+  // `weak_ptr_factory_` lives on this base class, do not use this to bind
+  // asynchronous callbacks to subclass methods.
+  base::WeakPtr<WindowController> GetWeakPtr() {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
+
   // Return an id uniquely identifying the window.
   virtual int GetWindowId() const = 0;
 
@@ -88,6 +93,9 @@ class WindowController {
 
   // Sets the window's fullscreen state. `extension_url` provides the url
   // associated with the extension (used by FullscreenController).
+  // Note: Transitioning fullscreen state may synchronously close the native
+  // window and destroy `this` (e.g., via nested event loops on macOS). Callers
+  // must check object liveness via `GetWeakPtr()` after calling this method.
   virtual void SetFullscreenMode(bool is_fullscreen,
                                  const GURL& extension_url) const = 0;
 
@@ -98,7 +106,7 @@ class WindowController {
 #if !BUILDFLAG(IS_ANDROID)
   // Returns a Browser if available. Defaults to returning NULL.
   // TODO(stevenjb): Temporary workaround. Eliminate this.
-  virtual Browser* GetBrowser() const;
+  virtual BrowserWindowInterface* GetBrowser() const;
 #endif
 
   // Returns the WebContents associated with the active tab, if any. Returns
@@ -162,6 +170,8 @@ class WindowController {
  private:
   raw_ptr<ui::BaseWindow, DanglingUntriaged> window_;
   raw_ptr<Profile, DanglingUntriaged> profile_;
+
+  base::WeakPtrFactory<WindowController> weak_ptr_factory_{this};
 };
 
 }  // namespace extensions

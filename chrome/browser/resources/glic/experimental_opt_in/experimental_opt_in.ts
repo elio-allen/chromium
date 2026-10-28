@@ -9,11 +9,19 @@ import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
 import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import 'chrome://resources/cr_elements/cr_button/cr_button.js';
 
+// <if expr="not is_android">
 import {ColorChangeUpdater} from '//resources/cr_components/color_change_listener/colors_css_updater.js';
+// </if>
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import {getRequiredElement} from '//resources/js/util.js';
+// <if expr="not enable_extensions_core">
+import {OriginCheckParams} from '/shared/guest_view/request_throttlers.js';
+
+// </if>
 
 import {ExperimentalOptInPageHandler} from './glic_experimental_opt_in.mojom-webui.js';
+import {isFullWebView} from './web_view_type.js';
+import type {WebViewType} from './web_view_type.js';
 
 const handler = ExperimentalOptInPageHandler.getRemote();
 
@@ -29,23 +37,33 @@ enum FailureType {
 const TRANSITION_DURATION_MS = 250;
 // Setup target height and width custom properties immediately at load to
 // prevent layout shifts.
+// <if expr="not is_android">
 const defaultHeight =
     loadTimeData.getInteger('glicExperimentalOptInDefaultHeight');
 const defaultWidth =
     loadTimeData.getInteger('glicExperimentalOptInDefaultWidth');
+const targetWidth = window.innerWidth > 0 ?
+    Math.min(defaultWidth, window.innerWidth) :
+    defaultWidth;
 document.documentElement.style.setProperty(
     '--glic-experimental-opt-in-height', `${defaultHeight}px`);
 document.documentElement.style.setProperty(
-    '--glic-experimental-opt-in-width', `${defaultWidth}px`);
+    '--glic-experimental-opt-in-width', `${targetWidth}px`);
+document.body.style.minHeight = `${defaultHeight}px`;
+// </if>
+// <if expr="is_android">
+document.documentElement.classList.add('android');
+document.documentElement.style.setProperty(
+    '--glic-experimental-opt-in-height', '100%');
+document.documentElement.style.setProperty(
+    '--glic-experimental-opt-in-width', '100%');
+// </if>
 document.documentElement.style.setProperty(
     '--glic-transition-duration', `${TRANSITION_DURATION_MS}ms`);
 
-// Set min-height on body to prevent collapse during loading when webview is
-// hidden and skeleton is absolute.
-document.body.style.minHeight = `${defaultHeight}px`;
-
 export class ExperimentalOptInApp {
-  private webview_: chrome.webviewTag.WebView;
+  private webview_: WebViewType;
+  private dialogRoot_: HTMLElement;
   private errorPanel_: HTMLElement;
   private errorIcon_: HTMLElement;
   private errorHeadline_: HTMLElement;
@@ -57,17 +75,22 @@ export class ExperimentalOptInApp {
 
   private hasError_: boolean = false;
   private transitioned_: boolean = false;
-  private isInitialLoad_: boolean = true;
   private loadingTimeoutId_: number|null = null;
 
   constructor() {
-    this.webview_ = getRequiredElement<chrome.webviewTag.WebView>('webview');
+    this.webview_ = getRequiredElement<WebViewType>('webview');
+    // <if expr="not is_android">
     // Allow a small margin of error (±2px) around the target width to prevent
     // subpixel rounding or zoom differences from failing the webview's internal
     // size-changed checks and collapsing the layout.
-    this.webview_.setAttribute('minwidth', String(defaultWidth - 2));
-    this.webview_.setAttribute('maxwidth', String(defaultWidth + 2));
+    this.webview_.setAttribute('minwidth', String(targetWidth - 2));
+    this.webview_.setAttribute('maxwidth', String(targetWidth + 2));
+    // </if>
+    // <if expr="is_android">
+    this.webview_.removeAttribute('autosize');
+    // </if>
 
+    this.dialogRoot_ = getRequiredElement('dialogRoot');
     this.errorPanel_ = getRequiredElement('errorPanel');
     this.errorIcon_ = getRequiredElement('errorIcon');
     this.errorHeadline_ = getRequiredElement('errorHeadline');
@@ -94,6 +117,8 @@ export class ExperimentalOptInApp {
 
     this.setupEventListeners_();
 
+    this.initDialogSemantics_();
+
     if (!this.hasError_) {
       this.tryLoad_();
     }
@@ -105,13 +130,6 @@ export class ExperimentalOptInApp {
     this.webview_.addEventListener(
         'loadstop', () => this.transitionToWebview_());
 
-    window.addEventListener(
-        'message',
-        (_e: MessageEvent) => {
-            // Intentionally no-op: heading title updates are handled inside
-            // guest DOM.
-        });
-
     this.webview_.addEventListener('loadstart', () => {
       this.hasError_ = false;
       this.errorPanel_.hidden = true;
@@ -120,32 +138,41 @@ export class ExperimentalOptInApp {
       this.startWatchdog_();
     });
 
-    this.webview_.request.onBeforeRequest.addListener(
-        (details: {url: string, frameId: number}) => {
-          if (details.frameId !== 0) {
-            return {};
-          }
-          const url = URL.parse(details.url);
-          if (!url) {
-            console.error(
-                'Failed to parse URL in onBeforeRequest:', details.url);
-            return {cancel: true};
-          }
-          if (loadTimeData.getBoolean('glicDevEnabled')) {
-            return {};
-          }
-          if (url.protocol === 'http:' || url.protocol === 'https:') {
-            if (url.origin !== this.optInOrigin_) {
+    if (isFullWebView(this.webview_)) {
+      this.webview_.request.onBeforeRequest.addListener(
+          (details: {url: string, frameId: number}) => {
+            if (details.frameId !== 0) {
+              return {};
+            }
+            const url = URL.parse(details.url);
+            if (!url) {
+              console.error(
+                  'Failed to parse URL in onBeforeRequest:', details.url);
               return {cancel: true};
             }
-          }
-          return {};
-        },
-        {
-          urls: ['<all_urls>'],
-          types: ['main_frame'],
-        },
-        ['blocking']);
+            if (loadTimeData.getBoolean('glicDevEnabled')) {
+              return {};
+            }
+            if (url.protocol === 'http:' || url.protocol === 'https:') {
+              if (url.origin !== this.optInOrigin_) {
+                return {cancel: true};
+              }
+            }
+            return {};
+          },
+          {
+            urls: ['<all_urls>'],
+            types: ['main_frame'],
+          },
+          ['blocking']);
+    } else {
+      // <if expr="not enable_extensions_core">
+      const allowedOriginsParams = getAllowedOriginsParams(this.optInOrigin_);
+      if (allowedOriginsParams !== null) {
+        this.webview_.allowedOriginsParams = allowedOriginsParams;
+      }
+      // </if>
+    }
 
     this.webview_.addEventListener('contentload', () => {
       this.clearWatchdog_();
@@ -155,92 +182,7 @@ export class ExperimentalOptInApp {
       this.errorPanel_.hidden = true;
       this.webview_.classList.add('autosized');
       this.webview_.hidden = false;
-
-      if (loadTimeData.getBoolean('glicOptInDialogLinkA11yFixEnabled')) {
-        // Inject script to add aria-labels to the links for accessibility.
-        const safelyLabel = loadTimeData.getString('safelyLinkLabel');
-        const unexpectedResultsLabel =
-            loadTimeData.getString('unexpectedResultsLinkLabel');
-        const reviewRisksLabel = loadTimeData.getString('reviewRisksLinkLabel');
-
-        const code = `
-          (function() {
-            const safelyLabel = ${JSON.stringify(safelyLabel)};
-            const unexpectedResultsLabel = ${
-            JSON.stringify(unexpectedResultsLabel)};
-            const reviewRisksLabel = ${JSON.stringify(reviewRisksLabel)};
-
-            // We match against default substrings from URL feature parameters defined in
-            // chrome/common/chrome_features.cc (kGlicWebActuationToggleConsiderSafelyURL,
-            // kGlicWebActuationToggleConsiderUnexpectedResultsURL, and
-            // kGlicExperimentalTriggeringSafetyURL). If those URLs are overridden to different
-            // domains, this matching logic will need to be updated.
-            function updateLink(link) {
-              const href = link.getAttribute('href');
-              if (href) {
-                if (href.includes('use-policy')) {
-                  link.setAttribute('aria-label', safelyLabel);
-                } else if (href.includes('unexpected_results')) {
-                  link.setAttribute('aria-label', unexpectedResultsLabel);
-                } else if (href.includes('gemini_spark_safety')) {
-                  link.setAttribute('aria-label', reviewRisksLabel);
-                }
-              }
-            }
-
-            // Update existing links immediately.
-            const links = document.querySelectorAll('a');
-            for (const link of links) {
-              updateLink(link);
-            }
-
-            // Observe future changes for dynamic content.
-            const observer = new MutationObserver((mutations) => {
-              for (const mutation of mutations) {
-                if (mutation.type === 'childList') {
-                  for (const node of mutation.addedNodes) {
-                    if (node.nodeType === Node.ELEMENT_NODE) {
-                      if (node.tagName === 'A') {
-                        updateLink(node);
-                      } else {
-                        const childLinks = node.querySelectorAll('a');
-                        for (const link of childLinks) {
-                          updateLink(link);
-                        }
-                      }
-                    }
-                  }
-                } else if (
-                    mutation.type === 'attributes' &&
-                    mutation.target.tagName === 'A') {
-                  updateLink(mutation.target);
-                }
-              }
-            });
-
-            observer.observe(document.documentElement, {
-              childList: true,
-              subtree: true,
-              attributes: true,
-              attributeFilter: ['href']
-            });
-          })();
-        `;
-        this.webview_.executeScript({code}, () => {
-          if (chrome.runtime.lastError) {
-            console.warn(
-                'Failed to inject accessibility labels: ' +
-                chrome.runtime.lastError.message);
-          }
-        });
-      }
-
-      if (this.isInitialLoad_) {
-        this.isInitialLoad_ = false;
-        this.scheduleInstantHeadingChecks_();
-      } else if (loadTimeData.getBoolean('glicOptInDialogA11yFixEnabled')) {
-        this.scheduleInstantHeadingChecks_();
-      }
+      this.focusWebview_();
       handler.onWebviewLoaded();
     });
 
@@ -279,20 +221,11 @@ export class ExperimentalOptInApp {
                         const urlHash = urlObj.hash;
 
                         if (urlHash === '#continue') {
-                          if (loadTimeData.getBoolean(
-                                  'glicOptInDialogA11yFixEnabled')) {
-                            this.focusGuestHeading_();
-                          }
                           handler.accept();
                         } else if (urlHash.startsWith('#noThanks')) {
                           handler.reject();
                         }
                       }) as EventListener);
-
-    this.webview_.addEventListener(
-        'pointerdown', () => this.scheduleInstantHeadingChecks_());
-    this.webview_.addEventListener(
-        'click', () => this.scheduleInstantHeadingChecks_());
 
     this.webview_.addEventListener(
         'newwindow', (e: Event) => this.onNewWindow_(e));
@@ -323,7 +256,7 @@ export class ExperimentalOptInApp {
     this.webview_.offsetHeight;
     this.webview_.classList.add('visible');
     if (loadTimeData.getBoolean('glicOptInDialogA11yFixEnabled')) {
-      this.scheduleInstantHeadingChecks_();
+      this.focusWebview_();
     }
 
     setTimeout(() => {
@@ -334,105 +267,35 @@ export class ExperimentalOptInApp {
     }, TRANSITION_DURATION_MS);
   }
 
-  private scheduleInstantHeadingChecks_() {
-    this.focusGuestHeading_();
-  }
-
-  private focusGuestHeading_() {
+  // Applies the dialog semantics used by screen readers to announce this
+  // WebUI, and moves focus into it. The Views dialog hosting this page is a
+  // tab-modal child widget, so without an explicitly labelled dialog container
+  // in the focused document there is nothing for the screen reader to
+  // announce when the dialog opens.
+  private initDialogSemantics_() {
     if (!loadTimeData.getBoolean('glicOptInDialogA11yFixEnabled')) {
       return;
     }
-    const code = `
-      (function() {
-        function focusVisibleDialog() {
-          const selectors = 'h1, h2, h3, h4, [role="heading"], .title, .headline, .header';
-          const candidates = document.querySelectorAll(selectors);
-          for (const el of candidates) {
-            if (el.offsetWidth > 0 && el.offsetHeight > 0 && window.getComputedStyle(el).visibility !== 'hidden') {
-              const text = el.textContent ? el.textContent.trim() : '';
-              if (text && text === window.__lastHeadingText) {
-                return true;
-              }
-              let target = document.getElementById('a11y-dialog-announcer');
-              if (target && document.activeElement === target && target.getAttribute('aria-label') === text) {
-                return true;
-              }
-              if (!target) {
-                target = document.createElement('div');
-                target.id = 'a11y-dialog-announcer';
-                target.style.position = 'absolute';
-                target.style.opacity = '0';
-                target.style.pointerEvents = 'none';
-                (document.body || document.documentElement).appendChild(target);
-              }
-              target.setAttribute('role', 'dialog');
-              target.setAttribute('tabindex', '-1');
-              if (text) {
-                target.setAttribute('aria-label', text);
-              }
-              window.__lastHeadingText = text;
-              target.focus();
-              try {
-                if (text && window.parent) {
-                  window.parent.postMessage({ type: 'a11y-heading-update', title: text }, '*');
-                }
-              } catch(e) {}
-              return true;
-            }
-          }
-          return false;
-        }
+    const title = loadTimeData.getString('glicWindowTitle');
+    document.title = title;
+    this.dialogRoot_.setAttribute('role', 'dialog');
+    this.dialogRoot_.setAttribute('aria-modal', 'true');
+    this.dialogRoot_.setAttribute('aria-label', title);
+    this.dialogRoot_.setAttribute('tabindex', '-1');
+    this.dialogRoot_.focus();
+  }
 
-        focusVisibleDialog();
-
-        if (!window.__a11yObserverActive) {
-          window.__a11yObserverActive = true;
-          const observer = new MutationObserver(() => {
-            const selectors = 'h1, h2, h3, h4, [role="heading"], .title, .headline, .header';
-            const candidates = document.querySelectorAll(selectors);
-            for (const el of candidates) {
-              if (el.offsetWidth > 0 && el.offsetHeight > 0 && window.getComputedStyle(el).visibility !== 'hidden') {
-                const text = el.textContent ? el.textContent.trim() : '';
-                if (text && text !== window.__lastHeadingText) {
-                  window.__lastHeadingText = text;
-                  let target = document.getElementById('a11y-dialog-announcer');
-                  if (!target) {
-                    target = document.createElement('div');
-                    target.id = 'a11y-dialog-announcer';
-                    target.style.position = 'absolute';
-                    target.style.opacity = '0';
-                    target.style.pointerEvents = 'none';
-                    (document.body || document.documentElement).appendChild(target);
-                  }
-                  target.setAttribute('role', 'dialog');
-                  target.setAttribute('tabindex', '-1');
-                  if (text) {
-                    target.setAttribute('aria-label', text);
-                  }
-                  target.focus();
-                  try {
-                    if (text && window.parent) {
-                      window.parent.postMessage({ type: 'a11y-heading-update', title: text }, '*');
-                    }
-                  } catch(e) {}
-                }
-                break;
-              }
-            }
-          });
-          observer.observe(document.body || document.documentElement, {
-            childList: true,
-            subtree: true,
-            characterData: true,
-            attributes: true,
-          });
-        }
-      })();
-    `;
+  private focusWebview_() {
+    if (!loadTimeData.getBoolean('glicOptInDialogA11yFixEnabled')) {
+      return;
+    }
+    if (!this.webview_.checkVisibility()) {
+      return;
+    }
     try {
-      this.webview_.executeScript({code: code});
+      this.webview_.focus();
     } catch (e) {
-      console.warn('Failed executeScript:', e);
+      console.warn('[Glic Opt-in A11y] Failed to focus webview element:', e);
     }
   }
 
@@ -451,7 +314,9 @@ export class ExperimentalOptInApp {
     this.loadingTimeoutId_ = setTimeout(() => {
       if (!this.hasError_ && this.webview_.hidden === false) {
         this.hasError_ = true;
-        this.webview_.stop();
+        if (isFullWebView(this.webview_)) {
+          this.webview_.stop();
+        }
         // A timeout may be caused by general slowness or server issues, not
         // just the device being offline, but we show the same generic offline
         // error UI here.
@@ -512,7 +377,7 @@ export class ExperimentalOptInApp {
     }
 
     // Wait for cookie sync to complete before setting src
-    const { success } = await handler.syncCookies();
+    const {success} = await handler.syncCookies();
     if (!success) {
       console.error('Failed to sync cookies for glic webview');
       // If sync fails, check if it's because the user went offline during the
@@ -526,16 +391,36 @@ export class ExperimentalOptInApp {
     }
 
     if (this.webview_.getAttribute('src') === this.optInUrl_) {
-      // If the URL is already set, setting it again does nothing. Force a reload.
-      this.webview_.reload();
+      // If the URL is already set, setting it again does nothing. Force a
+      // reload.
+      if (isFullWebView(this.webview_)) {
+        this.webview_.reload();
+      } else {
+        // <if expr="not enable_extensions_core">
+        this.webview_.removeAttribute('src');
+        await this.webview_.updateComplete;
+        this.webview_.setAttribute('src', this.optInUrl_);
+        // </if>
+      }
     } else {
       this.webview_.setAttribute('src', this.optInUrl_);
     }
   }
 }
 
+// <if expr="not enable_extensions_core">
+function getAllowedOriginsParams(optInOrigin: string): OriginCheckParams|null {
+  if (loadTimeData.getBoolean('glicDevEnabled')) {
+    return null;
+  }
+  return new OriginCheckParams(['main_frame'], [optInOrigin]);
+}
+// </if>
+
 function init() {
+  // <if expr="not is_android">
   ColorChangeUpdater.forDocument().start();
+  // </if>
   new ExperimentalOptInApp();
 }
 

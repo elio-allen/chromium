@@ -9,8 +9,10 @@
 
 #include "base/memory/scoped_refptr.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "components/omnibox/browser/actions/omnibox_action.h"
 #include "components/omnibox/browser/actions/omnibox_action_concepts.h"
 #include "components/omnibox/browser/autocomplete_match.h"
@@ -18,9 +20,19 @@
 #include "components/omnibox/browser/fake_autocomplete_controller.h"
 #include "components/omnibox/browser/omnibox_popup_selection.h"
 #include "components/omnibox/browser/test_omnibox_client.h"
+#if !BUILDFLAG(IS_IOS)
+#include "components/omnibox/browser/vector_icons.h"
+#endif  // !BUILDFLAG(IS_IOS)
+#include "components/search_engines/template_url.h"
+#include "components/search_engines/template_url_data.h"
+#include "components/search_engines/template_url_service.h"
+#include "components/search_engines/template_url_starter_pack_data.h"
+#include "components/vector_icons/vector_icons.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/ui_base_features.h"
+#include "ui/gfx/vector_icon_types.h"
 #include "url/gurl.h"
 
 using ::testing::_;
@@ -51,7 +63,7 @@ class MockOmniboxAction : public OmniboxAction {
 
 TEST_F(SearchboxUtilsTest, OpenMatchNormal) {
   AutocompleteMatch match(nullptr, 1000, false,
-                          AutocompleteMatchType::URL_WHAT_YOU_TYPED);
+                          omnibox::AutocompleteMatchType::kUrlWhatYouTyped);
   match.destination_url = GURL("https://example.com");
 
   autocomplete_controller_.internal_result_.AppendMatches({match});
@@ -66,20 +78,22 @@ TEST_F(SearchboxUtilsTest, OpenMatchNormal) {
   metrics_tracker.set_time_user_first_modified_omnibox(now - base::Seconds(2));
   metrics_tracker.set_match_selection_timestamp(now);
 
-  EXPECT_CALL(client_, OnAutocompleteAccept(GURL("https://example.com"), _,
-                                            WindowOpenDisposition::CURRENT_TAB,
-                                            _, _, _, _, _, _, _, _))
+  EXPECT_CALL(client_, OnAutocompleteAccept(
+                           GURL("https://example.com"), _,
+                           ui::mojom::WindowOpenDisposition::kCurrentTab, _, _,
+                           _, _, _, _, _, _))
       .Times(1);
 
   OpenMatch(&autocomplete_controller_, &client_,
-            autocomplete_controller_.input(), OmniboxPopupSelection(0), match,
-            WindowOpenDisposition::CURRENT_TAB, metrics_tracker,
+            MakeAutocompleteSnapshot(&autocomplete_controller_),
+            OmniboxPopupSelection(0), match,
+            ui::mojom::WindowOpenDisposition::kCurrentTab, metrics_tracker,
             metrics::OmniboxEventProto::INVALID, u"");
 }
 
 TEST_F(SearchboxUtilsTest, OpenMatchWithAction) {
   AutocompleteMatch match(nullptr, 1000, false,
-                          AutocompleteMatchType::SEARCH_SUGGEST);
+                          omnibox::AutocompleteMatchType::kSearchSuggest);
   match.destination_url = GURL("https://example.com");
   scoped_refptr<MockOmniboxAction> action =
       base::MakeRefCounted<MockOmniboxAction>(GURL("chrome://settings"));
@@ -102,12 +116,12 @@ TEST_F(SearchboxUtilsTest, OpenMatchWithAction) {
   EXPECT_CALL(*action, Execute(_)).Times(1);
 
   OmniboxPopupSelection selection(
-      0, OmniboxPopupSelection::FOCUSED_BUTTON_ACTION, 0);
+      0, OmniboxPopupSelection::LineState::kFocusedButtonAction, 0);
 
   OpenMatch(&autocomplete_controller_, &client_,
-            autocomplete_controller_.input(), selection, match,
-            WindowOpenDisposition::CURRENT_TAB, metrics_tracker,
-            metrics::OmniboxEventProto::INVALID, u"");
+            MakeAutocompleteSnapshot(&autocomplete_controller_), selection,
+            match, ui::mojom::WindowOpenDisposition::kCurrentTab,
+            metrics_tracker, metrics::OmniboxEventProto::INVALID, u"");
 }
 
 TEST_F(SearchboxUtilsTest, ComputeOpenDispositionFromModifiers) {
@@ -116,28 +130,40 @@ TEST_F(SearchboxUtilsTest, ComputeOpenDispositionFromModifiers) {
     bool control;
     bool alt;
     bool command;
-    WindowOpenDisposition expected_disposition;
+    ui::mojom::WindowOpenDisposition expected_disposition;
     int expected_metric_value;
   } test_cases[] = {
       // {shift, control, alt, command, expected_disposition,
       // expected_metric_value}
-      {false, false, false, false, WindowOpenDisposition::CURRENT_TAB, 0},
-      {false, true, false, false, WindowOpenDisposition::CURRENT_TAB, 1},
-      {false, false, true, false, WindowOpenDisposition::NEW_FOREGROUND_TAB, 2},
-      {false, true, true, false, WindowOpenDisposition::NEW_FOREGROUND_TAB, 3},
-      {true, false, false, true, WindowOpenDisposition::NEW_FOREGROUND_TAB, 4},
-      {true, true, false, true, WindowOpenDisposition::NEW_FOREGROUND_TAB, 5},
-      {true, false, true, false, WindowOpenDisposition::NEW_BACKGROUND_TAB, 6},
-      {true, true, true, false, WindowOpenDisposition::NEW_BACKGROUND_TAB, 7},
-      {false, false, false, true, WindowOpenDisposition::NEW_BACKGROUND_TAB, 8},
-      {false, true, false, true, WindowOpenDisposition::NEW_BACKGROUND_TAB, 9},
-      {true, false, false, false, WindowOpenDisposition::NEW_WINDOW, 10},
-      {true, true, false, false, WindowOpenDisposition::NEW_WINDOW, 11},
+      {false, false, false, false,
+       ui::mojom::WindowOpenDisposition::kCurrentTab, 0},
+      {false, true, false, false, ui::mojom::WindowOpenDisposition::kCurrentTab,
+       1},
+      {false, false, true, false,
+       ui::mojom::WindowOpenDisposition::kNewForegroundTab, 2},
+      {false, true, true, false,
+       ui::mojom::WindowOpenDisposition::kNewForegroundTab, 3},
+      {true, false, false, true,
+       ui::mojom::WindowOpenDisposition::kNewForegroundTab, 4},
+      {true, true, false, true,
+       ui::mojom::WindowOpenDisposition::kNewForegroundTab, 5},
+      {true, false, true, false,
+       ui::mojom::WindowOpenDisposition::kNewBackgroundTab, 6},
+      {true, true, true, false,
+       ui::mojom::WindowOpenDisposition::kNewBackgroundTab, 7},
+      {false, false, false, true,
+       ui::mojom::WindowOpenDisposition::kNewBackgroundTab, 8},
+      {false, true, false, true,
+       ui::mojom::WindowOpenDisposition::kNewBackgroundTab, 9},
+      {true, false, false, false, ui::mojom::WindowOpenDisposition::kNewWindow,
+       10},
+      {true, true, false, false, ui::mojom::WindowOpenDisposition::kNewWindow,
+       11},
   };
 
   for (const auto& test_case : test_cases) {
     base::HistogramTester histogram_tester;
-    WindowOpenDisposition disposition =
+    ui::mojom::WindowOpenDisposition disposition =
         ComputeOpenDispositionFromModifiersAndLogToUma(
             test_case.shift, test_case.control, test_case.alt,
             test_case.command);
@@ -147,6 +173,28 @@ TEST_F(SearchboxUtilsTest, ComputeOpenDispositionFromModifiers) {
         "Omnibox.OpenMatchWithKeyboardModifiers",
         test_case.expected_metric_value, 1);
   }
+}
+
+TEST_F(SearchboxUtilsTest, ClassifyStringUrl) {
+  AutocompleteMatch match;
+  GURL alternate_nav_url;
+  ClassifyString(&client_, u"https://example.com", /*in_keyword_mode=*/false,
+                 /*allow_exact_keyword_match=*/true, &match,
+                 &alternate_nav_url);
+  EXPECT_TRUE(match.destination_url.is_valid());
+  EXPECT_EQ(omnibox::AutocompleteMatchType::kUrlWhatYouTyped, match.type);
+  EXPECT_EQ(GURL("https://example.com/"), match.destination_url);
+}
+
+TEST_F(SearchboxUtilsTest, ClassifyStringSearchQuery) {
+  AutocompleteMatch match;
+  GURL alternate_nav_url;
+  ClassifyString(&client_, u"test search query", /*in_keyword_mode=*/false,
+                 /*allow_exact_keyword_match=*/true, &match,
+                 &alternate_nav_url);
+  EXPECT_TRUE(match.destination_url.is_valid());
+  EXPECT_TRUE(AutocompleteMatch::IsSearchType(match.type));
+  EXPECT_EQ(omnibox::AutocompleteMatchType::kSearchWhatYouTyped, match.type);
 }
 
 TEST_F(SearchboxUtilsTest, CanPasteAndGo) {
@@ -175,8 +223,9 @@ TEST_F(SearchboxUtilsTest, FocusChanged) {
 
   tracker.FocusChanged(false);
   EXPECT_TRUE(tracker.last_omnibox_focus().is_null());
-  histogram_tester.ExpectUniqueSample("Omnibox.FocusResultedInNavigation", true,
-                                      1);
+  histogram_tester.ExpectUniqueSample(
+      "Omnibox.FocusResultedInNavigation",
+      FocusResultedInNavigationType::kNavigationNoAttachments, 1);
 }
 
 TEST_F(SearchboxUtilsTest, GenerateDotComMatch) {
@@ -195,9 +244,93 @@ TEST_F(SearchboxUtilsTest, GenerateDotComMatch) {
   EXPECT_TRUE(generated_input.prevent_inline_autocomplete());
   EXPECT_TRUE(generated_input.allow_exact_keyword_match());
 
-  EXPECT_EQ(AutocompleteMatchType::URL_WHAT_YOU_TYPED, match.type);
+  EXPECT_EQ(omnibox::AutocompleteMatchType::kUrlWhatYouTyped, match.type);
   EXPECT_TRUE(match.destination_url.is_valid());
   EXPECT_EQ(GURL("http://www.example.com/"), match.destination_url);
 }
+
+TEST_F(SearchboxUtilsTest, GetKeywordLabelNames) {
+  TemplateURLService* turl_service = client_.GetTemplateURLService();
+  TemplateURLData data;
+  data.SetShortName(u"example");
+  data.SetKeyword(u"example");
+  data.SetURL("https://example.com/search?q={searchTerms}");
+  turl_service->Add(std::make_unique<TemplateURL>(data));
+
+  KeywordLabelNames names = GetKeywordLabelNames(u"example", turl_service);
+  EXPECT_EQ(u"example", names.short_name);
+  EXPECT_FALSE(names.full_name.empty());
+
+  KeywordLabelNames empty_names = GetKeywordLabelNames(u"example", nullptr);
+  EXPECT_TRUE(empty_names.short_name.empty());
+  EXPECT_TRUE(empty_names.full_name.empty());
+}
+
+#if !BUILDFLAG(IS_IOS)
+TEST_F(SearchboxUtilsTest, GetKeywordVectorIcon) {
+  TemplateURLData gemini_data;
+  gemini_data.starter_pack_id =
+      static_cast<int>(template_url_starter_pack_data::StarterPackId::kGemini);
+  TemplateURL gemini_turl(gemini_data);
+  EXPECT_EQ(omnibox::kSparkIcon.name, GetKeywordVectorIcon(gemini_turl).name);
+
+  TemplateURLData aimode_data;
+  aimode_data.starter_pack_id =
+      static_cast<int>(template_url_starter_pack_data::StarterPackId::kAiMode);
+  TemplateURL aimode_turl(aimode_data);
+
+  TemplateURLData bookmarks_data;
+  bookmarks_data.starter_pack_id = static_cast<int>(
+      template_url_starter_pack_data::StarterPackId::kBookmarks);
+  TemplateURL bookmarks_turl(bookmarks_data);
+
+  TemplateURLData history_data;
+  history_data.starter_pack_id =
+      static_cast<int>(template_url_starter_pack_data::StarterPackId::kHistory);
+  TemplateURL history_turl(history_data);
+
+  TemplateURLData tabs_data;
+  tabs_data.starter_pack_id =
+      static_cast<int>(template_url_starter_pack_data::StarterPackId::kTabs);
+  TemplateURL tabs_turl(tabs_data);
+
+  TemplateURLData regular_data;
+  regular_data.SetShortName(u"example");
+  regular_data.SetKeyword(u"example");
+  TemplateURL regular_turl(regular_data);
+
+  // When rounded icons are enabled:
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeature(features::kRoundedIcons);
+    EXPECT_EQ(omnibox::kSearchSparkIcon.name,
+              GetKeywordVectorIcon(aimode_turl).name);
+    EXPECT_EQ(omnibox::kStarFilledIcon.name,
+              GetKeywordVectorIcon(bookmarks_turl).name);
+    EXPECT_EQ(vector_icons::kHistoryIcon.name,
+              GetKeywordVectorIcon(history_turl).name);
+    EXPECT_EQ(omnibox::kChromeProductIcon.name,
+              GetKeywordVectorIcon(tabs_turl).name);
+    EXPECT_EQ(vector_icons::kSearchIcon.name,
+              GetKeywordVectorIcon(regular_turl).name);
+  }
+
+  // When rounded icons are disabled:
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(features::kRoundedIcons);
+    EXPECT_EQ(omnibox::kSearchSparkOldIcon.name,
+              GetKeywordVectorIcon(aimode_turl).name);
+    EXPECT_EQ(omnibox::kStarActiveChromeRefreshOldIcon.name,
+              GetKeywordVectorIcon(bookmarks_turl).name);
+    EXPECT_EQ(vector_icons::kHistoryChromeRefreshOldIcon.name,
+              GetKeywordVectorIcon(history_turl).name);
+    EXPECT_EQ(omnibox::kProductChromeRefreshOldIcon.name,
+              GetKeywordVectorIcon(tabs_turl).name);
+    EXPECT_EQ(vector_icons::kSearchChromeRefreshOldIcon.name,
+              GetKeywordVectorIcon(regular_turl).name);
+  }
+}
+#endif  // !BUILDFLAG(IS_IOS)
 
 }  // namespace searchbox

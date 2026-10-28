@@ -25,13 +25,12 @@
 #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
 #include "third_party/blink/renderer/platform/scheduler/public/worker_pool.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_skia.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/base64.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
+#include "third_party/skia/include/core/SkBitmap.h"
+#include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkSurface.h"
 #include "third_party/skia/include/encode/SkPngRustEncoder.h"
 
@@ -182,6 +181,22 @@ CanvasAsyncBlobCreator::CanvasAsyncBlobCreator(
     skia_image_ = image_->PaintImageForCurrentFrame().GetSwSkImage();
     CHECK(skia_image_);
     CHECK(!skia_image_->isTextureBacked());
+
+    const SkColorInfo target_color_info =
+        ImageEncoderUtils::GetColorInfoForEncoder(
+            skia_image_->imageInfo().colorInfo(), image_->GetHdrMetadata());
+    // It is more efficient to do alpha un-multiplication inside the decoder.
+    // https://crbug.com/557350372
+    if (target_color_info.makeAlphaType(skia_image_->imageInfo().alphaType()) !=
+        skia_image_->imageInfo().colorInfo()) {
+      SkBitmap bitmap;
+      if (bitmap.tryAllocPixels(SkImageInfo::Make(skia_image_->dimensions(),
+                                                  target_color_info)) &&
+          skia_image_->readPixels(bitmap.pixmap(), 0, 0)) {
+        bitmap.setImmutable();
+        skia_image_ = bitmap.asImage();
+      }
+    }
 
     // If image is lazy decoded, call readPixels() to trigger decoding.
     if (skia_image_->isLazyGenerated()) {

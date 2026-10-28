@@ -6,13 +6,15 @@
 
 #include <optional>
 
+#include "base/functional/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notimplemented.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/singleton_tabs.h"
@@ -78,15 +80,24 @@ bool PasskeyUnlockManager::ShouldDisplayErrorUi() const {
   return should_display_error_ui_;
 }
 
+void PasskeyUnlockManager::OnPasskeyUnlockStateChanged() {
+#if BUILDFLAG(IS_MAC)
+  MaybeStartICloudRecovery();
+#endif  // BUILDFLAG(IS_MAC)
+  ComputeShouldDisplayErrorUiAndNotifyObservers();
+}
+
 void PasskeyUnlockManager::ComputeShouldDisplayErrorUiAndNotifyObservers() {
   bool previous_value = should_display_error_ui_;
   // Compute the new value of `should_display_error_ui_`.
   std::optional<bool> passkeys_are_locked = ArePasskeysLocked();
   std::optional<bool> passkeys_are_unlockable = ArePasskeysUnlockable();
   if (!passkeys_are_locked.has_value() ||
-      !passkeys_are_unlockable.has_value()) {
+      !passkeys_are_unlockable.has_value() ||
+      IsOpportunisticRecoveryOnStartupUnfinished()) {
     // If we don't have sufficient information to decide whether passkeys are
-    // locked and unlockable, we don't want to display the error UI.
+    // locked and unlockable, or if iCloud Keychain recovery has not been
+    // attempted yet or is in progress, we don't want to display the error UI.
     should_display_error_ui_ = false;
   } else {
     should_display_error_ui_ =
@@ -105,7 +116,7 @@ void PasskeyUnlockManager::NotifyObservers() {
 }
 
 void PasskeyUnlockManager::OpenTabWithPasskeyUnlockChallenge(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     trusted_vault::TrustedVaultUserActionTriggerForUMA trigger) {
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(browser->GetProfile());
@@ -229,7 +240,7 @@ void PasskeyUnlockManager::OnHaveGpmPinAvailability(
     EnclaveManager::GpmPinAvailability gpm_pin_availability) {
   has_gpm_pin_ = gpm_pin_availability ==
                  EnclaveManager::GpmPinAvailability::kGpmPinSetAndUsable;
-  ComputeShouldDisplayErrorUiAndNotifyObservers();
+  OnPasskeyUnlockStateChanged();
   MaybeRecordDelayedGpmPinStatusHistogram(gpm_pin_availability);
 }
 
@@ -240,8 +251,39 @@ void PasskeyUnlockManager::AsynchronouslyCheckSystemUVAvailability() {
 }
 void PasskeyUnlockManager::OnHaveSystemUVAvailability(bool has_system_uv) {
   has_system_uv_ = has_system_uv;
+  OnPasskeyUnlockStateChanged();
+}
+
+bool PasskeyUnlockManager::IsOpportunisticRecoveryOnStartupUnfinished() const {
+#if BUILDFLAG(IS_MAC)
+  return base::FeatureList::IsEnabled(device::kPasskeyUnlockICloudRecovery) &&
+         icloud_recovery_state_ != ICloudRecoveryState::kDone;
+#else
+  return false;
+#endif  // BUILDFLAG(IS_MAC)
+}
+
+#if BUILDFLAG(IS_MAC)
+void PasskeyUnlockManager::MaybeStartICloudRecovery() {
+  if (icloud_recovery_state_ != ICloudRecoveryState::kNotStarted ||
+      !base::FeatureList::IsEnabled(device::kPasskeyUnlockICloudRecovery) ||
+      !ArePasskeysLocked().value_or(false)) {
+    return;
+  }
+  icloud_recovery_state_ = ICloudRecoveryState::kInProgress;
+  // TODO(crbug.com/470327407): Share a single security domain download between
+  // the GPM PIN check and iCloud Keychain recovery.
+  enclave_manager()->RecoverWithICloudKeychain(base::IgnoreArgs<bool>(
+      base::BindOnce(&PasskeyUnlockManager::OnICloudRecoveryComplete,
+                     weak_ptr_factory_.GetWeakPtr())));
+}
+
+void PasskeyUnlockManager::OnICloudRecoveryComplete() {
+  icloud_recovery_state_ = ICloudRecoveryState::kDone;
+  enclave_ready_ = enclave_manager()->IsReady();
   ComputeShouldDisplayErrorUiAndNotifyObservers();
 }
+#endif  // BUILDFLAG(IS_MAC)
 
 std::optional<bool> PasskeyUnlockManager::ArePasskeysLocked() const {
   if (!has_passkeys_.has_value()) {
@@ -273,28 +315,28 @@ void PasskeyUnlockManager::Shutdown() {
 
 void PasskeyUnlockManager::OnStateUpdated() {
   enclave_ready_ = enclave_manager()->IsReady();
-  ComputeShouldDisplayErrorUiAndNotifyObservers();
+  OnPasskeyUnlockStateChanged();
   MaybeRecordDelayedPasskeyReadinessHistogram();
 }
 
 void PasskeyUnlockManager::OnPasskeysChanged(
     const std::vector<webauthn::PasskeyModelChange>& changes) {
   UpdateHasPasskeys();
-  ComputeShouldDisplayErrorUiAndNotifyObservers();
+  OnPasskeyUnlockStateChanged();
 }
 
 void PasskeyUnlockManager::OnPasskeyModelShuttingDown() {}
 
 void PasskeyUnlockManager::OnPasskeyModelIsReady(bool is_ready) {
   UpdateHasPasskeys();
-  ComputeShouldDisplayErrorUiAndNotifyObservers();
+  OnPasskeyUnlockStateChanged();
   // If the passkey model wasn't ready on startup, record the histogram now.
   MaybeRecordDelayedPasskeyCountHistogram();
 }
 
 void PasskeyUnlockManager::OnStateChanged(syncer::SyncService* sync) {
   UpdateSyncState();
-  ComputeShouldDisplayErrorUiAndNotifyObservers();
+  OnPasskeyUnlockStateChanged();
   MaybeRecordDelayedPasswordReadinessHistogram();
 }
 
@@ -381,8 +423,6 @@ void PasskeyUnlockManager::MaybeRecordDelayedPasswordReadinessHistogram() {
           syncer::UserSelectableType::kPasswords)) {
     return;
   }
-  // Ensure that we will not try to record the metric again.
-  password_readiness_recorded_on_startup_ = true;
   // The metric should only be recorded for users with the trusted vault
   // passphrase. For users with a different passphrase type on startup we don't
   // record this metric.
@@ -392,6 +432,18 @@ void PasskeyUnlockManager::MaybeRecordDelayedPasswordReadinessHistogram() {
       syncer::PassphraseType::kTrustedVaultPassphrase) {
     return;
   }
+  if (!user_settings->IsTrustedVaultKeyRequiredForPreferredDataTypes() &&
+      !sync_service()->GetActiveDataTypes().Has(syncer::PASSWORDS)) {
+    // When Sync starts up, it asynchronously checks whether trusted vault keys
+    // are available locally. While this check is in flight,
+    // `IsTrustedVaultKeyRequiredForPreferredDataTypes()` temporarily returns
+    // false and `syncer::PASSWORDS` is not active yet. In this case we should
+    // not publish the password readiness metric yet.
+    return;
+  }
+  // Ensure that we will not try to record the metric again.
+  password_readiness_recorded_on_startup_ = true;
+
   bool password_readiness =
       !user_settings->IsTrustedVaultKeyRequiredForPreferredDataTypes();
   base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(

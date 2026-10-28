@@ -19,6 +19,10 @@
 class Profile;
 class BrowserWindowInterface;
 
+namespace components_sharing_message {
+class GlicExperimentalTriggering;
+}  // namespace components_sharing_message
+
 namespace tabs {
 class TabInterface;
 }  // namespace tabs
@@ -39,6 +43,15 @@ class GlicExperimentalTriggeringCoordinator {
       const GlicExperimentalTriggeringCoordinator&) = delete;
   virtual ~GlicExperimentalTriggeringCoordinator();
 
+  // Validates, logs, and processes an incoming raw protobuf triggering
+  // message, returning the domain response (success or error).
+  std::optional<ExperimentalTriggeringResponse> OnProtoMessage(
+      const std::string& context_id,
+      const components_sharing_message::GlicExperimentalTriggering& proto,
+      ScopedIncomingMessageResultLogger result_logger,
+      GlicExperimentalTriggeringUpdateCallback update_callback,
+      tabs::TabInterface* prepared_tab = nullptr);
+
   // Handles an incoming domain request for experimental triggering.
   // `result_logger` carries the responsibility for recording the
   // Glic.ExperimentalTriggering.IncomingMessageResult histogram; the
@@ -54,16 +67,27 @@ class GlicExperimentalTriggeringCoordinator {
     return context_id_to_updates_handler_map_.size();
   }
 
+  base::WeakPtr<GlicExperimentalTriggeringCoordinator> GetWeakPtr() {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
+
  protected:
   // Virtual for testing/delegation purposes to allow querying or overriding
-  // active tab/window.
+  // active tab/window or background state.
   virtual BrowserWindowInterface* GetBrowserWindow() const;
   virtual tabs::TabInterface* GetActiveTab() const;
+  virtual bool IsChromeInBackground() const;
 
  private:
   friend class ExperimentalTriggeringUpdatesHandler;
 
-  void OnUpdatesHandlerCleanup(std::string_view context_id);
+  void OnUpdatesHandlerCleanup(const std::string& context_id);
+
+  // Returns true if an active updates handler exists for `context_id`.
+  bool HasUpdatesHandler(std::string_view context_id) const {
+    return context_id_to_updates_handler_map_.find(context_id) !=
+           context_id_to_updates_handler_map_.end();
+  }
 
   const raw_ptr<Profile> profile_;
   std::map<std::string,

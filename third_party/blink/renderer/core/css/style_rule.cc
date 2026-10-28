@@ -49,6 +49,7 @@
 #include "third_party/blink/renderer/core/css/css_nested_declarations_rule.h"
 #include "third_party/blink/renderer/core/css/css_page_rule.h"
 #include "third_party/blink/renderer/core/css/css_position_try_rule.h"
+#include "third_party/blink/renderer/core/css/css_private_rule.h"
 #include "third_party/blink/renderer/core/css/css_property_rule.h"
 #include "third_party/blink/renderer/core/css/css_result_rule.h"
 #include "third_party/blink/renderer/core/css/css_scope_rule.h"
@@ -212,6 +213,9 @@ void StyleRuleBase::Trace(Visitor* visitor) const {
     case kCustomMedia:
       To<StyleRuleCustomMedia>(this)->TraceAfterDispatch(visitor);
       return;
+    case kPrivate:
+      To<StyleRule>(this)->TraceAfterDispatch(visitor);
+      return;
   }
   DUMP_WILL_BE_NOTREACHED();
 }
@@ -316,6 +320,9 @@ void StyleRuleBase::FinalizeGarbageCollectedObject() {
       return;
     case kCustomMedia:
       To<StyleRuleCustomMedia>(this)->~StyleRuleCustomMedia();
+      return;
+    case kPrivate:
+      To<StyleRule>(this)->~StyleRule();
       return;
   }
   NOTREACHED();
@@ -444,6 +451,13 @@ CSSRule* StyleRuleBase::CreateCSSOMWrapper(wtf_size_t position_hint,
       rule = MakeGarbageCollected<CSSResultRule>(To<StyleRuleResult>(self),
                                                  parent_sheet);
       break;
+    case kPrivate: {
+      DCHECK(parent_rule);
+      CSSStyleSheet* containing_sheet = parent_rule->parentStyleSheet();
+      rule = MakeGarbageCollected<CSSPrivateRule>(To<StyleRule>(self),
+                                                  containing_sheet);
+      break;
+    }
     case kApplyMixin:
       rule = MakeGarbageCollected<CSSApplyMixinRule>(
           To<StyleRuleApplyMixin>(self), parent_sheet);
@@ -480,8 +494,12 @@ StyleRule::StyleRule(base::PassKey<StyleRule>,
 
 StyleRule::StyleRule(base::PassKey<StyleRule>,
                      base::span<CSSSelector> selector_vector,
-                     CSSLazyPropertyParser* lazy_property_parser)
-    : StyleRuleBase(kStyle), lazy_property_parser_(lazy_property_parser) {
+                     CSSLazyParsingState* lazy_state,
+                     wtf_size_t lazy_offset)
+    : StyleRuleBase(kStyle),
+      lazy_state_(lazy_state),
+      lazy_offset_(lazy_offset) {
+  DCHECK(lazy_state);
   CSSSelectorList::AdoptSelectorVector(selector_vector, SelectorArray());
 }
 
@@ -496,20 +514,28 @@ StyleRule::StyleRule(base::PassKey<StyleRule>,
                      StyleRule&& other)
     : StyleRuleBase(kStyle),
       properties_(other.properties_),
-      lazy_property_parser_(other.lazy_property_parser_),
-      child_rules_(std::move(other.child_rules_)) {
+      lazy_state_(other.lazy_state_),
+      child_rules_(std::move(other.child_rules_)),
+      lazy_offset_(other.lazy_offset_) {
   CSSSelectorList::AdoptSelectorVector(selector_vector, SelectorArray());
 }
 
+StyleRule::StyleRule(base::PassKey<StyleRule>, CSSPropertyValueSet* properties)
+    : StyleRuleBase(kPrivate), properties_(properties) {}
+
 const CSSPropertyValueSet& StyleRule::Properties() const {
   if (!properties_) {
-    properties_ = lazy_property_parser_->ParseProperties();
-    lazy_property_parser_.Clear();
+    properties_ = CSSParserImpl::ParseDeclarationListForLazyStyle(
+        lazy_state_->SheetText(), lazy_offset_, lazy_state_->Context());
+    lazy_state_.Clear();
   }
   return *properties_;
 }
 
 StyleRule::~StyleRule() {
+  if (IsPrivateRule()) {
+    return;
+  }
   // Clean up any RareData that the selectors may be owning.
   CSSSelector* selector = SelectorArray();
   for (;;) {
@@ -557,27 +583,30 @@ void StyleRule::WrapperRemoveRule(CSSStyleSheet* parent_sheet, unsigned index) {
   child_rules_->erase(UNSAFE_BUFFERS(child_rules_->begin() + index));
 }
 
-bool StyleRule::PropertiesHaveFailedOrCanceledSubresources() const {
-  return properties_ && properties_->HasFailedOrCanceledSubresources();
+bool StyleRule::PropertiesHaveFailedOrCanceledSubresources(
+    ResourceFetcher* fetcher) const {
+  return properties_ && properties_->HasFailedOrCanceledSubresources(fetcher);
 }
 
 bool StyleRule::HasParsedProperties() const {
-  // StyleRule should only have one of {lazy_property_parser_, properties_} set.
-  DCHECK(lazy_property_parser_ || properties_);
-  DCHECK(!lazy_property_parser_ || !properties_);
-  return !lazy_property_parser_;
+  // StyleRule should only have one of {lazy_state_, properties_} set.
+  DCHECK(lazy_state_ || properties_);
+  DCHECK(!lazy_state_ || !properties_);
+  return !lazy_state_;
 }
 
 void StyleRule::TraceAfterDispatch(blink::Visitor* visitor) const {
   visitor->Trace(properties_);
-  visitor->Trace(lazy_property_parser_);
+  visitor->Trace(lazy_state_);
   visitor->Trace(child_rules_);
   visitor->Trace(mixin_parameter_bindings_);
 
-  const CSSSelector* current = SelectorArray();
-  do {
-    visitor->Trace(*current);
-  } while (!(UNSAFE_BUFFERS(current++))->IsLastInSelectorListForOilpan());
+  if (!IsPrivateRule()) {
+    const CSSSelector* current = SelectorArray();
+    do {
+      visitor->Trace(*current);
+    } while (!(UNSAFE_BUFFERS(current++))->IsLastInSelectorListForOilpan());
+  }
 
   StyleRuleBase::TraceAfterDispatch(visitor);
 }
@@ -797,6 +826,19 @@ StyleRuleBase* StyleRuleBase::Clone(
     case kCustomMedia:
       return MakeGarbageCollected<StyleRuleCustomMedia>(
           To<StyleRuleCustomMedia>(*this));
+    case kPrivate: {
+      auto* private_rule = To<StyleRule>(this);
+      auto* new_rule = StyleRule::CreatePrivateRule(
+          private_rule->Properties().ImmutableCopyIfNeeded());
+      if (GCedHeapVector<Member<StyleRuleBase>>* child_rules =
+              private_rule->ChildRules()) {
+        for (StyleRuleBase* child_rule : *child_rules) {
+          new_rule->AddChildRule(
+              child_rule->Clone(new_parent, mixin_parameter_bindings));
+        }
+      }
+      return new_rule;
+    }
   }
 }
 
@@ -1233,8 +1275,8 @@ void StyleRuleCustomMedia::TraceAfterDispatch(blink::Visitor* visitor) const {
   visitor->Trace(media_query_value_);
 }
 
-unsigned MixinParameterBindings::ComputeHash() const {
-  unsigned hash = parent_mixin_ ? parent_mixin_->GetHash() : 1234;
+uint32_t MixinParameterBindings::ComputeHash() const {
+  uint32_t hash = parent_mixin_ ? parent_mixin_->GetHash() : 1234;
   for (const auto& [key, value] : bindings_) {
     hash = HashInts(hash, HashInts(key.Impl()->GetHash(),
                                    value.value ? value.value->Hash() : 5678));

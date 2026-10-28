@@ -231,7 +231,11 @@ inline LayoutStateScenePassKey PassKey() {
 #pragma mark - UIResponder
 
 - (BOOL)canBecomeFirstResponder {
-  return YES;
+  // Only claim first responder when Tab Grid or App Bar has key commands to
+  // handle. When browser layout is active, child view controllers (e.g. BVC)
+  // handle keyboard input.
+  return _tabGridViewController.keyCommands.count > 0 ||
+         _appBar.keyCommands.count > 0;
 }
 
 - (NSArray<UIKeyCommand*>*)keyCommands {
@@ -621,6 +625,9 @@ inline LayoutStateScenePassKey PassKey() {
 // Updates the layout of the scene views depending on the active layout strategy
 // (Constraints vs. Frames).
 - (void)updateLayoutForViews {
+  if (!self.isViewLoaded || !self.view.window) {
+    return;
+  }
   AppBarPosition position = self.layoutState.appBarPosition;
   _appBar.view.hidden = (position == AppBarPosition::kNone);
   if (IsFullscreenRefactoringEnabled()) {
@@ -632,8 +639,6 @@ inline LayoutStateScenePassKey PassKey() {
 
 // Applies Auto Layout constraints to views.
 - (void)applyConstraintsForLayoutWithPosition:(AppBarPosition)position {
-  UIView* view = self.view;
-
   // Ensure default constraints are active to avoid leaving the view
   // unconstrained if `_appBar` is hidden or missing.
   if (position == AppBarPosition::kNone || !_appBar) {
@@ -641,10 +646,7 @@ inline LayoutStateScenePassKey PassKey() {
       [self setupDefaultConstraints];
       [NSLayoutConstraint activateConstraints:_baseAssistantConstraints];
     }
-    return;
   }
-
-  [view layoutIfNeeded];
 }
 
 // Applies manual frames to views by combining insets from App Bar and Side
@@ -686,8 +688,7 @@ inline LayoutStateScenePassKey PassKey() {
       break;
 
     case AppBarPosition::kBottom: {
-      CGFloat minHeight =
-          IsAppBarHiddenInFullscreen() ? 0 : kAppBarHeightFullscreen;
+      CGFloat minHeight = 0;
       CGFloat portraitHeight = CurrentAppBarHeightPortrait(
           self.layoutState.geminiFloatyInvoked,
           self.layoutState.assistantContainerInvoked);

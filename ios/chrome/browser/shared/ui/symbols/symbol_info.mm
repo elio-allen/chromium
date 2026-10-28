@@ -25,8 +25,8 @@ SymbolInfo InfoForSymbol(Symbol symbol) {
       return {@"google_drive", SymbolType::kCustom};
     case SymbolGoogleFull:
       return {@"google_full", SymbolType::kCustom};
-    case SymbolGoogleIcon:
-      return {@"google_icon", SymbolType::kCustom};
+    case SymbolGoogleIconMonochrome:
+      return {@"google_icon_monochrome", SymbolType::kCustom};
     case SymbolGoogleMaps:
       return {@"google_maps", SymbolType::kCustom};
     case SymbolGooglePay:
@@ -59,12 +59,16 @@ SymbolInfo InfoForSymbol(Symbol symbol) {
 #endif  // BUILDFLAG(IOS_USE_BRANDED_ASSETS)
 
       // Custom symbols.
+    case SymbolAcute:
+      return {@"acute_icon", SymbolType::kCustom};
     case SymbolAirplaneUp:
       return {@"airplane_up", SymbolType::kCustom};
     case SymbolAirplaneUpSpark:
       return {@"airplane_up_spark", SymbolType::kCustom};
     case SymbolArrowClockWise:
       return {@"arrow_clockwise", SymbolType::kCustom};
+    case SymbolArrowshapeUpSlash:
+      return {@"arrowshape_up_slash", SymbolType::kCustom};
     case SymbolBagSpark:
       return {@"bag_spark", SymbolType::kCustom};
     case SymbolBottomOmniboxOption:
@@ -75,6 +79,8 @@ SymbolInfo InfoForSymbol(Symbol symbol) {
       return {@"custom_camera_fill", SymbolType::kCustom};
     case SymbolCameraLens:
       return {@"camera_lens", SymbolType::kCustom};
+    case SymbolCameraSlash:
+      return {@"camera_slash", SymbolType::kCustom};
     case SymbolCarSpark:
       return {@"car_spark", SymbolType::kCustom};
     case SymbolChromeProduct:
@@ -83,6 +89,10 @@ SymbolInfo InfoForSymbol(Symbol symbol) {
       return {@"cloud_and_arrow_up", SymbolType::kCustom};
     case SymbolCloudSlash:
       return {@"cloud_slash", SymbolType::kCustom};
+    case SymbolCreditCardSpark:
+      return {@"creditcard_spark", SymbolType::kCustom};
+    case SymbolCustomShield:
+      return {@"shield", SymbolType::kCustom};
     case SymbolDangerousOmnibox:
       return {@"dangerous_omnibox", SymbolType::kCustom};
     case SymbolDeepSearch:
@@ -97,10 +107,10 @@ SymbolInfo InfoForSymbol(Symbol symbol) {
       return {@"ellipsis_square_fill", SymbolType::kCustom};
     case SymbolEnterprise:
       return {@"enterprise", SymbolType::kCustom};
-    case SymbolEnterpriseSigninBanner:
-      return {@"enterprise_signin_banner", SymbolType::kCustom};
     case SymbolFamilylink:
       return {@"familylink", SymbolType::kCustom};
+    case SymbolImageCreate:
+      return {@"image_create", SymbolType::kCustom};
     case SymbolIncognito:
       return {@"incognito", SymbolType::kCustom};
     case SymbolIncognitoCircleFill:
@@ -161,8 +171,6 @@ SymbolInfo InfoForSymbol(Symbol symbol) {
       return {@"checkermark_shield", SymbolType::kCustom};
     case SymbolSharedDrives:
       return {@"shared_drives", SymbolType::kCustom};
-    case SymbolShield:
-      return {@"shield", SymbolType::kCustom};
     case SymbolSquareNumber:
       return {@"square_number", SymbolType::kCustom};
     case SymbolTextAnalysis:
@@ -353,6 +361,8 @@ SymbolInfo InfoForSymbol(Symbol symbol) {
       return {@"pencil", SymbolType::kSystem};
     case SymbolEllipsis:
       return {@"ellipsis", SymbolType::kSystem};
+    case SymbolEllipsisCircle:
+      return {@"ellipsis.circle", SymbolType::kSystem};
     case SymbolEllipsisCircleFill:
       return {@"ellipsis.circle.fill", SymbolType::kSystem};
     case SymbolEllipsisRectangle:
@@ -437,6 +447,8 @@ SymbolInfo InfoForSymbol(Symbol symbol) {
       return {@"list.bullet.clipboard", SymbolType::kSystem};
     case SymbolListBulletRectangle:
       return {@"list.bullet.rectangle.portrait", SymbolType::kSystem};
+    case SymbolLocationSlash:
+      return {@"location.slash", SymbolType::kSystem};
     case SymbolLock:
       return {@"lock", SymbolType::kSystem};
     case SymbolMacbookAndIPhone:
@@ -465,6 +477,8 @@ SymbolInfo InfoForSymbol(Symbol symbol) {
       return {@"mic", SymbolType::kSystem};
     case SymbolMicrophoneFill:
       return {@"mic.fill", SymbolType::kSystem};
+    case SymbolMicrophoneSlash:
+      return {@"mic.slash", SymbolType::kSystem};
     case SymbolMinusInCircle:
       return {@"minus.circle", SymbolType::kSystem};
     case SymbolMovePlatterToBottomPhone:
@@ -584,6 +598,8 @@ SymbolInfo InfoForSymbol(Symbol symbol) {
       return {@"gearshape.fill", SymbolType::kSystem};
     case SymbolShare:
       return {@"square.and.arrow.up", SymbolType::kSystem};
+    case SymbolShield:
+      return {@"shield", SymbolType::kSystem};
     case SymbolShippingBoxFill:
       return {@"shippingbox.fill", SymbolType::kSystem};
     case SymbolShowAction:
@@ -642,6 +658,8 @@ SymbolInfo InfoForSymbol(Symbol symbol) {
       return {@"viewfinder", SymbolType::kSystem};
     case SymbolVideo:
       return {@"video", SymbolType::kSystem};
+    case SymbolVideoSlash:
+      return {@"video.slash", SymbolType::kSystem};
     case SymbolWalletBifold:
       return {@"wallet.bifold", SymbolType::kSystem};
     case SymbolWarning:
@@ -653,6 +671,8 @@ SymbolInfo InfoForSymbol(Symbol symbol) {
     case SymbolWandAndSparkles:
       return {@"wand.and.sparkles", SymbolType::kSystem};
     case SymbolWaveform:
+      return {@"waveform", SymbolType::kSystem};
+    case SymbolWaveformMid:
       return {@"waveform.mid", SymbolType::kSystem};
     case SymbolWifi:
       return {@"wifi", SymbolType::kSystem};

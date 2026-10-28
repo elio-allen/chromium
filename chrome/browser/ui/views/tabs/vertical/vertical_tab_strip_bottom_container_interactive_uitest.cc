@@ -7,10 +7,12 @@
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/tabs/new_tab_button.h"
-#include "chrome/browser/ui/views/tabs/organizer/organizer_panel_utils.h"
+#include "chrome/browser/ui/views/tabs/shared/new_tab_button_menu_model.h"
 #include "chrome/browser/ui/views/test/vertical_tabs_interactive_test_mixin.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "content/public/test/browser_test.h"
@@ -51,7 +53,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripBottomContainerInteractiveUiTest,
   base::HistogramTester histogram_tester;
   base::UserActionTester user_action_tester;
   RunTestSequence(
-      CheckResult([this]() { return browser()->tab_strip_model()->count(); },
+      CheckResult([this]() { return browser()->GetTabStripModel()->count(); },
                   1),
       Do([&]() {
         histogram_tester.ExpectTotalCount(
@@ -62,7 +64,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripBottomContainerInteractiveUiTest,
       EnsurePresent(kNewTabButtonElementId),
       PressButton(kNewTabButtonElementId,
                   ui::test::InteractionTestUtil::InputType::kDontCare),
-      CheckResult([this]() { return browser()->tab_strip_model()->count(); },
+      CheckResult([this]() { return browser()->GetTabStripModel()->count(); },
                   2),
       Do([&]() {
         histogram_tester.ExpectTotalCount(
@@ -97,12 +99,12 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripBottomContainerInteractiveUiTest,
   }
 
   RunTestSequence(
-      CheckResult([this]() { return browser()->tab_strip_model()->count(); },
+      CheckResult([this]() { return browser()->GetTabStripModel()->count(); },
                   1),
       WaitForShow(kNewTabButtonElementId), MoveMouseTo(kNewTabButtonElementId),
       ClickMouse(ui_controls::MIDDLE),
       PollState(kTabCountState,
-                [this]() { return browser()->tab_strip_model()->count(); }),
+                [this]() { return browser()->GetTabStripModel()->count(); }),
       WaitForState(kTabCountState, 2), StopObservingState(kTabCountState),
       Do([&]() {
         EXPECT_EQ(1, user_action_tester.GetActionCount(
@@ -150,8 +152,9 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripBottomContainerInteractiveUiTest,
             views::View::ConvertPointFromScreen(vt_region_view, &pt_above);
             return !vt_region_view->IsPositionInWindowCaption(pt_center) &&
                    !vt_region_view->IsPositionInWindowCaption(pt_above);
-          },
-          "Check that clicking new tab does not expose caption space"));
+          })
+          .SetDescription(
+              "Check that clicking new tab does not expose caption space"));
 }
 
 class NewTabButtonContextMenuInteractiveUITest
@@ -159,15 +162,6 @@ class NewTabButtonContextMenuInteractiveUITest
  public:
   NewTabButtonContextMenuInteractiveUITest() = default;
   ~NewTabButtonContextMenuInteractiveUITest() override = default;
-
-  void SetUpInProcessBrowserTestFixture() override {
-    VerticalTabStripBottomContainerInteractiveUiTest::
-        SetUpInProcessBrowserTestFixture();
-    feature_list_.InitAndEnableFeature(features::kTabGroupMenuMoreEntryPoints);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(NewTabButtonContextMenuInteractiveUITest,
@@ -177,7 +171,7 @@ IN_PROC_BROWSER_TEST_F(NewTabButtonContextMenuInteractiveUITest,
       ClickMouse(ui_controls::RIGHT),
       WaitForShow(NewTabButtonMenuModel::kNewTab),
       SelectMenuItem(NewTabButtonMenuModel::kNewTab),
-      CheckResult([this]() { return browser()->tab_strip_model()->count(); },
+      CheckResult([this]() { return browser()->GetTabStripModel()->count(); },
                   2));
 }
 

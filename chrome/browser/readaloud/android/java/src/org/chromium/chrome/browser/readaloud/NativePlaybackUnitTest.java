@@ -5,14 +5,14 @@
 package org.chromium.chrome.browser.readaloud;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.any;
-import static org.mockito.Mockito.anyFloat;
-import static org.mockito.Mockito.anyInt;
-import static org.mockito.Mockito.anyLong;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -26,11 +26,12 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.modules.readaloud.Feedback.FeedbackType;
 import org.chromium.chrome.modules.readaloud.Feedback.NegativeFeedbackReason;
+import org.chromium.chrome.modules.readaloud.Playback;
+import org.chromium.chrome.modules.readaloud.Playback.PlaybackTextType;
 import org.chromium.chrome.modules.readaloud.PlaybackArgs.PlaybackMode;
 import org.chromium.chrome.modules.readaloud.PlaybackListener;
 import org.chromium.chrome.modules.readaloud.ReadAloudPlaybackHooks.SendFeedbackCallback;
@@ -38,28 +39,27 @@ import org.chromium.content_public.browser.WebContents;
 
 /** Unit tests for {@link NativePlayback}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class NativePlaybackUnitTest {
-    private static final long NATIVE_PTR = 12345L;
     private static final String LANGUAGE = "en";
     private static final String CANONICAL_URL = "https://example.com/article";
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    @Mock private ReadAloudController.Natives mNativeMock;
+    @Mock private ReadAloudNativeBridge mBridgeMock;
     @Mock private WebContents mWebContents;
     @Mock private PlaybackListener mListener;
     @Mock private SendFeedbackCallback mFeedbackCallback;
     @Captor private ArgumentCaptor<PlaybackListener.PlaybackData> mDataCaptor;
+    @Captor private ArgumentCaptor<PlaybackListener.PhraseTiming> mPhraseTimingCaptor;
 
     private NativePlayback mPlayback;
 
     @Before
     public void setUp() {
-        ReadAloudControllerJni.setInstanceForTesting(mNativeMock);
+        when(mBridgeMock.isInitialized()).thenReturn(true);
         mPlayback =
                 new NativePlayback(
-                        NATIVE_PTR, mWebContents, LANGUAGE, CANONICAL_URL, PlaybackMode.CLASSIC);
+                        mBridgeMock, mWebContents, LANGUAGE, CANONICAL_URL, PlaybackMode.CLASSIC);
     }
 
     @Test
@@ -68,14 +68,27 @@ public class NativePlaybackUnitTest {
         assertEquals(LANGUAGE, mPlayback.getMetadata().languageCode());
         assertEquals(CANONICAL_URL, mPlayback.getMetadata().canonicalUrl());
         assertEquals(PlaybackMode.CLASSIC, mPlayback.getMetadata().playbackMode());
-        assertEquals(PlaybackListener.State.BUFFERING, mPlayback.getState());
+        assertEquals(PlaybackListener.State.PLAYBACK_CREATION, mPlayback.getState());
+        verify(mBridgeMock).setPlaybackMode(PlaybackMode.CLASSIC.getValue());
+        mPlayback.initializeSession();
+        verify(mBridgeMock).initializeSession(mWebContents);
+    }
+
+    @Test
+    public void testConstructor_setsOverviewPlaybackModeOnBridge() {
+        NativePlayback playback =
+                new NativePlayback(
+                        mBridgeMock, mWebContents, LANGUAGE, CANONICAL_URL, PlaybackMode.OVERVIEW);
+        verify(mBridgeMock).setPlaybackMode(PlaybackMode.OVERVIEW.getValue());
+        assertEquals(PlaybackMode.OVERVIEW, playback.getMetadata().playbackMode());
     }
 
     @Test
     public void testAddListenerNotifiesInitialData() {
         mPlayback.addListener(mListener);
         verify(mListener).onPlaybackDataChanged(mDataCaptor.capture());
-        assertEquals(PlaybackListener.State.BUFFERING, mDataCaptor.getValue().state());
+        verify(mListener).onMetadataChanged(eq(mPlayback.getMetadata()));
+        assertEquals(PlaybackListener.State.PLAYBACK_CREATION, mDataCaptor.getValue().state());
     }
 
     @Test
@@ -107,6 +120,59 @@ public class NativePlaybackUnitTest {
     }
 
     @Test
+    public void testNotifyWordHighlightUpdated_notifiesListenersWithOffsets() {
+        mPlayback.addListener(mListener);
+
+        mPlayback.notifyWordHighlightUpdated(
+                /* absoluteStartIndex= */ 12, /* absoluteEndIndex= */ 17);
+
+        verify(mListener).onPhraseChanged(mPhraseTimingCaptor.capture());
+        assertEquals(12, mPhraseTimingCaptor.getValue().absoluteStartIndex());
+        assertEquals(17, mPhraseTimingCaptor.getValue().absoluteEndIndex());
+    }
+
+    @Test
+    public void testNotifyWordHighlightUpdated_reusesPhraseTiming() {
+        mPlayback.addListener(mListener);
+        mPlayback.notifyWordHighlightUpdated(
+                /* absoluteStartIndex= */ 12, /* absoluteEndIndex= */ 17);
+        verify(mListener).onPhraseChanged(mPhraseTimingCaptor.capture());
+        PlaybackListener.PhraseTiming initialPhraseTiming = mPhraseTimingCaptor.getValue();
+
+        mPlayback.notifyWordHighlightUpdated(
+                /* absoluteStartIndex= */ 18, /* absoluteEndIndex= */ 25);
+
+        verify(mListener, times(2)).onPhraseChanged(mPhraseTimingCaptor.capture());
+        PlaybackListener.PhraseTiming updatedPhraseTiming = mPhraseTimingCaptor.getValue();
+        assertSame(initialPhraseTiming, updatedPhraseTiming);
+        assertEquals(18, updatedPhraseTiming.absoluteStartIndex());
+        assertEquals(25, updatedPhraseTiming.absoluteEndIndex());
+    }
+
+    @Test
+    public void testIsHighlightingSupported_defaultsToTrue() {
+        assertTrue(mPlayback.isHighlightingSupported());
+    }
+
+    @Test
+    public void testSetHighlightingSupported_updatesState() {
+        mPlayback.setHighlightingSupported(false);
+
+        assertFalse(mPlayback.isHighlightingSupported());
+    }
+
+    @Test
+    public void testNotifyWordHighlightUpdated_highlightingNotSupported_dropsUpdate() {
+        mPlayback.addListener(mListener);
+        mPlayback.setHighlightingSupported(false);
+
+        mPlayback.notifyWordHighlightUpdated(
+                /* absoluteStartIndex= */ 12, /* absoluteEndIndex= */ 17);
+
+        verify(mListener, never()).onPhraseChanged(any(PlaybackListener.PhraseTiming.class));
+    }
+
+    @Test
     public void testNotifyPlaybackStateChanged() {
         mPlayback.addListener(mListener);
         mPlayback.notifyPlaybackStateChanged(PlaybackListener.State.PLAYING);
@@ -116,30 +182,25 @@ public class NativePlaybackUnitTest {
 
     @Test
     public void testUpdateMetadata() {
+        mPlayback.addListener(mListener);
+        reset(mListener);
         mPlayback.updateMetadata("Title", "Publisher");
         assertEquals("Title", mPlayback.getMetadata().title());
         assertEquals("Publisher", mPlayback.getMetadata().publisher());
+        verify(mListener).onMetadataChanged(mPlayback.getMetadata());
     }
 
     @Test
     public void testPlay() {
-        when(mWebContents.isDestroyed()).thenReturn(false);
         mPlayback.play();
-        verify(mNativeMock).play(eq(NATIVE_PTR), eq(mWebContents));
-    }
-
-    @Test
-    public void testPlay_destroyedWebContents() {
-        when(mWebContents.isDestroyed()).thenReturn(true);
-        mPlayback.play();
-        verify(mNativeMock, never()).play(anyLong(), any());
+        verify(mBridgeMock).play(mWebContents);
     }
 
     @Test
     public void testNullConstructorInputs_safeFallback() {
         NativePlayback nullPlayback =
                 new NativePlayback(
-                        NATIVE_PTR,
+                        mBridgeMock,
                         /* webContents= */ null,
                         /* languageCode= */ null,
                         /* canonicalUrl= */ null,
@@ -149,48 +210,37 @@ public class NativePlaybackUnitTest {
         assertEquals(PlaybackMode.CLASSIC, nullPlayback.getMetadata().playbackMode());
 
         nullPlayback.play();
-        verify(mNativeMock, never()).play(anyLong(), any());
+        verify(mBridgeMock).play(null);
     }
 
     @Test
     public void testPauseSeekRateAndRelease() {
         mPlayback.pause();
-        verify(mNativeMock).pause(eq(NATIVE_PTR));
+        verify(mBridgeMock).pause();
 
         mPlayback.seek(100L);
-        verify(mNativeMock).seek(eq(NATIVE_PTR), eq(100L));
+        verify(mBridgeMock).seek(100L);
 
         mPlayback.seekRelative(50L);
-        verify(mNativeMock).seekRelative(eq(NATIVE_PTR), eq(50L));
+        verify(mBridgeMock).seekRelative(50L);
+
+        mPlayback.seekToWord(2, 15);
+        verify(mBridgeMock).seekToWord(2, 15);
 
         mPlayback.setRate(1.5f);
-        verify(mNativeMock).setPlaybackRate(eq(NATIVE_PTR), eq(1.5f));
+        verify(mBridgeMock).setPlaybackRate(1.5f);
 
         mPlayback.release();
-        verify(mNativeMock).stop(eq(NATIVE_PTR));
+        verify(mBridgeMock).stop();
     }
 
     @Test
-    public void testSetNativeServicePtrToZero_preventsJniCalls() {
-        mPlayback.setNativeServicePtr(0);
-        when(mWebContents.isDestroyed()).thenReturn(false);
+    public void testUninitializedBridge_failsFeedback() {
+        when(mBridgeMock.isInitialized()).thenReturn(false);
 
-        mPlayback.play();
-        mPlayback.pause();
-        mPlayback.seek(100L);
-        mPlayback.seekRelative(50L);
-        mPlayback.setRate(1.5f);
-        mPlayback.release();
         mPlayback.sendFeedback(
                 FeedbackType.POSITIVE, NegativeFeedbackReason.OTHER, mFeedbackCallback);
 
-        verify(mNativeMock, never()).play(anyLong(), any());
-        verify(mNativeMock, never()).pause(anyLong());
-        verify(mNativeMock, never()).seek(anyLong(), anyLong());
-        verify(mNativeMock, never()).seekRelative(anyLong(), anyLong());
-        verify(mNativeMock, never()).setPlaybackRate(anyLong(), anyFloat());
-        verify(mNativeMock, never()).stop(anyLong());
-        verify(mNativeMock, never()).sendFeedback(anyLong(), anyInt());
         verify(mFeedbackCallback).onFailure(any(Exception.class));
     }
 
@@ -198,7 +248,99 @@ public class NativePlaybackUnitTest {
     public void testSendFeedback() {
         mPlayback.sendFeedback(
                 FeedbackType.POSITIVE, NegativeFeedbackReason.OTHER, mFeedbackCallback);
-        verify(mNativeMock).sendFeedback(eq(NATIVE_PTR), eq(FeedbackType.POSITIVE.getValue()));
+        verify(mBridgeMock).sendFeedback(FeedbackType.POSITIVE.getValue());
         verify(mFeedbackCallback).onSuccess();
+    }
+
+    @Test
+    public void testOnTextChunked_populatesMetadataAndNotifiesListeners() {
+        mPlayback.addListener(mListener);
+        reset(mListener);
+
+        String[] chunks = new String[] {"First chunk.", "Second chunk.", "Third chunk."};
+        mPlayback.onTextChunked(chunks);
+
+        Playback.Metadata metadata = mPlayback.getMetadata();
+        assertEquals("First chunk. Second chunk. Third chunk.", metadata.fullText());
+        assertEquals(3, metadata.paragraphs().length);
+
+        assertEquals(0, metadata.paragraphs()[0].getParagraphIndex());
+        assertEquals(0, metadata.paragraphs()[0].getOffset());
+        assertEquals(12, metadata.paragraphs()[0].getLength());
+        assertEquals(PlaybackTextType.TEXT_TYPE_NORMAL, metadata.paragraphs()[0].getType());
+
+        assertEquals(1, metadata.paragraphs()[1].getParagraphIndex());
+        assertEquals(13, metadata.paragraphs()[1].getOffset());
+        assertEquals(13, metadata.paragraphs()[1].getLength());
+        assertEquals(PlaybackTextType.TEXT_TYPE_NORMAL, metadata.paragraphs()[1].getType());
+
+        assertEquals(2, metadata.paragraphs()[2].getParagraphIndex());
+        assertEquals(27, metadata.paragraphs()[2].getOffset());
+        assertEquals(12, metadata.paragraphs()[2].getLength());
+        assertEquals(PlaybackTextType.TEXT_TYPE_NORMAL, metadata.paragraphs()[2].getType());
+
+        verify(mListener).onMetadataChanged(metadata);
+    }
+
+    @Test
+    public void testOnTextChunked_emptyArray() {
+        mPlayback.addListener(mListener);
+        reset(mListener);
+
+        mPlayback.onTextChunked(new String[0]);
+
+        Playback.Metadata metadata = mPlayback.getMetadata();
+        assertEquals("", metadata.fullText());
+        assertEquals(0, metadata.paragraphs().length);
+        verify(mListener).onMetadataChanged(metadata);
+    }
+
+    @Test
+    public void testOnTextChunked_sequentialCallsOverwriteCleanly() {
+        mPlayback.addListener(mListener);
+
+        mPlayback.onTextChunked(new String[] {"Initial", "content"});
+        assertEquals("Initial content", mPlayback.getMetadata().fullText());
+        assertEquals(2, mPlayback.getMetadata().paragraphs().length);
+        assertEquals(0, mPlayback.getMetadata().paragraphs()[0].getOffset());
+        assertEquals(7, mPlayback.getMetadata().paragraphs()[0].getLength());
+        assertEquals(8, mPlayback.getMetadata().paragraphs()[1].getOffset());
+        assertEquals(7, mPlayback.getMetadata().paragraphs()[1].getLength());
+
+        reset(mListener);
+        mPlayback.onTextChunked(new String[] {"Replacement"});
+        assertEquals("Replacement", mPlayback.getMetadata().fullText());
+        assertEquals(1, mPlayback.getMetadata().paragraphs().length);
+        assertEquals(0, mPlayback.getMetadata().paragraphs()[0].getParagraphIndex());
+        assertEquals(0, mPlayback.getMetadata().paragraphs()[0].getOffset());
+        assertEquals(11, mPlayback.getMetadata().paragraphs()[0].getLength());
+        verify(mListener).onMetadataChanged(mPlayback.getMetadata());
+    }
+
+    @Test
+    public void testOnTextChunked_withEmptyChunkStrings() {
+        mPlayback.addListener(mListener);
+        reset(mListener);
+
+        String[] chunks = new String[] {"First", "", "Third"};
+        mPlayback.onTextChunked(chunks);
+
+        Playback.Metadata metadata = mPlayback.getMetadata();
+        assertEquals("First Third", metadata.fullText());
+        assertEquals(3, metadata.paragraphs().length);
+
+        assertEquals(0, metadata.paragraphs()[0].getParagraphIndex());
+        assertEquals(0, metadata.paragraphs()[0].getOffset());
+        assertEquals(5, metadata.paragraphs()[0].getLength());
+
+        assertEquals(1, metadata.paragraphs()[1].getParagraphIndex());
+        assertEquals(5, metadata.paragraphs()[1].getOffset());
+        assertEquals(0, metadata.paragraphs()[1].getLength());
+
+        assertEquals(2, metadata.paragraphs()[2].getParagraphIndex());
+        assertEquals(6, metadata.paragraphs()[2].getOffset());
+        assertEquals(5, metadata.paragraphs()[2].getLength());
+
+        verify(mListener).onMetadataChanged(metadata);
     }
 }

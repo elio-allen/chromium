@@ -7,6 +7,7 @@
 #include <stddef.h>
 
 #include <string>
+#include <utility>
 
 #include "base/feature_list.h"
 #include "base/strings/strcat.h"
@@ -96,8 +97,8 @@ INSTANTIATE_TEST_SUITE_P(
         // Should fail parsing in US.
         ParseNumberTestCase{false, u"17134567", "US"},
         // Does not have area code, but still a possible number with
-        // unknown("") deduced region.
-        ParseNumberTestCase{true, u"7134567", "US", u"7134567", u"", u"", ""},
+        // unknown("ZZ") deduced region.
+        ParseNumberTestCase{true, u"7134567", "US", u"7134567", u"", u"", "ZZ"},
         // Valid Canadian toll-free number.
         ParseNumberTestCase{true, u"3101234", "CA", u"1234", u"310", u"", "CA"},
         // Test for string with greater than 7 digits but less than 10 digits.
@@ -118,14 +119,14 @@ INSTANTIATE_TEST_SUITE_P(
         // Test for string with exactly 10 digits.
         // Should give back phone number and city code.
         // This one has an incorrect area code but could still be a possible
-        // number with unknown("") deduced region.
+        // number with unknown("ZZ") deducted region.
         ParseNumberTestCase{true, u"1234567890", "US", u"1234567890", u"", u"",
-                            ""},
+                            "ZZ"},
         // This is actually not a valid number because the first number after
         // area code is 1. But it's still a possible number, just with deduced
-        // country set to unknown("").
+        // country set to unknown("ZZ").
         ParseNumberTestCase{true, u"6501567890", "US", u"1567890", u"650", u"",
-                            ""},
+                            "ZZ"},
         ParseNumberTestCase{true, u"6504567890", "US", u"4567890", u"650", u"",
                             "US"},
         // Test for string with exactly 10 digits and separators.
@@ -133,9 +134,9 @@ INSTANTIATE_TEST_SUITE_P(
         ParseNumberTestCase{true, u"(650) 456-7890", "US", u"4567890", u"650",
                             u"", "US"},
         // Tests for string with over 10 digits.
-        // 011 is a correct "dial out" prefix in the USA, parse remaining phone
-        // number as a Singapore number (country code "65", region code "SG").
-        ParseNumberTestCase{true, u"0116591234567", "US", u"4567", u"9123",
+        // 01 is incorrect prefix in the USA, we interpret 011 as prefix, and
+        // rest is parsed as a Singapore number(country code "SG").
+        ParseNumberTestCase{true, u"0116504567890", "US", u"04567890", u"",
                             u"65", "SG"},
         // 011 is a correct "dial out" prefix in the USA - the parsing should
         // succeed.
@@ -223,8 +224,10 @@ TEST(PhoneNumberI18NTest, PhoneNumbersMatch) {
   EXPECT_TRUE(
       PhoneNumbersMatch(u"1(415)888-99-99", u"+14158889999", "US", "en-US"));
 
-  // Partial matches don't count.
+  // Partial matches don't count by default.
   EXPECT_FALSE(PhoneNumbersMatch(u"14158889999", u"8889999", "US", "en-US"));
+  EXPECT_TRUE(PhoneNumbersMatch(u"14158889999", u"8889999", "US", "en-US",
+                                /*support_short_nsn_match=*/true));
 
   // Different numbers don't match.
   EXPECT_FALSE(PhoneNumbersMatch(u"14158889999", u"1415888", "US", "en-US"));
@@ -236,6 +239,29 @@ TEST(PhoneNumberI18NTest, PhoneNumbersMatch) {
   // An empty and a non-empty number do not match.
   EXPECT_FALSE(
       PhoneNumbersMatch(std::u16string(), u"5088585123", "US", "en-US"));
+}
+
+// Tests that PhoneNumbersMatch correctly matches PhoneNumber protos including
+// short NSN matches when support_short_nsn_match is enabled.
+TEST(PhoneNumberI18NTest, PhoneNumbersMatchProto) {
+  ::i18n::phonenumbers::PhoneNumberUtil* phone_util =
+      ::i18n::phonenumbers::PhoneNumberUtil::GetInstance();
+  ::i18n::phonenumbers::PhoneNumber number1;
+  ASSERT_EQ(phone_util->Parse("14158889999", "US", &number1),
+            ::i18n::phonenumbers::PhoneNumberUtil::NO_PARSING_ERROR);
+  ::i18n::phonenumbers::PhoneNumber number2;
+  ASSERT_EQ(phone_util->Parse("8889999", "US", &number2),
+            ::i18n::phonenumbers::PhoneNumberUtil::NO_PARSING_ERROR);
+  ::i18n::phonenumbers::PhoneNumber number3;
+  ASSERT_EQ(phone_util->Parse("14151112222", "US", &number3),
+            ::i18n::phonenumbers::PhoneNumberUtil::NO_PARSING_ERROR);
+
+  EXPECT_FALSE(PhoneNumbersMatch(number1, number2));
+  EXPECT_TRUE(
+      PhoneNumbersMatch(number1, number2, /*support_short_nsn_match=*/true));
+  EXPECT_FALSE(PhoneNumbersMatch(number1, number3));
+  EXPECT_FALSE(
+      PhoneNumbersMatch(number1, number3, /*support_short_nsn_match=*/true));
 }
 
 // Tests that the phone numbers are correctly formatted for the Payment
@@ -473,6 +499,47 @@ INSTANTIATE_TEST_SUITE_P(
         PhoneNumberFormatCase(u"1 415 555 5555", u"", u"+1 415-555-5555"),
         // If no country code is found, formats for US.
         PhoneNumberFormatCase(u"415-555-5555", u"", u"+1 415-555-5555")));
+
+// `PhoneObject` keeps the region hint and `infer_country_code` value it was
+// created with, even when parsing fails or infers a different region, so that
+// callers can use them as a cache key.
+TEST(PhoneNumberI18NTest, PhoneObjectKeepsCreationArguments) {
+  i18n::PhoneObject unparseable(u"1234", "US", /*infer_country_code=*/false);
+  EXPECT_FALSE(unparseable.IsValidNumber());
+  EXPECT_EQ(unparseable.region(), "");
+  EXPECT_EQ(unparseable.creation_region_hint(), "US");
+  EXPECT_FALSE(unparseable.infer_country_code_from_region_hint());
+
+  i18n::PhoneObject unknown_region(u"6501567890", "US",
+                                   /*infer_country_code=*/false);
+  EXPECT_TRUE(unknown_region.IsValidNumber());
+  EXPECT_EQ(unknown_region.region(), "ZZ");
+  EXPECT_EQ(unknown_region.creation_region_hint(), "US");
+
+  i18n::PhoneObject cross_region(u"+420 27-89.10.112", "US",
+                                 /*infer_country_code=*/true);
+  EXPECT_TRUE(cross_region.IsValidNumber());
+  EXPECT_EQ(cross_region.region(), "CZ");
+  EXPECT_EQ(cross_region.creation_region_hint(), "US");
+  EXPECT_TRUE(cross_region.infer_country_code_from_region_hint());
+
+  i18n::PhoneObject copy(cross_region);
+  EXPECT_EQ(copy.creation_region_hint(), "US");
+  EXPECT_TRUE(copy.infer_country_code_from_region_hint());
+
+  i18n::PhoneObject assigned;
+  assigned = unparseable;
+  EXPECT_EQ(assigned.creation_region_hint(), "US");
+  EXPECT_FALSE(assigned.infer_country_code_from_region_hint());
+
+  i18n::PhoneObject moved(std::move(copy));
+  EXPECT_EQ(moved.creation_region_hint(), "US");
+  EXPECT_TRUE(moved.infer_country_code_from_region_hint());
+
+  i18n::PhoneObject empty;
+  EXPECT_EQ(empty.creation_region_hint(), "");
+  EXPECT_FALSE(empty.infer_country_code_from_region_hint());
+}
 
 }  // namespace
 }  // namespace autofill

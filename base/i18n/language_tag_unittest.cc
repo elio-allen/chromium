@@ -5,12 +5,15 @@
 #include "base/i18n/language_tag.h"
 
 #include <string_view>
+#include <vector>
 
 #include "base/containers/fixed_flat_set.h"
+#include "base/i18n/icu4c_tag_converter.h"
 #include "base/i18n/language_tag_value_converters.h"
 #include "base/i18n/tag_converters.h"
 #include "base/test/gmock_expected_support.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/icu/source/common/unicode/locid.h"
@@ -18,6 +21,7 @@
 namespace base::i18n {
 namespace {
 
+using ::testing::ElementsAre;
 using ::testing::Eq;
 using ::testing::Optional;
 using ::testing::Property;
@@ -535,6 +539,16 @@ TEST(LanguageTagTest, Canonicalize) {
   // Deprecated tags: "tl" -> "fil"
   EXPECT_THAT(LanguageTagConverter::GetInstance().FromString("tl"),
               Optional(GetKnownLanguageTag("fil")));
+
+#if BUILDFLAG(IS_WIN)
+  // Windows legacy Chinese tags: "zh-chs" -> "zh-cn"
+  EXPECT_THAT(LanguageTagConverter::GetInstance().FromString("zh-chs"),
+              Optional(GetKnownLanguageTag("zh-CN")));
+
+  // Windows legacy Chinese tags: "zh-cht" -> "zh-tw"
+  EXPECT_THAT(LanguageTagConverter::GetInstance().FromString("zh-cht"),
+              Optional(GetKnownLanguageTag("zh-TW")));
+#endif  // BUILDFLAG(IS_WIN)
 }
 
 TEST(LanguageTagTest, LegacyLanguages) {
@@ -555,6 +569,10 @@ TEST(LanguageTagTest, UndefinedLanguageTag) {
 }
 
 TEST(LanguageTagTest, CanCreateFixedFlatSet) {
+  static_assert(GetKnownLanguageTag("en-US") < GetKnownLanguageTag("pt-BR"),
+                "Comparison en-US < pt-BR failed!");
+  static_assert(GetKnownLanguageTag("en-US") != GetKnownLanguageTag("pt-BR"),
+                "Comparison en-US != pt-BR failed!");
   constexpr auto kLanguageTagsSet = base::MakeFixedFlatSet<LanguageTag>({
       GetKnownLanguageTag("en-US"),
       GetKnownLanguageTag("pt-BR"),
@@ -634,6 +652,69 @@ TEST(LanguageTagTest, GetRegionSubtag) {
   EXPECT_TRUE(lt_script_ext_no_region.region_subtag().empty());
 }
 
+TEST(LanguageTagTest, GetScriptSubtag) {
+  // Simple case with script.
+  ASSERT_OK_AND_ASSIGN(
+      LanguageTag lt_zh_hant_tw,
+      LanguageTagConverter::GetInstance().FromString("zh-Hant-TW"));
+  EXPECT_EQ(lt_zh_hant_tw.script_subtag(), "Hant");
+
+  // Script but no region.
+  ASSERT_OK_AND_ASSIGN(
+      LanguageTag lt_sr_latn,
+      LanguageTagConverter::GetInstance().FromString("sr-Latn"));
+  EXPECT_EQ(lt_sr_latn.script_subtag(), "Latn");
+
+  // No script.
+  ASSERT_OK_AND_ASSIGN(LanguageTag lt_en_us,
+                       LanguageTagConverter::GetInstance().FromString("en-US"));
+  EXPECT_TRUE(lt_en_us.script_subtag().empty());
+
+  // Complex case with extensions and script.
+  ASSERT_OK_AND_ASSIGN(
+      LanguageTag lt_complex,
+      LanguageTagConverter::GetInstance().FromString("sr-Latn-u-ca-gregory"));
+  EXPECT_EQ(lt_complex.script_subtag(), "Latn");
+
+  // Undefined language with script.
+  ASSERT_OK_AND_ASSIGN(
+      LanguageTag lt_und_latn,
+      LanguageTagConverter::GetInstance().FromString("und-Latn"));
+  EXPECT_EQ(lt_und_latn.script_subtag(), "Latn");
+}
+
+TEST(LanguageTagTest, GetVariantSubtags) {
+  // No variants.
+  ASSERT_OK_AND_ASSIGN(LanguageTag lt_en_us,
+                       LanguageTagConverter::GetInstance().FromString("en-US"));
+  EXPECT_TRUE(lt_en_us.variant_subtags().empty());
+
+  // Single variant.
+  ASSERT_OK_AND_ASSIGN(
+      LanguageTag lt_oxendict,
+      LanguageTagConverter::GetInstance().FromString("en-GB-oxendict"));
+  EXPECT_THAT(lt_oxendict.variant_subtags(), ElementsAre("oxendict"));
+
+  // Numeric variant.
+  ASSERT_OK_AND_ASSIGN(
+      LanguageTag lt_de_1996,
+      LanguageTagConverter::GetInstance().FromString("de-1996"));
+  EXPECT_THAT(lt_de_1996.variant_subtags(), ElementsAre("1996"));
+
+  // Multiple variants.
+  ASSERT_OK_AND_ASSIGN(
+      LanguageTag lt_multiple,
+      LanguageTagConverter::GetInstance().FromString("sl-IT-rozaj-biske"));
+  // Variants are sorted.
+  EXPECT_THAT(lt_multiple.variant_subtags(), ElementsAre("biske", "rozaj"));
+
+  // Complex tag with variants and extension.
+  ASSERT_OK_AND_ASSIGN(LanguageTag lt_complex,
+                       LanguageTagConverter::GetInstance().FromString(
+                           "en-GB-oxendict-u-ca-gregory"));
+  EXPECT_THAT(lt_complex.variant_subtags(), ElementsAre("oxendict"));
+}
+
 TEST(LanguageTagTest, GetParentEnUs) {
   ASSERT_OK_AND_ASSIGN(LanguageTag lt,
                        LanguageTagConverter::GetInstance().FromString("en-US"));
@@ -687,6 +768,21 @@ TEST(LanguageTagTest, GetParentWithPrivateUseSubtags) {
       LanguageTag lt,
       LanguageTagConverter::GetInstance().FromString("en-US-x-test"));
   EXPECT_THAT(lt.GetParentTag(), OptionalToString("en-US"));
+}
+
+TEST(LanguageTagTest, GetLineage) {
+  ASSERT_OK_AND_ASSIGN(
+      LanguageTag lt,
+      LanguageTagConverter::GetInstance().FromString("sr-Latn-RS"));
+  EXPECT_THAT(lt.GetLineage(), ElementsAre(GetKnownLanguageTag("sr-Latn-RS"),
+                                           GetKnownLanguageTag("sr-Latn"),
+                                           GetKnownLanguageTag("sr")));
+}
+
+TEST(LanguageTagTest, GetLineageNoParents) {
+  ASSERT_OK_AND_ASSIGN(LanguageTag lt,
+                       LanguageTagConverter::GetInstance().FromString("en"));
+  EXPECT_THAT(lt.GetLineage(), ElementsAre(GetKnownLanguageTag("en")));
 }
 
 TEST(LanguageTagTest, ExtensionMutation) {
@@ -752,6 +848,61 @@ TEST(LanguageTagTest, ExtensionMutation) {
     EXPECT_TRUE(new_a_ext->AddSubtag("other"));
     LanguageTag mutated = lc.WithExtension(*new_a_ext);
     EXPECT_EQ(mutated.tag_string(), "en-US-a-myext-other");
+  }
+}
+
+TEST(LanguageTagTest, WithExtensionRemoved) {
+  // Removing an extension from a tag with no extensions should return the same
+  // tag.
+  {
+    ASSERT_OK_AND_ASSIGN(
+        LanguageTag lc,
+        LanguageTagConverter::GetInstance().FromString("en-US"));
+    EXPECT_EQ(lc.WithExtensionRemoved('a').tag_string(), "en-US");
+    EXPECT_EQ(lc.WithExtensionRemoved('x').tag_string(), "en-US");
+  }
+
+  // Removing an existing Unicode extension ('u').
+  {
+    ASSERT_OK_AND_ASSIGN(
+        LanguageTag lc,
+        LanguageTagConverter::GetInstance().FromString("en-US-u-ca-gregory"));
+    EXPECT_EQ(lc.WithExtensionRemoved('u').tag_string(), "en-US");
+    // Also test case insensitivity for 'U'.
+    EXPECT_EQ(lc.WithExtensionRemoved('U').tag_string(), "en-US");
+  }
+
+  // Removing an existing generic extension ('a').
+  {
+    ASSERT_OK_AND_ASSIGN(
+        LanguageTag lc,
+        LanguageTagConverter::GetInstance().FromString("en-US-a-foo-bar"));
+    EXPECT_EQ(lc.WithExtensionRemoved('a').tag_string(), "en-US");
+    // Also test case insensitivity for 'A'.
+    EXPECT_EQ(lc.WithExtensionRemoved('A').tag_string(), "en-US");
+  }
+
+  // Removing an existing private use extension ('x').
+  {
+    ASSERT_OK_AND_ASSIGN(
+        LanguageTag lc,
+        LanguageTagConverter::GetInstance().FromString("en-US-x-private"));
+    EXPECT_EQ(lc.WithExtensionRemoved('x').tag_string(), "en-US");
+    // Also test 'X'.
+    EXPECT_EQ(lc.WithExtensionRemoved('X').tag_string(), "en-US");
+  }
+
+  // Removing an extension from a tag with multiple extensions.
+  {
+    ASSERT_OK_AND_ASSIGN(LanguageTag lc,
+                         LanguageTagConverter::GetInstance().FromString(
+                             "en-US-a-foo-u-ca-gregory-x-private"));
+    EXPECT_EQ(lc.WithExtensionRemoved('a').tag_string(),
+              "en-US-u-ca-gregory-x-private");
+    EXPECT_EQ(lc.WithExtensionRemoved('u').tag_string(),
+              "en-US-a-foo-x-private");
+    EXPECT_EQ(lc.WithExtensionRemoved('x').tag_string(),
+              "en-US-a-foo-u-ca-gregory");
   }
 }
 
@@ -841,14 +992,14 @@ TEST(IcuLocaleConverterTest, FromLanguageTag) {
   EXPECT_STREQ("en_US@calendar=gregorian", locale_dynamic.getName());
 }
 
-TEST(LanguageTagConverterTest, FromIcuLocale) {
-  const LanguageTagConverter& converter = LanguageTagConverter::GetInstance();
+TEST(IcuLocaleConverterTest, ToLanguageTag) {
+  const IcuLocaleConverter& converter = IcuLocaleConverter::GetInstance();
 
   // Test simple locale conversion
   UErrorCode status = U_ZERO_ERROR;
   icu::Locale locale_en_us = icu::Locale::forLanguageTag("en-US", status);
   ASSERT_TRUE(U_SUCCESS(status));
-  LanguageTag en_us = converter.FromIcuLocale(locale_en_us);
+  LanguageTag en_us = converter.ToLanguageTag(locale_en_us);
   EXPECT_EQ("en-US", en_us.tag_string());
 
   // Test custom/dynamic locale conversion
@@ -856,13 +1007,189 @@ TEST(LanguageTagConverterTest, FromIcuLocale) {
   icu::Locale locale_dynamic =
       icu::Locale::forLanguageTag("en-US-u-ca-gregory", status);
   ASSERT_TRUE(U_SUCCESS(status));
-  LanguageTag dynamic_tag = converter.FromIcuLocale(locale_dynamic);
+  LanguageTag dynamic_tag = converter.ToLanguageTag(locale_dynamic);
   EXPECT_EQ("en-US-u-ca-gregory", dynamic_tag.tag_string());
 
   // Test fallback/failure or undefined
   icu::Locale locale_und = icu::Locale::getRoot();
-  LanguageTag und = converter.FromIcuLocale(locale_und);
+  LanguageTag und = converter.ToLanguageTag(locale_und);
   EXPECT_EQ("und", und.tag_string());
+}
+
+// The subtag accessors (`language_subtag()`, `script_subtag()`,
+// `region_subtag()`, `variant_subtags()`) and `GetExtension()` use
+// `SubtagsReaderUnsafe::Create`, which classifies subtags mostly by their size
+// only. The tests below exercise the cases in which size alone could be
+// ambiguous to make sure every subtag is attributed to the right type.
+struct SubtagAccessorsTestCase {
+  std::string_view tag;
+  std::string_view language;
+  std::string_view script;
+  std::string_view region;
+  std::vector<std::string_view> variants;
+};
+
+TEST(LanguageTagTest, SubtagAccessorsUnsafeReader) {
+  const SubtagAccessorsTestCase kTestCases[] = {
+      // Language-only, 2 and 3 letters.
+      {"en", "en", "", "", {}},
+      {"fil", "fil", "", "", {}},
+      {"und", "und", "", "", {}},
+      // 4-char subtags: alpha-first is a script, digit-first is a variant.
+      {"sr-Latn", "sr", "Latn", "", {}},
+      {"de-1996", "de", "", "", {"1996"}},
+      {"sr-Latn-1994", "sr", "Latn", "", {"1994"}},
+      {"de-CH-1996", "de", "", "CH", {"1996"}},
+      // Regions: 2 letters and 3 digits, with and without script.
+      {"en-US", "en", "", "US", {}},
+      {"es-419", "es", "", "419", {}},
+      {"zh-Hant-TW", "zh", "Hant", "TW", {}},
+      {"en-Latn-001", "en", "Latn", "001", {}},
+      // Variants of length 5 and 8, directly after the language, script and
+      // region.
+      {"sl-rozaj", "sl", "", "", {"rozaj"}},
+      {"en-oxendict", "en", "", "", {"oxendict"}},
+      {"sr-Latn-ekavsk", "sr", "Latn", "", {"ekavsk"}},
+      {"en-GB-oxendict", "en", "", "GB", {"oxendict"}},
+      // Multiple variants (sorted by canonicalization).
+      {"sl-1994-rozaj", "sl", "", "", {"1994", "rozaj"}},
+      {"sl-IT-biske-rozaj", "sl", "", "IT", {"biske", "rozaj"}},
+      // All of language, script, region and variant.
+      {"sr-Latn-RS-1994", "sr", "Latn", "RS", {"1994"}},
+      // Extension subtags with the same size as script, region and variants
+      // must not be mistaken by them.
+      {"en-a-abcd", "en", "", "", {}},
+      {"en-a-us", "en", "", "", {}},
+      {"en-a-123", "en", "", "", {}},
+      {"en-a-abcde", "en", "", "", {}},
+      {"en-a-1234-abcdefgh", "en", "", "", {}},
+      {"en-u-ca-gregory", "en", "", "", {}},
+      // Private use subtags with the same size as script, region and variants
+      // must not be mistaken by them.
+      {"en-x-latn", "en", "", "", {}},
+      {"en-x-us", "en", "", "", {}},
+      {"en-x-419", "en", "", "", {}},
+      {"en-x-1996-oxendict", "en", "", "", {}},
+      {"und-x-private", "und", "", "", {}},
+      // Extensions and private use after all the other subtags.
+      {"sr-Latn-RS-1994-a-abcd-u-ca-gregory-x-us",
+       "sr",
+       "Latn",
+       "RS",
+       {"1994"}},
+  };
+
+  for (const SubtagAccessorsTestCase& test_case : kTestCases) {
+    SCOPED_TRACE(test_case.tag);
+    ASSERT_OK_AND_ASSIGN(
+        LanguageTag lt,
+        LanguageTagConverter::GetInstance().FromString(test_case.tag));
+    // Makes sure the input is already canonical so that the expectations
+    // below are applied to the intended tag.
+    ASSERT_EQ(lt.tag_string(), test_case.tag);
+    EXPECT_EQ(lt.language_subtag(), test_case.language);
+    EXPECT_EQ(lt.script_subtag(), test_case.script);
+    EXPECT_EQ(lt.region_subtag(), test_case.region);
+    EXPECT_EQ(lt.variant_subtags(), test_case.variants);
+  }
+}
+
+TEST(LanguageTagTest, SubtagAccessorsConstexpr) {
+  static_assert(GetKnownLanguageTag("en-US").language_subtag() == "en");
+  static_assert(GetKnownLanguageTag("en-US").script_subtag().empty());
+  static_assert(GetKnownLanguageTag("en-US").region_subtag() == "US");
+  static_assert(GetKnownLanguageTag("en-US").variant_subtags().empty());
+  static_assert(GetKnownLanguageTag("es-419").language_subtag() == "es");
+  static_assert(GetKnownLanguageTag("es-419").region_subtag() == "419");
+  static_assert(GetKnownLanguageTag("fil").language_subtag() == "fil");
+  static_assert(GetKnownLanguageTag("fil").region_subtag().empty());
+}
+
+TEST(LanguageTagTest, GetExtensionUnsafeReader) {
+  // Every extension is found among many, and missing ones are not.
+  {
+    ASSERT_OK_AND_ASSIGN(LanguageTag lt,
+                         LanguageTagConverter::GetInstance().FromString(
+                             "en-a-foo-c-bar-baz-u-ca-gregory-x-private"));
+    ASSERT_EQ(lt.tag_string(), "en-a-foo-c-bar-baz-u-ca-gregory-x-private");
+    EXPECT_THAT(lt.GetExtension(bcp47_extensions::ext<'a'>()),
+                Optional(Property(&Extension::SubtagsString, Eq("foo"))));
+    EXPECT_EQ(lt.GetExtension(bcp47_extensions::ext<'b'>()), std::nullopt);
+    EXPECT_THAT(lt.GetExtension(bcp47_extensions::ext<'c'>()),
+                Optional(Property(&Extension::SubtagsString, Eq("bar-baz"))));
+    EXPECT_THAT(
+        lt.GetExtension(bcp47_extensions::unicode()),
+        Optional(Property(&UnicodeExtension::SubtagsString, Eq("ca-gregory"))));
+    EXPECT_EQ(lt.GetExtension(bcp47_extensions::ext<'z'>()), std::nullopt);
+    EXPECT_THAT(
+        lt.GetExtension(bcp47_extensions::priv()),
+        Optional(Property(&PrivateUseSubtags::SubtagsString, Eq("private"))));
+  }
+  // Extension subtags of minimum (2) and maximum (8) sizes, including ones
+  // with the size of script, region and variant subtags.
+  {
+    ASSERT_OK_AND_ASSIGN(LanguageTag lt,
+                         LanguageTagConverter::GetInstance().FromString(
+                             "sr-Latn-RS-1994-a-ab-abc-abcd-abcdefgh"));
+    ASSERT_EQ(lt.tag_string(), "sr-Latn-RS-1994-a-ab-abc-abcd-abcdefgh");
+    EXPECT_THAT(lt.GetExtension(bcp47_extensions::ext<'a'>()),
+                Optional(Property(&Extension::SubtagsString,
+                                  Eq("ab-abc-abcd-abcdefgh"))));
+  }
+  // A digit singleton before the looked-up extension.
+  {
+    ASSERT_OK_AND_ASSIGN(LanguageTag lt,
+                         LanguageTagConverter::GetInstance().FromString(
+                             "en-0-abc-u-ca-gregory"));
+    ASSERT_EQ(lt.tag_string(), "en-0-abc-u-ca-gregory");
+    EXPECT_THAT(
+        lt.GetExtension(bcp47_extensions::unicode()),
+        Optional(Property(&UnicodeExtension::SubtagsString, Eq("ca-gregory"))));
+    EXPECT_EQ(lt.GetExtension(bcp47_extensions::ext<'a'>()), std::nullopt);
+  }
+  // Single-char private use subtags look like extension singletons but must
+  // not be treated as such.
+  {
+    ASSERT_OK_AND_ASSIGN(
+        LanguageTag lt,
+        LanguageTagConverter::GetInstance().FromString("en-x-a-b"));
+    ASSERT_EQ(lt.tag_string(), "en-x-a-b");
+    EXPECT_EQ(lt.GetExtension(bcp47_extensions::ext<'a'>()), std::nullopt);
+    EXPECT_EQ(lt.GetExtension(bcp47_extensions::ext<'b'>()), std::nullopt);
+    EXPECT_THAT(
+        lt.GetExtension(bcp47_extensions::priv()),
+        Optional(Property(&PrivateUseSubtags::SubtagsString, Eq("a-b"))));
+  }
+  // A unicode-looking sequence inside private use is not a unicode extension.
+  {
+    ASSERT_OK_AND_ASSIGN(
+        LanguageTag lt,
+        LanguageTagConverter::GetInstance().FromString("en-x-u-ca-gregory"));
+    ASSERT_EQ(lt.tag_string(), "en-x-u-ca-gregory");
+    EXPECT_EQ(lt.GetExtension(bcp47_extensions::unicode()), std::nullopt);
+    EXPECT_THAT(lt.GetExtension(bcp47_extensions::priv()),
+                Optional(Property(&PrivateUseSubtags::SubtagsString,
+                                  Eq("u-ca-gregory"))));
+  }
+  // Private use subtags of minimum (1) and maximum (8) sizes.
+  {
+    ASSERT_OK_AND_ASSIGN(LanguageTag lt,
+                         LanguageTagConverter::GetInstance().FromString(
+                             "en-US-u-ca-gregory-x-1-12345678"));
+    ASSERT_EQ(lt.tag_string(), "en-US-u-ca-gregory-x-1-12345678");
+    EXPECT_THAT(lt.GetExtension(bcp47_extensions::priv()),
+                Optional(Property(&PrivateUseSubtags::SubtagsString,
+                                  Eq("1-12345678"))));
+  }
+  // No extensions at all, with subtags of every other type.
+  {
+    ASSERT_OK_AND_ASSIGN(
+        LanguageTag lt,
+        LanguageTagConverter::GetInstance().FromString("sr-Latn-RS-1994"));
+    EXPECT_EQ(lt.GetExtension(bcp47_extensions::ext<'a'>()), std::nullopt);
+    EXPECT_EQ(lt.GetExtension(bcp47_extensions::unicode()), std::nullopt);
+    EXPECT_EQ(lt.GetExtension(bcp47_extensions::priv()), std::nullopt);
+  }
 }
 
 }  // namespace

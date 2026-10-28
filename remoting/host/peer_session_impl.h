@@ -33,15 +33,15 @@
 #include "remoting/host/client_session_events.h"
 #include "remoting/host/cursor_visibility_notifier.h"
 #include "remoting/host/desktop_display_info.h"
-#include "remoting/host/host_extension_session_manager.h"
 #include "remoting/host/input_pipeline.h"
 #include "remoting/host/mojom/chromoting_host_services.mojom.h"
 #include "remoting/host/mojom/remote_url_opener.mojom.h"
 #include "remoting/host/mojom/webauthn_proxy.mojom.h"
 #include "remoting/host/peer_session.h"
-#include "remoting/host/security_key/security_key_extension.h"
+#include "remoting/host/terminal_data_channel_manager.h"
 #include "remoting/proto/action.pb.h"
 #include "remoting/proto/control.pb.h"
+#include "remoting/proto/terminal.pb.h"
 #include "remoting/protocol/audio_sample_info.h"
 #include "remoting/protocol/clipboard_echo_filter.h"
 #include "remoting/protocol/clipboard_filter.h"
@@ -52,12 +52,10 @@
 #include "remoting/protocol/errors.h"
 #include "remoting/protocol/host_stub.h"
 #include "remoting/protocol/input_event_timestamps.h"
-#include "remoting/protocol/mouse_cursor_monitor.h"
 #include "remoting/protocol/transport.h"
 #include "remoting/protocol/video_stream.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_capture_types.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_geometry.h"
-#include "third_party/webrtc/modules/desktop_capture/mouse_cursor.h"
 #include "ui/events/types/event_type.h"
 
 namespace remoting {
@@ -89,22 +87,21 @@ class PeerSessionImpl : public PeerSession,
                         public ClientSessionEvents,
                         public CursorVisibilityNotifier::EventHandler,
                         public AudioInjector::Delegate,
-                        public protocol::MouseCursorMonitor::Callback,
                         public mojom::ChromotingSessionServices {
  public:
   // Maximum allowed length in bytes for a client pairing name.
   static constexpr size_t kMaxClientNameLength = 1024;
 
   using RequestPairingResponseCallback =
-      base::OnceCallback<void(std::optional<protocol::PairingResponse>)>;
-  using RequestPairingCallback =
-      base::RepeatingCallback<void(const std::string& client_name,
-                                   RequestPairingResponseCallback response_cb)>;
+      PeerSessionFactory::RequestPairingResponseCallback;
+  using RequestPairingCallback = PeerSessionFactory::RequestPairingCallback;
+  using RequestPairingOnceCallback =
+      PeerSessionFactory::RequestPairingOnceCallback;
 
   // `desktop_environment_factory` must outlive `this`.
   PeerSessionImpl(std::unique_ptr<protocol::ConnectionToClient> connection,
                   DesktopEnvironmentFactory* desktop_environment_factory,
-                  RequestPairingCallback request_pairing_cb);
+                  RequestPairingOnceCallback request_pairing_cb);
 
   PeerSessionImpl(const PeerSessionImpl&) = delete;
   PeerSessionImpl& operator=(const PeerSessionImpl&) = delete;
@@ -115,16 +112,14 @@ class PeerSessionImpl : public PeerSession,
   void Start(PeerSession::EventHandler* event_handler,
              std::string_view client_jid,
              const DesktopEnvironmentOptions& desktop_environment_options,
-             const std::vector<HostExtension*>& extensions,
              const SessionPolicies& session_policies,
              const SessionOptions& session_options) override;
 
-  HostExtensionSessionManager* extension_manager_for_tests() const {
-    return extension_manager_.get();
-  }
-
   TerminalSessionManager* terminal_session_manager_for_tests() const {
-    return terminal_session_manager_.get();
+    return terminal_data_channel_manager_
+               ? terminal_data_channel_manager_
+                     ->terminal_session_manager_for_tests()
+               : nullptr;
   }
 
   // Returns the set of capabilities negotiated between client and host.
@@ -144,8 +139,6 @@ class PeerSessionImpl : public PeerSession,
   void ControlPeerConnection(
       const protocol::PeerConnectionParameters& parameters) override;
   void SetVideoLayout(const protocol::VideoLayout& video_layout) override;
-  void ControlTerminal(
-      const protocol::TerminalControl& terminal_control) override;
 
   // protocol::ConnectionToClient::EventHandler interface.
   void CreateMediaStreams() override;
@@ -188,11 +181,6 @@ class PeerSessionImpl : public PeerSession,
   // CursorVisibilityNotifier::EventHandler interface
   void OnCursorVisibilityChanged(bool visible) override;
 
-  // MouseCursorMonitor::Callback implementation.
-  void OnMouseCursor(
-      std::unique_ptr<webrtc::MouseCursor> mouse_cursor) override;
-  void OnMouseCursorPosition(const webrtc::DesktopVector& position) override;
-
   // mojom::ChromotingSessionServices implementation.
   void BindWebAuthnProxy(
       mojo::PendingReceiver<mojom::WebAuthnProxy> receiver) override;
@@ -202,8 +190,12 @@ class PeerSessionImpl : public PeerSession,
   void BindSecurityKeyForwarder(
       mojo::PendingReceiver<mojom::SecurityKeyForwarder> receiver) override;
 #endif
+  void SetAgentStatus(
+      int32_t terminal_id,
+      const protocol::TerminalControl::AgentInfo& agent_status,
+      SetAgentStatusCallback callback) override;
 
-  protocol::Transport* transport() const override;
+  protocol::Transport* transport() override;
 
   bool channels_connected() const { return channels_connected_; }
 
@@ -224,7 +216,7 @@ class PeerSessionImpl : public PeerSession,
     return effective_policies_;
   }
 
-  void SetRequestPairingCallbackForTesting(RequestPairingCallback cb) {
+  void SetRequestPairingCallbackForTesting(RequestPairingOnceCallback cb) {
     request_pairing_cb_ = std::move(cb);
   }
 
@@ -234,6 +226,9 @@ class PeerSessionImpl : public PeerSession,
 
   void OnDesktopEnvironmentCreated(
       std::unique_ptr<DesktopEnvironment> desktop_environment);
+  void OnAgentIntegrationSupportDetermined(
+      std::unique_ptr<DesktopEnvironment> desktop_environment,
+      bool is_agent_integration_supported);
 
   void CreateAudioInjectorAndBuffer();
 
@@ -264,6 +259,10 @@ class PeerSessionImpl : public PeerSession,
       const std::string& channel_name,
       std::unique_ptr<protocol::MessagePipe> pipe);
 
+  void CreateAgentIntegrationControlMessageHandler(
+      const std::string& channel_name,
+      std::unique_ptr<protocol::MessagePipe> pipe);
+
   void CreateRemoteWebAuthnMessageHandler(
       const std::string& channel_name,
       std::unique_ptr<protocol::MessagePipe> pipe);
@@ -271,8 +270,6 @@ class PeerSessionImpl : public PeerSession,
   void CreateSecurityKeyDataChannelHandler(
       const std::string& channel_name,
       std::unique_ptr<protocol::MessagePipe> pipe);
-
-  void DestroySecurityKeyExtensionSession();
 
   void CreatePerMonitorVideoStreams();
 
@@ -287,15 +284,10 @@ class PeerSessionImpl : public PeerSession,
   // whenever the screen id associated with the active window changes.
   void OnActiveDisplayChanged(webrtc::ScreenId display);
 
-  // Calls SetComposeEnabled() on all video streams. This controls whether the
-  // host's cursor should be composed onto the desktop frame.
-  // TODO: crbug.com/455622961 - Remove this method once the
-  // clientRenderedHostCursor capability is fully rolled out.
-  void SetComposeEnabledOnVideoStreams(bool enabled);
-
-  void SendTerminalOutput(int32_t terminal_id, const std::string& data);
-
-  void OnTerminalExited(int32_t terminal_id);
+  // Creates an outgoing data channel for a restored terminal. Returns nullptr
+  // if the connection is not ready.
+  std::unique_ptr<protocol::MessagePipe> CreateOutgoingTerminalChannel(
+      const std::string& name);
 
   void OnPairingResponse(
       std::optional<protocol::PairingResponse> pairing_response);
@@ -328,15 +320,10 @@ class PeerSessionImpl : public PeerSession,
   // Used to enable/disable clipboard sync and to restrict payload size.
   protocol::ClipboardFilter host_clipboard_filter_;
   protocol::ClipboardFilter client_clipboard_filter_;
-
   // Factory for weak pointers to the client clipboard stub.
   // This must appear after `clipboard_echo_filter_`, so that it won't outlive
   // it.
   base::WeakPtrFactory<protocol::ClipboardStub> client_clipboard_factory_;
-
-  // A timer that triggers a disconnect when the maximum session duration
-  // is reached.
-  base::OneShotTimer max_duration_timer_;
 
   // Objects responsible for sending video, audio.
   std::map<webrtc::ScreenId, std::unique_ptr<protocol::VideoStream>>
@@ -377,7 +364,7 @@ class PeerSessionImpl : public PeerSession,
   int default_y_dpi_ = kDefaultDpi;
 
   // Callback for PIN-less authentication pairing request.
-  RequestPairingCallback request_pairing_cb_;
+  RequestPairingOnceCallback request_pairing_cb_;
 
   // Used to dispatch new data channels to factory methods.
   protocol::DataChannelManager data_channel_manager_;
@@ -412,9 +399,6 @@ class PeerSessionImpl : public PeerSession,
   std::unique_ptr<KeyboardLayoutMonitor> keyboard_layout_monitor_;
 
   std::unique_ptr<SecurityKeyAuthHandler> security_key_auth_handler_;
-  std::unique_ptr<SecurityKeyExtension> security_key_extension_;
-  std::unique_ptr<HostExtensionSessionManager> extension_manager_;
-  std::vector<raw_ptr<HostExtension, VectorExperimental>> extensions_;
 
   base::WeakPtr<RemoteWebAuthnMessageHandler> remote_webauthn_message_handler_;
   base::WeakPtr<RemoteOpenUrlMessageHandler> remote_open_url_message_handler_;
@@ -426,10 +410,9 @@ class PeerSessionImpl : public PeerSession,
 
   SessionPolicies effective_policies_;
 
-  bool host_cursor_rendered_by_client_ = false;
   bool cursor_visible_ = false;
 
-  std::unique_ptr<TerminalSessionManager> terminal_session_manager_;
+  std::unique_ptr<TerminalDataChannelManager> terminal_data_channel_manager_;
 
   bool pairing_request_pending_ = false;
   std::optional<protocol::PairingResponse> pending_pairing_response_;
@@ -459,9 +442,7 @@ class PeerSessionImplFactory : public PeerSessionFactory {
   std::unique_ptr<PeerSession> Create() override;
 
   void set_request_pairing_callback(
-      const RequestPairingCallback& request_pairing_cb) {
-    request_pairing_cb_ = request_pairing_cb;
-  }
+      const RequestPairingCallback& request_pairing_cb) override;
 
  private:
   SEQUENCE_CHECKER(sequence_checker_);

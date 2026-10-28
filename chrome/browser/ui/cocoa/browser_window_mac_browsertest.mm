@@ -27,6 +27,7 @@
 #include "testing/gtest_mac.h"
 #include "ui/accessibility/accessibility_switches.h"
 #import "ui/base/cocoa/window_size_constants.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/test/ns_ax_tree_validator.h"
 
 // Test harness for Mac-specific behaviors of BrowserWindow.
@@ -83,7 +84,7 @@ IN_PROC_BROWSER_TEST_F(BrowserWindowMacTest,
   [window addChildWindow:child_window ordered:NSWindowAbove];
 
   NSMenuItem* show_bookmark_bar_menu_item =
-      [[[[NSApp mainMenu] itemWithTag:kMacViewMenuId] submenu]
+      [[[[NSApp mainMenu] itemWithTag:IDC_VIEW_MENU] submenu]
           itemWithTag:IDC_SHOW_BOOKMARK_BAR];
 
   // Make sure both windows validate the bookmark bar menu item.
@@ -166,10 +167,10 @@ IN_PROC_BROWSER_TEST_F(BrowserWindowMacTest, DisableCommandsWhenSheetAttached) {
       [[[[NSApp mainMenu] itemWithTag:AppMenuModel::kBookmarksMenuPlaceholder]
           submenu] itemWithTag:IDC_BOOKMARK_ALL_TABS];
   ASSERT_TRUE(bookmark_all_tabs_item);
-  NSMenuItem* print_item = [[[[NSApp mainMenu] itemWithTag:kMacFileMenuId]
+  NSMenuItem* print_item = [[[[NSApp mainMenu] itemWithTag:IDC_FILE_MENU]
       submenu] itemWithTag:IDC_PRINT];
   ASSERT_TRUE(print_item);
-  NSMenuItem* save_item = [[[[NSApp mainMenu] itemWithTag:kMacFileMenuId]
+  NSMenuItem* save_item = [[[[NSApp mainMenu] itemWithTag:IDC_FILE_MENU]
       submenu] itemWithTag:IDC_SAVE_PAGE];
   ASSERT_TRUE(save_item);
 

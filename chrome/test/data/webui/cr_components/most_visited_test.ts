@@ -2,9 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'chrome://resources/cr_components/most_visited/most_visited.js';
+
 import {TileSource} from '//resources/mojo/components/ntp_tiles/tile_source.mojom-webui.js';
-import {MostVisitedElement} from 'chrome://resources/cr_components/most_visited/most_visited.js';
-import type {AutoRemovedEventDetail} from 'chrome://resources/cr_components/most_visited/most_visited.js';
+import type {AutoRemovedEventDetail, MostVisitedElement} from 'chrome://resources/cr_components/most_visited/most_visited.js';
 import type {MostVisitedPageRemote, MostVisitedTile} from 'chrome://resources/cr_components/most_visited/most_visited.mojom-webui.js';
 import {browserProxyFactory, MostVisitedPageHandlerRemote} from 'chrome://resources/cr_components/most_visited/most_visited.mojom-webui.js';
 import {MostVisitedWindowProxy} from 'chrome://resources/cr_components/most_visited/window_proxy.js';
@@ -163,24 +164,32 @@ function leaveUrlInput() {
 }
 
 interface SetUpTestOptions {
+  nonEditable: boolean;
+  hideTitle: boolean;
   singleRow: boolean;
   reflowOnOverflow: boolean;
   expandableTilesEnabled: boolean;
+  shortcutsReorderEnabled: boolean;
   maxTilesInCollapsedState: number;
   maxShortcutsInExpandedState: number;
   maxMostVisitedTilesInExpandedState: number;
   maxEnterpriseShortcuts: number;
+  maxTiles: number;
 }
 
 function setUpTest(providedOptions: Partial<SetUpTestOptions> = {}) {
   const defaultOptions = {
+    nonEditable: false,
+    hideTitle: false,
     singleRow: false,
     reflowOnOverflow: false,
     expandableTilesEnabled: false,
+    shortcutsReorderEnabled: false,
     maxTilesInCollapsedState: 6,
     maxShortcutsInExpandedState: 10,
     maxMostVisitedTilesInExpandedState: 8,
     maxEnterpriseShortcuts: 10,
+    maxTiles: 0,
   };
   const options = {...defaultOptions, ...providedOptions};
   document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -188,11 +197,16 @@ function setUpTest(providedOptions: Partial<SetUpTestOptions> = {}) {
   createBrowserProxy();
   createWindowProxy();
 
-  mostVisited = new MostVisitedElement();
+  mostVisited = document.createElement('cr-most-visited');
+  mostVisited.nonEditable = options.nonEditable;
+  mostVisited.hideTitle = options.hideTitle;
   mostVisited.singleRow = options.singleRow;
   mostVisited.reflowOnOverflow = options.reflowOnOverflow;
   if (options.expandableTilesEnabled) {
     mostVisited.setAttribute('expandable-tiles-enabled', '');
+  }
+  if (options.shortcutsReorderEnabled) {
+    mostVisited.setAttribute('shortcuts-reorder-enabled', '');
   }
   mostVisited.setAttribute(
       'max-tiles-in-collapsed-state',
@@ -205,6 +219,9 @@ function setUpTest(providedOptions: Partial<SetUpTestOptions> = {}) {
       options.maxMostVisitedTilesInExpandedState.toString());
   mostVisited.setAttribute(
       'max-enterprise-shortcuts', options.maxEnterpriseShortcuts.toString());
+  if (options.maxTiles > 0) {
+    mostVisited.setAttribute('max-tiles', options.maxTiles.toString());
+  }
   document.body.appendChild(mostVisited);
   assertEquals(1, handler.getCallCount('updateMostVisitedInfo'));
   return wide();
@@ -244,6 +261,34 @@ suite('General', () => {
         new KeyboardEvent('keyup', {key: ' '}));
     assertTrue(mostVisited.$.dialog.open);
   });
+
+  test(
+      'favicon scale factor when mostVisitedHighDpiFaviconsEnabled is false',
+      async () => {
+        document.body.innerHTML = window.trustedTypes!.emptyHTML;
+        loadTimeData.overrideValues({mostVisitedHighDpiFaviconsEnabled: false});
+        await setUpTest();
+        await addTiles(1);
+        const img = mostVisited.shadowRoot.querySelector<HTMLImageElement>(
+            '.tile-icon img')!;
+        const url = new URL(img.src);
+        assertEquals('1x', url.searchParams.get('scaleFactor'));
+      });
+
+  test(
+      'favicon scale factor when mostVisitedHighDpiFaviconsEnabled is true',
+      async () => {
+        document.body.innerHTML = window.trustedTypes!.emptyHTML;
+        loadTimeData.overrideValues({mostVisitedHighDpiFaviconsEnabled: true});
+        await setUpTest();
+        await addTiles(1);
+        const img = mostVisited.shadowRoot.querySelector<HTMLImageElement>(
+            '.tile-icon img')!;
+        const url = new URL(img.src);
+        assertEquals(
+            `${window.devicePixelRatio || 1}x`,
+            url.searchParams.get('scaleFactor'));
+      });
 });
 
 suite('ShowAddButton', () => {
@@ -316,7 +361,7 @@ suite('ExpandableTiles', () => {
         'getMostVisitedExpandedState', Promise.resolve({isExpanded: true}));
     createWindowProxy();
 
-    mostVisited = new MostVisitedElement();
+    mostVisited = document.createElement('cr-most-visited');
     mostVisited.setAttribute('expandable-tiles-enabled', '');
     document.body.appendChild(mostVisited);
     await wide();
@@ -905,6 +950,59 @@ suite('Reflow Layouts', () => {
   });
 });
 
+suite('ContainerWidth', () => {
+  setup(async () => {
+    await setUpTest({singleRow: true});
+    await addTiles(8);
+  });
+
+  test('column count follows the container width', async () => {
+    // 700px fits 6 tiles of 112px, so 5 columns.
+    mostVisited.containerWidth = 700;
+    await microtasksFinished();
+    assertTileLength(8);
+    assertHiddenTileLength(3);
+
+    // 10 columns, the maximum for a single row.
+    mostVisited.containerWidth = 1300;
+    await microtasksFinished();
+    assertHiddenTileLength(0);
+
+    // 3 columns, the minimum.
+    mostVisited.containerWidth = 400;
+    await microtasksFinished();
+    assertHiddenTileLength(5);
+  });
+
+  test('switches between the container and window widths', async () => {
+    assertHiddenTileLength(0);
+
+    mostVisited.containerWidth = 400;
+    await microtasksFinished();
+    assertHiddenTileLength(5);
+
+    // The window's width is no longer listened to.
+    await wide();
+    assertHiddenTileLength(5);
+
+    mostVisited.containerWidth = null;
+    await microtasksFinished();
+    await wide();
+    assertHiddenTileLength(0);
+  });
+
+  test('keeps using the container width when singleRow changes', async () => {
+    mostVisited.containerWidth = 700;
+    await microtasksFinished();
+    assertHiddenTileLength(3);
+
+    // 5 columns in 2 rows.
+    mostVisited.singleRow = false;
+    await microtasksFinished();
+    assertHiddenTileLength(0);
+  });
+});
+
 suite('LoggingAndUpdates', () => {
   setup(async () => {
     await setUpTest();
@@ -1316,7 +1414,7 @@ suite('Modification', () => {
                 {
                   title: 'e1',
                   titleDirection: TextDirection.LEFT_TO_RIGHT,
-                  url: `https://e1/`,
+                  url: 'https://e1/',
                   source: TileSource.ENTERPRISE_SHORTCUTS,
                   titleSource: 0,
                   isQueryTile: false,
@@ -1326,7 +1424,7 @@ suite('Modification', () => {
                 {
                   title: 'c1',
                   titleDirection: TextDirection.LEFT_TO_RIGHT,
-                  url: `https://e1/`,
+                  url: 'https://e1/',
                   source: TileSource.CUSTOM_LINKS,
                   titleSource: 1,
                   isQueryTile: false,
@@ -1386,7 +1484,7 @@ suite('Modification', () => {
             {
               title: 'e1',
               titleDirection: TextDirection.LEFT_TO_RIGHT,
-              url: `https://e1/`,
+              url: 'https://e1/',
               source: TileSource.ENTERPRISE_SHORTCUTS,
               titleSource: 0,
               isQueryTile: false,
@@ -1396,7 +1494,7 @@ suite('Modification', () => {
             {
               title: 'c1',
               titleDirection: TextDirection.LEFT_TO_RIGHT,
-              url: `https://c1/`,
+              url: 'https://c1/',
               source: TileSource.CUSTOM_LINKS,
               titleSource: 1,
               isQueryTile: false,
@@ -1729,7 +1827,7 @@ function createDragAndDropSuite(singleRow: boolean, reflowOnOverflow: boolean) {
     const enterpriseShortcut = {
       title: 'e1',
       titleDirection: TextDirection.LEFT_TO_RIGHT,
-      url: `https://e1/`,
+      url: 'https://e1/',
       source: TileSource.ENTERPRISE_SHORTCUTS,
       titleSource: 0,
       isQueryTile: false,
@@ -1739,7 +1837,7 @@ function createDragAndDropSuite(singleRow: boolean, reflowOnOverflow: boolean) {
     const customLink1 = {
       title: 'c1',
       titleDirection: TextDirection.LEFT_TO_RIGHT,
-      url: `https://c1/`,
+      url: 'https://c1/',
       source: TileSource.CUSTOM_LINKS,
       titleSource: 1,
       isQueryTile: false,
@@ -1749,7 +1847,7 @@ function createDragAndDropSuite(singleRow: boolean, reflowOnOverflow: boolean) {
     const customLink2 = {
       title: 'c2',
       titleDirection: TextDirection.LEFT_TO_RIGHT,
-      url: `https://c2/`,
+      url: 'https://c2/',
       source: TileSource.CUSTOM_LINKS,
       titleSource: 2,
       isQueryTile: false,
@@ -1803,7 +1901,7 @@ function createDragAndDropSuite(singleRow: boolean, reflowOnOverflow: boolean) {
     const enterpriseShortcut = {
       title: 'a',
       titleDirection: TextDirection.LEFT_TO_RIGHT,
-      url: `https://a/`,
+      url: 'https://a/',
       source: TileSource.ENTERPRISE_SHORTCUTS,
       titleSource: 0,
       isQueryTile: false,
@@ -1813,7 +1911,7 @@ function createDragAndDropSuite(singleRow: boolean, reflowOnOverflow: boolean) {
     const customLink = {
       title: 'b',
       titleDirection: TextDirection.LEFT_TO_RIGHT,
-      url: `https://b/`,
+      url: 'https://b/',
       source: TileSource.CUSTOM_LINKS,
       titleSource: 1,
       isQueryTile: false,
@@ -1857,7 +1955,7 @@ function createDragAndDropSuite(singleRow: boolean, reflowOnOverflow: boolean) {
     const enterpriseShortcut = {
       title: 'a',
       titleDirection: TextDirection.LEFT_TO_RIGHT,
-      url: `https://a/`,
+      url: 'https://a/',
       source: TileSource.ENTERPRISE_SHORTCUTS,
       titleSource: 0,
       isQueryTile: false,
@@ -1867,7 +1965,7 @@ function createDragAndDropSuite(singleRow: boolean, reflowOnOverflow: boolean) {
     const customLink = {
       title: 'b',
       titleDirection: TextDirection.LEFT_TO_RIGHT,
-      url: `https://b/`,
+      url: 'https://b/',
       source: TileSource.CUSTOM_LINKS,
       titleSource: 1,
       isQueryTile: false,
@@ -2147,7 +2245,7 @@ suite('EnterpriseShortcuts', () => {
           {
             title: 'c',
             titleDirection: TextDirection.LEFT_TO_RIGHT,
-            url: `https://c/`,
+            url: 'https://c/',
             source: TileSource.CUSTOM_LINKS,
             titleSource: 1,
             isQueryTile: false,
@@ -2269,6 +2367,131 @@ suite('EnterpriseShortcuts', () => {
   });
 });
 
+suite('ShortcutsReorder', () => {
+  [false, true].forEach(shortcutsReorderEnabled => {
+    test(
+        `reorder menu option rendered when shortcutsReorderEnabled=${
+            shortcutsReorderEnabled}`,
+        async () => {
+          document.body.innerHTML = window.trustedTypes!.emptyHTML;
+          await setUpTest({shortcutsReorderEnabled});
+          await addTiles(1);
+          const tile = queryTiles()[0]!;
+          const actionMenuButton =
+              tile.querySelector<HTMLElement>('#actionMenuButton')!;
+          assertFalse(mostVisited.$.actionMenu.open);
+          actionMenuButton.click();
+          assertTrue(mostVisited.$.actionMenu.open);
+          const reorderButton =
+              $$<HTMLElement>(mostVisited, '#actionMenuReorder');
+          if (shortcutsReorderEnabled) {
+            assertTrue(!!reorderButton);
+          } else {
+            assertFalse(!!reorderButton);
+          }
+        });
+  });
+
+  test('tile properties change when reorder mode is enabled', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    await setUpTest({shortcutsReorderEnabled: true});
+    await addTiles(1);
+    const tile = queryTiles()[0]!;
+    const tileLink = tile.querySelector<HTMLAnchorElement>('a')!;
+    // In default mode, the aria-label is just the title.
+    const title = tileLink.getAttribute('aria-label')!;
+
+    // Open the action menu and enter reorder mode.
+    tile.querySelector<HTMLElement>('#actionMenuButton')!.click();
+    await microtasksFinished();
+    $$<HTMLElement>(mostVisited, '#actionMenuReorder').click();
+    await new Promise(requestAnimationFrame);
+    await microtasksFinished();
+
+    // The aria-label should change when in reorder mode.
+    const reorderA11yLabel = tileLink.getAttribute('aria-label')!;
+    assertNotEquals(title, reorderA11yLabel);
+    assertTrue(reorderA11yLabel.includes('arrow keys'));
+    assertEquals('', tileLink.getAttribute('href'));
+    assertEquals(tileLink, mostVisited.shadowRoot?.activeElement);
+  });
+
+  test('container role is application only in reorder mode', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    await setUpTest({shortcutsReorderEnabled: true});
+    await addTiles(1);
+    const container = $$<HTMLElement>(mostVisited, '#container');
+    assertFalse(container.hasAttribute('role'));
+
+    // Enter reorder mode.
+    const tile = queryTiles()[0]!;
+    tile.querySelector<HTMLElement>('#actionMenuButton')!.click();
+    await microtasksFinished();
+    $$<HTMLElement>(mostVisited, '#actionMenuReorder').click();
+    await microtasksFinished();
+
+    assertEquals('application', container.getAttribute('role'));
+  });
+
+  test('tiles reorder correctly with arrow keys', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    await setUpTest({shortcutsReorderEnabled: true});
+    await addTiles(3);
+    const tilesBefore = queryTiles();
+    const firstTitleBefore = tilesBefore[0]!.title;
+    const secondTitleBefore = tilesBefore[1]!.title;
+
+    // Enter reorder mode on the first tile.
+    tilesBefore[0]!.querySelector<HTMLElement>('#actionMenuButton')!.click();
+    await microtasksFinished();
+    $$<HTMLElement>(mostVisited, '#actionMenuReorder').click();
+    await microtasksFinished();
+
+    // Press Right arrow to swap the first and second tiles.
+    tilesBefore[0]!.dispatchEvent(
+        new KeyboardEvent('keydown', {key: 'ArrowRight', bubbles: true}));
+    await microtasksFinished();
+
+    const tilesAfter = queryTiles();
+    // The second tile should now be first, and the first tile should now be
+    // second
+    assertEquals(secondTitleBefore, tilesAfter[0]!.title);
+    assertEquals(firstTitleBefore, tilesAfter[1]!.title);
+  });
+
+  test('tiles reorder wraps only across visible tiles', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    await setUpTest({
+      shortcutsReorderEnabled: true,
+      expandableTilesEnabled: true,
+      maxTilesInCollapsedState: 2,
+    });
+    await addTiles(3);
+    const tilesBefore = queryTiles();
+    const firstTitle = tilesBefore[0]!.title;
+    const secondTitle = tilesBefore[1]!.title;
+    const hiddenTitle = tilesBefore[2]!.title;
+    assertTrue(tilesBefore[2]!.hidden);
+
+    // Enter reorder mode on the first visible tile.
+    tilesBefore[0]!.querySelector<HTMLElement>('#actionMenuButton')!.click();
+    await microtasksFinished();
+    $$<HTMLElement>(mostVisited, '#actionMenuReorder').click();
+    await microtasksFinished();
+
+    // Press Left arrow to wrap around to the last visible tile,
+    // skipping the hidden tile.
+    tilesBefore[0]!.dispatchEvent(
+        new KeyboardEvent('keydown', {key: 'ArrowLeft', bubbles: true}));
+    await microtasksFinished();
+
+    const tilesAfter = queryTiles();
+    assertEquals(secondTitle, tilesAfter[0]!.title);
+    assertEquals(firstTitle, tilesAfter[1]!.title);
+    assertEquals(hiddenTitle, tilesAfter[2]!.title);
+  });
+});
+
 suite('ShortcutsAutoRemovalToast', () => {
   setup(async () => {
     await setUpTest();
@@ -2307,4 +2530,118 @@ suite('ShortcutsAutoRemovalToast', () => {
     autoRemovalEvent!.detail.undo();
     await wait;
   });
+});
+
+suite('NonEditable', () => {
+  setup(async () => {
+    await setUpTest({nonEditable: true});
+  });
+
+  test('add shortcut button is hidden for custom links', async () => {
+    await addTiles(1, /*customLinksEnabled=*/ true);
+    assertAddShortcutHidden();
+  });
+
+  test('action menu button is hidden for custom links', async () => {
+    await addTiles(1, /*customLinksEnabled=*/ true);
+    const actionMenuButtons = queryAll<HTMLElement>('#actionMenuButton');
+    assertEquals(1, actionMenuButtons.length);
+    assertTrue(actionMenuButtons[0]!.hidden);
+  });
+
+  test('remove button is hidden for top sites', async () => {
+    await addTiles(1, /*customLinksEnabled=*/ false);
+    const removeButtons = queryAll<HTMLElement>('#removeButton');
+    assertEquals(1, removeButtons.length);
+    assertTrue(removeButtons[0]!.hidden);
+  });
+
+  test('delete key does not delete tile', async () => {
+    await addTiles(1, /*customLinksEnabled=*/ true);
+    const tile = queryTiles()[0]!;
+    tile.dispatchEvent(new KeyboardEvent('keydown', {key: 'Delete'}));
+    assertEquals(0, handler.getCallCount('deleteMostVisitedTile'));
+  });
+
+  test('tiles are not draggable', async () => {
+    await addTiles(1, /*customLinksEnabled=*/ true);
+    const tile = queryTiles()[0]!;
+    assertEquals('false', tile.getAttribute('draggable'));
+  });
+
+  test('show more button is shown when expandable tiles enabled', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    await setUpTest({
+      nonEditable: true,
+      expandableTilesEnabled: true,
+      maxTilesInCollapsedState: 2,
+    });
+    await addTiles(3, /*customLinksEnabled=*/ true);
+    const showMore = getShowMoreButton();
+    assertTrue(!!showMore);
+    assertFalse(showMore.hidden);
+    assertAddShortcutHidden();
+  });
+
+  test('tile titles are hidden when hideTitle is true', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    await setUpTest({
+      nonEditable: true,
+      hideTitle: true,
+    });
+    await addTiles(1, /*customLinksEnabled=*/ true);
+    const titleElements = queryAll<HTMLElement>('.tile-title');
+    assertTrue(titleElements.length > 0);
+    titleElements.forEach(el => assertTrue(el.hidden));
+  });
+
+  test(
+      'maxTiles limits total tiles in single row and updates dynamically',
+      async () => {
+        document.body.innerHTML = window.trustedTypes!.emptyHTML;
+        await setUpTest({
+          nonEditable: true,
+          hideTitle: true,
+          singleRow: true,
+          maxTiles: 7,
+        });
+        await addTiles(10, /*customLinksEnabled=*/ false);
+        let tiles = queryTiles();
+        assertEquals(7, tiles.length);
+        tiles.forEach(el => assertFalse(el.hidden));
+
+        // Verify dynamically changing maxTiles updates rendered tiles.
+        mostVisited.maxTiles = 5;
+        await microtasksFinished();
+        tiles = queryTiles();
+        assertEquals(5, tiles.length);
+        tiles.forEach(el => assertFalse(el.hidden));
+      });
+
+  [false, true].forEach(hideTitle => {
+    test(
+        `focused tile link highlights circular tile icon, hideTitle=${
+            hideTitle}`,
+        async () => {
+          document.body.innerHTML = window.trustedTypes!.emptyHTML;
+          await setUpTest({
+            nonEditable: true,
+            hideTitle,
+          });
+          mostVisited.style.setProperty(
+              '--most-visited-focus-shadow', 'rgb(26, 115, 232) 0px 0px 0px 2px');
+          document.documentElement.classList.add('focus-outline-visible');
+          await addTiles(1, /*customLinksEnabled=*/ false);
+          const tile = queryTiles()[0]!;
+          const tileLink = tile.querySelector<HTMLElement>('a')!;
+          const tileIcon = tile.querySelector<HTMLElement>('.tile-icon')!;
+
+          tileLink.focus();
+          assertEquals('none', getComputedStyle(tileLink).boxShadow);
+          assertEquals(
+              'rgb(26, 115, 232) 0px 0px 0px 2px',
+              getComputedStyle(tileIcon).boxShadow);
+        });
+  });
+
 });

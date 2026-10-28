@@ -37,7 +37,6 @@ test("ash_webui_unittests") {
     "//ash/webui/os_feedback_ui/backend:unit_tests",
     "//ash/webui/personalization_app:unit_tests",
     "//ash/webui/print_management/backend:unit_tests",
-    "//ash/webui/print_preview_cros:unit_tests",
     "//ash/webui/projector_app:unit_tests",
     "//ash/webui/recorder_app_ui:unit_tests",
     "//ash/webui/scanning:unit_tests",
@@ -51,6 +50,7 @@ test("ash_webui_unittests") {
     "//base",
     "//base/test:test_support",
     "//build:chromeos_buildflags",
+    "//chromeos/ash/components:test_support",
     "//content/test:test_support",
     "//mojo/core/embedder",
     "//ui/accessibility:test_support",
@@ -58,11 +58,6 @@ test("ash_webui_unittests") {
     "//ui/color",
     "//ui/gl",
     "//ui/gl:test_support",
-  ]
-
-  data_deps = [
-    "//chromeos/strings:chromeos_test_strings",
-    "//ui/resources:ui_test_pak_data",
   ]
 }
 

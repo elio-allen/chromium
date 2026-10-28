@@ -10,9 +10,9 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
+#include "base/no_destructor.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "chrome/browser/glic/common/glic_navigation.h"
@@ -22,15 +22,16 @@
 #include "chrome/browser/glic/glic_profile_manager.h"
 #include "chrome/browser/glic/host/auth_controller.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
-#include "chrome/browser/glic/host/glic_ui.h"
 #include "chrome/browser/glic/host/glic_web_client_access.h"
 #include "chrome/browser/glic/host/glic_web_client_handler.h"
+#include "chrome/browser/glic/host/glic_webui_contents_manager.h"
 #include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/public/glic_provider_metrics.h"
 #include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
 #include "chrome/browser/glic/service/metrics/glic_instance_metrics.h"
 #include "chrome/browser/profiles/profile.h"
@@ -40,7 +41,10 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/buildflags/buildflags.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
+#include "ui/display/display.h"
+#include "ui/display/screen.h"
 #include "ui/gfx/geometry/size.h"
 #include "url/gurl.h"
 
@@ -52,6 +56,49 @@
 
 namespace glic {
 
+namespace {
+
+// Translates the wire enum into the browser-side vocabulary. Exhaustive with
+// no default so that a new mojom value cannot be added without deciding what
+// it means.
+ClientLoadErrorReason ToClientLoadErrorReason(
+    mojom::ClientLoadErrorReason reason) {
+  switch (reason) {
+    case mojom::ClientLoadErrorReason::kUnknown:
+      return ClientLoadErrorReason::kUnknown;
+    case mojom::ClientLoadErrorReason::kUnavailable:
+      return ClientLoadErrorReason::kUnavailable;
+    case mojom::ClientLoadErrorReason::kIneligibleAccount:
+      return ClientLoadErrorReason::kIneligibleAccount;
+    case mojom::ClientLoadErrorReason::kLocationMismatch:
+      return ClientLoadErrorReason::kLocationMismatch;
+    case mojom::ClientLoadErrorReason::kDisabledByAdmin:
+      return ClientLoadErrorReason::kDisabledByAdmin;
+    case mojom::ClientLoadErrorReason::kOffline:
+      return ClientLoadErrorReason::kOffline;
+    case mojom::ClientLoadErrorReason::kSignIn:
+      return ClientLoadErrorReason::kSignIn;
+    case mojom::ClientLoadErrorReason::kCookieSyncFailed:
+      return ClientLoadErrorReason::kCookieSyncFailed;
+    case mojom::ClientLoadErrorReason::kGuestLoadFailed:
+      return ClientLoadErrorReason::kGuestLoadFailed;
+    case mojom::ClientLoadErrorReason::kGuestProcessGone:
+      return ClientLoadErrorReason::kGuestProcessGone;
+    case mojom::ClientLoadErrorReason::kClientError:
+      return ClientLoadErrorReason::kClientError;
+    case mojom::ClientLoadErrorReason::kClientLoadTimeout:
+      return ClientLoadErrorReason::kClientLoadTimeout;
+    case mojom::ClientLoadErrorReason::kWarmedTimeout:
+      return ClientLoadErrorReason::kWarmedTimeout;
+    case mojom::ClientLoadErrorReason::kGuestOriginBlocked:
+      return ClientLoadErrorReason::kGuestOriginBlocked;
+    case mojom::ClientLoadErrorReason::kGuestApiNotAllowed:
+      return ClientLoadErrorReason::kGuestApiNotAllowed;
+  }
+}
+
+}  // namespace
+
 GlicPageHandler::GlicPageHandler(
     content::WebContents* webui_contents,
     Host* host,
@@ -60,16 +107,23 @@ GlicPageHandler::GlicPageHandler(
     : host_(host),
       webui_contents_(webui_contents),
       browser_context_(webui_contents->GetBrowserContext()),
+      metric_reporter_(
+          Profile::FromBrowserContext(webui_contents->GetBrowserContext())),
       receiver_(this, std::move(receiver)),
       page_(std::move(page)) {
   VLOG(1) << "Glic [PageHandler] Constructor";
   CHECK(host_);
   MarkProcessAsGlic(webui_contents->GetPrimaryMainFrame()->GetProcess());
+  host_observation_.Observe(host_);
   host_->WebUIPageHandlerAdded(this);
-  host_->AddObserver(this);
-  page_->WebClientStateChanged(host_->web_client_state());
-  host_->instance().AddStateObserver(this);
-  UpdatePageState(host_->instance().GetPanelState().kind);
+  if (auto* contents_manager = static_cast<GlicWebUIContentsManager*>(
+          GetContentsManagerForWebContents(webui_contents_))) {
+    contents_manager->WebUIPageHandlerAdded(this);
+  }
+  subscriptions_.push_back(
+      host_->instance().GetPanelState().AddObserverAndNotify(
+          base::BindRepeating(&GlicPageHandler::PanelStateChanged,
+                              base::Unretained(this))));
   subscriptions_.push_back(
       GetGlicService()->enabling().RegisterProfileReadyStateChanged(
           base::BindRepeating(&GlicPageHandler::UpdateProfileReadyState,
@@ -79,14 +133,11 @@ GlicPageHandler::GlicPageHandler(
 
 GlicPageHandler::~GlicPageHandler() {
   VLOG(1) << "Glic [PageHandler] Destructor";
-  host_->instance().RemoveStateObserver(this);
-  WebUiStateChanged(glic::mojom::WebUiState::kUninitialized);
-  // Clear `host_` before unregistering so the Host can be deleted
-  // synchronously without leaving a dangling raw_ptr during teardown.
-  Host* host = host_;
-  host_ = nullptr;
-  host->RemoveObserver(this);
-  host->WebUIPageHandlerRemoved(this);
+  if (auto* contents_manager = static_cast<GlicWebUIContentsManager*>(
+          GetContentsManagerForWebContents(webui_contents_))) {
+    contents_manager->WebUIPageHandlerRemoved(this);
+  }
+  host_->WebUIPageHandlerRemoved(this);
 }
 
 content::WebContents* GlicPageHandler::webui_contents() {
@@ -99,12 +150,6 @@ Host& GlicPageHandler::host() {
 
 GlicKeyedService* GlicPageHandler::GetGlicService() {
   return GlicKeyedServiceFactory::GetGlicKeyedService(browser_context_);
-}
-
-void GlicPageHandler::CreateWebClient(
-    ::mojo::PendingReceiver<glic::mojom::WebClientHandler>
-        web_client_receiver) {
-  host_->CreateWebClient(std::move(web_client_receiver));
 }
 
 void GlicPageHandler::PrepareForClient(
@@ -125,8 +170,11 @@ void GlicPageHandler::PrepareForClient(
       },
       this->weak_ptr_factory_.GetWeakPtr(), std::move(callback));
 
-  GetGlicService()->GetAuthController().CheckAuthBeforeLoad(
-      std::move(wrapped_callback));
+  if (auto* auth_controller = GetGlicService()->GetAuthController()) {
+    auth_controller->CheckAuthBeforeLoad(std::move(wrapped_callback));
+  } else {
+    std::move(wrapped_callback).Run(mojom::PrepareForClientResult::kSuccess);
+  }
 }
 
 void GlicPageHandler::WebviewCommitted(const GURL& url) {
@@ -146,24 +194,42 @@ void GlicPageHandler::OnZoomLevelChange(double zoom_factor) {
     LOG(ERROR) << "Glic [PageHandler] Invalid zoom level: " << zoom_factor;
     return;
   }
+  // LINT.ThenChange(//chrome/browser/resources/glic/webview.ts:GlicZoomFactors,//chrome/browser/glic/host/guest_util.cc:GlicZoomFactors)
+
   int zoom_percent = std::round(zoom_factor * 100);
   auto* pref_service =
       Profile::FromBrowserContext(browser_context_)->GetPrefs();
   // The webui sends a zoom level change on initialization. Skip these.
+  if (!has_received_initial_zoom_) {
+    has_received_initial_zoom_ = true;
+    pref_service->SetInteger(prefs::kGlicZoomLevel, zoom_percent);
+    return;
+  }
   if (pref_service->GetInteger(prefs::kGlicZoomLevel) != zoom_percent) {
     // Note that zoom level is already persisted in the glic webview partition -
     // this pref is only used for metrics.
     pref_service->SetInteger(prefs::kGlicZoomLevel, zoom_percent);
     host().instance_metrics().OnZoomLevelChange();
   }
-  // LINT.ThenChange(//chrome/browser/resources/glic/webview.ts:GlicZoomFactors,//chrome/browser/glic/host/guest_util.cc:GlicZoomFactors)
 }
 
 void GlicPageHandler::NotifyWindowIntentToShow() {
+  // The page retries most failures when it is shown (see `intentToShow()` in
+  // glic_app_controller.ts), so a failure it reported before this point
+  // describes a load that is about to be replaced. Withdraw it now rather than
+  // when the page gets around to reloading: `Host::client_load_state()` is read
+  // synchronously by invocations in the same call stack as the show, which
+  // would otherwise fail on the stale verdict and never see the retry. A page
+  // that does not retry reasserts its failure in response to `IntentToShow()`.
+  host().SetClientLoadFailed(this, false);
   page_->IntentToShow();
 }
 
-void GlicPageHandler::Zoom(mojom::ZoomAction zoom_action) {
+void GlicPageHandler::WaitForLoad(mojom::Page::WaitForLoadCallback callback) {
+  page_->WaitForLoad(std::move(callback));
+}
+
+void GlicPageHandler::Zoom(mojom::ZoomAction zoom_action, ZoomSource source) {
   auto* pref_service =
       Profile::FromBrowserContext(browser_context_)->GetPrefs();
   int current_zoom = pref_service->GetInteger(prefs::kGlicZoomLevel);
@@ -194,7 +260,26 @@ void GlicPageHandler::Zoom(mojom::ZoomAction zoom_action) {
       break;
   }
 
-  base::UmaHistogramEnumeration("Glic.ZoomAction", action_metric);
+  // Log the aggregate base metric for reporting continuity.
+  metric_reporter_.RecordEnumeration("ZoomAction", action_metric);
+
+  // Log the sliced metric.
+  const char* zoom_action_by_source_metric_name;
+  switch (source) {
+    case ZoomSource::kHotkey:
+      zoom_action_by_source_metric_name = "ZoomAction.Hotkey";
+      break;
+    case ZoomSource::kHotkeyWithShift:
+      zoom_action_by_source_metric_name = "ZoomAction.HotkeyWithShift";
+      break;
+    case ZoomSource::kScroll:
+      zoom_action_by_source_metric_name = "ZoomAction.Scroll";
+      break;
+  }
+
+  metric_reporter_.RecordEnumeration(zoom_action_by_source_metric_name,
+                                     action_metric);
+
   page_->Zoom(zoom_action);
 }
 
@@ -218,11 +303,54 @@ void GlicPageHandler::OpenDisabledByAdminLinkAndClosePanel() {
   std::unique_ptr<NavigateParams> params = std::make_unique<NavigateParams>(
       Profile::FromBrowserContext(browser_context_), disabled_by_admin_link_url,
       ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
-  params->disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params->disposition = WindowOpenDisposition::kNewForegroundTab;
   glic::NavigateAsync(std::move(params), base::DoNothing());
   host().ClosePanel();
   base::RecordAction(
       base::UserMetricsAction("Glic.DisabledByAdminPanelLinkClicked"));
+}
+
+void GlicPageHandler::OpenLinkInPopup(const GURL& url,
+                                      int32_t popup_width,
+                                      int32_t popup_height) {
+  if (!url.SchemeIsHTTPOrHTTPS()) {
+    return;
+  }
+
+  gfx::NativeView native_view = webui_contents_->GetContentNativeView();
+  const display::Display& display =
+      display::Screen::Get()->GetDisplayNearestView(native_view);
+  const gfx::Rect work_area = display.work_area();
+
+  const int x = work_area.x() + (work_area.width() - popup_width) / 2;
+  const int y = work_area.y() + (work_area.height() - popup_height) / 2;
+
+  std::unique_ptr<NavigateParams> params = std::make_unique<NavigateParams>(
+      Profile::FromBrowserContext(browser_context_), url,
+      ui::PAGE_TRANSITION_LINK);
+  params->disposition = WindowOpenDisposition::kNewPopup;
+  params->opened_by_another_window = true;
+  params->window_features.bounds = gfx::Rect(x, y, popup_width, popup_height);
+  glic::NavigateAsync(std::move(params), base::DoNothing());
+}
+
+void GlicPageHandler::OpenLinkInNewTab(const GURL& url) {
+  if (!url.SchemeIsHTTPOrHTTPS()) {
+    return;
+  }
+  std::unique_ptr<NavigateParams> params = std::make_unique<NavigateParams>(
+      Profile::FromBrowserContext(browser_context_), url,
+      ui::PAGE_TRANSITION_LINK);
+  params->disposition = WindowOpenDisposition::kNewForegroundTab;
+  glic::NavigateAsync(std::move(params), base::DoNothing());
+}
+
+void GlicPageHandler::ShouldAllowGeolocationPermissionRequest(
+    ShouldAllowGeolocationPermissionRequestCallback callback) {
+  std::move(callback).Run(Profile::FromBrowserContext(browser_context_)
+                              ->GetPrefs()
+                              ->GetBoolean(prefs::kGlicGeolocationEnabled) &&
+                          host_->IsWidgetShowing(nullptr));
 }
 
 void GlicPageHandler::OpenHelpCenterTopicAndClosePanel(
@@ -241,13 +369,15 @@ void GlicPageHandler::OpenHelpCenterTopicAndClosePanel(
   auto params = std::make_unique<NavigateParams>(
       Profile::FromBrowserContext(browser_context_), help_url,
       ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
-  params->disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params->disposition = WindowOpenDisposition::kNewForegroundTab;
   glic::Navigate(std::move(params));
   host().ClosePanel();
 }
 
 void GlicPageHandler::SignInAndClosePanel() {
-  GetGlicService()->GetAuthController().ShowReauthForAccount(webui_contents_);
+  if (auto* auth_controller = GetGlicService()->GetAuthController()) {
+    auth_controller->ShowReauthForAccount(webui_contents_);
+  }
 }
 
 void GlicPageHandler::ResizeWidget(const gfx::Size& size,
@@ -256,14 +386,21 @@ void GlicPageHandler::ResizeWidget(const gfx::Size& size,
   host().ResizePanel(size, duration, std::move(callback));
 }
 
-void GlicPageHandler::EnableDragResize(bool enabled) {
-  // features::kGlicUserResize is not checked here because the WebUI page
-  // invokes this method when it is disabled, too (when its state changes).
-  host().EnableDragResize(enabled);
-}
-
 void GlicPageHandler::OnWebUiStateChanged(glic::mojom::WebUiState new_state) {
   host().WebUiStateChanged(this, new_state);
+}
+
+void GlicPageHandler::NotifyClientLoadError(
+    glic::mojom::ClientLoadErrorReason reason) {
+  host().ClientLoadErrorOccurred(ToClientLoadErrorReason(reason));
+}
+
+void GlicPageHandler::OnClientLoadFailed(bool failed) {
+  host().SetClientLoadFailed(this, failed);
+}
+
+void GlicPageHandler::ClientReadyToShow(const mojom::OpenPanelInfo& open_info) {
+  page_->ClientReadyStateChanged(true);
 }
 
 void GlicPageHandler::PanelStateChanged(
@@ -278,10 +415,6 @@ void GlicPageHandler::UpdatePageState(mojom::PanelStateKind panelStateKind) {
 void GlicPageHandler::UpdateProfileReadyState() {
   page_->SetProfileReadyState(GlicEnabling::GetProfileReadyState(
       Profile::FromBrowserContext(browser_context_)));
-}
-
-void GlicPageHandler::WebClientStateChanged(mojom::WebClientState state) {
-  page_->WebClientStateChanged(state);
 }
 
 }  // namespace glic

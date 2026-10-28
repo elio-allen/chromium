@@ -15,7 +15,6 @@
 #include "net/base/proxy_chain.h"
 #include "net/proxy_resolution/proxy_config.h"
 #include "net/proxy_resolution/proxy_host_matching_rules.h"
-#include "url/gurl.h"
 
 namespace enterprise_net {
 
@@ -88,14 +87,33 @@ struct ProvisioningDomainConfig {
 
 // Public structure representing a fetched Provisioning Domain configuration
 // alongside its current fetch state.
-// TODO(crbug.com/540422559): Change the transient error definition to
-// distinguish between blocked and currently retry-able transient errors.
 struct ProvisioningDomainProxyConfig {
+  // Lifecycle and fetch state of a Provisioning Domain configuration.
   enum class State {
+    // Initial state upon creation or restoration from persistent cache;
+    // indicates a refresh is needed or scheduled.
+    // Cached routing rules remain active.
     kRefreshNeeded = 0,
+    // A network or authentication token fetch is currently in progress.
     kFetching,
+    // Configuration was successfully fetched and validated; actively used for
+    // routing and proxy authentication.
     kValid,
+    // A temporary network, 5xx server, HTTP 401/403/408/429, or token fetch
+    // error occurred.
+    // Cached routes are preserved in memory to prevent session disruption,
+    // and refreshes are retried on timers and applicable changes
+    // (network, account etc).
     kFailedTransient,
+    // A blocking condition occurred (e.g. invalid credentials, unparsable
+    // server responses, certificate errors, or non-retryable HTTP 4xx errors
+    // such as 400/404). Active routes are preserved and refreshes will be
+    // retried upon applicable changes (network, account, manual refresh etc).
+    kFailedBlocked,
+    // An unrecoverable policy or configuration error occurred (e.g. malformed
+    // policy dictionary, invalid URL, or unsupported scope).
+    // Active routes are flushed and the domain will not be retried (even on
+    // manual refreshes).
     kFailedPermanent,
   };
 

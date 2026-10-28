@@ -6,7 +6,6 @@ import '../controls/collapse_radio_button.js';
 import '../controls/settings_dropdown_menu.js';
 import '../controls/settings_radio_group.js';
 import '../controls/settings_toggle_button.js';
-import '/shared/settings/prefs/prefs.js';
 import 'chrome://resources/cr_elements/cr_collapse/cr_collapse.js';
 import '../settings_page/settings_section.js';
 
@@ -157,13 +156,22 @@ export class SpeedPageElement extends SpeedPageElementBase {
         loadTimeData.getString('preloadingLearnMoreUrl'));
   }
 
-  // <if expr="_google_chrome">
-  protected onSendFeedback_(e: Event) {
-    e.stopPropagation();
+  protected showSendFeedbackButton_(): boolean {
+    // <if expr="_google_chrome">
+    return true;
+    // </if>
+    // <if expr="not _google_chrome">
+    return false;
+    // </if>
+  }
+
+  protected onSendFeedback_(_e: Event) {
+    // <if expr="_google_chrome">
+    _e.stopPropagation();
     PerformanceBrowserProxyImpl.getInstance().openFeedbackDialog(
         PerformanceFeedbackCategory.SPEED);
+    // </if>
   }
-  // </if>
 
   protected getCpuPerformanceNominalTierLabel_(): string {
     const tierLabels = [

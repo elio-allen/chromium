@@ -37,12 +37,13 @@ import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.LaunchIntentDispatcher;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.intents.BrowserIntentUtils;
+import org.chromium.chrome.browser.night_mode.NightModeUtils;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
-import org.chromium.components.sync_device_info.FormFactor;
+import org.chromium.components.sync_device_info.RemoteDeviceInfo;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -162,11 +163,20 @@ public class OtherDevicesShortcutController implements Destroyable {
 
         Context appContext = activity.getApplicationContext();
 
-        String url = IntentHandler.getUrlFromIntent(intent);
-        if (TextUtils.isEmpty(url)) return;
+        List<String> urls;
+        if (ChromeFeatureList.sSendTabToSelfMultiTabShare.isEnabled()) {
+            urls = IntentHandler.getAllUrlsFromShareIntent(intent);
+        } else {
+            String url = IntentHandler.getUrlFromIntent(intent);
+            urls =
+                    TextUtils.isEmpty(url)
+                            ? Collections.emptyList()
+                            : Collections.singletonList(url);
+        }
+        if (urls.isEmpty()) return;
 
-        String title = intent.getStringExtra(Intent.EXTRA_SUBJECT);
-        // Title is allowed to be empty!
+        // Title is allowed to be empty, and only makes sense if there's a single URL.
+        String title = urls.size() == 1 ? intent.getStringExtra(Intent.EXTRA_SUBJECT) : null;
 
         // Accessing the shortcut from ShortcutManager should be done on a background thread.
         sTaskRunner.execute(
@@ -196,14 +206,16 @@ public class OtherDevicesShortcutController implements Destroyable {
                     PostTask.postTask(
                             TaskTraits.UI_DEFAULT,
                             () -> {
-                                SendTabToSelfAndroidBridge.sendTabToDevice(
-                                        profile,
-                                        null,
-                                        targetDeviceSyncCacheGuid,
-                                        targetDeviceName,
-                                        url,
-                                        title != null ? title : "",
-                                        ShareEntryPoint.SHARE_SHEET_DIRECT_SHARE);
+                                for (String url : urls) {
+                                    SendTabToSelfAndroidBridge.sendTabToDevice(
+                                            profile,
+                                            null,
+                                            targetDeviceSyncCacheGuid,
+                                            targetDeviceName,
+                                            url,
+                                            title != null ? title : "",
+                                            ShareEntryPoint.SHARE_SHEET_DIRECT_SHARE);
+                                }
                             });
                 });
     }
@@ -242,7 +254,7 @@ public class OtherDevicesShortcutController implements Destroyable {
         List<ShortcutInfo> newShortcuts = new ArrayList<>();
 
         if (ChromeFeatureList.sSendTabToSelfDynamicShortcuts.isEnabled()) {
-            List<TargetDeviceInfo> devices =
+            List<RemoteDeviceInfo> devices =
                     SendTabToSelfAndroidBridge.getAllTargetDeviceInfos(mProfile);
             IdentityManager identityManager =
                     IdentityServicesProvider.get().getIdentityManager(mProfile);
@@ -250,14 +262,14 @@ public class OtherDevicesShortcutController implements Destroyable {
                     identityManager != null ? identityManager.getPrimaryAccountInfo() : null;
             String givenName = accountInfo != null ? accountInfo.getGivenName() : null;
 
-            // LauncherShortcutActivity may create a dynamic shortcut (with rank 0), which should
-            // always appear before the STTS shortcuts, so start at rank 1 here.
-            int nextRank = 1;
+            // LauncherShortcutActivity may create up to 2 dynamic shortcuts (with ranks 0 and 1),
+            // which should always appear before the STTS shortcuts, so start at rank 2 here.
+            int nextRank = 2;
             // Limit the number of devices to avoid overcrowding the share sheet and the launcher.
             // The list of devices is sorted, so the most-recently-used devices will be used for
             // shortcuts.
             for (int i = 0; i < Math.min(devices.size(), MAX_SHORTCUTS); i++) {
-                TargetDeviceInfo device = devices.get(i);
+                RemoteDeviceInfo device = devices.get(i);
 
                 // Create a ShortcutInfo corresponding to `device`. Note that the shortcut has two
                 // separate purposes, which use (overlapping) subsets of all the fields.
@@ -275,7 +287,7 @@ public class OtherDevicesShortcutController implements Destroyable {
                 intent.putExtra(EXTRA_DEVICE_GUID, device.cacheGuid);
                 intent.putExtra(IntentHandler.EXTRA_INVOKED_FROM_SHORTCUT, true);
 
-                Icon icon = createAdaptiveIcon(device.formFactor);
+                Icon icon = createAdaptiveIcon(device);
 
                 // Note: A Person can also have a name and an icon, but those are not used for the
                 // display of DirectShare targets.
@@ -374,9 +386,17 @@ public class OtherDevicesShortcutController implements Destroyable {
                 });
     }
 
-    private Icon createAdaptiveIcon(@FormFactor int formFactor) {
-        int iconRes = getIconResForFormFactor(formFactor);
-        Drawable drawable = mContext.getDrawable(iconRes);
+    private Icon createAdaptiveIcon(RemoteDeviceInfo device) {
+        int iconRes =
+                DeviceResourceProviderFactory.create()
+                        .getDeviceTypeIcon(device.formFactor, device.osType);
+        // Use a themed context to inflate the drawable, as the application context (mContext)
+        // does not carry theme attributes (e.g. ?attr/colorOnSurface) which are used in the icons.
+        // However, the shortcut icons are always rendered in light mode.
+        Context themedContext =
+                NightModeUtils.wrapContextWithNightModeConfig(
+                        mContext, R.style.Theme_BrowserUI_DayNight, /* nightMode= */ false);
+        Drawable drawable = themedContext.getDrawable(iconRes);
         if (drawable == null) {
             return Icon.createWithResource(mContext, iconRes);
         }
@@ -387,11 +407,13 @@ public class OtherDevicesShortcutController implements Destroyable {
         // In particular, the icon should be 108x108 dp, but the outer 18 dp on each side may not be
         // used (reserved for use by the system UI). In addition, the remaining 72x72 dp will be
         // further masked (e.g. to a circle), leaving only a 66 dp-diameter circle as the safe zone
-        // that will not be cropped. This fits at most a 46 dp square icon.
+        // that will not be cropped. This safely fits only a 46 dp square icon, but in practice a
+        // *little* more (56dp) works better, because the icons aren't full squares.
         Resources res = mContext.getResources();
         int size = (int) (res.getDisplayMetrics().density * 108);
-        int iconSize = (int) (res.getDisplayMetrics().density * 46);
+        int iconSize = (int) (res.getDisplayMetrics().density * 56);
         Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        // The icons have a transparent background by default. Add a white background.
         bitmap.eraseColor(Color.WHITE);
 
         // Center the icon in the bitmap.
@@ -401,18 +423,5 @@ public class OtherDevicesShortcutController implements Destroyable {
         drawable.draw(canvas);
 
         return Icon.createWithAdaptiveBitmap(bitmap);
-    }
-
-    private static int getIconResForFormFactor(@FormFactor int formFactor) {
-        switch (formFactor) {
-            case FormFactor.DESKTOP:
-                return R.drawable.computer_black_24dp;
-            case FormFactor.PHONE:
-                return R.drawable.smartphone_black_24dp;
-            case FormFactor.TABLET:
-                return R.drawable.tablet_black_24dp;
-            default:
-                return R.drawable.devices_black_24dp;
-        }
     }
 }

@@ -31,8 +31,7 @@
 #context[apply-context-button-background]::part(context-menu-entrypoint-icon) {
   --cr-composebox-entrypoint-background-color: var(
     --color-omnibox-composebox-context-entrypoint-background);
-  --cr-icon-button-hover-background-color: var(
-      --cr-active-neutral-on-subtle-background-color);
+  --cr-icon-button-hover-background-color: var(--color-omnibox-icon-pressed);
 }
 
 .context-menu-container {
@@ -40,21 +39,24 @@
   margin-top: var(--omnibox-context-menu-container-margin-top);
 }
 
-:host([searchbox-layout-mode='TallBottomContext']) .context-menu-container:has(*),
-:host([searchbox-layout-mode='Compact']) .context-menu-container:has(*) {
+:host([searchbox-layout-mode_='TallBottomContext']) .context-menu-container:has(*),
+:host([searchbox-layout-mode_='Compact']) .context-menu-container:has(*) {
   height: 40px;
 }
 
-:host([searchbox-layout-mode='Compact']) .context-menu-container,
-:host([searchbox-layout-mode^='Tall']) .context-menu-container:not(:has(#context)) {
+:host([searchbox-layout-mode_='Compact']) .context-menu-container,
+:host([searchbox-layout-mode_^='Tall']) .context-menu-container:not(:has(#context)) {
   --contextual-entrypoint-and-carousel-context-menu-container-padding-inline-start: 12px;
 }
 
-:host([searchbox-layout-mode^='Tall']) #context {
+:host([searchbox-layout-mode_^='Tall']) #context {
   padding-inline: 8px;
 }
 
 #lensSearchIcon {
+  --color-composebox-font-light: var(--color-omnibox-text);
+  --color-composebox-voice-button-hover-background:
+      var(--color-omnibox-action-icon-hover);
   margin-inline-start: auto;
   margin-inline-end: 16px;
 }

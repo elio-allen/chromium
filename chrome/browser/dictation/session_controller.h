@@ -13,6 +13,8 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
+#include "base/time/time.h"
+#include "base/timer/timer.h"
 #include "chrome/browser/dictation/metrics.h"
 #include "chrome/browser/dictation/session_state.h"
 #include "chrome/browser/dictation/session_ui_delegate.h"
@@ -24,6 +26,7 @@
 
 namespace dictation {
 
+enum class DictationStreamEndTrigger;
 class SessionControllerDelegate;
 class SessionUi;
 class StreamProvider;
@@ -56,21 +59,27 @@ class SessionController : public SessionUiDelegate,
   // StreamProviderDelegate:
   void DidUpdateStreamProviderState(
       StreamProvider& stream_provider,
-      StreamProvider::StreamState old_state) override;
+      StreamProvider::StreamState old_state,
+      StreamErrorReason reason = StreamErrorReason::kNone) override;
 
   // content::WebContentsObserver:
+  void DidGetUserInteraction(const blink::WebInputEvent& event) override;
   void OnFocusChangedInPage(
       const content::FocusedNodeDetails& details) override;
   void PrimaryPageChanged(content::Page& page) override;
+  void PrimaryMainFrameRenderProcessGone(
+      base::TerminationStatus status) override;
+  void WebContentsDestroyed() override;
 
   // Starts a new dictation stream by creating and attaching a new stream
   // provider. An existing stream must have been detached before calling this
   // method.
   void StartDictationStream(const TargetDetails& target_details,
-                            DictationStreamStartTrigger trigger);
+                            DictationStreamStartTrigger trigger,
+                            base::TimeTicks trigger_time);
 
   // Ends the current dictation stream and detaches the stream provider.
-  void EndDictationStream();
+  void EndDictationStream(DictationStreamEndTrigger trigger);
 
   // Updates the audio level in the UI.
   void UpdateAudioLevel(float audio_level);
@@ -81,10 +90,16 @@ class SessionController : public SessionUiDelegate,
 
   SessionUi* ui_for_testing() { return ui_.get(); }
 
+  bool is_auto_session_end_timer_running_for_testing() const {
+    return auto_session_end_timer_.IsRunning();
+  }
+
  private:
   void MoveToState(SessionState new_state);
   void EndSessionAsynchronously();
+  void EndSessionSynchronously();
   void PurgeToDeleteStreamProviders();
+  content::BrowserContext* GetBrowserContext() const;
 
   const base::raw_ref<SessionControllerDelegate> delegate_;
 
@@ -109,6 +124,15 @@ class SessionController : public SessionUiDelegate,
       session_state_changed_callback_list_;
 
   std::optional<TargetDetails> last_used_target_details_;
+
+  // When the user action that started the current stream happened. Used to
+  // record VoiceTyping.StreamStartLatency and
+  // VoiceTyping.StreamAbandonedBeforeListening.
+  base::TimeTicks stream_trigger_time_;
+
+  // Timer for delayed session shutdown when `kSessionEndsOnStreamEnd` is
+  // enabled.
+  base::OneShotTimer auto_session_end_timer_;
 
   base::WeakPtrFactory<SessionController> weak_ptr_factory_{this};
 };

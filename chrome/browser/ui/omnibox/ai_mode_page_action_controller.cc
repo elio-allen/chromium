@@ -52,6 +52,7 @@
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/image/image_skia.h"
@@ -118,6 +119,12 @@ AiModePageActionController::AiModePageActionController(
           base::IgnoreArgs<const AiModeButtonUiConfig*>(
               base::BindRepeating(&AiModePageActionController::UpdatePageAction,
                                   weak_factory_.GetWeakPtr())));
+
+  pref_change_registrar_.Init(profile.GetPrefs());
+  pref_change_registrar_.Add(
+      omnibox::kShowAiModeOmniboxButton,
+      base::BindRepeating(&AiModePageActionController::UpdatePageAction,
+                          weak_factory_.GetWeakPtr()));
 }
 
 AiModePageActionController::~AiModePageActionController() = default;
@@ -204,42 +211,36 @@ bool AiModePageActionController::ShouldShowPageAction(
     return false;
   }
 
-  // If the feature is enabled to hide the AIM entrypoint on user input, don't
-  // show the AIM entrypoint if the user typed text is non-empty.
-  if (base::FeatureList::IsEnabled(omnibox::kHideAimEntrypointOnUserInput) &&
-      !edit_model->user_text().empty()) {
-    return false;
-  }
-
   if (omnibox::kShowRhsAimHint.Get()) {
     return false;
   }
 
   // If the feature is enabled to hide the AIM entrypoint for URL suggestions,
-  // don't show the AIM entrypoint if the default match is a URL suggestion.
+  // don't show the AIM entrypoint if the current selected match or typed input
+  // is a URL suggestion.
   if (base::FeatureList::IsEnabled(
           omnibox::kHideAimEntrypointForUrlSuggestions) ||
       base::FeatureList::IsEnabled(omnibox::kWebUIOmniboxDynamicAiModeButton)) {
     const AutocompleteResult& result =
         omnibox_controller->autocomplete_controller()->result();
-    if (result.default_match() &&
-        !AutocompleteMatch::IsSearchType(result.default_match()->type)) {
+    const OmniboxPopupSelection selection = edit_model->GetPopupSelection();
+    if (selection.line != OmniboxPopupSelection::kNoMatch &&
+        selection.line < result.size()) {
+      if (!AutocompleteMatch::IsSearchType(
+              result.match_at(selection.line).type)) {
+        return false;
+      }
+    } else if (edit_model->user_input_in_progress() &&
+               !AutocompleteMatch::IsSearchType(
+                   edit_model->CurrentMatch().type)) {
       return false;
     }
   }
 
   // Otherwise, we should show the AIM view if the focus is within any view in
-  // the location bar, including the omnibox, this view or any other page action
-  // icon views.
-  //
-  // When the "full" WebUI Omnibox popup is enabled, OmniboxEditModel needs to
-  // be queried to determine focus state, as focus gets transferred to an
-  // entirely separate widget (containing the WebContents) when the popup is
-  // shown.
-  const bool has_focus =
-      location_bar.IsFocusWithin() ||
-      (base::FeatureList::IsEnabled(omnibox::kWebUIOmniboxFullPopup) &&
-       edit_model->has_focus());
+  // the location bar, including the omnibox, this view, or any other page
+  // action icon views.
+  const bool has_focus = location_bar.IsFocusWithin();
 
   // TODO(crbug.com/448234135): Remove this logic from the migrated path when
   // Page Action framework supports suggestion chip queueing.
@@ -260,13 +261,13 @@ bool AiModePageActionController::ShouldShowPageAction(
 
 void AiModePageActionController::OnPageActionIconShown(
     const page_actions::PageActionState& page_action) {
-  DCHECK_EQ(page_action.action_id, kActionAiMode);
+  CHECK_EQ(page_action.action_id, kActionAiMode, base::NotFatalUntil::M162);
   is_visible_ = true;
 }
 
 void AiModePageActionController::OnPageActionIconHidden(
     const page_actions::PageActionState& page_action) {
-  DCHECK_EQ(page_action.action_id, kActionAiMode);
+  CHECK_EQ(page_action.action_id, kActionAiMode, base::NotFatalUntil::M162);
   is_visible_ = false;
 }
 
@@ -291,7 +292,7 @@ void AiModePageActionController::UpdatePageActionUi(bool is_visible) {
   page_action_controller->OverrideAccessibleName(kActionAiMode,
                                                  config->a11y_label);
 
-  if (omnibox::kWebUIOmniboxDynamicAnimation.Get()) {
+  if (omnibox::IsWebUIOmniboxDynamicAnimationEnabled()) {
     page_action_controller->SetAnimationStyle(
         kActionAiMode,
         page_actions::PageActionAnimationStyle::kSlideAndCrossfade);
@@ -301,15 +302,18 @@ void AiModePageActionController::UpdatePageActionUi(bool is_visible) {
 
     bool has_user_input = false;
     if (auto* omnibox_controller = location_bar_->GetOmniboxController()) {
-      has_user_input = omnibox_controller->edit_model() &&
-                       !omnibox_controller->edit_model()->user_text().empty();
+      const OmniboxEditModel* edit_model = omnibox_controller->edit_model();
+      has_user_input = edit_model && edit_model->user_input_in_progress() &&
+                       !edit_model->user_text().empty();
     }
     page_action_controller->SetShowTrailingIcon(kActionAiMode, has_user_input);
   }
 
-  if (omnibox::kWebUIOmniboxDynamicColorScheme.Get()) {
+  if (omnibox::IsWebUIOmniboxDynamicColorSchemeEnabled()) {
     page_action_controller->OverrideBackgroundColor(
-        kActionAiMode, kColorOmniboxResultsBackgroundHovered);
+        kActionAiMode, kColorOmniboxComposeboxContextEntrypointBackground);
+    page_action_controller->OverrideForegroundColor(
+        kActionAiMode, kColorOmniboxContextEntrypointText);
   }
 
   ImageCacheKey key{config->id, GURL(config->favicon_url).spec()};
@@ -324,14 +328,21 @@ void AiModePageActionController::UpdatePageActionUi(bool is_visible) {
   }
 
   if (config->id == SearchEngineType::SEARCH_ENGINE_GOOGLE) {
+    ui::ColorId spark_color_id = kColorOmniboxIconForegroundTonal;
+    if (omnibox::IsWebUIOmniboxDynamicColorSchemeEnabled()) {
+      spark_color_id = kColorOmniboxContextEntrypointText;
+    }
     ui::ImageModel image_model = ui::ImageModel::FromImageGenerator(
-        base::BindRepeating([](const ui::ColorProvider* color_provider) {
-          return gfx::CreateVectorIcon(
-              features::IsRoundedIconsEnabled() ? omnibox::kSearchSparkIcon
-                                                : omnibox::kSearchSparkOldIcon,
-              GetLayoutConstant(LayoutConstant::kLocationBarChipIconSize),
-              color_provider->GetColor(kColorOmniboxIconForegroundTonal));
-        }),
+        base::BindRepeating(
+            [](ui::ColorId color_id, const ui::ColorProvider* color_provider) {
+              return gfx::CreateVectorIcon(
+                  features::IsRoundedIconsEnabled()
+                      ? omnibox::kSearchSparkIcon
+                      : omnibox::kSearchSparkOldIcon,
+                  GetLayoutConstant(LayoutConstant::kLocationBarChipIconSize),
+                  color_provider->GetColor(color_id));
+            },
+            spark_color_id),
         gfx::Size(GetLayoutConstant(LayoutConstant::kLocationBarChipIconSize),
                   GetLayoutConstant(LayoutConstant::kLocationBarChipIconSize)));
     ShowAndOverrideImage(image_model, key, IconSource::kVectorIcon);

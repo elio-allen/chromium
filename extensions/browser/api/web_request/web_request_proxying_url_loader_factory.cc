@@ -31,6 +31,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/global_request_id.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/storage_partition.h"
@@ -130,6 +131,22 @@ net::RedirectInfo CreateRedirectInfo(
       referrer_policy_header,
       /*insecure_scheme_was_upgraded=*/false, /*copy_fragment=*/false,
       /*is_signed_exchange_fallback_redirect=*/false);
+}
+
+// Returns `navigation_response_task_runner` when
+// `kWebRequestProxyNavigationResponseTaskRunner` is enabled so Mojo receivers
+// (`TrustedHeaderClient` and cloned `URLLoaderFactory` pipes) dispatch onto the
+// navigation network response task runner rather than falling back to
+// `SequencedTaskRunner::GetCurrentDefault()`.
+scoped_refptr<base::SequencedTaskRunner> MaybeGetNavigationResponseTaskRunner(
+    const scoped_refptr<base::SequencedTaskRunner>&
+        navigation_response_task_runner) {
+  if (navigation_response_task_runner &&
+      base::FeatureList::IsEnabled(
+          extensions_features::kWebRequestProxyNavigationResponseTaskRunner)) {
+    return navigation_response_task_runner;
+  }
+  return nullptr;
 }
 
 }  // namespace
@@ -264,6 +281,16 @@ void WebRequestProxyingURLLoaderFactory::InProgressRequest::Restart() {
 }
 
 void WebRequestProxyingURLLoaderFactory::InProgressRequest::
+    AuthorizeBypassRedirectChecks() {
+  if (info_->is_navigation_request && info_->navigation_id.has_value() &&
+      factory_->navigation_ui_data_) {
+    content::NavigationHandle::SetBypassRedirectChecksForNextRedirect(
+        factory_->navigation_ui_data_->frame_tree_node_id(),
+        info_->navigation_id.value());
+  }
+}
+
+void WebRequestProxyingURLLoaderFactory::InProgressRequest::
     UpdateRequestInfo() {
   // Derive a new WebRequestInfo value any time |Restart()| is called, because
   // the details in |request_| may have changed e.g. if we've been redirected.
@@ -367,6 +394,34 @@ void WebRequestProxyingURLLoaderFactory::InProgressRequest::RestartInternal() {
 void WebRequestProxyingURLLoaderFactory::InProgressRequest::FollowRedirect(
     network::HttpRequestHeadersUpdateParams headers_update_params,
     const std::optional<GURL>& new_url) {
+  // Only follow a redirect this class actually forwarded to the client. A
+  // compromised renderer could send an unexpected "FollowRedirect()", which
+  // would otherwise swap `request_.url` for the new URL.
+  // See crbug.com/497494634.
+  //
+  // NOTE: RejectFollowRedirect() deletes `this`, so every call site below must
+  // return immediately without touching any member state.
+  if (!deferred_redirect_url_) {
+    RejectFollowRedirect("Unexpected FollowRedirect");
+    return;
+  }
+
+  // `new_url` lets throttles adjust the redirect destination, but per the
+  // network::mojom::URLLoader contract it must be same-origin, same-scheme and
+  // credential-free. Kept in sync with CorsURLLoader::FollowRedirect().
+  if (new_url && (!new_url->is_valid() ||
+                  new_url->scheme() != deferred_redirect_url_->scheme() ||
+                  !url::IsSameOriginWith(*new_url, *deferred_redirect_url_))) {
+    RejectFollowRedirect("Unexpected new_url in FollowRedirect");
+    return;
+  }
+  if (new_url && (new_url->has_username() || new_url->has_password())) {
+    RejectFollowRedirect("new_url with credentials in FollowRedirect");
+    return;
+  }
+
+  deferred_redirect_url_.reset();
+
   if (new_url) {
     request_.url = new_url.value();
   }
@@ -424,6 +479,8 @@ void WebRequestProxyingURLLoaderFactory::InProgressRequest::OnReceiveResponse(
       perfetto::Flow::ProcessScoped(profile_request_id_,
                                     kWebRequestProxyingURLLoaderFactoryScope));
 
+  // A response can only arrive once any forwarded redirect has been followed.
+  CHECK(!deferred_redirect_url_);
   current_body_ = std::move(body);
   current_cached_metadata_ = std::move(cached_metadata);
   if (current_request_uses_header_client_) {
@@ -470,7 +527,7 @@ void WebRequestProxyingURLLoaderFactory::InProgressRequest::OnReceiveRedirect(
   bool redirect_url_comes_from_extension =
       redirect_url_ == redirect_info.new_url;
   if (redirect_url_comes_from_extension) {
-    head->bypass_redirect_checks = true;
+    AuthorizeBypassRedirectChecks();
   }
 
   if (!redirect_url_comes_from_extension &&
@@ -532,6 +589,8 @@ void WebRequestProxyingURLLoaderFactory::InProgressRequest::OnComplete(
     return;
   }
 
+  // As in OnReceiveResponse(); success implies the redirect was followed.
+  CHECK(!deferred_redirect_url_);
   state_ = kCompleted;
   target_client_->OnComplete(status);
   WebRequestEventRouter::Get(factory_->browser_context_)
@@ -603,7 +662,14 @@ void WebRequestProxyingURLLoaderFactory::InProgressRequest::OnLoaderCreated(
   // We need this explicit reset to avoid a DCHECK failure in mojo::Receiver.
   header_client_receiver_.reset();
 
-  header_client_receiver_.Bind(std::move(receiver));
+  // Bind `header_client_receiver_` to `navigation_response_task_runner_` so
+  // `TrustedHeaderClient::OnHeadersReceived` is not priority-inverted onto
+  // `QueueType::kDefault` while `net::URLRequestHttpJob` waits for its
+  // callback before `NotifyHeadersComplete()`
+  // (`ReceiveHeadersToReceiveResponse`).
+  header_client_receiver_.Bind(
+      std::move(receiver),
+      MaybeGetNavigationResponseTaskRunner(navigation_response_task_runner_));
   if (is_header_client_receiver_paused_) {
     header_client_receiver_.Pause();
   }
@@ -739,7 +805,7 @@ void WebRequestProxyingURLLoaderFactory::InProgressRequest::
   head->headers = base::MakeRefCounted<net::HttpResponseHeaders>(
       net::HttpUtil::AssembleRawHeaders(headers));
   head->encoded_data_length = 0;
-  head->bypass_redirect_checks = true;
+  AuthorizeBypassRedirectChecks();
 
   current_response_ = std::move(head);
   ContinueToBeforeRedirect(redirect_info, net::OK);
@@ -986,15 +1052,16 @@ void WebRequestProxyingURLLoaderFactory::InProgressRequest::ContinueAuthRequest(
   }
 
   info_->AddResponseInfoFromResourceResponse(*current_response_);
-  auto continuation =
-      base::BindRepeating(&InProgressRequest::OnAuthRequestHandled,
-                          weak_factory_.GetWeakPtr(), base::Passed(&callback));
+  auto [async_continuation, sync_continuation] = base::SplitOnceCallback(
+      base::BindOnce(&InProgressRequest::OnAuthRequestHandled,
+                     weak_factory_.GetWeakPtr(), std::move(callback)));
 
   auth_credentials_.emplace();
   WebRequestEventRouter::AuthRequiredResponse response =
       WebRequestEventRouter::Get(factory_->browser_context_)
           ->OnAuthRequired(factory_->browser_context_, &info_.value(),
-                           auth_info, continuation, &auth_credentials_.value());
+                           auth_info, std::move(async_continuation),
+                           &auth_credentials_.value());
 
   // At least one extension has a blocking handler for this request, so we'll
   // just wait for them to finish. |OnAuthRequestHandled()| will be invoked
@@ -1008,7 +1075,7 @@ void WebRequestProxyingURLLoaderFactory::InProgressRequest::ContinueAuthRequest(
   // proceed.
   DCHECK_EQ(response, WebRequestEventRouter::AuthRequiredResponse::
                           AUTH_REQUIRED_RESPONSE_NO_ACTION);
-  continuation.Run(response);
+  std::move(sync_continuation).Run(response);
 }
 
 void WebRequestProxyingURLLoaderFactory::InProgressRequest::
@@ -1238,7 +1305,7 @@ void WebRequestProxyingURLLoaderFactory::InProgressRequest::
 
     // Since this is an extension-generated redirect, we need to tell
     // the client to bypass redirect checks.
-    current_response_->bypass_redirect_checks = true;
+    AuthorizeBypassRedirectChecks();
 
     // These will get re-bound if a new request is initiated by
     // |FollowRedirect()|.
@@ -1261,7 +1328,10 @@ void WebRequestProxyingURLLoaderFactory::InProgressRequest::
   // debug crbug.com/463388771.
   CHECK(!has_forwarded_response_);
   has_forwarded_response_ = true;
-  target_client_->OnReceiveResponse(current_response_.Clone(),
+  auto response = current_response_.Clone();
+  response->cache_storage_side_data_writer =
+      std::move(current_response_->cache_storage_side_data_writer);
+  target_client_->OnReceiveResponse(std::move(response),
                                     std::move(current_body_),
                                     std::move(current_cached_metadata_));
 }
@@ -1292,6 +1362,7 @@ void WebRequestProxyingURLLoaderFactory::InProgressRequest::
   WebRequestEventRouter::Get(factory_->browser_context_)
       ->OnBeforeRedirect(factory_->browser_context_, &info_.value(),
                          redirect_info.new_url);
+  deferred_redirect_url_ = redirect_info.new_url;
   target_client_->OnReceiveRedirect(redirect_info, current_response_.Clone());
   request_.UpdateOnRedirect(redirect_info);
 
@@ -1384,6 +1455,22 @@ void WebRequestProxyingURLLoaderFactory::InProgressRequest::OnRequestError(
 
   // Deletes |this|.
   factory_->RemoveRequest(request_id_for_network_service_, profile_request_id_);
+}
+
+void WebRequestProxyingURLLoaderFactory::InProgressRequest::
+    RejectFollowRedirect(std::string_view reason, net::Error error_code) {
+  // This proxy is also used for navigations, service worker script loads and
+  // browser-initiated prefetches, whose client lives in the browser process.
+  // Reporting a bad message there would take down the browser for what is a
+  // browser-side bug, so only fail the request. This matches similar behavior
+  // in CorsURLLoader.
+  if (factory_->render_process_id_ != -1) {
+    proxied_loader_receiver_.ReportBadMessage(reason);
+  }
+
+  // Deletes `this`.
+  OnRequestError(CreateURLLoaderCompletionStatus(error_code),
+                 State::kRejectedByUnexpectedFollowRedirect);
 }
 
 void WebRequestProxyingURLLoaderFactory::InProgressRequest::OnNetworkError(
@@ -1632,7 +1719,9 @@ void WebRequestProxyingURLLoaderFactory::CreateLoaderAndStart(
 void WebRequestProxyingURLLoaderFactory::Clone(
     mojo::PendingReceiver<network::mojom::URLLoaderFactory> loader_receiver) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  proxy_receivers_.Add(this, std::move(loader_receiver));
+  proxy_receivers_.Add(
+      this, std::move(loader_receiver),
+      MaybeGetNavigationResponseTaskRunner(navigation_response_task_runner_));
 }
 
 void WebRequestProxyingURLLoaderFactory::OnLoaderCreated(

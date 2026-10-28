@@ -27,6 +27,7 @@
 
 #include <algorithm>
 
+#include "base/memory/raw_ptr_exclusion.h"
 #include "build/build_config.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
@@ -421,7 +422,8 @@ static bool ShouldNotInheritStyleFrom(const Node& node) {
 namespace {
 
 struct HtmlEquivalentTagDefinition {
-  const HTMLQualifiedName* tag;
+  // RAW_PTR_EXCLUSION: #global-scope
+  RAW_PTR_EXCLUSION const HTMLQualifiedName* tag;
   CSSPropertyID property;
   CSSValueID value_id;
 };
@@ -750,9 +752,7 @@ void DeleteSelectionCommand::RemoveCompletelySelectedNodes(
       // content from any descendant text nodes to ensure selectionchange
       // event fires. This handles nested contenteditable elements and
       // deeply nested text nodes.
-      if (is_root_editable &&
-          RuntimeEnabledFeatures::
-              DeleteTextInContentEditableBeforeRemovingChildrenEnabled()) {
+      if (is_root_editable) {
         HeapVector<Member<Text>> text_nodes_to_clear;
         for (Node& descendant :
              NodeTraversal::DescendantsOf(*node_to_be_removed)) {
@@ -1044,7 +1044,7 @@ void DeleteSelectionCommand::FixupWhitespace(const Position& position) {
   if (IsRenderedCharacter(position))
     return;
   DCHECK(!text_node->GetLayoutObject() ||
-         text_node->GetLayoutObject()->StyleRef().ShouldCollapseWhiteSpaces())
+         text_node->GetLayoutObject()->Style().ShouldCollapseWhiteSpaces())
       << text_node;
   ReplaceTextInNode(text_node, position.ComputeOffsetInContainerNode(), 1,
                     NonBreakingSpaceString(),
@@ -1132,14 +1132,10 @@ void DeleteSelectionCommand::MergeParagraphs(EditingState* editing_state) {
   if (merge_destination.DeepEquivalent() == merge_origin.DeepEquivalent())
     return;
 
-  VisiblePosition start_of_paragraph_to_move = StartOfParagraph(merge_origin);
-  VisiblePosition end_of_paragraph_to_move =
-      EndOfParagraph(merge_origin, kCanSkipOverEditingBoundary);
-  if (RuntimeEnabledFeatures::TraverseFlatTreeToHandleSlotsEnabled()) {
-    start_of_paragraph_to_move = StartOfParagraphInFlatTree(merge_origin);
-    end_of_paragraph_to_move =
-        EndOfParagraphInFlatTree(merge_origin, kCanSkipOverEditingBoundary);
-  }
+  const VisiblePosition start_of_paragraph_to_move =
+      StartOfParagraphInFlatTree(merge_origin);
+  const VisiblePosition end_of_paragraph_to_move =
+      EndOfParagraphInFlatTree(merge_origin, kCanSkipOverEditingBoundary);
 
   if (merge_destination.DeepEquivalent() ==
       end_of_paragraph_to_move.DeepEquivalent())

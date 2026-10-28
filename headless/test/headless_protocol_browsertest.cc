@@ -9,6 +9,7 @@
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/files/scoped_temp_dir.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/memory/scoped_refptr.h"
@@ -726,6 +727,9 @@ HEADLESS_PROTOCOL_TEST(WindowOpenNoopenerClickOpenerId,
 HEADLESS_PROTOCOL_TEST(WindowOpenShiftClickOpenerId,
                        "shared/window-open-shift-click-opener-id.js")
 
+HEADLESS_PROTOCOL_TEST(WindowOpenMiddleClick,
+                       "shared/window-open-middle-click.js")
+
 HEADLESS_PROTOCOL_TEST(BlockNewWebContents, "sanity/block-new-web-contents.js")
 
 HEADLESS_PROTOCOL_TEST(ContextDisposal, "sanity/context-disposal.js")
@@ -736,13 +740,7 @@ HEADLESS_PROTOCOL_TEST(ScreenRotationSecondaryScreen,
 HEADLESS_PROTOCOL_TEST(MoveWindowBetweenScreens,
                        "shared/move-window-between-screens.js")
 
-// This fails on Mac with RenderDocument enabled, http://crbug.com/446689489.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_CreateTargetSecondaryScreen DISABLED_CreateTargetSecondaryScreen
-#else
-#define MAYBE_CreateTargetSecondaryScreen CreateTargetSecondaryScreen
-#endif
-HEADLESS_PROTOCOL_TEST(MAYBE_CreateTargetSecondaryScreen,
+HEADLESS_PROTOCOL_TEST(CreateTargetSecondaryScreen,
                        "shared/create-target-secondary-screen.js")
 
 HEADLESS_PROTOCOL_TEST(CreateTargetWindowState,
@@ -754,8 +752,6 @@ HEADLESS_PROTOCOL_TEST(DocumentVisibilityState,
 HEADLESS_PROTOCOL_TEST(DocumentVisibilityStatePopup,
                        "shared/document-visibility-state-popup.js")
 
-// This currently results in an unexpected screen orientation type,
-// see http://crbug.com/398150465.
 HEADLESS_PROTOCOL_TEST(MultipleScreenDetails,
                        "shared/multiple-screen-details.js")
 
@@ -850,6 +846,49 @@ HEADLESS_PROTOCOL_TEST(RangeMouseEventAfterNodeRemoval,
 HEADLESS_PROTOCOL_TEST(GetCanvasContextWebGL,
                        "shared/get-canvas-context-webgl.js")
 
+#if !BUILDFLAG(IS_FUCHSIA)
+HEADLESS_PROTOCOL_TEST(WebGLAndWebGPUEnabledWithSwiftShader,
+                       "shared/webgl-and-webgpu-enabled-with-swiftshader.js")
+
+HEADLESS_PROTOCOL_TEST(WebGLAndWebGPUDisabledByDefault,
+                       "shared/webgl-and-webgpu-disabled-by-default.js")
+
+HEADLESS_PROTOCOL_TEST(
+    WebGLAndWebGPUDisabledWithoutSwiftShader,
+    "shared/webgl-and-webgpu-disabled-without-swiftshader.js")
+#endif  // !BUILDFLAG(IS_FUCHSIA)
+
 HEADLESS_PROTOCOL_TEST(GetBrowserContexts, "shared/get-browser-contexts.js")
+
+class HeadlessProtocolBrowserTestWithDownload
+    : public HeadlessProtocolBrowserTest {
+ public:
+  void SetUp() override {
+    ASSERT_TRUE(download_dir_.CreateUniqueTempDir());
+    HeadlessProtocolBrowserTest::SetUp();
+  }
+
+ protected:
+  base::DictValue GetPageUrlExtraParams() override {
+    base::DictValue dict;
+    dict.Set("downloadPath", download_dir_.GetPath().AsUTF8Unsafe());
+    return dict;
+  }
+
+ private:
+  base::ScopedTempDir download_dir_;
+};
+
+HEADLESS_PROTOCOL_TEST_F(HeadlessProtocolBrowserTestWithDownload,
+                         FileDownload,
+                         "shared/file-download.js")
+
+HEADLESS_PROTOCOL_TEST_F(HeadlessProtocolBrowserTestWithDownload,
+                         FileDownloadRepeated,
+                         "shared/file-download-repeated.js")
+
+HEADLESS_PROTOCOL_TEST_F(HeadlessProtocolBrowserTestWithDownload,
+                         FileDownloadSecondTab,
+                         "shared/file-download-second-tab.js")
 
 }  // namespace headless

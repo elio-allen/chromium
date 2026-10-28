@@ -12,6 +12,8 @@
 #import <vector>
 
 #import "base/base64.h"
+#import "base/debug/crash_logging.h"
+#import "base/debug/dump_without_crashing.h"
 #import "base/functional/bind.h"
 #import "base/functional/callback_helpers.h"
 #import "base/ios/block_types.h"
@@ -22,6 +24,7 @@
 #import "ios/web/js_messaging/web_frame_internal.h"
 #import "ios/web/public/js_messaging/web_frame.h"
 #import "ios/web/public/js_messaging/web_frames_manager.h"
+#import "ios/web/public/navigation/navigation_context.h"
 #import "ios/web/public/thread/web_thread.h"
 #import "ios/web/public/web_state.h"
 #import "ios/web/webui/web_ui_metrics.h"
@@ -170,16 +173,17 @@ void MojoFacade::HandleMojoMessage(
   DCHECK_CURRENTLY_ON(WebThread::UI);
 
   const std::string* name = message->FindString("name");
-  CHECK(name);
   const base::DictValue* args = message->FindDict("args");
-  CHECK(args);
-
   base::Value result;
   WebUIMojoActions action_outcome = WebUIMojoActions::kSuccess;
 
-  if (*name == "Mojo.bindInterface") {
-    // HandleMojoBindInterface does not return a value.
-    HandleMojoBindInterface(*args);
+  if (!name || !args) {
+    action_outcome = WebUIMojoActions::kFailure;
+  } else if (*name == "Mojo.bindInterface") {
+    result = HandleMojoBindInterface(*args);
+    if (result.GetInt() != MOJO_RESULT_OK) {
+      action_outcome = WebUIMojoActions::kFailure;
+    }
   } else if (*name == "MojoHandle.close") {
     // HandleMojoHandleClose does not return a value.
     HandleMojoHandleClose(*args);
@@ -208,7 +212,7 @@ void MojoFacade::HandleMojoMessage(
     action_outcome = WebUIMojoActions::kFailure;
   }
 
-  std::string action_name = "Unknown";
+  std::string action_name = "Mojo.Unknown";
   if (name) {
     action_name = *name;
   }
@@ -227,22 +231,35 @@ void MojoFacade::HandleMojoMessage(
   std::move(completion).Run(message_id, json_result);
 }
 
-void MojoFacade::HandleMojoBindInterface(const base::DictValue& args) {
+base::Value MojoFacade::HandleMojoBindInterface(const base::DictValue& args) {
   const std::string* interface_name = args.FindString("interfaceName");
-  CHECK(interface_name);
-
   std::optional<int> pipe_id = FindIntOrDoubleAsInt(args, "requestHandle");
-  CHECK(pipe_id.has_value());
 
-  mojo::ScopedMessagePipeHandle pipe = TakePipeFromId(*pipe_id);
-  CHECK(pipe.is_valid());
+  mojo::ScopedMessagePipeHandle pipe;
+  if (pipe_id.has_value()) {
+    pipe = TakePipeFromId(*pipe_id);
+  }
+
+  if (!interface_name || !pipe_id.has_value() || !pipe.is_valid()) {
+    SCOPED_CRASH_KEY_STRING32("MojoFacade", "interface",
+                              interface_name ? *interface_name : "missing");
+    SCOPED_CRASH_KEY_NUMBER("MojoFacade", "requestHandle",
+                            pipe_id.value_or(-1));
+    SCOPED_CRASH_KEY_BOOL("MojoFacade", "pipe_valid", pipe.is_valid());
+    base::debug::DumpWithoutCrashing();
+    return base::Value(static_cast<int>(MOJO_RESULT_INVALID_ARGUMENT));
+  }
+
   web_state_->GetInterfaceBinderForMainFrame()->BindInterface(
       mojo::GenericPendingReceiver(*interface_name, std::move(pipe)));
+  return base::Value(static_cast<int>(MOJO_RESULT_OK));
 }
 
 void MojoFacade::HandleMojoHandleClose(const base::DictValue& args) {
   std::optional<int> pipe_id = FindIntOrDoubleAsInt(args, "handle");
-  CHECK(pipe_id.has_value());
+  if (!pipe_id.has_value()) {
+    return;
+  }
 
   // Will close once out of scope.
   mojo::ScopedMessagePipeHandle pipe = TakePipeFromId(*pipe_id);
@@ -265,15 +282,17 @@ base::Value MojoFacade::HandleMojoCreateMessagePipe(
 base::Value MojoFacade::HandleMojoHandleWriteMessage(
     const base::DictValue& args) {
   std::optional<int> pipe_id = FindIntOrDoubleAsInt(args, "handle");
-  CHECK(pipe_id.has_value());
-  mojo::MessagePipeHandle pipe = GetPipeFromId(*pipe_id);
-  CHECK(pipe.is_valid());
-
   const base::ListValue* handles_list = args.FindList("handles");
-  CHECK(handles_list);
-
   const std::string* buffer = args.FindString("buffer");
-  CHECK(buffer);
+  if (!pipe_id.has_value() || !handles_list || !buffer) {
+    return base::Value(static_cast<int>(MOJO_RESULT_INVALID_ARGUMENT));
+  }
+
+  mojo::MessagePipeHandle pipe = GetPipeFromId(*pipe_id);
+  std::optional<std::vector<uint8_t>> bytes = base::Base64Decode(*buffer);
+  if (!pipe.is_valid() || !bytes.has_value()) {
+    return base::Value(static_cast<int>(MOJO_RESULT_INVALID_ARGUMENT));
+  }
 
   int flags = MOJO_WRITE_MESSAGE_FLAG_NONE;
 
@@ -281,11 +300,10 @@ base::Value MojoFacade::HandleMojoHandleWriteMessage(
   handles.reserve(handles_list->size());
   for (const base::Value& item : *handles_list) {
     std::optional<int> handle_id = FindIntOrDoubleAsInt(item);
+    if (!handle_id.has_value()) {
+      return base::Value(static_cast<int>(MOJO_RESULT_INVALID_ARGUMENT));
+    }
     handles.push_back(TakePipeFromId(*handle_id));
-  }
-  std::optional<std::vector<uint8_t>> bytes = base::Base64Decode(*buffer);
-  if (!bytes) {
-    return base::Value(static_cast<int>(MOJO_RESULT_INVALID_ARGUMENT));
   }
 
   MojoResult result = mojo::WriteMessageRaw(
@@ -299,7 +317,9 @@ base::Value MojoFacade::HandleMojoHandleWriteMessage(
 
 base::Value MojoFacade::ReadMessageFromPipe(int pipe_id) {
   mojo::MessagePipeHandle pipe = GetPipeFromId(pipe_id);
+  WebUIMojoActions mojo_outcome = WebUIMojoActions::kFailure;
   if (!pipe.is_valid()) {
+    RecordWebUIMojoActionOutcome("MojoHandle.readMessage", mojo_outcome);
     base::DictValue result;
     result.Set("result", static_cast<int>(MOJO_RESULT_INVALID_ARGUMENT));
     return base::Value(std::move(result));
@@ -313,6 +333,7 @@ base::Value MojoFacade::ReadMessageFromPipe(int pipe_id) {
 
   base::DictValue result;
   if (mojo_result == MOJO_RESULT_OK) {
+    mojo_outcome = WebUIMojoActions::kSuccess;
     base::ListValue handles_list;
     for (uint32_t i = 0; i < handles.size(); i++) {
       handles_list.Append(AllocatePipeId(mojo::ScopedMessagePipeHandle(
@@ -327,6 +348,7 @@ base::Value MojoFacade::ReadMessageFromPipe(int pipe_id) {
     result.Set("buffer", std::move(buffer));
   }
   result.Set("result", static_cast<int>(mojo_result));
+  RecordWebUIMojoActionOutcome("MojoHandle.readMessage", mojo_outcome);
   return base::Value(std::move(result));
 }
 
@@ -378,11 +400,18 @@ void MojoFacade::OnWatcherCallback(int callback_id,
 
 base::Value MojoFacade::HandleMojoHandleWatch(const base::DictValue& args) {
   std::optional<int> pipe_id = FindIntOrDoubleAsInt(args, "handle");
-  CHECK(pipe_id.has_value());
   std::optional<int> signals = FindIntOrDoubleAsInt(args, "signals");
-  CHECK(signals.has_value());
   std::optional<int> callback_id = FindIntOrDoubleAsInt(args, "callbackId");
-  CHECK(callback_id.has_value());
+  if (!pipe_id.has_value() || !signals.has_value() ||
+      !callback_id.has_value()) {
+    return base::Value(static_cast<int>(MOJO_RESULT_INVALID_ARGUMENT));
+  }
+
+  mojo::MessagePipeHandle pipe = GetPipeFromId(*pipe_id);
+  if (!pipe.is_valid()) {
+    return base::Value(static_cast<int>(MOJO_RESULT_INVALID_ARGUMENT));
+  }
+
   const int watch_id = ++last_watch_id_;
 
   // Note: base::Unretained() is safe because `this` owns all the watchers.
@@ -393,8 +422,10 @@ base::Value MojoFacade::HandleMojoHandleWatch(const base::DictValue& args) {
   auto watcher = std::make_unique<mojo::SimpleWatcher>(
       FROM_HERE, mojo::SimpleWatcher::ArmingPolicy::MANUAL);
 
-  mojo::MessagePipeHandle pipe = GetPipeFromId(*pipe_id);
-  watcher->Watch(pipe, *signals, callback);
+  if (watcher->Watch(pipe, *signals, callback) != MOJO_RESULT_OK) {
+    return base::Value(static_cast<int>(MOJO_RESULT_INVALID_ARGUMENT));
+  }
+
   watcher->ArmOrNotify();
   watchers_.insert(std::make_pair(watch_id, std::move(watcher)));
   return base::Value(watch_id);
@@ -402,7 +433,9 @@ base::Value MojoFacade::HandleMojoHandleWatch(const base::DictValue& args) {
 
 void MojoFacade::HandleMojoWatcherCancel(const base::DictValue& args) {
   std::optional<int> watch_id = FindIntOrDoubleAsInt(args, "watchId");
-  CHECK(watch_id.has_value());
+  if (!watch_id.has_value()) {
+    return;
+  }
   watchers_.erase(*watch_id);
 }
 
@@ -452,6 +485,21 @@ void MojoFacade::WebFrameBecameUnavailable(WebFramesManager* web_frames_manager,
   }
 }
 
+void MojoFacade::DidFinishNavigation(WebState* web_state,
+                                     NavigationContext* navigation_context) {
+  DCHECK_CURRENTLY_ON(WebThread::UI);
+  DCHECK_EQ(web_state_, web_state);
+  if (!navigation_context->HasCommitted() ||
+      navigation_context->IsSameDocument()) {
+    return;
+  }
+  pipes_.clear();
+  watchers_.clear();
+  last_watch_id_ = 0;
+  is_awaiting_message_ = false;
+  weak_ptr_factory_.InvalidateWeakPtrs();
+}
+
 void MojoFacade::PageLoaded(WebState* web_state,
                             PageLoadCompletionStatus load_completion_status) {
   DCHECK_CURRENTLY_ON(WebThread::UI);
@@ -459,11 +507,6 @@ void MojoFacade::PageLoaded(WebState* web_state,
   if (load_completion_status == PageLoadCompletionStatus::SUCCESS &&
       GetMainWebFrame() &&
       web_state_->GetInterfaceBinderForMainFrame()->HasRegisteredInterfaces()) {
-    pipes_.clear();
-    watchers_.clear();
-    last_watch_id_ = 0;
-    is_awaiting_message_ = false;
-    weak_ptr_factory_.InvalidateWeakPtrs();
     AwaitNextMessage();
   }
 }

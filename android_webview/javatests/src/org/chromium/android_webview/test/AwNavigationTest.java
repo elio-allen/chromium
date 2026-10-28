@@ -4,6 +4,7 @@
 
 package org.chromium.android_webview.test;
 
+import android.os.SystemClock;
 import android.util.Pair;
 
 import androidx.test.filters.SmallTest;
@@ -18,13 +19,16 @@ import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.UseParametersRunnerFactory;
 
 import org.chromium.android_webview.AwNavigation;
+import org.chromium.android_webview.AwNavigationState;
 import org.chromium.android_webview.AwPage;
+import org.chromium.android_webview.AwPageState;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.Feature;
 import org.chromium.net.test.util.TestWebServer;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -66,8 +70,7 @@ public class AwNavigationTest extends AwParameterizedTest {
     @SmallTest
     @Feature({"AndroidWebView"})
     public void testBasicNavigationProperties() throws Throwable {
-        final String url =
-                mWebServer.setResponse("/page.html", "<html><body>Hello</body></html>", null);
+        String url = mWebServer.setResponse("/page.html", "<html><body>Hello</body></html>", null);
 
         mActivityTestRule.loadUrlSync(
                 mTestContainerView.getAwContents(), mContentsClient.getOnPageFinishedHelper(), url);
@@ -99,7 +102,7 @@ public class AwNavigationTest extends AwParameterizedTest {
                         new Pair<>("Custom-Header", "Value1"),
                         new Pair<>("Custom-Header", "Value2"));
 
-        final String url =
+        String url =
                 mWebServer.setResponse("/page.html", "<html><body>Hello</body></html>", headers);
 
         mActivityTestRule.loadUrlSync(
@@ -116,12 +119,50 @@ public class AwNavigationTest extends AwParameterizedTest {
     @Test
     @SmallTest
     @Feature({"AndroidWebView"})
+    public void testNavigationResponseHeadersOnRedirect() throws Throwable {
+        String destinationUrl =
+                mWebServer.setResponse(
+                        "/destination.html", "<html><body>Hello</body></html>", null);
+        List<Pair<String, String>> redirectHeaders =
+                new ArrayList<>(List.of(new Pair<>("Custom-Header", "RedirectValue")));
+        String redirectUrl =
+                mWebServer.setRedirect("/redirect.html", destinationUrl, redirectHeaders);
+
+        mActivityTestRule.loadUrlSync(
+                mTestContainerView.getAwContents(),
+                mContentsClient.getOnPageFinishedHelper(),
+                redirectUrl);
+
+        // The headers and status code of the redirect response are given to the
+        // onNavigationRedirected callback.
+        Map<String, String> redirectResponseHeaders =
+                mNavigationListener.getLastRedirectResponseHeaders();
+        Assert.assertNotNull(redirectResponseHeaders);
+        Assert.assertEquals("RedirectValue", redirectResponseHeaders.get("Custom-Header"));
+        Assert.assertEquals(destinationUrl, redirectResponseHeaders.get("Location"));
+        Assert.assertEquals(Integer.valueOf(302), mNavigationListener.getLastRedirectStatusCode());
+
+        // The navigation itself only holds the headers and status code of the final response, even
+        // though it's the same navigation object that was redirected.
+        AwNavigation navigation = mNavigationListener.getLastCompletedNavigation();
+        Assert.assertNotNull(navigation);
+        Assert.assertSame(navigation, mNavigationListener.getLastRedirectedNavigation());
+        Assert.assertEquals(destinationUrl, navigation.getUrl());
+        Map<String, String> responseHeaders = navigation.getResponseHeaders();
+        Assert.assertNotNull(responseHeaders);
+        Assert.assertFalse(responseHeaders.containsKey("Custom-Header"));
+        Assert.assertEquals(200, navigation.getStatusCode());
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
     public void testRendererInitiatedNavigation() throws Throwable {
         AwActivityTestRule.enableJavaScriptOnUiThread(mTestContainerView.getAwContents());
 
-        final String page1Url =
+        String page1Url =
                 mWebServer.setResponse("/page1.html", "<html><body>Page 1</body></html>", null);
-        final String page2Url =
+        String page2Url =
                 mWebServer.setResponse("/page2.html", "<html><body>Page 2</body></html>", null);
 
         // Load Page 1
@@ -148,15 +189,18 @@ public class AwNavigationTest extends AwParameterizedTest {
     @SmallTest
     @Feature({"AndroidWebView"})
     public void testSameDocumentNavigation() throws Throwable {
-        final String url =
-                mWebServer.setResponse("/page.html", "<html><body>Hello</body></html>", null);
-        final String fragmentUrl = url + "#fragment";
+        String url = mWebServer.setResponse("/page.html", "<html><body>Hello</body></html>", null);
+        String fragmentUrl = url + "#fragment";
 
         // Load initial page
         mActivityTestRule.loadUrlSync(
                 mTestContainerView.getAwContents(), mContentsClient.getOnPageFinishedHelper(), url);
         AwPage initialPage = mNavigationListener.getLastCompletedNavigation().getPage();
+        AwNavigationState navigationState =
+                mNavigationListener.getLastCompletedNavigation().snapshotState();
+        AwPageState pageState = navigationState.getPageState();
         Assert.assertNotNull(initialPage);
+        Assert.assertNotNull(pageState);
 
         // Navigate to fragment
         mActivityTestRule.loadUrlSync(
@@ -165,19 +209,20 @@ public class AwNavigationTest extends AwParameterizedTest {
                 fragmentUrl);
 
         AwNavigation navigation = mNavigationListener.getLastCompletedNavigation();
+        navigationState = navigation.snapshotState();
         Assert.assertNotNull(navigation);
         Assert.assertEquals(fragmentUrl, navigation.getUrl());
         Assert.assertTrue(navigation.isSameDocument());
         Assert.assertTrue(navigation.didCommit());
         Assert.assertSame(initialPage, navigation.getPage());
+        Assert.assertSame(pageState.getPage(), navigationState.getPageState().getPage());
     }
 
     @Test
     @SmallTest
     @Feature({"AndroidWebView"})
     public void testReload() throws Throwable {
-        final String url =
-                mWebServer.setResponse("/page.html", "<html><body>Hello</body></html>", null);
+        String url = mWebServer.setResponse("/page.html", "<html><body>Hello</body></html>", null);
 
         // Load initial page
         mActivityTestRule.loadUrlSync(
@@ -198,9 +243,9 @@ public class AwNavigationTest extends AwParameterizedTest {
     @SmallTest
     @Feature({"AndroidWebView"})
     public void testHistoryNavigation() throws Throwable {
-        final String url1 =
+        String url1 =
                 mWebServer.setResponse("/page1.html", "<html><body>Page 1</body></html>", null);
-        final String url2 =
+        String url2 =
                 mWebServer.setResponse("/page2.html", "<html><body>Page 2</body></html>", null);
 
         // Load Page 1
@@ -244,7 +289,7 @@ public class AwNavigationTest extends AwParameterizedTest {
     @SmallTest
     @Feature({"AndroidWebView"})
     public void testErrorPageNavigation() throws Throwable {
-        final String badUrl = "http://fake.domain.test/a.html";
+        String badUrl = "http://fake.domain.test/a.html";
 
         // Load bad URL
         mActivityTestRule.loadUrlAsync(mTestContainerView.getAwContents(), badUrl);
@@ -266,8 +311,7 @@ public class AwNavigationTest extends AwParameterizedTest {
     @SmallTest
     @Feature({"AndroidWebView"})
     public void testNavigationVisibleCallback() throws Throwable {
-        final String url =
-                mWebServer.setResponse("/page.html", "<html><body>Hello</body></html>", null);
+        String url = mWebServer.setResponse("/page.html", "<html><body>Hello</body></html>", null);
 
         mActivityTestRule.loadUrlSync(
                 mTestContainerView.getAwContents(), mContentsClient.getOnPageFinishedHelper(), url);
@@ -284,9 +328,9 @@ public class AwNavigationTest extends AwParameterizedTest {
     @SmallTest
     @Feature({"AndroidWebView"})
     public void testNavigationVisibleCallback_followUpCrossDocumentNavigation() throws Throwable {
-        final String page1Url =
-                mWebServer.setResponse("/page1.html", "<html><body>Page 1</body></html>", null);
-        final String page2Url =
+        String page1Url =
+mWebServer.setResponse("/page1.html", "<html><body>Page 1</body></html>", null);
+        String page2Url =
                 mWebServer.setResponse("/page2.html", "<html><body>Page 2</body></html>", null);
         // Load initial page
         mActivityTestRule.loadUrlSync(
@@ -321,9 +365,8 @@ public class AwNavigationTest extends AwParameterizedTest {
     @SmallTest
     @Feature({"AndroidWebView"})
     public void testNavigationVisibleCallback_followUpSameDocumentNavigation() throws Throwable {
-        final String url =
-                mWebServer.setResponse("/page.html", "<html><body>Hello</body></html>", null);
-        final String fragmentUrl = url + "#fragment";
+        String url = mWebServer.setResponse("/page.html", "<html><body>Hello</body></html>", null);
+        String fragmentUrl = url + "#fragment";
         // Load initial page
         mActivityTestRule.loadUrlSync(
                 mTestContainerView.getAwContents(), mContentsClient.getOnPageFinishedHelper(), url);
@@ -350,5 +393,30 @@ public class AwNavigationTest extends AwParameterizedTest {
         Assert.assertNotNull(navigation);
         Assert.assertEquals(fragmentUrl, navigation.getUrl());
         Assert.assertTrue(navigation.isSameDocument());
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    public void testNavigationStartTime() throws Throwable {
+        long timeBeforeStart = SystemClock.uptimeMillis();
+        String url = mWebServer.setResponse("/time.html", "<html><body>Time</body></html>", null);
+
+        mActivityTestRule.loadUrlSync(
+                mTestContainerView.getAwContents(), mContentsClient.getOnPageFinishedHelper(), url);
+
+        AwNavigation navigation = mNavigationListener.getLastCompletedNavigation();
+        Assert.assertNotNull(navigation);
+
+        long startTime = navigation.getNavigationStartUptimeMillis();
+        long timeAfterFinished = SystemClock.uptimeMillis();
+
+        Assert.assertTrue("Start time should be positive", startTime > 0);
+        Assert.assertTrue(
+                "Start time should be after test start",
+                startTime >= timeBeforeStart);
+        Assert.assertTrue(
+                "Start time should be before or equal to finish time",
+                startTime <= timeAfterFinished);
     }
 }

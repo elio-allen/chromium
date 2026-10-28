@@ -10,6 +10,7 @@
 #include "base/logging.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/trace_event/trace_event.h"
+#include "base/trace_event/typed_macros.h"
 #include "ui/ozone/platform/wayland/host/wayland_frame_manager.h"
 
 namespace ui {
@@ -20,11 +21,9 @@ BeginFrameSourceWayland::BeginFrameSourceWayland(
     : frame_manager_(frame_manager), window_(window) {
   DCHECK(frame_manager_);
   SetBeginFrameSourceExtension(window, this);
-  frame_manager_->AddFrameTimingObserver(this);
 }
 
 BeginFrameSourceWayland::~BeginFrameSourceWayland() {
-  frame_manager_->RemoveFrameTimingObserver(this);
   SetBeginFrameSourceExtension(window_, nullptr);
 }
 
@@ -34,8 +33,7 @@ void BeginFrameSourceWayland::Reset() {
   ready_to_issue_begin_frame_ = false;
   last_frame_deadline_time_ = base::TimeTicks();
   last_sent_vsync_interval_ = base::TimeDelta();
-  frame_callback_timeout_timer_.Stop();
-  deferred_issue_begin_frame_timer_.Stop();
+  UpdateBeginFrameProduction();
 }
 
 void BeginFrameSourceWayland::SetDelegate(Delegate* delegate) {
@@ -43,29 +41,20 @@ void BeginFrameSourceWayland::SetDelegate(Delegate* delegate) {
 }
 
 void BeginFrameSourceWayland::SetNeedsBeginFrame(bool needs) {
-  TRACE_EVENT1("wayland", "BeginFrameSourceWayland::SetNeedsBeginFrame",
-               "needs_begin_frames", needs);
+  TRACE_EVENT("wayland", "BeginFrameSourceWayland::SetNeedsBeginFrame",
+              "needs_begin_frames", needs, "surface_id",
+              frame_manager_->GetRootSurfaceId());
   if (needs_begin_frame_ == needs) {
     return;
   }
-
   needs_begin_frame_ = needs;
-
-  if (needs_begin_frame_) {
-    if (!frame_in_flight_) {
-      ready_to_issue_begin_frame_ = true;
-      MaybeIssueBeginFrame();
-    }
-  } else {
-    ready_to_issue_begin_frame_ = false;
-    frame_callback_timeout_timer_.Stop();
-    deferred_issue_begin_frame_timer_.Stop();
-  }
+  UpdateBeginFrameProduction();
 }
 
 void BeginFrameSourceWayland::SetPreferredInterval(base::TimeDelta interval) {
-  TRACE_EVENT1("wayland", "BeginFrameSourceWayland::SetPreferredInterval",
-               "interval_us", interval.InMicroseconds());
+  TRACE_EVENT("wayland", "BeginFrameSourceWayland::SetPreferredInterval",
+              "interval_us", interval.InMicroseconds(), "surface_id",
+              frame_manager_->GetRootSurfaceId());
   if (!interval.is_zero()) {
     DVLOG(1) << "SetPreferredInterval: preferred interval updated to "
              << interval.InMillisecondsF() << "ms";
@@ -97,23 +86,31 @@ base::TimeDelta BeginFrameSourceWayland::GetEffectiveInterval() const {
 }
 
 void BeginFrameSourceWayland::OnFrameCallback(base::TimeTicks callback_time) {
-  TRACE_EVENT1("wayland", "BeginFrameSourceWayland::OnFrameCallback",
-               "callback_time", callback_time);
-  if (frame_callback_timeout_timer_.IsRunning()) {
-    frame_callback_timeout_timer_.Stop();
-  }
+  TRACE_EVENT("wayland", "BeginFrameSourceWayland::OnFrameCallback",
+              "callback_time", callback_time, "surface_id",
+              frame_manager_->GetRootSurfaceId());
   ready_to_issue_begin_frame_ = true;
+  UpdateFrameCallbackRecoveryTimer();
 
   if (!frame_in_flight_) {
     MaybeIssueBeginFrame();
   }
 }
 
+void BeginFrameSourceWayland::OnFrameCallbackUnavailable() {
+  TRACE_EVENT("wayland", "BeginFrameSourceWayland::OnFrameCallbackUnavailable",
+              "surface_id", frame_manager_->GetRootSurfaceId());
+  ready_to_issue_begin_frame_ = true;
+  UpdateFrameCallbackRecoveryTimer();
+  MaybeIssueBeginFrame();
+}
+
 void BeginFrameSourceWayland::OnPresentationFeedback(
     const gfx::PresentationFeedback& feedback) {
-  TRACE_EVENT2("wayland", "BeginFrameSourceWayland::OnPresentationFeedback",
-               "interval_us", feedback.interval.InMicroseconds(), "failed",
-               feedback.failed());
+  TRACE_EVENT("wayland", "BeginFrameSourceWayland::OnPresentationFeedback",
+              "interval_us", feedback.interval.InMicroseconds(), "failed",
+              feedback.failed(), "surface_id",
+              frame_manager_->GetRootSurfaceId());
   if (feedback.failed()) {
     return;
   }
@@ -144,18 +141,27 @@ void BeginFrameSourceWayland::OnPresentationFeedback(
     last_sent_vsync_interval_ = vsync_interval_;
     delegate_->OnVSyncIntervalChanged(last_presentation_time_, vsync_interval_);
   }
+
+  // Presentation is authoritative proof that the compositor is ready for a
+  // frame.
+  ready_to_issue_begin_frame_ = true;
+  UpdateFrameCallbackRecoveryTimer();
+  if (!frame_in_flight_) {
+    MaybeIssueBeginFrame();
+  }
 }
 
 void BeginFrameSourceWayland::MaybeIssueBeginFrame() {
-  TRACE_EVENT1("wayland", "BeginFrameSourceWayland::MaybeIssueBeginFrame",
-               "effective_interval_us",
-               GetEffectiveInterval().InMicroseconds());
-  if (!needs_begin_frame_ || !ready_to_issue_begin_frame_ || frame_in_flight_ ||
-      !delegate_) {
+  TRACE_EVENT("wayland", "BeginFrameSourceWayland::MaybeIssueBeginFrame",
+              "effective_interval_us", GetEffectiveInterval().InMicroseconds(),
+              "surface_id", frame_manager_->GetRootSurfaceId());
+  if (!needs_begin_frame_ || suspended_ || !ready_to_issue_begin_frame_ ||
+      frame_in_flight_ || !delegate_) {
     return;
   }
 
   base::TimeTicks now = base::TimeTicks::Now();
+  const base::TimeDelta effective_interval = GetEffectiveInterval();
 
   if (!last_frame_deadline_time_.is_null()) {
     // Wayland sometimes fires multiple frame callbacks within one refresh
@@ -179,7 +185,6 @@ void BeginFrameSourceWayland::MaybeIssueBeginFrame() {
     }
   }
 
-  const base::TimeDelta effective_interval = GetEffectiveInterval();
   base::TimeTicks deadline = now + effective_interval;
   // The naive deadline of one interval from now is too far in the
   // future because "now" is some meaningful amount of time after the previous
@@ -187,8 +192,11 @@ void BeginFrameSourceWayland::MaybeIssueBeginFrame() {
   // presentation time, we can calculate a deadline aligned to the
   // display's actual vsync/refresh cycle.
   if (!last_presentation_time_.is_null()) {
+    // If an issue lands exactly on a tick, snap forward so it gets the
+    // full interval rather than a deadline of now.
     deadline =
-        now.SnappedToNextTick(last_presentation_time_, effective_interval);
+        (now + base::Microseconds(1))
+            .SnappedToNextTick(last_presentation_time_, effective_interval);
   }
   // Likewise, we can determine the true frame time, which was immediately after
   // the previous frame was shown. This keeps the difference between frame time
@@ -218,42 +226,91 @@ void BeginFrameSourceWayland::MaybeIssueBeginFrame() {
 }
 
 void BeginFrameSourceWayland::OnBeginFrameAck(bool has_damage) {
-  TRACE_EVENT1("wayland", "BeginFrameSourceWayland::OnBeginFrameAck",
-               "has_damage", has_damage);
+  TRACE_EVENT("wayland", "BeginFrameSourceWayland::OnBeginFrameAck",
+              "has_damage", has_damage, "surface_id",
+              frame_manager_->GetRootSurfaceId());
   frame_in_flight_ = false;
   if (!needs_begin_frame_) {
+    UpdateFrameCallbackRecoveryTimer();
     return;
   }
 
   if (ready_to_issue_begin_frame_) {
-    DVLOG(1)
-        << "OnBeginFrameAck: next frame callback arrived early, attempting to "
-           "issue immediately";
+    TRACE_EVENT_INSTANT("wayland",
+                        "OnBeginFrameAck: callback arrived early, issuing");
     MaybeIssueBeginFrame();
-  } else if (!has_damage) {
-    // No damage means no buffer commit, so no frame callback will arrive.
-    // Request a bare frame callback from the compositor to maintain pacing.
-    DVLOG(2) << "OnBeginFrameAck: no damage, requesting empty frame callback";
-    frame_manager_->RequestFrameCallback();
-    StartFrameCallbackTimer();
+  } else if (has_damage) {
+    TRACE_EVENT_INSTANT("wayland",
+                        "OnBeginFrameAck: damage, awaiting callback");
+  } else if (frame_manager_->HasFrameWaitingToCommit()) {
+    TRACE_EVENT_INSTANT(
+        "wayland", "OnBeginFrameAck: frame waiting to commit, not issuing");
   } else {
-    DVLOG(2) << "OnBeginFrameAck: has damage, waiting for frame callback";
-    StartFrameCallbackTimer();
+    // No damage means no buffer commit, so no frame callback or presentation
+    // feedback will arrive. Issue a frame for the next vsync to maintain
+    // pacing.
+    TRACE_EVENT_INSTANT("wayland",
+                        "OnBeginFrameAck: no damage, scheduling next frame");
+    ready_to_issue_begin_frame_ = true;
+    MaybeIssueBeginFrame();
+  }
+  UpdateFrameCallbackRecoveryTimer();
+}
+
+void BeginFrameSourceWayland::UpdateFrameCallbackRecoveryTimer() {
+  // TODO(crbug.com/537421794): Callbacks arriving late (even after multiple
+  // vsyncs) is fine and expected; it is only a problem if they never arrive at
+  // all but we were waiting for them. This fallback mechanism should be relaxed
+  // as we address internal causes for lost frame callbacks and improve pacing
+  // and recovery techniques.
+  static constexpr base::TimeDelta kFrameCallbackRecoveryTimeout =
+      base::Milliseconds(100);
+  const bool waiting_for_frame_callback =
+      needs_begin_frame_ && !frame_in_flight_ && !ready_to_issue_begin_frame_;
+  if (waiting_for_frame_callback && !suspended_) {
+    frame_callback_recovery_timer_.Start(
+        FROM_HERE, kFrameCallbackRecoveryTimeout,
+        base::BindOnce(
+            &BeginFrameSourceWayland::OnFrameCallbackRecoveryTimerFired,
+            weak_factory_.GetWeakPtr()));
+  } else {
+    frame_callback_recovery_timer_.Stop();
   }
 }
 
-void BeginFrameSourceWayland::StartFrameCallbackTimer() {
-  frame_callback_timeout_timer_.Start(
-      FROM_HERE, GetEffectiveInterval() * 2,
-      base::BindOnce(&BeginFrameSourceWayland::OnFrameCallbackTimeout,
-                     weak_factory_.GetWeakPtr()));
+void BeginFrameSourceWayland::OnWindowSuspensionChanged(bool suspended) {
+  TRACE_EVENT("wayland", "BeginFrameSourceWayland::OnWindowSuspensionChanged",
+              "suspended", suspended, "surface_id",
+              frame_manager_->GetRootSurfaceId());
+  if (suspended_ == suspended) {
+    return;
+  }
+  suspended_ = suspended;
+  UpdateBeginFrameProduction();
 }
 
-void BeginFrameSourceWayland::OnFrameCallbackTimeout() {
-  TRACE_EVENT0("wayland", "BeginFrameSourceWayland::OnFrameCallbackTimeout");
-  DVLOG(1) << "OnFrameCallbackTimeout: timed out with no frame callback, "
-              "immediately issuing frame";
+void BeginFrameSourceWayland::UpdateBeginFrameProduction() {
+  if (needs_begin_frame_ && !suspended_) {
+    if (!frame_in_flight_ && !frame_manager_->HasFrameWaitingToCommit()) {
+      // Force the first frame after starting/resuming production since
+      // we won't have any readiness signals yet.
+      ready_to_issue_begin_frame_ = true;
+      MaybeIssueBeginFrame();
+    }
+  } else {
+    deferred_issue_begin_frame_timer_.Stop();
+  }
+  UpdateFrameCallbackRecoveryTimer();
+}
+
+void BeginFrameSourceWayland::OnFrameCallbackRecoveryTimerFired() {
+  TRACE_EVENT("wayland",
+              "BeginFrameSourceWayland::OnFrameCallbackRecoveryTimerFired",
+              "surface_id", frame_manager_->GetRootSurfaceId());
   if (!ready_to_issue_begin_frame_) {
+    DVLOG(1) << "OnFrameCallbackRecoveryTimerFired: no frame callback arrived, "
+                "issuing a "
+                "frame to recover";
     ready_to_issue_begin_frame_ = true;
     MaybeIssueBeginFrame();
   }

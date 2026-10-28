@@ -151,7 +151,7 @@
 #include "components/autofill/core/common/autocomplete_parsing_util.h"
 #include "components/autofill/core/common/autofill_debug_features.h"
 #include "components/autofill/core/common/autofill_features.h"
-#include "components/autofill/core/common/autofill_test_utils.h"
+#include "components/autofill/core/common/autofill_test_util.h"
 #include "components/autofill/core/common/form_data_test_api.h"
 #include "components/autofill/core/common/language_code.h"
 #include "components/optimization_guide/core/delivery/model_info.h"
@@ -605,6 +605,8 @@ std::vector<std::pair<base::test::FeatureRef, bool>> GetWipFeatures(
       // TODO(crbug.com/320965828): Understand the changes to the expectations
       // caused by this feature.
       {features::kAutofillBetterLocalHeuristicPlaceholderSupport, false},
+      // NAME_LAST_SECOND missclassification fix
+      {features::kAutofillImproveClassificationForTwoWordLastNames, true},
   };
   bool should_disable_address_lines =
       (country == "BR" || country == "MX" || country == "IN");

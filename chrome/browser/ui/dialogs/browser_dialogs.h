@@ -15,6 +15,7 @@
 #include "chrome/browser/task_manager/task_manager_metrics_recorder.h"
 #include "chrome/browser/ui/bookmarks/bookmark_editor.h"
 #include "components/autofill/core/common/unique_ids.h"
+#include "components/captive_portal/core/captive_portal_types.h"
 #include "components/compose/buildflags.h"
 #include "components/compose/core/browser/compose_client.h"
 #include "extensions/buildflags/buildflags.h"
@@ -25,7 +26,6 @@
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/native_ui_types.h"
 
-class Browser;
 class BrowserWindowInterface;
 class Profile;
 
@@ -73,7 +73,7 @@ namespace chrome {
 // Returns a pointer to the underlying TableModel, which can be ignored, or used
 // for testing.
 task_manager::TaskManagerTableModel* ShowTaskManager(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     task_manager::StartAction start_action = task_manager::StartAction::kOther);
 void HideTaskManager();
 
@@ -118,17 +118,24 @@ void ShowTabModal(std::unique_ptr<ui::DialogModel> dialog_model,
 // Make sure to use the returned window only when you know it is safe
 // to do so, i.e. before OnDialogClosed() is called on the delegate.
 //
+// `captive_portal_window_type` marks the dialog's WebContents as a captive
+// portal sign-in surface, as NavigateParams::captive_portal_window_type does
+// for a browser window.
+//
 // Please use tabs::TabDialogManager for showing dialogs on desktop platforms.
-gfx::NativeWindow ShowWebDialog(gfx::NativeView parent,
-                                content::BrowserContext* context,
-                                ui::WebDialogDelegate* delegate,
-                                bool show = true);
+gfx::NativeWindow ShowWebDialog(
+    gfx::NativeView parent,
+    content::BrowserContext* context,
+    ui::WebDialogDelegate* delegate,
+    bool show = true,
+    captive_portal::CaptivePortalWindowType captive_portal_window_type =
+        captive_portal::CaptivePortalWindowType::kNone);
 
 #if BUILDFLAG(IS_MAC)
 
 // Bridging methods that show/hide the toolkit-views based Task Manager on Mac.
 task_manager::TaskManagerTableModel* ShowTaskManagerViews(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     task_manager::StartAction start_action = task_manager::StartAction::kOther);
 void HideTaskManagerViews();
 
@@ -141,14 +148,14 @@ void HideTaskManagerViews();
 base::OnceClosure ShowDeviceChooserDialog(
     content::RenderFrameHost* owner,
     std::unique_ptr<permissions::ChooserController> controller);
-bool IsDeviceChooserShowingForTesting(Browser* browser);
+bool IsDeviceChooserShowingForTesting(BrowserWindowInterface* browser);
 #endif
 
 // Show the prompt to set a window name for browser's window, optionally with
 // the given context.
-void ShowWindowNamePrompt(Browser* browser);
+void ShowWindowNamePrompt(BrowserWindowInterface* browser);
 std::unique_ptr<ui::DialogModel> CreateWindowNamePromptDialogModelForTesting(
-    Browser* browser);
+    BrowserWindowInterface* browser);
 
 #if BUILDFLAG(ENABLE_COMPOSE)
 std::unique_ptr<compose::ComposeDialogController> ShowComposeDialog(
@@ -161,7 +168,7 @@ std::unique_ptr<compose::ComposeDialogController> ShowComposeDialog(
 // desktop of the OS. Before the dialog is shown, the necessary metadata is
 // gathered from the browser's active WebContents.
 // Triggered from the three-dot menu on Chrome, Save & Share > Create Shortcut.
-void CreateDesktopShortcutForActiveWebContents(Browser* browser);
+void CreateDesktopShortcutForActiveWebContents(BrowserWindowInterface* browser);
 
 }  // namespace chrome
 

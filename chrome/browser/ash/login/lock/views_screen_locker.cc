@@ -22,6 +22,7 @@
 #include "chrome/browser/ash/login/challenge_response_auth_keys_loader.h"
 #include "chrome/browser/ash/login/helper.h"
 #include "chrome/browser/ash/login/lock/screen_locker.h"
+#include "chrome/browser/ash/login/lock/screen_locker_controller.h"
 #include "chrome/browser/ash/login/lock_screen_utils.h"
 #include "chrome/browser/ash/login/mojo_system_info_dispatcher.h"
 #include "chrome/browser/ash/login/quick_unlock/pin_backend.h"
@@ -29,7 +30,6 @@
 #include "chrome/browser/ash/login/quick_unlock/quick_unlock_utils.h"
 #include "chrome/browser/ash/login/screens/chrome_user_selection_screen.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/ash/system/system_clock.h"
 #include "chrome/browser/ui/ash/session/session_controller_client_impl.h"
 #include "chrome/browser/ui/ash/wallpaper/wallpaper_controller_client_impl.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
@@ -37,6 +37,7 @@
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "google_apis/gaia/gaia_auth_util.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "ui/base/ime/ash/ime_keyboard.h"
 
 // TODO(b/228873153): Remove after figuring out the root cause of the bug
@@ -49,13 +50,18 @@ ViewsScreenLocker::ViewsScreenLocker(
     PrefService* local_state,
     const ApplicationLocaleStorage* application_locale_storage,
     scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
-    policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash)
+    policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+    const user_manager::MultiUserSignInPolicyController*
+        multi_user_sign_in_policy_controller,
+    system::SystemClock* system_clock)
     : local_state_(CHECK_DEREF(local_state)),
       user_selection_screen_(std::make_unique<ChromeUserSelectionScreen>(
           local_state,
           &CHECK_DEREF(application_locale_storage),
           std::move(shared_url_loader_factory),
           &CHECK_DEREF(browser_policy_connector_ash),
+          multi_user_sign_in_policy_controller,
+          system_clock,
           DisplayedScreen::LOCK_SCREEN)),
       system_info_updater_(std::make_unique<MojoSystemInfoDispatcher>(
           &CHECK_DEREF(browser_policy_connector_ash))),
@@ -105,11 +111,12 @@ void ViewsScreenLocker::HandleAuthenticateUserWithPasswordOrPin(
     const std::string& password,
     bool authenticated_by_pin,
     base::OnceCallback<void(bool)> callback) {
-  DCHECK_EQ(account_id.GetUserEmail(),
-            gaia::SanitizeEmail(account_id.GetUserEmail()));
+  CHECK_EQ(account_id.GetUserEmail(),
+           gaia::SanitizeEmail(account_id.GetUserEmail()),
+           base::NotFatalUntil::M160);
   const user_manager::User* const user =
       user_manager::UserManager::Get()->FindUser(account_id);
-  DCHECK(user);
+  CHECK(user, base::NotFatalUntil::M160);
   auto user_context = std::make_unique<UserContext>(*user);
   user_context->SetKey(
       Key(Key::KEY_TYPE_PASSWORD_PLAIN, std::string(), password));
@@ -124,7 +131,7 @@ void ViewsScreenLocker::HandleAuthenticateUserWithPasswordOrPin(
   auto on_authenticated = base::BindOnce(&ViewsScreenLocker::OnAuthenticated,
                                          weak_factory_.GetWeakPtr(), account_id,
                                          std::move(callback));
-  ScreenLocker::default_screen_locker()->Authenticate(
+  ScreenLockerController::Get().screen_locker()->Authenticate(
       std::move(user_context), std::move(on_authenticated));
 }
 
@@ -136,8 +143,9 @@ void ViewsScreenLocker::HandleAuthenticateUserWithEasyUnlock(
 void ViewsScreenLocker::HandleAuthenticateUserWithChallengeResponse(
     const AccountId& account_id,
     base::OnceCallback<void(bool)> callback) {
-  ScreenLocker::default_screen_locker()->AuthenticateWithChallengeResponse(
-      account_id, std::move(callback));
+  ScreenLockerController::Get()
+      .screen_locker()
+      ->AuthenticateWithChallengeResponse(account_id, std::move(callback));
 }
 
 void ViewsScreenLocker::HandleOnFocusPod(const AccountId& account_id) {

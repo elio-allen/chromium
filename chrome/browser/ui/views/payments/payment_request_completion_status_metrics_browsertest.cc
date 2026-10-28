@@ -11,6 +11,7 @@
 #include "components/payments/core/journey_logger.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/label.h"
 
@@ -357,7 +358,7 @@ IN_PROC_BROWSER_TEST_F(PaymentRequestCompletionStatusMetricsTest,
 
   // Reload the page containing the Payment Request.
   ResetEventWaiterForSequence({DialogEvent::DIALOG_CLOSED});
-  chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::Reload(browser(), WindowOpenDisposition::kCurrentTab);
   ASSERT_TRUE(WaitForObservedEvent());
 
   // Make sure the correct events were logged.
@@ -398,7 +399,8 @@ IN_PROC_BROWSER_TEST_F(PaymentRequestInitiatedCompletionStatusMetricsTest,
       histogram_tester.GetAllSamples("PaymentRequest.Events2");
   ASSERT_EQ(1U, buckets.size());
   EXPECT_EQ(toInt(Event2::kInitiated) | toInt(Event2::kUserAborted) |
-                toInt(Event2::kRequestMethodOther),
+                toInt(Event2::kRequestMethodOther) |
+                toInt(Event2::kCanMakePaymentCalled),
             buckets[0].min);
 }
 

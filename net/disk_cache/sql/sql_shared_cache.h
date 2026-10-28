@@ -6,7 +6,9 @@
 #define NET_DISK_CACHE_SQL_SQL_SHARED_CACHE_H_
 
 #include <atomic>
+#include <vector>
 
+#include "base/containers/id_map.h"
 #include "base/containers/queue.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
@@ -17,11 +19,13 @@
 #include "net/base/net_export.h"
 #include "net/base/network_isolation_key.h"
 #include "net/disk_cache/sql/cache_entry_key.h"
+#include "net/disk_cache/sql/shared_cache_client_remote.h"
 #include "net/disk_cache/sql/sql_persistent_store.h"
 #include "net/disk_cache/sql/sql_read_cache_memory_monitor.h"
 #include "net/disk_cache/sql/sql_shared_cache_blob_handle.h"
 #include "net/disk_cache/sql/sql_shared_cache_isolated_database.h"
 #include "net/disk_cache/sql/sql_tracked_sequence_bound.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace disk_cache {
 
@@ -65,6 +69,7 @@ class NET_EXPORT_PRIVATE SqlSharedCache {
 
   // Returns true if there are any active handles referencing this cache.
   bool IsReferenced() const { return handle_count_ != 0; }
+  size_t handle_count_for_testing() const { return handle_count_; }
 
   // Increments/decrements the count of active `SqlSharedCacheHandle` instances.
   // Restricted via `base::PassKey` to `SqlSharedCacheHandle`.
@@ -98,7 +103,9 @@ class NET_EXPORT_PRIVATE SqlSharedCache {
       base::queue<SqlPersistentStore::SharedCacheEligibleEntry> entries,
       scoped_refptr<base::RefCountedData<std::atomic_bool>> abort_flag,
       base::OnceCallback<void(
-          base::queue<SqlPersistentStore::SharedCacheEligibleEntry>)> callback);
+          base::queue<SqlPersistentStore::SharedCacheEligibleEntry>)> callback,
+      base::RepeatingCallback<void(const CacheEntryKey&)>
+          on_entry_copied_callback = {});
 
   // Deletes entries specified by `shared_cache_row_ids` from the isolated
   // database.
@@ -128,7 +135,14 @@ class NET_EXPORT_PRIVATE SqlSharedCache {
           base::expected<scoped_refptr<SqlSharedCacheBlobHandle>,
                          SqlSharedCacheIsolatedDatabase::Error>)> callback);
 
+  // Registers a remote client to receive database connection handles.
+  void RegisterClient(std::unique_ptr<SharedCacheClientRemote> client);
+
  private:
+  using ClientId = int32_t;
+  using ClientsMap =
+      base::IDMap<std::unique_ptr<SharedCacheClientRemote>, ClientId>;
+
   // Entry Copying Call Flow Overview:
   //
   // CopyEntries()
@@ -203,13 +217,25 @@ class NET_EXPORT_PRIVATE SqlSharedCache {
   void MoveBlobsToSharedCache(CacheEntryKey key,
                               SqlPersistentStore::ResId res_id,
                               SqlSharedCacheRowId shared_cache_row_id);
-  void OnCopyEntryComplete();
+  void OnCopyEntryComplete(const CacheEntryKey& key);
   void OnCopyEntryFailed();
   void FinishCopy();
+
+  void OnClientDisconnected(ClientId client_id,
+                            scoped_refptr<SqlSharedCacheHandle> handle);
 
   void OnIsolatedDatabaseRead(
       SqlPersistentStore::ReadResultOrErrorCallback callback,
       SqlSharedCacheIsolatedDatabase::ReadResultOrError result);
+
+  void OnPendingFileSetForClient(
+      ClientId client_id,
+      base::expected<sqlite_vfs::PendingFileSet,
+                     SqlSharedCacheIsolatedDatabase::Error> pending_file_set);
+
+  void OnHashesLoaded(
+      base::expected<std::vector<uint32_t>,
+                     SqlSharedCacheIsolatedDatabase::Error> hashes);
 
   const std::string nik_string_;
   const raw_ref<SqlPersistentStore> store_;
@@ -225,6 +251,9 @@ class NET_EXPORT_PRIVATE SqlSharedCache {
 
   SqlTrackedSequenceBound<SqlSharedCacheIsolatedDatabase> isolated_database_;
 
+  std::optional<absl::flat_hash_set<uint32_t>> cached_hashes_;
+  ClientsMap clients_;
+
   base::queue<SqlPersistentStore::SharedCacheEligibleEntry>
       pending_copy_entries_;
   scoped_refptr<base::RefCountedData<std::atomic_bool>> copy_abort_flag_;
@@ -232,6 +261,10 @@ class NET_EXPORT_PRIVATE SqlSharedCache {
       base::queue<SqlPersistentStore::SharedCacheEligibleEntry>)>
       copy_callback_;
   std::optional<SqlSharedCacheRowId> current_copy_row_id_;
+
+  base::RepeatingCallback<void(const CacheEntryKey&)> on_entry_copied_callback_;
+  std::optional<uint32_t> current_entry_hash_;
+  std::vector<uint32_t> copy_new_hashes_;
 
   base::WeakPtrFactory<SqlSharedCache> weak_factory_{this};
 };

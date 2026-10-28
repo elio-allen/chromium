@@ -14,7 +14,10 @@ component("features") {
     "page_content_annotations_switches.h",
   ]
   public_deps = [ "//base" ]
-  deps = [ "//ui/base" ]
+  deps = [
+    "//base/i18n:language_tag",
+    "//ui/base",
+  ]
   defines = [ "IS_PAGE_CONTENT_ANNOTATIONS_FEATURES_IMPL" ]
 }
 
@@ -77,6 +80,7 @@ static_library("core") {
     "//components/optimization_guide/core",
     "//components/search",
     "//components/search_engines",
+    "//ui/base",
   ]
   deps = [
     "//components/database_utils",
@@ -141,6 +145,7 @@ source_set("unit_tests") {
     "//components/optimization_guide/core:test_support",
     "//components/passage_embeddings/core:passage_embeddings_types",
     "//components/search_engines:test_support",
+    "//sql:test_support",
     "//testing/gmock",
     "//testing/gtest",
   ]

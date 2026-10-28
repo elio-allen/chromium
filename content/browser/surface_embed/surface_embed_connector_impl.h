@@ -19,6 +19,8 @@
 #include "third_party/blink/public/mojom/frame/intrinsic_sizing_info.mojom-forward.h"
 #include "third_party/blink/public/mojom/frame/lifecycle.mojom.h"
 #include "third_party/blink/public/mojom/frame/viewport_intersection_state.mojom.h"
+#include "ui/accessibility/ax_node_id_forward.h"
+#include "ui/accessibility/ax_tree_id.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/compositor/compositor.h"
 #include "ui/display/screen_infos.h"
@@ -84,6 +86,11 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
   bool IsThrottledForTesting() override;
   bool IsSubtreeThrottledForTesting() override;
   bool IsDisplayLockedForTesting() override;
+  PinchGestureMode GetPinchGestureModeForTesting() const override;
+  void SetPinchGestureMode(PinchGestureMode mode) override;
+  void SetParentAccessibilityInfo(ui::AXNodeID ax_node_id,
+                                  const ui::AXTreeID& ax_tree_id) override;
+  ui::AXTreeID GetParentAXTreeID() const override;
 
   // FrameConnector:
   void SetKeepSurfaceAlive(bool keep_alive) override;
@@ -92,6 +99,7 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
                bool allow_paint_holding) override;
   RenderWidgetHostViewBase* GetParentRenderWidgetHostView() override;
   RenderWidgetHostViewBase* GetRootRenderWidgetHostView() override;
+  input::RenderWidgetHostViewInput* GetPinchZoomTarget() override;
   void RenderProcessGone() override;
   void FirstSurfaceActivation(const viz::SurfaceInfo& surface_info) override;
   void SendIntrinsicSizingInfoToParent(
@@ -139,6 +147,8 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
   input::RenderWidgetHostViewInput* GetParentViewInput() override;
   input::RenderWidgetHostViewInput* GetRootViewInput() override;
 
+  void UpdateAccessibilityTree();
+
   // Updates the `view_` member to track the current RenderWidgetHostView
   // associated with the child WebContents.
   void UpdateViewForCurrentRenderFrameHost();
@@ -150,11 +160,6 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
   // Called by WebContentsImpl before the connector is cleared. Notifies the
   // parent WebContents.
   void OnDetachedFromParent();
-
-  // Requests focus for all ancestor embed elements up the chain. This ensures
-  // that in a multi-level embedding scenario, each ancestor's <embed> element
-  // becomes the active element in its respective document.
-  void RequestFocusOnEmbedElement();
 
   // Returns nullptr if the focus is outside of this connector's child
   // WebContents.
@@ -190,7 +195,8 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
   SurfaceEmbedConnectorImpl(WebContents* child_web_contents,
                             WebContents* parent_web_contents,
                             RenderFrameHost* embedder_rfh,
-                            SurfaceEmbedConnector::Delegate* delegate);
+                            SurfaceEmbedConnector::Delegate* delegate,
+                            PinchGestureMode pinch_gesture_mode);
 
   static WebContentsImpl* GetParentWebContents(WebContentsImpl* web_contents);
   static WebContentsImpl* GetRootWebContents(WebContentsImpl* web_contents);
@@ -223,9 +229,20 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
   // The RenderFrameHost in the parent that hosts the embed element.
   base::WeakPtr<RenderFrameHostImpl> embedder_rfh_;
   raw_ptr<RenderWidgetHostViewChildFrame> view_ = nullptr;
+  PinchGestureMode pinch_gesture_mode_;
 
   // The last received FrameSinkId from the guest WebContents's view.
   viz::FrameSinkId frame_sink_id_;
+
+  ui::AXNodeID container_accessibility_node_id_ = ui::kInvalidAXNodeID;
+  ui::AXTreeID container_accessibility_tree_id_;
+
+  // The AXTreeID of the parent (embedder) accessibility tree that the child's
+  // tree is currently stitched into, or ui::AXTreeIDUnknown() when not
+  // stitched. Established by UpdateAccessibilityTree() and read back by
+  // RenderFrameHostImpl (via RenderFrameHostDelegate::GetSurfaceEmbedConnector)
+  // to answer the embedded child main frame's AX-parent queries.
+  ui::AXTreeID embed_parent_ax_tree_id_;
 
   // The last received LocalSurfaceId from the SurfaceEmbed.
   viz::LocalSurfaceId local_surface_id_;

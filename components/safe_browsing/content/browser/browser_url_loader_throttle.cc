@@ -14,7 +14,6 @@
 #include "base/trace_event/trace_event.h"
 #include "components/safe_browsing/buildflags.h"
 #include "components/safe_browsing/content/browser/async_check_tracker.h"
-#include "components/safe_browsing/content/browser/safe_browsing_navigation_observer.h"
 #include "components/safe_browsing/core/browser/db/v5_get_hash_protocol_manager.h"
 #include "components/safe_browsing/core/browser/hashprefix_realtime/hash_realtime_service.h"
 #include "components/safe_browsing/core/browser/realtime/url_lookup_service_base.h"
@@ -34,6 +33,10 @@
 #include "services/network/public/mojom/fetch_api.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
+
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+#include "components/safe_browsing/content/browser/safe_browsing_navigation_observer.h"
+#endif
 
 namespace {
 
@@ -223,12 +226,18 @@ void BrowserURLLoaderThrottle::WillStartRequest(
           ? url_lookup_service_->CanCheckSafeBrowsingHighConfidenceAllowlist()
           : true;
 
-  if (async_check_tracker_ && navigation_id_.has_value() &&
-      !(request->load_flags & net::LOAD_PREFETCH)) {
+  const bool is_non_prefetch_navigation =
+      navigation_id_.has_value() && !(request->load_flags & net::LOAD_PREFETCH);
+  const bool is_real_time_lookup_enabled =
+      url_real_time_lookup_enabled_ ||
+      hash_realtime_selection_ !=
+          hash_realtime_utils::HashRealTimeSelection::kNone;
+  const bool can_prioritize_navigation_callbacks =
+      is_non_prefetch_navigation &&
+      base::FeatureList::IsEnabled(kPrioritizeSafeBrowsingNavigationCallbacks);
+  if (async_check_tracker_ && is_non_prefetch_navigation) {
     CHECK(can_check_db);
-    CHECK(url_real_time_lookup_enabled_ ||
-          hash_realtime_selection_ !=
-              hash_realtime_utils::HashRealTimeSelection::kNone);
+    CHECK(is_real_time_lookup_enabled);
     // If async check is enabled, sync_sb_checker only performs local database
     // check.
     sync_sb_checker_ = std::make_unique<UrlCheckerHolder>(
@@ -245,10 +254,11 @@ void BrowserURLLoaderThrottle::WillStartRequest(
         /*hash_realtime_selection=*/
         hash_realtime_utils::HashRealTimeSelection::kNone,
         /*is_async_check=*/false,
-        /*check_allowlist_before_hash_database=*/
-        async_check_tracker_->should_sync_checker_check_allowlist(),
+        /*check_allowlist_before_hash_database=*/false,
         /*tab_id=*/SessionID::InvalidValue(), referring_app_info_,
-        v5_get_hash_protocol_manager_);
+        v5_get_hash_protocol_manager_,
+        /*prioritize_navigation_callbacks=*/
+        can_prioritize_navigation_callbacks);
     async_sb_checker_ = std::make_unique<UrlCheckerHolder>(
         delegate_getter_, frame_tree_node_id_, navigation_id_,
         web_contents_getter_,
@@ -259,7 +269,8 @@ void BrowserURLLoaderThrottle::WillStartRequest(
         can_check_high_confidence_allowlist, url_lookup_service_metric_suffix_,
         url_lookup_service_, hash_realtime_service_, hash_realtime_selection_,
         /*is_async_check=*/true, /*check_allowlist_before_hash_database=*/false,
-        tab_id_, referring_app_info_, v5_get_hash_protocol_manager_);
+        tab_id_, referring_app_info_, v5_get_hash_protocol_manager_,
+        /*prioritize_navigation_callbacks=*/false);
     if (on_sync_sb_checker_created_callback_for_testing_) {
       std::move(on_sync_sb_checker_created_callback_for_testing_).Run();
     }
@@ -278,7 +289,9 @@ void BrowserURLLoaderThrottle::WillStartRequest(
         url_lookup_service_, hash_realtime_service_, hash_realtime_selection_,
         /*is_async_check=*/false,
         /*check_allowlist_before_hash_database=*/false, tab_id_,
-        referring_app_info_, v5_get_hash_protocol_manager_);
+        referring_app_info_, v5_get_hash_protocol_manager_,
+        /*prioritize_navigation_callbacks=*/
+        can_prioritize_navigation_callbacks && !is_real_time_lookup_enabled);
     if (on_sync_sb_checker_created_callback_for_testing_) {
       std::move(on_sync_sb_checker_created_callback_for_testing_).Run();
     }
@@ -340,6 +353,7 @@ void BrowserURLLoaderThrottle::WillRedirectRequest(
     return;
   }
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   // Make IP addresses from redirects available for later real-time URL checks.
   if (!response_head.remote_endpoint.address().empty()) {
     content::WebContents* web_contents = web_contents_getter_.Run();
@@ -353,6 +367,7 @@ void BrowserURLLoaderThrottle::WillRedirectRequest(
       }
     }
   }
+#endif
   current_url_ = redirect_info->new_url;
 
   pending_sync_checks_++;

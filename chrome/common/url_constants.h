@@ -120,6 +120,12 @@ inline constexpr char kChromeOsHelpViaWebUIURL[] =
 // widgets instead of using HTML.
 inline constexpr char kChromeNativeScheme[] = "chrome-native";
 
+// The chrome-experimental-site-token-provider: scheme is used to retrieve
+// site-specific tokens.
+inline constexpr char kChromeExperimentalSiteTokenProviderScheme[] =
+    "chrome-experimental-site-token-provider";
+inline constexpr char kChromeExperimentalSiteTokenHost[] = "token";
+
 // The URL of safe section in Chrome page (https://www.google.com/chrome).
 inline constexpr char16_t kChromeSafePageURL[] =
     u"https://www.google.com/chrome/#safe";
@@ -204,6 +210,10 @@ inline constexpr char16_t kDoNotTrackLearnMoreURL[] =
 #else
     u"https://support.google.com/chrome?p=settings_do_not_track";
 #endif
+
+// "Learn more" URL for Universal Opt-Out.
+inline constexpr char16_t kUniversalOptOutLearnMoreURL[] =
+    u"https://support.google.com/chrome?p=opt_out_request";
 
 // The URL for the "Learn more" page for interrupted downloads.
 inline constexpr char kDownloadInterruptedLearnMoreURL[] =
@@ -444,6 +454,14 @@ inline constexpr char16_t kCardBenefitsLearnMoreURL[] =
 inline constexpr char16_t kGmailOtpFillingLearnMoreURL[] =
     u"https://support.google.com/chrome?p=one_time_password";
 
+// URL for Gmail general settings.
+inline constexpr char16_t kGmailSettingsURL[] =
+    u"https://mail.google.com/mail/u/0/#settings/general";
+
+// URL for Gmail smart features settings.
+inline constexpr char16_t kGmailSmartFeaturesURL[] =
+    u"https://mail.google.com/mail/u/0/?ogwsfsd=true#settings";
+
 // "Learn more" URL for the performance intervention notification setting.
 inline constexpr char16_t kPerformanceInterventionLearnMoreUrl[] =
     u"https://support.google.com/chrome?p=performance_personalization";
@@ -538,20 +556,12 @@ inline constexpr char16_t kSyncEncryptionHelpURL[] =
 inline constexpr char kSyncErrorsHelpURL[] =
     "https://support.google.com/chrome?p=settings_sync_error";
 
-// Legacy URL to the sync google dashboard.
-inline constexpr char kLegacySyncGoogleDashboardURL[] =
-    "https://www.google.com/settings/chrome/sync";
-#if BUILDFLAG(IS_CHROMEOS)
-static_assert(std::string_view(kLegacySyncGoogleDashboardURL) ==
-              ash::chrome_external_urls::kLegacySyncGoogleDashboardURL);
-#endif
-
-// New URL to the sync google dashboard.
-inline constexpr char kNewSyncGoogleDashboardURL[] =
+// URL to the sync google dashboard.
+inline constexpr char kSyncGoogleDashboardURL[] =
     "https://chrome.google.com/data";
 #if BUILDFLAG(IS_CHROMEOS)
-static_assert(std::string_view(kNewSyncGoogleDashboardURL) ==
-              ash::chrome_external_urls::kNewSyncGoogleDashboardURL);
+static_assert(std::string_view(kSyncGoogleDashboardURL) ==
+              ash::chrome_external_urls::kSyncGoogleDashboardURL);
 #endif
 
 // The URL for the "Learn more" page for sync setup on the personal stuff page.

@@ -20,9 +20,10 @@ import androidx.fragment.app.Fragment;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.R;
 import org.chromium.chrome.browser.firstrun.FirstRunUtils.SafetyFrePromoArm;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.safety_promo.R;
+import org.chromium.chrome.browser.safety_promo.SafetyPromoFirstRunView;
 import org.chromium.chrome.browser.ui.signin.SigninUtils;
 
 /** A {@link Fragment} for the Safety Promo during the First Run Experience (FRE). */
@@ -64,8 +65,8 @@ public class SafetyPromoFirstRunFragment extends Fragment implements FirstRunFra
         setupView(view, arm);
     }
 
-    private @LayoutRes int getLayoutId(@SafetyFrePromoArm int arm, boolean useLandscape) {
-        if (arm == SafetyFrePromoArm.PASSWORD_MANAGER) {
+    private static @LayoutRes int getLayoutId(@SafetyFrePromoArm int arm, boolean useLandscape) {
+        if (FirstRunUtils.isCardBasedPromoArm(arm)) {
             return useLandscape
                     ? R.layout.safety_promo_fre_cards_landscape_view
                     : R.layout.safety_promo_fre_cards_portrait_view;
@@ -82,11 +83,33 @@ public class SafetyPromoFirstRunFragment extends Fragment implements FirstRunFra
     }
 
     private void setupView(SafetyPromoFirstRunView view, @SafetyFrePromoArm int arm) {
-        if (arm == SafetyFrePromoArm.PASSWORD_MANAGER) {
-            view.setCards(FirstRunUtils.getCardsForSafetyFrePromoArm(arm));
-        }
         var pageDelegate = assumeNonNull(getPageDelegate());
-        view.getContinueButtonView().setOnClickListener(v -> pageDelegate.advanceToNextPage());
+        var state = pageDelegate.getSafetyPromoFirstRunState();
+        if (FirstRunUtils.isCardBasedPromoArm(arm)) {
+            view.setCards(
+                    FirstRunUtils.getItemsForSafetyFrePromoArm(arm),
+                    item -> {
+                        state.setSelectedItem(item);
+                        pageDelegate.advanceToNextPage();
+                    });
+        }
+
+        view.getContinueButtonView()
+                .setOnClickListener(
+                        _ -> {
+                            state.setSelectedItem(null);
+                            pageDelegate.advanceToNextPage();
+                        });
+    }
+
+    @Override
+    public void reset() {
+        // Clear the previous selection when the user comes back to this page. Without this,
+        // picking card A, swiping the carousel to card B, coming back here and picking card A
+        // again would leave the carousel on card B: the carousel fragment and its coordinator
+        // survive back-navigation, and the supplier does not notify observers because card A is
+        // still its value.
+        assumeNonNull(getPageDelegate()).getSafetyPromoFirstRunState().setSelectedItem(null);
     }
 
     @Override

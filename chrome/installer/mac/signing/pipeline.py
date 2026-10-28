@@ -10,9 +10,23 @@ The pipeline module orchestrates the entire signing process, which includes:
 """
 
 import asyncio
+import collections
+import copy
 import os.path
 
-from signing import commands, logger, model, modification, notarize, parts, signing
+from signing import (
+    commands,
+    logger,
+    model,
+    modification,
+    notarize,
+    parts,
+    signing,
+)
+
+PkgDistribution = collections.namedtuple(
+    'PkgDistribution', ['dist', 'dist_config', 'paths', 'pkg_path']
+)
 
 
 def _include_branding_code_in_app(dist):
@@ -49,8 +63,9 @@ def _binary_architectures(binary_path):
     return output
 
 
-async def _customize_and_sign_chrome(paths, dist_config, dest_dir,
-                                     signed_frameworks):
+async def _customize_and_sign_chrome(
+    paths, dist_config, dest_dir, signed_frameworks
+):
     """Does channel customization and signing of a Chrome distribution. The
     resulting app bundle is moved into |dest_dir|.
 
@@ -70,7 +85,8 @@ async def _customize_and_sign_chrome(paths, dist_config, dest_dir,
     """
     # Copy the app to sign into the work dir.
     commands.copy_files(
-        os.path.join(paths.input, dist_config.base_config.app_dir), paths.work)
+        os.path.join(paths.input, dist_config.base_config.app_dir), paths.work
+    )
 
     # Customize the app bundle.
     customization_dist = dist_config.distribution
@@ -78,14 +94,20 @@ async def _customize_and_sign_chrome(paths, dist_config, dest_dir,
     if not _include_branding_code_in_app(customization_dist):
         customization_dist = dist_config.distribution.brandless_copy()
         customization_dist_config = customization_dist.to_config(
-            dist_config.base_config)
+            dist_config.base_config
+        )
 
-    modification.customize_distribution(paths, customization_dist,
-                                        customization_dist_config)
+    modification.customize_distribution(
+        paths, customization_dist, customization_dist_config
+    )
 
-    work_dir_framework_path = os.path.join(paths.work,
-                                           dist_config.framework_dir)
-    if signed_frameworks is not None and dist_config.base_bundle_id in signed_frameworks:
+    work_dir_framework_path = os.path.join(
+        paths.work, dist_config.framework_dir
+    )
+    if (
+        signed_frameworks is not None
+        and dist_config.base_bundle_id in signed_frameworks
+    ):
         # If the inner framework has already been modified and signed for this
         # bundle ID, recycle the existing signed copy without signing a new
         # copy. This ensures that bit-for-bit identical input will result in
@@ -93,35 +115,49 @@ async def _customize_and_sign_chrome(paths, dist_config, dest_dir,
         # example, the signature's timestamp. All variants of a product sharing
         # the same bundle ID are assumed to have bit-for-bit identical
         # frameworks.
-        (signed_framework_path, signed_framework_change_count
-        ) = signed_frameworks[dist_config.base_bundle_id]
-        actual_framework_change_count = commands.copy_dir_overwrite_and_count_changes(
-            os.path.join(dest_dir, signed_framework_path),
-            work_dir_framework_path,
-            dry_run=False)
+        (signed_framework_path, signed_framework_change_count) = (
+            signed_frameworks[dist_config.base_bundle_id]
+        )
+        actual_framework_change_count = (
+            commands.copy_dir_overwrite_and_count_changes(
+                os.path.join(dest_dir, signed_framework_path),
+                work_dir_framework_path,
+                dry_run=False,
+            )
+        )
 
         if actual_framework_change_count != signed_framework_change_count:
             raise ValueError(
-                'While customizing and signing {} ({}), actual_framework_change_count {} != signed_framework_change_count {}'
-                .format(dist_config.base_bundle_id,
-                        dist_config.packaging_basename,
-                        actual_framework_change_count,
-                        signed_framework_change_count))
+                'While customizing and signing {} ({}), actual_framework_change_count {} != signed_framework_change_count {}'.format(
+                    dist_config.base_bundle_id,
+                    dist_config.packaging_basename,
+                    actual_framework_change_count,
+                    signed_framework_change_count,
+                )
+            )
 
         await parts.sign_chrome(paths, dist_config, sign_framework=False)
     else:
-        unsigned_framework_path = os.path.join(paths.work,
-                                               'modified_unsigned_framework')
+        unsigned_framework_path = os.path.join(
+            paths.work, 'modified_unsigned_framework'
+        )
         commands.copy_dir_overwrite_and_count_changes(
-            work_dir_framework_path, unsigned_framework_path, dry_run=False)
+            work_dir_framework_path, unsigned_framework_path, dry_run=False
+        )
         await parts.sign_chrome(paths, dist_config, sign_framework=True)
-        actual_framework_change_count = commands.copy_dir_overwrite_and_count_changes(
-            work_dir_framework_path, unsigned_framework_path, dry_run=True)
+        actual_framework_change_count = (
+            commands.copy_dir_overwrite_and_count_changes(
+                work_dir_framework_path, unsigned_framework_path, dry_run=True
+            )
+        )
         if signed_frameworks is not None:
-            dest_dir_framework_path = os.path.join(dest_dir,
-                                                   dist_config.framework_dir)
+            dest_dir_framework_path = os.path.join(
+                dest_dir, dist_config.framework_dir
+            )
             signed_frameworks[dist_config.base_bundle_id] = (
-                dest_dir_framework_path, actual_framework_change_count)
+                dest_dir_framework_path,
+                actual_framework_change_count,
+            )
 
     app_path = os.path.join(paths.work, dist_config.app_dir)
     commands.make_dir(dest_dir)
@@ -161,7 +197,15 @@ def _create_pkgbuild_scripts(paths, dist_config):
             '@APP_PRODUCT@': dist_config.app_product,
             '@BRAND_CODE@': dist_config.distribution.branding_code or '',
             '@BUNDLE_ID@': dist_config.base_bundle_id,
-            '@FRAMEWORK_DIR@': dist_config.framework_dir
+            '@FRAMEWORK_DIR@': dist_config.framework_dir,
+            # The value of `dist_config.codesign_requirements_basic` is used by
+            # appending it to an existing requirements value, so it must have a
+            # structure that allows it to be used in such a way (i.e. being an
+            # empty string in the default case, or starting with 'and anchor
+            # ...' for internal configs). Prepending a 'true' allows for its
+            # usage here.
+            '@UPDATER_REQUIREMENT@': 'true '
+            + dist_config.codesign_requirements_basic,
         }
         for key, value in substitutions.items():
             script = script.replace(key, value)
@@ -201,15 +245,22 @@ def _component_property_path(paths, dist_config):
         The path to the component plist file.
     """
     component_property_path = os.path.join(
-        paths.work, '{}.plist'.format(dist_config.app_product))
+        paths.work, '{}.plist'.format(dist_config.app_product)
+    )
 
-    commands.write_plist([{
-        'BundleHasStrictIdentifier': True,
-        'BundleIsRelocatable': False,
-        'BundleIsVersionChecked': True,
-        'BundleOverwriteAction': 'upgrade',
-        'RootRelativeBundlePath': dist_config.app_dir
-    }], component_property_path, 'xml1')
+    commands.write_plist(
+        [
+            {
+                'BundleHasStrictIdentifier': True,
+                'BundleIsRelocatable': False,
+                'BundleIsVersionChecked': True,
+                'BundleOverwriteAction': 'upgrade',
+                'RootRelativeBundlePath': dist_config.app_dir,
+            }
+        ],
+        component_property_path,
+        'xml1',
+    )
 
     return component_property_path
 
@@ -223,14 +274,16 @@ def _minimum_os_version(app_paths, dist_config):
     Returns:
         The minimum OS requirement.
     """
-    app_plist_path = os.path.join(app_paths.work, dist_config.app_dir,
-                                  'Contents', 'Info.plist')
+    app_plist_path = os.path.join(
+        app_paths.work, dist_config.app_dir, 'Contents', 'Info.plist'
+    )
     with commands.PlistContext(app_plist_path) as app_plist:
         return app_plist['LSMinimumSystemVersion']
 
 
-def _productbuild_distribution_path(app_paths, pkg_paths, dist_config,
-                                    component_pkg_path):
+def _productbuild_distribution_path(
+    app_paths, pkg_paths, dist_config, component_pkg_path
+):
     """Creates a distribution XML file for use by `productbuild`. This copies
     the OS and architecture requirements from the copy of Chrome being packaged.
 
@@ -243,13 +296,20 @@ def _productbuild_distribution_path(app_paths, pkg_paths, dist_config,
     Returns:
         The path to the distribution file.
     """
-    distribution_path = os.path.join(pkg_paths.work,
-                                     '{}.dist'.format(dist_config.app_product))
+    distribution_path = os.path.join(
+        pkg_paths.work, '{}.dist'.format(dist_config.app_product)
+    )
 
-    app_binary_path = os.path.join(app_paths.work, dist_config.app_dir,
-                                   'Contents', 'MacOS', dist_config.app_product)
-    app_plist_path = os.path.join(app_paths.work, dist_config.app_dir,
-                                  'Contents', 'Info.plist')
+    app_binary_path = os.path.join(
+        app_paths.work,
+        dist_config.app_dir,
+        'Contents',
+        'MacOS',
+        dist_config.app_product,
+    )
+    app_plist_path = os.path.join(
+        app_paths.work, dist_config.app_dir, 'Contents', 'Info.plist'
+    )
     with commands.PlistContext(app_plist_path) as app_plist:
         # For now, restrict installation to only the boot volume (the <domains/>
         # tag) to simplify the Keystone installation.
@@ -292,7 +352,8 @@ def _productbuild_distribution_path(app_paths, pkg_paths, dist_config,
             host_architectures=_binary_architectures(app_binary_path),
             minimum_system=app_plist['LSMinimumSystemVersion'],
             component_pkg_filename=os.path.basename(component_pkg_path),
-            version=dist_config.version)
+            version=dist_config.version,
+        )
 
         commands.write_file(distribution_path, distribution_xml)
 
@@ -329,7 +390,7 @@ def _package_and_sign_pkg(paths, dist_config):
         root_directory = os.path.join(pkg_paths.work, 'payload')
         commands.make_dir(root_directory)
         app_path = os.path.join(paths.work, dist_config.app_dir)
-        new_app_path = os.path.join(root_directory, dist_config.app_dir)
+        new_app_path = os.path.join(root_directory, dist_config.app_dir)  # noqa: F841
         commands.copy_files(app_path, root_directory)
 
         # The spaces are removed from |dist_config.app_product| for the
@@ -337,35 +398,56 @@ def _package_and_sign_pkg(paths, dist_config):
         # "Show Files" window to be blank if there is a space in a component
         # package name. https://stackoverflow.com/questions/43031272/
         component_pkg_name = '{}.pkg'.format(dist_config.app_product).replace(
-            ' ', '')
+            ' ', ''
+        )
         component_pkg_path = os.path.join(pkg_paths.work, component_pkg_name)
         component_property_path = _component_property_path(
-            pkg_paths, dist_config)
+            pkg_paths, dist_config
+        )
         scripts_path = _create_pkgbuild_scripts(pkg_paths, dist_config)
 
         command = [
-            'pkgbuild', '--root', root_directory, '--component-plist',
-            component_property_path, '--identifier', dist_config.base_bundle_id,
-            '--version', dist_config.version, '--install-location',
-            '/Applications', '--scripts', scripts_path, '--compression',
-            'latest', '--min-os-version',
-            _minimum_os_version(paths, dist_config), component_pkg_path
+            'pkgbuild',
+            '--root',
+            root_directory,
+            '--component-plist',
+            component_property_path,
+            '--identifier',
+            dist_config.base_bundle_id,
+            '--version',
+            dist_config.version,
+            '--install-location',
+            '/Applications',
+            '--scripts',
+            scripts_path,
+            '--compression',
+            'latest',
+            '--min-os-version',
+            _minimum_os_version(paths, dist_config),
+            component_pkg_path,
         ]
         commands.run_command(command)
 
         ## The distribution package.
 
         distribution_path = _productbuild_distribution_path(
-            paths, pkg_paths, dist_config, component_pkg_path)
+            paths, pkg_paths, dist_config, component_pkg_path
+        )
 
-        product_pkg_path = os.path.join(
-            pkg_paths.output, '{}.pkg'.format(dist_config.packaging_basename))
+        product_pkg_path = _pkg_path(pkg_paths, dist_config)
 
         command = [
-            'productbuild', '--identifier', dist_config.base_bundle_id,
-            '--version', dist_config.version, '--distribution',
-            distribution_path, '--package-path', pkg_paths.work, '--sign',
-            dist_config.installer_identity
+            'productbuild',
+            '--identifier',
+            dist_config.base_bundle_id,
+            '--version',
+            dist_config.version,
+            '--distribution',
+            distribution_path,
+            '--package-path',
+            pkg_paths.work,
+            '--sign',
+            dist_config.installer_identity,
         ]
         if dist_config.notarize.should_notarize():
             # Assume if the config has notary authentication information that
@@ -375,7 +457,88 @@ def _package_and_sign_pkg(paths, dist_config):
         command.append(product_pkg_path)
         commands.run_command(command)
 
+        _verify_pkg_signature(product_pkg_path)
+
         return product_pkg_path
+
+
+def _verify_pkg_signature(pkg_path):
+    """Verifies the code signature of a PKG.
+
+    Args:
+        pkg_path: Path to the PKG file to verify.
+
+    Raises:
+        subprocess.CalledProcessError: If validation fails.
+    """
+    commands.run_command(['pkgutil', '--check-signature', pkg_path])
+
+
+def _pkg_path(paths, dist_config):
+    """Computes the output path for the base PKG of |dist_config|."""
+    return os.path.join(
+        paths.output, '{}.pkg'.format(dist_config.packaging_basename)
+    )
+
+
+def _derived_pkg_path(paths, dist_config, suffix):
+    """Computes the output path for a PKG derived from the base PKG of
+    |dist_config|, such as the taggable PKG or a tagged variant.
+
+    The PKG is named '<packaging_basename>[-<brand>]-<suffix>.pkg'. The
+    configured |packaging_basename| is always used as the prefix, so derived
+    PKGs are named consistently with the base PKG. If the distribution has no
+    packaging name fragment, <brand> is its brand code (or 'Unbranded' if it
+    has none) so that derived PKGs identify their source distribution;
+    otherwise the fragment, which is already part of |packaging_basename|,
+    serves that purpose.
+
+    Args:
+        paths: A |model.Paths| object.
+        dist_config: The |config.CodeSignConfig| object for the base
+            distribution.
+        suffix: The string identifying the kind of derived PKG.
+
+    Returns:
+        The path where the derived PKG should be written.
+    """
+    dist = dist_config.distribution
+    parts = [dist_config.packaging_basename]
+    if not dist.packaging_name_fragment:
+        parts.append(dist.branding_code or 'Unbranded')
+    parts.append(suffix)
+    return os.path.join(paths.output, '{}.pkg'.format('-'.join(parts)))
+
+
+def _taggable_pkg_path(paths, dist_config):
+    """Returns the path to the taggable base PKG with empty tag space.
+
+    See |_derived_pkg_path| for naming; the suffix is 'Taggable'.
+    """
+    return _derived_pkg_path(paths, dist_config, 'Taggable')
+
+
+def _variant_pkg_path(paths, dist_config, variant_brand):
+    """Determines the output file path for a tagged variant PKG.
+
+    See |_derived_pkg_path| for naming; the suffix is 'Tagged-<variant_brand>'.
+    The name identifies both the distribution the variant was built from and
+    the brand it was tagged with, and the 'Tagged' infix keeps variant names
+    distinct from natively branded PKGs.
+
+    Args:
+        paths: A |model.Paths| object.
+        dist_config: The |config.CodeSignConfig| object for the base
+            distribution.
+        variant_brand: The brand code string for this variant.
+
+    Returns:
+        The path where the tagged variant PKG should be written.
+    """
+    assert variant_brand
+    return _derived_pkg_path(
+        paths, dist_config, 'Tagged-{}'.format(variant_brand)
+    )
 
 
 def _package_and_sign_dmg(paths, dist_config):
@@ -398,10 +561,12 @@ def _package_and_sign_dmg(paths, dist_config):
     dmg_identifier = dist_config.packaging_basename
     if dist.branding_code:
         dmg_identifier = dist_config.packaging_basename.replace(
-            dist.packaging_name_fragment, dist.branding_code)
+            dist.packaging_name_fragment, dist.branding_code
+        )
 
     product = model.CodeSignedProduct(
-        dmg_path, dmg_identifier, sign_with_identifier=True)
+        dmg_path, dmg_identifier, sign_with_identifier=True
+    )
     signing.sign_part(paths, dist_config, product)
     signing.verify_part(paths, product)
 
@@ -428,8 +593,9 @@ def _package_dmg(paths, dist, config):
         dsstore_file = 'chrome_dmg_dsstore'
         icon_file = 'chrome_dmg_icon.icns'
 
-    dmg_path = os.path.join(paths.output,
-                            '{}.dmg'.format(config.packaging_basename))
+    dmg_path = os.path.join(
+        paths.output, '{}.dmg'.format(config.packaging_basename)
+    )
     app_path = os.path.join(paths.work, config.app_dir)
 
     # A locally-created empty directory is more trustworthy than /var/empty.
@@ -457,7 +623,7 @@ def _package_dmg(paths, dist, config):
     if dist.inflation_kilobytes:
         pkg_dmg += [
             '--copy',
-            '{}/inflation.bin:/.background/inflation.bin'.format(packaging_dir)
+            '{}/inflation.bin:/.background/inflation.bin'.format(packaging_dir),
         ]
 
     if config.is_chrome_branded():
@@ -488,8 +654,9 @@ def _package_zip(paths, config):
     Returns:
         A path to the produced ZIP file.
     """
-    zip_path = os.path.join(paths.output,
-                            '{}.zip'.format(config.packaging_basename))
+    zip_path = os.path.join(
+        paths.output, '{}.zip'.format(config.packaging_basename)
+    )
 
     zip_command = [
         'zip',
@@ -509,8 +676,9 @@ def _package_zip(paths, config):
         # when it is eventually executed.
         packaging_dir = paths.packaging_dir(config)
         ks_install_path = os.path.join(packaging_dir, 'keystone_install.sh')
-        dotted_ks_install_work_path = os.path.join(paths.work,
-                                                   '.keystone_install')
+        dotted_ks_install_work_path = os.path.join(
+            paths.work, '.keystone_install'
+        )
         commands.copy_files(ks_install_path, dotted_ks_install_work_path)
         zip_command.append('.keystone_install')
 
@@ -562,16 +730,24 @@ def _intermediate_work_dir_name(dist):
 
 
 def _filter_distributions(distributions, skip_brands, channels):
-    """Filters |distributions| by filtering out those whose brand code is
-    indicated for skipping by |skip_brands|, and filtering in those whose
-    channel is indicated for inclusion by |channels|. Returns the filtered
-    distribution list.
+    """Filters |distributions| by brand code and channel.
+
+    Distributions whose brand code is indicated for skipping by |skip_brands|
+    are filtered out, and those whose channel is indicated for inclusion by
+    |channels| are filtered in. When a distribution's brand code is skipped,
+    the brand code is removed from the distribution's |tagged_variants| without
+    skipping the distribution itself. Distributions whose variants are filtered
+    are returned as copies, so the caller's objects are not modified.
 
     Args:
         distributions: A list of |model.Distribution| objects.
         skip_brands: A list of brand code strings. If a distribution has a brand
             code in this list, or if a distribution has a brand code and
-            |skip_brands| contains *, that distribution will be skipped.
+            |skip_brands| contains *, that distribution will be skipped. Brand
+            codes in this list that match a tagged variant remove that variant
+            from its distribution, and * removes all tagged variants. A
+            distribution whose variants are all removed is still produced (with
+            an empty |tagged_variants|), so its taggable PKG is still built.
         channels: A list of channel names. If the list is non-empty, then only
             distributions that match a channel name in this list will be
             produced. The string 'stable' matches the None channel.
@@ -581,18 +757,26 @@ def _filter_distributions(distributions, skip_brands, channels):
 
     Raises:
         ValueError: If any value provided in |skip_brands| does not match at
-            least one distribution.
+            least one distribution's brand code or tagged variant.
         ValueError: If any value provided in |channels| does not match at least
             one distribution.
         ValueError: If no distribution matching a value provided in |channels|
             can be returned due to brand filtering.
     """
-    all_distribution_brands = {dist.branding_code for dist in distributions}
+    all_distribution_brands = {
+        dist.branding_code for dist in distributions if dist.branding_code
+    }
+    for dist in distributions:
+        if dist.tagged_variants:
+            all_distribution_brands.update(dist.tagged_variants)
     invalid_brands = set(skip_brands) - all_distribution_brands
     invalid_brands.discard('*')
     if invalid_brands:
-        raise ValueError('Brand codes do not match any distribution: {}'.format(
-            invalid_brands))
+        raise ValueError(
+            'Brand codes do not match any distribution: {}'.format(
+                sorted(invalid_brands)
+            )
+        )
 
     all_distribution_channels = {
         "stable" if dist.channel is None else dist.channel
@@ -600,8 +784,11 @@ def _filter_distributions(distributions, skip_brands, channels):
     }
     invalid_channels = set(channels) - all_distribution_channels
     if invalid_channels:
-        raise ValueError('Channels do not match any distribution: {}'.format(
-            invalid_channels))
+        raise ValueError(
+            'Channels do not match any distribution: {}'.format(
+                invalid_channels
+            )
+        )
 
     def include_brand(dist):
         if not dist.branding_code:
@@ -621,10 +808,22 @@ def _filter_distributions(distributions, skip_brands, channels):
             channel = 'stable'
         return channel in channels
 
-    filtered_distributions = [
-        dist for dist in distributions
-        if include_brand(dist) and include_channel(dist)
-    ]
+    filtered_distributions = []
+    for dist in distributions:
+        if not (include_brand(dist) and include_channel(dist)):
+            continue
+
+        if dist.tagged_variants:
+            filtered_variants = tuple(
+                v
+                for v in dist.tagged_variants
+                if v not in skip_brands and '*' not in skip_brands
+            )
+            if filtered_variants != dist.tagged_variants:
+                dist = copy.copy(dist)
+                dist.tagged_variants = filtered_variants
+
+        filtered_distributions.append(dist)
 
     filtered_distribution_channels = {
         "stable" if dist.channel is None else dist.channel
@@ -633,17 +832,22 @@ def _filter_distributions(distributions, skip_brands, channels):
     filtered_channels = set(channels) - filtered_distribution_channels
     if filtered_channels:
         raise ValueError(
-            'All distributions for channels were filtered out by brand: {}'
-            .format(filtered_channels))
+            'All distributions for channels were filtered out by brand: {}'.format(
+                filtered_channels
+            )
+        )
 
     return filtered_distributions
 
 
-async def sign_all(orig_paths,
-                   config,
-                   disable_packaging=False,
-                   skip_brands=[],
-                   channels=[]):
+async def sign_all(
+    orig_paths,
+    config,
+    disable_packaging=False,
+    skip_brands=[],
+    channels=[],
+    tag_tool=None,
+):
     """For each distribution in |config|, performs customization, signing, and
     DMG packaging and places the resulting signed DMG in |orig_paths.output|.
     The |paths.input| must contain the products to customize and sign.
@@ -661,38 +865,57 @@ async def sign_all(orig_paths,
         channels: A list of channel names. If the list is non-empty, then only
             distributions that match a channel name in this list will be
             produced. The string 'stable' matches the None channel.
+        tag_tool: Path to the tag tool binary. Must be specified if any
+            distribution has tagged_variants configured.
     """
     with commands.WorkDirectory(orig_paths) as notary_paths:
-        distributions = _filter_distributions(config.distributions, skip_brands,
-                                              channels)
+        distributions = _filter_distributions(
+            config.distributions, skip_brands, channels
+        )
+
+        def _has_taggable_pkg(distributions):
+            return any(
+                d.package_as_pkg and d.tagged_variants is not None
+                for d in distributions
+            )
+
+        if not disable_packaging:
+            _verify_pkg_paths_noncolliding(distributions, config, notary_paths)
 
         # First, sign all the distributions and optionally submit the
         # notarization requests.
         dist_configs = await asyncio.wait_for(
-            _sign_and_maybe_notarize_distributions(config, distributions,
-                                                   notary_paths,
-                                                   disable_packaging),
-            timeout=60 * 60 * 2)
+            _sign_and_maybe_notarize_distributions(
+                config, distributions, notary_paths, disable_packaging
+            ),
+            timeout=60 * 60 * 2,
+        )
 
         # Staple if required.
         if config.notarize.should_staple():
             for dist_config in dist_configs:
                 dest_dir = os.path.join(
                     notary_paths.work,
-                    _intermediate_work_dir_name(dist_config.distribution))
+                    _intermediate_work_dir_name(dist_config.distribution),
+                )
                 _staple_chrome(notary_paths.replace_work(dest_dir), dist_config)
 
         # After all apps are optionally notarized, package as required.
         if not disable_packaging:
             await asyncio.wait_for(
                 _package_and_maybe_notarize_distributions(
-                    config, distributions, notary_paths),
-                timeout=60 * 60 * 2)
+                    config,
+                    distributions,
+                    notary_paths,
+                    tag_tool=tag_tool,
+                ),
+                timeout=60 * 60 * 2,
+            )
 
 
-async def _sign_and_maybe_notarize_distributions(config, distributions,
-                                                 notary_paths,
-                                                 disable_packaging):
+async def _sign_and_maybe_notarize_distributions(
+    config, distributions, notary_paths, disable_packaging
+):
     """Iterates each distribution in |distributions|, codesigns it according to
     the |config|, and potentially uploads it for notarization.
 
@@ -717,8 +940,11 @@ async def _sign_and_maybe_notarize_distributions(config, distributions,
             with commands.WorkDirectory(notary_paths) as paths:
                 dist_config = dist.to_config(config)
                 dist_configs.append(dist_config)
-                do_packaging = (dist.package_as_dmg or dist.package_as_pkg or
-                                dist.package_as_zip) and not disable_packaging
+                do_packaging = (
+                    dist.package_as_dmg
+                    or dist.package_as_pkg
+                    or dist.package_as_zip
+                ) and not disable_packaging
 
                 # If not packaging and not notarizing, then simply drop the
                 # signed bundle in the output directory when done signing.
@@ -727,8 +953,9 @@ async def _sign_and_maybe_notarize_distributions(config, distributions,
                 else:
                     dest_dir = notary_paths.work
 
-                dest_dir = os.path.join(dest_dir,
-                                        _intermediate_work_dir_name(dist))
+                dest_dir = os.path.join(
+                    dest_dir, _intermediate_work_dir_name(dist)
+                )
 
                 # Different distributions might share the same underlying app
                 # bundle, and if they do, then the _intermediate_work_dir_name
@@ -738,14 +965,16 @@ async def _sign_and_maybe_notarize_distributions(config, distributions,
                     continue
                 created_app_bundles.add(dest_dir)
 
-                await _customize_and_sign_chrome(paths, dist_config, dest_dir,
-                                                 signed_frameworks)
+                await _customize_and_sign_chrome(
+                    paths, dist_config, dest_dir, signed_frameworks
+                )
 
                 # If the build products are to be notarized, ZIP the app bundle
                 # and submit it for notarization.
                 if config.notarize.should_notarize():
                     tasks.create_task(
-                        _zip_and_notarize(notary_paths, dist_config, dest_dir))
+                        _zip_and_notarize(notary_paths, dist_config, dest_dir)
+                    )
 
             # Yield the event loop to let the notarization subprocesses start
             # before continuing to the next distribution.
@@ -754,23 +983,150 @@ async def _sign_and_maybe_notarize_distributions(config, distributions,
 
 
 async def _zip_and_notarize(notary_paths, dist_config, dest_dir):
-    zip_file = os.path.join(notary_paths.work,
-                            dist_config.packaging_basename + '.zip')
-    command, exit_code, stdout, stderr = await commands.run_command_all_output_async(
+    zip_file = os.path.join(
+        notary_paths.work, dist_config.packaging_basename + '.zip'
+    )
+    (
+        command,
+        exit_code,
+        stdout,
+        stderr,
+    ) = await commands.run_command_all_output_async(
         [
-            'zip', '--recurse-paths', '--symlinks', '--quiet', zip_file,
-            dist_config.app_dir
+            'zip',
+            '--recurse-paths',
+            '--symlinks',
+            '--quiet',
+            zip_file,
+            dist_config.app_dir,
         ],
-        cwd=dest_dir)
-    logger.info('Command %s returned %d: (stdout=) %s (stderr=) %s', command,
-                exit_code, stdout, stderr)
+        cwd=dest_dir,
+    )
+    logger.info(
+        'Command %s returned %d: (stdout=) %s (stderr=) %s',
+        command,
+        exit_code,
+        stdout,
+        stderr,
+    )
     if exit_code:
-        raise subprocess.CalledProcessError(
-            exit_code, command, output=stdout, stderr=stderr)
+        raise subprocess.CalledProcessError(  # noqa: F821
+            exit_code, command, output=stdout, stderr=stderr
+        )
     await notarize.submit(zip_file, dist_config)
 
-async def _package_and_maybe_notarize_distributions(config, distributions,
-                                                    notary_paths):
+
+def _verify_pkg_paths_noncolliding(distributions, config, paths):
+    """Verifies that none of the PKG distributions or tagged variants have
+    colliding file paths.
+
+    Args:
+        distributions: A list of |model.Distribution| objects.
+        config: The |config.CodeSignConfig| object.
+        paths: A |model.Paths| object.
+
+    Raises:
+        ValueError: If any duplicate package output paths are detected. The
+            message lists every collision, one per line.
+    """
+    seen_paths = set()
+    errors = []
+
+    for dist in distributions:
+        if not dist.package_as_pkg:
+            continue
+
+        dist_config = dist.to_config(config)
+        base_pkg_path = _pkg_path(paths, dist_config)
+        if base_pkg_path in seen_paths:
+            errors.append(
+                'Duplicate package output path: {}'.format(base_pkg_path)
+            )
+        seen_paths.add(base_pkg_path)
+
+        if dist.tagged_variants is None:
+            continue
+
+        taggable_pkg_path = _taggable_pkg_path(paths, dist_config)
+        if taggable_pkg_path in seen_paths:
+            errors.append(
+                'Duplicate package output path for taggable package: {}'.format(
+                    taggable_pkg_path
+                )
+            )
+        seen_paths.add(taggable_pkg_path)
+
+        for variant_brand in dist.tagged_variants:
+            variant_pkg_path = _variant_pkg_path(
+                paths, dist_config, variant_brand
+            )
+            if variant_pkg_path in seen_paths:
+                errors.append(
+                    'Duplicate package output path for tagged variant '
+                    '{!r}: {}'.format(variant_brand, variant_pkg_path)
+                )
+            seen_paths.add(variant_pkg_path)
+
+    if errors:
+        raise ValueError('\n'.join(errors))
+
+
+def _tag_pkg_distributions(pkg_distributions, tag_tool=None):
+    """Injects tag space and creates tagged variants for PKG distributions.
+
+    Args:
+        pkg_distributions: A list of |PkgDistribution| tuples for distributions
+            packaged as PKG.
+        tag_tool: Path to the tag tool binary. Must be specified when tagging
+            distribution variants.
+    """
+    for dist, dist_config, paths, pkg_path in pkg_distributions:
+        if dist.tagged_variants is None:
+            continue
+
+        if tag_tool is None:
+            raise ValueError(
+                'tag_tool must be specified when a distribution '
+                'has tagged_variants'
+            )
+
+        taggable_pkg_path = _taggable_pkg_path(paths, dist_config)
+        commands.run_command(
+            [
+                tag_tool,
+                '--set-tag',
+                '--out={}'.format(taggable_pkg_path),
+                pkg_path,
+            ]
+        )
+        _verify_pkg_signature(taggable_pkg_path)
+        if dist_config.notarize.should_staple():
+            commands.run_command(
+                ['xcrun', 'stapler', 'validate', taggable_pkg_path]
+            )
+
+        for variant_brand in dist.tagged_variants:
+            variant_pkg_path = _variant_pkg_path(
+                paths, dist_config, variant_brand
+            )
+            commands.run_command(
+                [
+                    tag_tool,
+                    '--set-tag=brand={}'.format(variant_brand),
+                    '--out={}'.format(variant_pkg_path),
+                    taggable_pkg_path,
+                ]
+            )
+            _verify_pkg_signature(variant_pkg_path)
+            if dist_config.notarize.should_staple():
+                commands.run_command(
+                    ['xcrun', 'stapler', 'validate', variant_pkg_path]
+                )
+
+
+async def _package_and_maybe_notarize_distributions(
+    config, distributions, notary_paths, tag_tool=None
+):
     """Iterates each |model.Distribution| in |distributions| and packages it
     according to its specification. If notarization is requested, that is
     performed on the assembled package.
@@ -780,23 +1136,34 @@ async def _package_and_maybe_notarize_distributions(config, distributions,
         distributions: The |model.Distribution|s to sign.
         notary_paths: A |model.Paths| object where artifacts will be placed when
             notarizing.
+        tag_tool: Path to the tag tool binary. Must be specified if any
+            distribution has tagged_variants configured.
     """
     staple_paths = []
+    pkgs_to_tag = []
     async with asyncio.TaskGroup() as tasks:
         for dist in distributions:
             dist_config = dist.to_config(config)
             paths = notary_paths.replace_work(
                 os.path.join(
                     notary_paths.work,
-                    _intermediate_work_dir_name(dist_config.distribution)))
+                    _intermediate_work_dir_name(dist_config.distribution),
+                )
+            )
 
             if dist.inflation_kilobytes:
                 inflation_path = os.path.join(
-                    paths.packaging_dir(config), 'inflation.bin')
-                commands.run_command([
-                    'dd', 'if=/dev/urandom', 'of=' + inflation_path, 'bs=1000',
-                    'count={}'.format(dist.inflation_kilobytes)
-                ])
+                    paths.packaging_dir(config), 'inflation.bin'
+                )
+                commands.run_command(
+                    [
+                        'dd',
+                        'if=/dev/urandom',
+                        'of=' + inflation_path,
+                        'bs=1000',
+                        'count={}'.format(dist.inflation_kilobytes),
+                    ]
+                )
 
             if dist.package_as_dmg:
                 dmg_path = _package_and_sign_dmg(paths, dist_config)
@@ -807,6 +1174,12 @@ async def _package_and_maybe_notarize_distributions(config, distributions,
 
             if dist.package_as_pkg:
                 pkg_path = _package_and_sign_pkg(paths, dist_config)
+                # Tagged variants are built out of the already-notarized
+                # packages later in the call to `_tag_pkg_distributions`.
+                if dist.tagged_variants is not None:
+                    pkgs_to_tag.append(
+                        PkgDistribution(dist, dist_config, paths, pkg_path)
+                    )
 
                 if config.notarize.should_notarize():
                     tasks.create_task(notarize.submit(pkg_path, dist_config))
@@ -822,3 +1195,4 @@ async def _package_and_maybe_notarize_distributions(config, distributions,
     if config.notarize.should_staple():
         for path in staple_paths:
             notarize.staple(path)
+    _tag_pkg_distributions(pkgs_to_tag, tag_tool=tag_tool)

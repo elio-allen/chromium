@@ -4,12 +4,16 @@
 
 #include "gpu/command_buffer/service/dawn_caching_interface.h"
 
+#include <array>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
-#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/memory_coordinator/memory_coordinator_features.h"
+#include "base/memory_coordinator/utils.h"
+#include "base/strings/string_view_util.h"
 #include "base/test/scoped_feature_list.h"
 #include "gpu/command_buffer/service/gpu_persistent_cache.h"
 #include "gpu/command_buffer/service/mocks.h"
@@ -46,11 +50,10 @@ TEST_F(DawnCachingInterfaceTest, StoreThenLoadSameInterface) {
   auto dawn_caching_interface = factory_.CreateInstance(handle_);
   dawn_caching_interface->StoreData(kKey, base::as_byte_span(kData));
 
-  char buffer[kDataSize];
+  std::array<uint8_t, kDataSize> buffer = {};
   EXPECT_EQ(kDataSize, dawn_caching_interface->FindKey(kKey));
-  EXPECT_EQ(kDataSize, dawn_caching_interface->LoadData(
-                           kKey, base::as_writable_byte_span(buffer)));
-  UNSAFE_TODO(EXPECT_EQ(0, memcmp(buffer, kData.data(), kDataSize)));
+  EXPECT_EQ(kDataSize, dawn_caching_interface->LoadData(kKey, buffer));
+  EXPECT_EQ(kData, base::as_string_view(buffer));
 }
 
 TEST_F(DawnCachingInterfaceTest, LoadPartialData) {
@@ -58,10 +61,9 @@ TEST_F(DawnCachingInterfaceTest, LoadPartialData) {
   dawn_caching_interface->StoreData(kKey, base::as_byte_span(kData));
 
   static constexpr size_t kPartialSize = kDataSize / 2;
-  char buffer[kPartialSize];
+  std::array<uint8_t, kPartialSize> buffer = {};
   // Should return 0 because of size mismatch.
-  EXPECT_EQ(0u, dawn_caching_interface->LoadData(
-                    kKey, base::as_writable_byte_span(buffer)));
+  EXPECT_EQ(0u, dawn_caching_interface->LoadData(kKey, buffer));
 }
 
 TEST_F(DawnCachingInterfaceTest, LoadLargerBuffer) {
@@ -69,11 +71,10 @@ TEST_F(DawnCachingInterfaceTest, LoadLargerBuffer) {
   dawn_caching_interface->StoreData(kKey, base::as_byte_span(kData));
 
   static constexpr size_t kLargerSize = kDataSize * 2;
-  char buffer[kLargerSize];
+  std::array<uint8_t, kLargerSize> buffer = {};
   // Should return kDataSize and only copy kDataSize bytes.
-  EXPECT_EQ(kDataSize, dawn_caching_interface->LoadData(
-                           kKey, base::as_writable_byte_span(buffer)));
-  UNSAFE_TODO(EXPECT_EQ(0, memcmp(buffer, kData.data(), kDataSize)));
+  EXPECT_EQ(kDataSize, dawn_caching_interface->LoadData(kKey, buffer));
+  EXPECT_EQ(kData, base::as_string_view(base::span(buffer).first(kDataSize)));
 }
 
 TEST_F(DawnCachingInterfaceTest, StoreThenLoadSameHandle) {
@@ -81,11 +82,10 @@ TEST_F(DawnCachingInterfaceTest, StoreThenLoadSameHandle) {
   store_interface->StoreData(kKey, base::as_byte_span(kData));
 
   auto load_interface = factory_.CreateInstance(handle_);
-  char buffer[kDataSize];
+  std::array<uint8_t, kDataSize> buffer = {};
   EXPECT_EQ(kDataSize, load_interface->FindKey(kKey));
-  EXPECT_EQ(kDataSize, load_interface->LoadData(
-                           kKey, base::as_writable_byte_span(buffer)));
-  UNSAFE_TODO(EXPECT_EQ(0, memcmp(buffer, kData.data(), kDataSize)));
+  EXPECT_EQ(kDataSize, load_interface->LoadData(kKey, buffer));
+  EXPECT_EQ(kData, base::as_string_view(buffer));
 }
 
 TEST_F(DawnCachingInterfaceTest, StoreDestroyThenLoadSameHandle) {
@@ -94,11 +94,10 @@ TEST_F(DawnCachingInterfaceTest, StoreDestroyThenLoadSameHandle) {
   store_interface.reset();
 
   auto load_interface = factory_.CreateInstance(handle_);
-  char buffer[kDataSize];
+  std::array<uint8_t, kDataSize> buffer = {};
   EXPECT_EQ(kDataSize, load_interface->FindKey(kKey));
-  EXPECT_EQ(kDataSize, load_interface->LoadData(
-                           kKey, base::as_writable_byte_span(buffer)));
-  UNSAFE_TODO(EXPECT_EQ(0, memcmp(buffer, kData.data(), kDataSize)));
+  EXPECT_EQ(kDataSize, load_interface->LoadData(kKey, buffer));
+  EXPECT_EQ(kData, base::as_string_view(buffer));
 }
 
 // If the handle is released before a new cache is created, the new cache should
@@ -243,6 +242,11 @@ TEST_F(DawnCachingInterfaceTest, TestVeryLargeEntrySize) {
 TEST_F(DawnCachingInterfaceTest, TestMemoryPressureCritical) {
   // Verifies that on PurgeMemory the cache becomes empty for critical pressure
   // levels without `kAggressiveShaderCacheLimits` feature flag.
+  // This test relies on the memory limit not persisting after
+  // OnReleaseMemory(). See OnReleaseMemoryLimitPersistsStateful for the
+  // stateful behavior.
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(base::kStatefulMemoryPressure);
   static constexpr std::string_view kKey1 = "1";
   static constexpr std::string_view kData1 = "1";
   static constexpr size_t kKeySize = kKey1.size();
@@ -259,15 +263,20 @@ TEST_F(DawnCachingInterfaceTest, TestMemoryPressureCritical) {
     interface->StoreData(kKey1, base::as_byte_span(kData1));
     EXPECT_EQ(kDataSize, interface->FindKey(kKey1));
 
-    factory.PurgeMemory(base::MEMORY_PRESSURE_LEVEL_CRITICAL);
+    factory.OnReleaseMemory(base::kCriticalMemoryPressureThreshold);
     EXPECT_EQ(0u, interface->FindKey(kKey1));
   }
 }
 
 TEST_F(DawnCachingInterfaceTest, TestAggressiveCacheAndMemoryPressure) {
   // Verifies PurgeMemory with `kAggressiveShaderCacheLimits` feature flag.
-  base::test::ScopedFeatureList feature_list{
-      ::features::kAggressiveShaderCacheLimits};
+  // This test relies on the memory limit not persisting after
+  // OnReleaseMemory(). See OnReleaseMemoryLimitPersistsStateful for the
+  // stateful behavior.
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/{::features::kAggressiveShaderCacheLimits},
+      /*disabled_features=*/{base::kStatefulMemoryPressure});
   static constexpr std::string_view kKey1 = "1";
   static constexpr std::string_view kData1 = "1";
   static constexpr size_t kKeySize = kKey1.size();
@@ -285,17 +294,150 @@ TEST_F(DawnCachingInterfaceTest, TestAggressiveCacheAndMemoryPressure) {
     EXPECT_EQ(kDataSize, interface->FindKey(kKey1));
 
     // Moderate memory pressure is ignored
-    factory.PurgeMemory(base::MEMORY_PRESSURE_LEVEL_MODERATE);
+    factory.OnReleaseMemory(base::kModerateMemoryPressureThreshold);
     EXPECT_EQ(kDataSize, interface->FindKey(kKey1));
 
     // But not critical, except on Android
-    factory.PurgeMemory(base::MEMORY_PRESSURE_LEVEL_CRITICAL);
+    factory.OnReleaseMemory(base::kCriticalMemoryPressureThreshold);
 #if BUILDFLAG(IS_ANDROID)
     EXPECT_EQ(kDataSize, interface->FindKey(kKey1));
 #else
     EXPECT_EQ(0u, interface->FindKey(kKey1));
 #endif
   }
+}
+
+TEST_F(DawnCachingInterfaceTest, OnUpdateMemoryLimitStateful) {
+  base::test::ScopedFeatureList feature_list{base::kStatefulMemoryPressure};
+  static constexpr std::string_view kKey1 = "key1";
+  static constexpr std::string_view kData1 = "data1";
+  static constexpr std::string_view kKey2 = "key2";
+  static constexpr std::string_view kData2 = "data2";
+  static constexpr size_t kSingleEntrySize = kKey1.size() + kData1.size();
+  // Under moderate pressure (50%), capacity scales to 25% of kCacheSize.
+  // Set kCacheSize = 4 * kSingleEntrySize so that exactly 1 entry fits under
+  // moderate pressure.
+  static constexpr size_t kCacheSize = 4u * kSingleEntrySize;
+
+  DawnCachingInterfaceFactory factory(base::BindRepeating(
+      []() { return base::MakeRefCounted<MemoryCache>(kCacheSize); }));
+  std::unique_ptr<DawnInMemoryCache> interface_graphite =
+      factory.CreateInstance(gpu::GpuDiskCacheHandle(kDawnGraphiteHandle));
+  std::unique_ptr<DawnInMemoryCache> interface_webgpu =
+      factory.CreateInstance(gpu::GpuDiskCacheHandle(kDawnWebGPUHandle));
+
+  // 1. Setup data for both caches.
+  interface_graphite->StoreData(kKey1, base::as_byte_span(kData1));
+  interface_graphite->StoreData(kKey2, base::as_byte_span(kData2));
+  interface_webgpu->StoreData(kKey1, base::as_byte_span(kData1));
+  interface_webgpu->StoreData(kKey2, base::as_byte_span(kData2));
+
+  EXPECT_EQ(kData1.size(), interface_graphite->FindKey(kKey1));
+  EXPECT_EQ(kData2.size(), interface_graphite->FindKey(kKey2));
+  EXPECT_EQ(kData1.size(), interface_webgpu->FindKey(kKey1));
+  EXPECT_EQ(kData2.size(), interface_webgpu->FindKey(kKey2));
+
+  // 2. Call OnUpdateMemoryLimit() on factory (non-destructive update).
+  factory.OnUpdateMemoryLimit(base::kModerateMemoryPressureThreshold);
+
+  // 3. Verify keys for both caches remain intact.
+  EXPECT_EQ(kData1.size(), interface_graphite->FindKey(kKey1));
+  EXPECT_EQ(kData2.size(), interface_graphite->FindKey(kKey2));
+  EXPECT_EQ(kData1.size(), interface_webgpu->FindKey(kKey1));
+  EXPECT_EQ(kData2.size(), interface_webgpu->FindKey(kKey2));
+
+  // 4. Call OnReleaseMemory() on factory (evicts down to moderate threshold).
+  factory.OnReleaseMemory(base::kModerateMemoryPressureThreshold);
+
+  // 5. Verify LRU entries (kKey1) are evicted across both caches.
+  EXPECT_EQ(0u, interface_graphite->FindKey(kKey1));
+  EXPECT_EQ(kData2.size(), interface_graphite->FindKey(kKey2));
+  EXPECT_EQ(0u, interface_webgpu->FindKey(kKey1));
+  EXPECT_EQ(kData2.size(), interface_webgpu->FindKey(kKey2));
+
+  // Under critical pressure, all entries are evicted across both caches.
+  factory.OnReleaseMemory(base::kCriticalMemoryPressureThreshold);
+  EXPECT_EQ(0u, interface_graphite->FindKey(kKey1));
+  EXPECT_EQ(0u, interface_graphite->FindKey(kKey2));
+  EXPECT_EQ(0u, interface_webgpu->FindKey(kKey1));
+  EXPECT_EQ(0u, interface_webgpu->FindKey(kKey2));
+
+  // Restoring memory limit allows storing new entries again across both.
+  factory.OnUpdateMemoryLimit(base::kNoMemoryPressureThreshold);
+  interface_graphite->StoreData(kKey1, base::as_byte_span(kData1));
+  interface_webgpu->StoreData(kKey1, base::as_byte_span(kData1));
+  EXPECT_EQ(kData1.size(), interface_graphite->FindKey(kKey1));
+  EXPECT_EQ(kData1.size(), interface_webgpu->FindKey(kKey1));
+}
+
+TEST_F(DawnCachingInterfaceTest, NewlyCreatedBackendRespectsMemoryLimit) {
+  base::test::ScopedFeatureList feature_list{base::kStatefulMemoryPressure};
+  static constexpr std::string_view kKey1 = "key1";
+  static constexpr std::string_view kData1 = "data1";
+  static constexpr size_t kSingleEntrySize = kKey1.size() + kData1.size();
+  static constexpr size_t kCacheSize = 4u * kSingleEntrySize;
+
+  DawnCachingInterfaceFactory factory(base::BindRepeating(
+      []() { return base::MakeRefCounted<MemoryCache>(kCacheSize); }));
+
+  // Set memory limit to critical before creating the backend instance.
+  factory.OnUpdateMemoryLimit(base::kCriticalMemoryPressureThreshold);
+
+  std::unique_ptr<DawnInMemoryCache> interface =
+      factory.CreateInstance(gpu::GpuDiskCacheHandle(kDawnGraphiteHandle));
+
+  // Newly created backend should have size limit of 0 under critical pressure.
+  interface->StoreData(kKey1, base::as_byte_span(kData1));
+  EXPECT_EQ(0u, interface->FindKey(kKey1));
+
+  // Restoring memory limit allows storing entries.
+  factory.OnUpdateMemoryLimit(base::kNoMemoryPressureThreshold);
+  interface->StoreData(kKey1, base::as_byte_span(kData1));
+  EXPECT_EQ(kData1.size(), interface->FindKey(kKey1));
+}
+
+TEST_F(DawnCachingInterfaceTest, OnReleaseMemoryLimitPersistsStateful) {
+  // Use the default policy, where critical pressure scales the cache to 0.
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/{base::kStatefulMemoryPressure},
+      /*disabled_features=*/{::features::kAggressiveShaderCacheLimits});
+  static constexpr std::string_view kKey1 = "key1";
+  static constexpr std::string_view kData1 = "data1";
+  static constexpr size_t kSingleEntrySize = kKey1.size() + kData1.size();
+  static constexpr size_t kCacheSize = 4u * kSingleEntrySize;
+  static constexpr gpu::GpuDiskCacheDawnWebGPUHandle kOtherDawnWebGPUHandle =
+      gpu::GpuDiskCacheDawnWebGPUHandle(3);
+
+  DawnCachingInterfaceFactory factory(base::BindRepeating(
+      []() { return base::MakeRefCounted<MemoryCache>(kCacheSize); }));
+  std::unique_ptr<DawnInMemoryCache> interface_graphite =
+      factory.CreateInstance(gpu::GpuDiskCacheHandle(kDawnGraphiteHandle));
+  std::unique_ptr<DawnInMemoryCache> interface_webgpu =
+      factory.CreateInstance(gpu::GpuDiskCacheHandle(kDawnWebGPUHandle));
+
+  factory.OnReleaseMemory(base::kCriticalMemoryPressureThreshold);
+
+  // The limit persists after OnReleaseMemory(), so stores are rejected.
+  interface_graphite->StoreData(kKey1, base::as_byte_span(kData1));
+  interface_webgpu->StoreData(kKey1, base::as_byte_span(kData1));
+  EXPECT_EQ(0u, interface_graphite->FindKey(kKey1));
+  EXPECT_EQ(0u, interface_webgpu->FindKey(kKey1));
+
+  // Backends created after OnReleaseMemory() also respect the limit.
+  std::unique_ptr<DawnInMemoryCache> interface_other_webgpu =
+      factory.CreateInstance(gpu::GpuDiskCacheHandle(kOtherDawnWebGPUHandle));
+  interface_other_webgpu->StoreData(kKey1, base::as_byte_span(kData1));
+  EXPECT_EQ(0u, interface_other_webgpu->FindKey(kKey1));
+
+  // Restoring the memory limit allows storing entries again.
+  factory.OnUpdateMemoryLimit(base::kNoMemoryPressureThreshold);
+  interface_graphite->StoreData(kKey1, base::as_byte_span(kData1));
+  interface_webgpu->StoreData(kKey1, base::as_byte_span(kData1));
+  interface_other_webgpu->StoreData(kKey1, base::as_byte_span(kData1));
+  EXPECT_EQ(kData1.size(), interface_graphite->FindKey(kKey1));
+  EXPECT_EQ(kData1.size(), interface_webgpu->FindKey(kKey1));
+  EXPECT_EQ(kData1.size(), interface_other_webgpu->FindKey(kKey1));
 }
 
 }  // namespace

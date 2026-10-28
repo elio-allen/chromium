@@ -15,12 +15,16 @@
 #import "components/enterprise/connectors/core/connectors_prefs.h"
 #import "components/policy/core/common/policy_types.h"
 #import "components/prefs/pref_service.h"
+#import "ios/chrome/browser/enterprise/cloud_content_scanning/model/background_cloud_scanner_manager.h"
+#import "ios/chrome/browser/enterprise/cloud_content_scanning/model/background_cloud_scanner_manager_factory.h"
 #import "ios/chrome/browser/enterprise/cloud_content_scanning/model/files_request_handler_ios.h"
 #import "ios/chrome/browser/enterprise/cloud_content_scanning/model/ios_cloud_binary_upload_service_factory.h"
 #import "ios/chrome/browser/enterprise/common/util.h"
 #import "ios/chrome/browser/enterprise/connectors/analysis/content_analysis_info.h"
 #import "ios/chrome/browser/enterprise/connectors/connectors_service.h"
 #import "ios/chrome/browser/enterprise/connectors/connectors_service_factory.h"
+#import "ios/chrome/browser/enterprise/connectors/connectors_util.h"
+#import "ios/chrome/browser/enterprise/connectors/reporting/ios_reporting_event_router_factory.h"
 #import "ios/chrome/browser/enterprise/enterprise_dialog/model/warning_dialog.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
@@ -34,6 +38,7 @@
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/shared/public/snackbar/snackbar_message.h"
 #import "ios/chrome/grit/ios_strings.h"
+#import "ios/web/public/navigation/navigation_context.h"
 #import "ios/web/public/web_state.h"
 #import "ios/web/public/web_state_observer.h"
 #import "ios/web/public/web_state_user_data.h"
@@ -183,6 +188,14 @@ class PendingScanDecision : public web::WebStateUserData<PendingScanDecision>,
     web_state_ = nullptr;
   }
 
+  void DidStartNavigation(web::WebState* web_state,
+                          web::NavigationContext* navigation_context) override {
+    CHECK_EQ(web_state_, web_state);
+    if (!navigation_context->IsSameDocument()) {
+      web_state_->RemoveUserData(UserDataKey());
+    }
+  }
+
  private:
   friend class web::WebStateUserData<PendingScanDecision>;
 
@@ -297,13 +310,14 @@ FileDownloadScanningResources::FileDownloadScanningResources(
 FileDownloadScanningResources& FileDownloadScanningResources::operator=(
     FileDownloadScanningResources&&) = default;
 
-FileDownloadScanningResources StartCloudContentScanning(
+FileDownloadScanningResources PrepareCloudContentScanning(
     web::WebState* web_state,
     const GURL& url,
     const base::FilePath& file_path,
     TriggerType trigger_type,
     base::OnceCallback<void(bool)> download_proceed) {
   CHECK(web_state);
+  CHECK(!download_proceed.is_null());
   ProfileIOS* profile =
       ProfileIOS::FromBrowserState(web_state->GetBrowserState());
 
@@ -316,26 +330,63 @@ FileDownloadScanningResources StartCloudContentScanning(
         url, AnalysisConnector::FILE_DOWNLOADED);
   }
 
+  bool is_analysis_enabled =
+      settings.has_value() && IsDownloadConnectorEnabled(connectors_service);
+  FileDownloadScanningResources resources;
   auto content_analysis_info = std::make_unique<ContentAnalysisInfo>(
       url, std::move(settings).value_or(AnalysisSettings()),
       ContentAnalysisRequest::NORMAL_DOWNLOAD, *web_state);
+  bool should_scan_asynchronously =
+      is_analysis_enabled &&
+      content_analysis_info->settings().block_until_verdict !=
+          BlockUntilVerdict::kBlock;
 
-  auto files_request_handler_delegate =
-      std::make_unique<FilesRequestHandlerIOS>(
-          profile, file_path,
-          base::BindOnce(&HandleScanDecision, web_state->GetWeakPtr(),
-                         trigger_type, std::move(download_proceed)));
+  if (!should_scan_asynchronously) {
+    auto files_request_handler_delegate =
+        std::make_unique<FilesRequestHandlerIOS>(
+            ConnectorsServiceFactory::GetForProfile(profile),
+            IOSReportingEventRouterFactory::GetForProfile(profile), file_path,
+            base::BindOnce(&HandleScanDecision, web_state->GetWeakPtr(),
+                           trigger_type, std::move(download_proceed)));
 
-  // Send the download file for enterprise DLP download content scanning.
-  auto files_request_handler = std::make_unique<FilesRequestHandlerBase>(
-      content_analysis_info.get(),
+    // Prepare the filesRequestHandler that uploads the file for scanning.
+    auto files_request_handler = std::make_unique<FilesRequestHandlerBase>(
+        content_analysis_info.get(),
+        IOSCloudBinaryUploadServiceFactory::GetForProfile(profile), url, "",
+        DeepScanAccessPoint::DOWNLOAD,
+        std::move(files_request_handler_delegate));
+
+    resources.content_analysis_info = std::move(content_analysis_info);
+    resources.files_request_handler = std::move(files_request_handler);
+    return resources;
+  }
+
+  // For non-blocking mode, the `download_proceed` callback is deferred so it
+  // runs after the downloaded file has been cloned to ensure it can be uploaded
+  // succesfully. After the clone, the download and content scanning should
+  // proceed asynchronously.
+  BackgroundCloudScannerManagerFactory::GetForProfile(profile)->StartScanner(
+      std::move(content_analysis_info), url, file_path,
+      std::move(download_proceed));
+
+  // Return a dummy handler to the caller. An empty `file_path` makes it a no-op
+  // dummy. This is used to maintain the existing synchronous-like flow in the
+  // caller while allowing the actual scan to run asynchronously in the
+  // background.
+  auto dummy_info = std::make_unique<ContentAnalysisInfo>(
+      url, AnalysisSettings(), ContentAnalysisRequest::NORMAL_DOWNLOAD,
+      *web_state);
+  auto dummy_delegate = std::make_unique<FilesRequestHandlerIOS>(
+      ConnectorsServiceFactory::GetForProfile(profile),
+      IOSReportingEventRouterFactory::GetForProfile(profile), base::FilePath(),
+      base::BindOnce([](RequestHandlerResult result) {}));
+  auto dummy_handler = std::make_unique<FilesRequestHandlerBase>(
+      dummy_info.get(),
       IOSCloudBinaryUploadServiceFactory::GetForProfile(profile), url, "",
-      DeepScanAccessPoint::DOWNLOAD, std::move(files_request_handler_delegate));
-  files_request_handler->UploadData();
+      DeepScanAccessPoint::DOWNLOAD, std::move(dummy_delegate));
 
-  FileDownloadScanningResources resources;
-  resources.content_analysis_info = std::move(content_analysis_info);
-  resources.files_request_handler = std::move(files_request_handler);
+  resources.content_analysis_info = std::move(dummy_info);
+  resources.files_request_handler = std::move(dummy_handler);
   return resources;
 }
 

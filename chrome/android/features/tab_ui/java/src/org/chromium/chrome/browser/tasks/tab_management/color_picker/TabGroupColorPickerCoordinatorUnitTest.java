@@ -13,13 +13,11 @@ import android.view.View;
 import android.widget.RadioGroup;
 
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.Robolectric;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features;
@@ -32,7 +30,6 @@ import java.util.List;
 
 /** Tests for TabGroupColorPickerCoordinator. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @Features.DisableFeatures({TabGroupsFeatureMap.UPDATE_TAB_GROUP_COLORS})
 public class TabGroupColorPickerCoordinatorUnitTest {
     private Activity mActivity;
@@ -51,7 +48,6 @@ public class TabGroupColorPickerCoordinatorUnitTest {
         TabGroupColorPickerContainer container = root.findViewById(R.id.color_picker_container);
         mCoordinator =
                 new TabGroupColorPickerCoordinator(
-                        mActivity,
                         mColors,
                         container,
                         TabGroupColorPickerType.TAB_GROUP,
@@ -62,7 +58,6 @@ public class TabGroupColorPickerCoordinatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testAccessibilityDelegate() {
         AccessibilityNodeInfoCompat info = AccessibilityNodeInfoCompat.obtain();
         mContainerView

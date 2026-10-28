@@ -106,7 +106,8 @@ HRESULT MediaFoundationStreamWrapper::RuntimeClassInitialize(
                 << ", is_encrypted=" << is_encrypted_;
 
   media_log_ = std::move(media_log);
-  if (base::FeatureList::IsEnabled(kMediaFoundationBatchRead)) {
+  batch_read_enabled_ = base::FeatureList::IsEnabled(kMediaFoundationBatchRead);
+  if (batch_read_enabled_) {
     if (kBatchReadCount.Get() < 1 || kBatchReadCount.Get() > 500) {
       DLOG(WARNING) << "batch_read_count_=" << kBatchReadCount.Get()
                     << " is out of range [1,500], "
@@ -185,6 +186,12 @@ void MediaFoundationStreamWrapper::SetEnabled(bool enabled) {
     if (enabled_ == enabled)
       return;
     enabled_ = enabled;
+    // Drop any synthetic EOS buffers queued while the stream was disabled so
+    // they are not treated as real end-of-stream when re-enabled.
+    std::erase_if(buffer_queue_, [](const PendingInputBuffer& item) {
+      return item.status == DemuxerStream::Status::kOk && item.buffer &&
+             item.buffer->end_of_stream();
+    });
   }
   // Restart processing of queued requests when stream is re-enabled.
   ProcessRequestsIfPossible();
@@ -194,6 +201,8 @@ void MediaFoundationStreamWrapper::Flush() {
   DVLOG_FUNC(2);
 
   base::AutoLock auto_lock(lock_);
+
+  stream_ended_ = false;
 
   // buffering_post_flush_samples_ state is only relevant when the stream is
   // selected. No samples should be received until the stream is selected and
@@ -208,6 +217,9 @@ void MediaFoundationStreamWrapper::Flush() {
   while (!post_flush_buffers_.empty()) {
     post_flush_buffers_.pop();
   }
+
+  // Mark any batched read still in flight as predating this flush.
+  ++flush_generation_;
 }
 
 bool MediaFoundationStreamWrapper::HasEnded() const {
@@ -231,37 +243,52 @@ void MediaFoundationStreamWrapper::SetLastStartPosition(
 HRESULT MediaFoundationStreamWrapper::QueueStartedEvent(
     const PROPVARIANT* start_position) {
   DVLOG_FUNC(2);
-  base::AutoLock auto_lock(lock_);
+  {
+    base::AutoLock auto_lock(lock_);
 
-  // Save the new start position in the stream.
-  SetLastStartPosition(start_position);
+    // Save the new start position in the stream.
+    SetLastStartPosition(start_position);
 
-  DVLOG_FUNC(2) << "buffering_post_flush_samples_=false";
-  buffering_post_flush_samples_ = false;
-  state_ = State::kStarted;
-  RETURN_IF_FAILED(mf_media_event_queue_->QueueEventParamVar(
-      MEStreamStarted, GUID_NULL, S_OK, start_position));
+    DVLOG_FUNC(2) << "buffering_post_flush_samples_=false";
+    buffering_post_flush_samples_ = false;
+    stream_ended_ = false;
+    state_ = State::kStarted;
+    RETURN_IF_FAILED(mf_media_event_queue_->QueueEventParamVar(
+        MEStreamStarted, GUID_NULL, S_OK, start_position));
+  }
+  task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(&MediaFoundationStreamWrapper::ProcessRequestsIfPossible,
+                     weak_factory_.GetWeakPtr()));
   return S_OK;
 }
 
 HRESULT MediaFoundationStreamWrapper::QueueSeekedEvent(
     const PROPVARIANT* start_position) {
   DVLOG_FUNC(2);
-  base::AutoLock auto_lock(lock_);
+  {
+    base::AutoLock auto_lock(lock_);
 
-  // Save the new start position in the stream.
-  SetLastStartPosition(start_position);
+    // Save the new start position in the stream.
+    SetLastStartPosition(start_position);
 
-  DVLOG_FUNC(2) << "buffering_post_flush_samples_=false";
-  buffering_post_flush_samples_ = false;
-  state_ = State::kStarted;
-  RETURN_IF_FAILED(mf_media_event_queue_->QueueEventParamVar(
-      MEStreamSeeked, GUID_NULL, S_OK, start_position));
+    DVLOG_FUNC(2) << "buffering_post_flush_samples_=false";
+    buffering_post_flush_samples_ = false;
+    stream_ended_ = false;
+    state_ = State::kStarted;
+    RETURN_IF_FAILED(mf_media_event_queue_->QueueEventParamVar(
+        MEStreamSeeked, GUID_NULL, S_OK, start_position));
+  }
+  task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(&MediaFoundationStreamWrapper::ProcessRequestsIfPossible,
+                     weak_factory_.GetWeakPtr()));
   return S_OK;
 }
 
 HRESULT MediaFoundationStreamWrapper::QueueStoppedEvent() {
   DVLOG_FUNC(2);
+  base::AutoLock auto_lock(lock_);
 
   state_ = State::kStopped;
   RETURN_IF_FAILED(mf_media_event_queue_->QueueEventParamVar(
@@ -271,6 +298,7 @@ HRESULT MediaFoundationStreamWrapper::QueueStoppedEvent() {
 
 HRESULT MediaFoundationStreamWrapper::QueuePausedEvent() {
   DVLOG_FUNC(2);
+  base::AutoLock auto_lock(lock_);
 
   state_ = State::kPaused;
   RETURN_IF_FAILED(mf_media_event_queue_->QueueEventParamVar(
@@ -328,11 +356,12 @@ void MediaFoundationStreamWrapper::ProcessRequestsIfPossible() {
         batch_read_count_,
         base::BindOnce(
             &MediaFoundationStreamWrapper::OnDemuxerStreamReadBuffers,
-            weak_factory_.GetWeakPtr()));
+            weak_factory_.GetWeakPtr(), flush_generation_));
   }
 }
 
 void MediaFoundationStreamWrapper::OnDemuxerStreamReadBuffers(
+    uint32_t flush_generation,
     DemuxerStream::Status status,
     DemuxerStream::DecoderBufferVector buffers) {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
@@ -345,11 +374,40 @@ void MediaFoundationStreamWrapper::OnDemuxerStreamReadBuffers(
     DCHECK(pending_stream_read_);
     pending_stream_read_ = false;
 
+    // A read requested before a flush returns buffers from the position
+    // playback seeked away from. It cannot be cancelled: the demuxer has
+    // already fulfilled it, and MojoDemuxerStreamAdapter has no way to discard
+    // a batch it is still reassembling. Drop the buffers here and let the read
+    // issued below refill from the new position. A non-kOk status carries no
+    // buffer of its own and is kept, as OnDemuxerStreamRead() needs it to
+    // report a config change.
+    if (batch_read_enabled_ && flush_generation != flush_generation_ &&
+        status == DemuxerStream::Status::kOk && !buffers.empty()) {
+      DVLOG_FUNC(2) << "dropping " << buffers.size() << " stale buffer(s)";
+      // An end of stream buffer has no timestamp, so it is traced as -1.
+      const auto& first = buffers.front();
+      const auto& last = buffers.back();
+      TRACE_EVENT_INSTANT(
+          "media", "MFDropStaleBatchRead",
+          "StreamType:", DemuxerStream::GetTypeName(stream_type_),
+          "flush_generation", flush_generation_, "dropped_buffer_count",
+          buffers.size(), "first_timestamp_us",
+          first->end_of_stream() ? -1 : first->timestamp().InMicroseconds(),
+          "last_timestamp_us",
+          last->end_of_stream() ? -1 : last->timestamp().InMicroseconds());
+      buffers.clear();
+    }
+
     DemuxerStream::DecoderBufferVector pending_buffers =
         (status == DemuxerStream::Status::kOk)
             ? std::move(buffers)
             : DemuxerStream::DecoderBufferVector{nullptr};
     for (auto& buffer : pending_buffers) {
+      if (!enabled_ && status == DemuxerStream::Status::kOk && buffer &&
+          buffer->end_of_stream()) {
+        DVLOG_FUNC(2) << "Ignoring EOS buffer for disabled stream";
+        continue;
+      }
       DVLOG_FUNC(3) << "push buffer to buffer_queue_, status="
                     << DemuxerStream::GetStatusName(status) << ", buffer="
                     << (buffer ? buffer->AsHumanReadableString(false) : "null");

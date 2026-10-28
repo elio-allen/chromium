@@ -27,23 +27,23 @@
 
 namespace {
 
-// Returns two point ranges (<left, width> pairs) at row |canvasY| which belong
+// Returns two point ranges (<left, width> pairs) at row |canvas_y| which belong
 // to |src| but not |dst|. A range is empty if its width is 0.
 inline void findBlendRangeAtRow(const gfx::Rect& src,
                                 const gfx::Rect& dst,
-                                int canvasY,
+                                int canvas_y,
                                 int& left1,
                                 int& width1,
                                 int& left2,
                                 int& width2) {
-  SECURITY_CHECK(canvasY >= src.y() && canvasY < src.bottom());
+  SECURITY_CHECK(canvas_y >= src.y() && canvas_y < src.bottom());
   left1 = -1;
   width1 = 0;
   left2 = -1;
   width2 = 0;
 
-  if (canvasY < dst.y() || canvasY >= dst.bottom() || src.x() >= dst.right() ||
-      src.right() <= dst.x()) {
+  if (canvas_y < dst.y() || canvas_y >= dst.bottom() ||
+      src.x() >= dst.right() || src.right() <= dst.x()) {
     left1 = src.x();
     width1 = src.width();
     return;
@@ -67,30 +67,32 @@ inline void findBlendRangeAtRow(const gfx::Rect& src,
 // images.
 void alphaBlendPremultiplied(blink::ImageFrame& src,
                              blink::ImageFrame& dst,
-                             int canvasY,
+                             int canvas_y,
                              int left,
                              int width) {
   for (int x = 0; x < width; ++x) {
-    int canvasX = left + x;
-    blink::ImageFrame::PixelData* pixel = src.GetAddr(canvasX, canvasY);
+    int canvas_x = left + x;
+    blink::ImageFrame::PixelData* pixel = src.GetAddr(canvas_x, canvas_y);
     if (SkPMColorGetA(*pixel) != 0xff) {
-      blink::ImageFrame::PixelData prevPixel = *dst.GetAddr(canvasX, canvasY);
-      blink::ImageFrame::BlendSrcOverDstPremultiplied(pixel, prevPixel);
+      blink::ImageFrame::PixelData prev_pixel =
+          *dst.GetAddr(canvas_x, canvas_y);
+      blink::ImageFrame::BlendSrcOverDstPremultiplied(pixel, prev_pixel);
     }
   }
 }
 
 void alphaBlendNonPremultiplied(blink::ImageFrame& src,
                                 blink::ImageFrame& dst,
-                                int canvasY,
+                                int canvas_y,
                                 int left,
                                 int width) {
   for (int x = 0; x < width; ++x) {
-    int canvasX = left + x;
-    blink::ImageFrame::PixelData* pixel = src.GetAddr(canvasX, canvasY);
+    int canvas_x = left + x;
+    blink::ImageFrame::PixelData* pixel = src.GetAddr(canvas_x, canvas_y);
     if (SkPMColorGetA(*pixel) != 0xff) {
-      blink::ImageFrame::PixelData prevPixel = *dst.GetAddr(canvasX, canvasY);
-      blink::ImageFrame::BlendSrcOverDstRaw(pixel, prevPixel);
+      blink::ImageFrame::PixelData prev_pixel =
+          *dst.GetAddr(canvas_x, canvas_y);
+      blink::ImageFrame::BlendSrcOverDstRaw(pixel, prev_pixel);
     }
   }
 }
@@ -509,7 +511,7 @@ void WEBPImageDecoder::ReadColorProfile() {
   wtf_size_t profile_size =
       base::checked_cast<wtf_size_t>(chunk_iterator.chunk.size);
 
-  if (auto profile = ColorProfile::Create(
+  if (auto profile = skia::ColorProfile::Make(
           UNSAFE_TODO(base::span(chunk_iterator.chunk.bytes, profile_size)))) {
     if (profile->IsRGB()) {
       SetEmbeddedColorProfile(std::move(profile));
@@ -611,8 +613,10 @@ wtf_size_t WEBPImageDecoder::DecodeFrameCount() {
 }
 
 void WEBPImageDecoder::InitializeNewFrame(wtf_size_t index) {
+  ImageFrame* buffer = &frame_buffer_cache_[index];
+  CHECK_EQ(buffer->GetStatus(), ImageFrame::kFrameEmpty);
   if (!(format_flags_ & ANIMATION_FLAG)) {
-    DCHECK(!index);
+    DCHECK_EQ(index, 0u);
     return;
   }
   WebPIterator animated_frame;
@@ -621,10 +625,11 @@ void WEBPImageDecoder::InitializeNewFrame(wtf_size_t index) {
     return;
   }
   DCHECK_EQ(animated_frame.complete, 1);
-  ImageFrame* buffer = &frame_buffer_cache_[index];
   gfx::Rect frame_rect(animated_frame.x_offset, animated_frame.y_offset,
                        animated_frame.width, animated_frame.height);
-  buffer->SetOriginalFrameRect(IntersectRects(frame_rect, gfx::Rect(Size())));
+  CHECK(gfx::Rect(Size()).Contains(frame_rect));
+  CHECK(!frame_rect.IsEmpty());
+  buffer->SetOriginalFrameRect(frame_rect);
   buffer->SetDuration(base::Milliseconds(animated_frame.duration));
   buffer->SetDisposalMethod(animated_frame.dispose_method ==
                                     WEBP_MUX_DISPOSE_BACKGROUND
@@ -759,6 +764,11 @@ bool WEBPImageDecoder::DecodeSingleFrame(const uint8_t* data_bytes,
   DCHECK_NE(buffer.GetStatus(), ImageFrame::kFrameComplete);
 
   if (buffer.GetStatus() == ImageFrame::kFrameEmpty) {
+    // For animation, AllocatePixelData(), ZeroFillPixelData(),
+    // SetStatus(ImageFrame::kFramePartial), and SetHasAlpha(true) are called
+    // in InitFrameBuffer(), and SetOriginalFrameRect() is called in
+    // InitializeNewFrame().
+    CHECK(!(format_flags_ & ANIMATION_FLAG));
     if (!buffer.AllocatePixelData(Size().width(), Size().height(),
                                   ColorSpaceForSkImages())) {
       return SetFailed();
@@ -772,25 +782,33 @@ bool WEBPImageDecoder::DecodeSingleFrame(const uint8_t* data_bytes,
     buffer.SetOriginalFrameRect(gfx::Rect(Size()));
   }
 
-  const gfx::Rect& frame_rect = buffer.OriginalFrameRect();
   if (!decoder_) {
     // Set up decoder_buffer_ with output mode
     if (!WebPInitDecBuffer(&decoder_buffer_)) {
       return SetFailed();
     }
+    // WebPINewDecoder uses only decoder_buffer_.is_external_memory and
+    // decoder_buffer_.colorspace.
     decoder_buffer_.colorspace = RGBOutputMode();
-    decoder_buffer_.u.RGBA.stride =
-        Size().width() * sizeof(ImageFrame::PixelData);
-    decoder_buffer_.u.RGBA.size =
-        decoder_buffer_.u.RGBA.stride * frame_rect.height();
     decoder_buffer_.is_external_memory = 1;
     decoder_ = WebPINewDecoder(&decoder_buffer_);
     if (!decoder_) {
       return SetFailed();
     }
   }
-  decoder_buffer_.u.RGBA.rgba = reinterpret_cast<uint8_t*>(
-      buffer.GetAddr(frame_rect.x(), frame_rect.y()));
+  const gfx::Rect& frame_rect = buffer.OriginalFrameRect();
+  CHECK(gfx::Rect(Size()).Contains(frame_rect));
+  CHECK(!frame_rect.IsEmpty());
+  // The top-left pixel of frame_rect.
+  ImageFrame::PixelData* frame_rect_front =
+      buffer.GetAddr(frame_rect.x(), frame_rect.y());
+  // The bottom-right pixel of frame_rect.
+  ImageFrame::PixelData* frame_rect_back =
+      buffer.GetAddr(frame_rect.right() - 1, frame_rect.bottom() - 1);
+  decoder_buffer_.u.RGBA.rgba = reinterpret_cast<uint8_t*>(frame_rect_front);
+  decoder_buffer_.u.RGBA.stride = buffer.Bitmap().rowBytes();
+  decoder_buffer_.u.RGBA.size =
+      (frame_rect_back - frame_rect_front + 1) * sizeof(ImageFrame::PixelData);
 
   switch (WebPIUpdate(decoder_, data_bytes, data_size)) {
     case VP8_STATUS_OK:

@@ -26,6 +26,9 @@
                 "target_platform": "linux"
               },
               "legacy_gclient_config": {
+                "apply_configs": [
+                  "checkout_mesa"
+                ],
                 "config": "chromium"
               }
             }
@@ -69,6 +72,5 @@
   "sheriff_rotations": [
     "chromium"
   ],
-  "upload_bucket": "chromium-browser-libfuzzer",
-  "upload_directory": "asan"
+  "upload_bucket": "chromium-browser-libfuzzer"
 }

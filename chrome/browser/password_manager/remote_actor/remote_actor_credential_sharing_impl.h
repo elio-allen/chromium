@@ -14,7 +14,7 @@
 #include "base/memory/weak_ptr.h"
 #include "chrome/common/password_manager/remote_actor_credential_sharing.mojom.h"
 #include "components/password_manager/core/browser/password_form.h"
-#include "components/password_manager/core/browser/password_store/password_store_consumer.h"
+#include "components/password_manager/core/browser/remote_actor/remote_actor_credential_sharing_controller.h"
 #include "content/public/browser/document_user_data.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
@@ -32,31 +32,11 @@ class DeviceAuthenticator;
 
 namespace password_manager {
 
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-//
-// LINT.IfChange(RemoteActorCredentialSharingResult)
-enum class RemoteActorCredentialSharingResult {
-  kOtherError = 0,
-  kSuccess = 1,
-  kUserIdentityOrSyncStateInvalid = 2,
-  kNoSyncOrAccountStorage = 3,
-  kNoPasswordsFound = 4,
-  kUserCancelledDialog = 5,
-  kAuthenticatorFailed = 6,
-  kSharingServiceUnavailable = 7,
-  kSharingFailed = 8,
-  kRequestAlreadyInProgress = 9,
-  kMaxValue = kRequestAlreadyInProgress,
-};
-// LINT.ThenChange(/tools/metrics/histograms/metadata/password/enums.xml:RemoteActorCredentialSharingResult)
-
 class RemoteActorSelectionDialogController;
 
 class RemoteActorCredentialSharingImpl
     : public chrome::mojom::RemoteActorCredentialSharing,
-      public content::DocumentUserData<RemoteActorCredentialSharingImpl>,
-      public PasswordStoreConsumer {
+      public content::DocumentUserData<RemoteActorCredentialSharingImpl> {
  public:
   // Factory callback type used to create the credential selection dialog.
   using DialogFactory = base::RepeatingCallback<
@@ -83,7 +63,7 @@ class RemoteActorCredentialSharingImpl
   void RequestAgentAuthentication(
       const std::string& gaia_id,
       const std::string& domain,
-      const std::string& remote_actor_id,
+      const std::string& task_id,
       RequestAgentAuthenticationCallback callback) override;
 
  private:
@@ -101,43 +81,26 @@ class RemoteActorCredentialSharingImpl
     std::string gaia_id;
     // The credential domain for which credentials are requested.
     std::string domain;
-    // The ID of the remote actor requesting credentials.
-    std::string remote_actor_id;
+    // The ID of the remote actor task requesting credentials.
+    std::string task_id;
     // The callback to return the result to the Mojo caller.
     RequestAgentAuthenticationCallback callback;
-    // The number of password store queries started.
-    int expected_callbacks = 0;
-    // The number of password store queries that have completed.
-    int received_callbacks = 0;
-    // Collected credentials from the stores.
-    std::vector<PasswordForm> credentials;
   };
 
-  // PasswordStoreConsumer:
-  void OnGetPasswordStoreResultsOrErrorFrom(
-      PasswordStoreInterface* store,
-      LoginsResultOrError results_or_error) override;
-
   // Called when all password store queries have completed.
-  void OnAllLoginsRetrieved();
+  void OnAllLoginsRetrieved(
+      RemoteActorCredentialSharingController::CredentialsOrError credentials);
   void ProceedWithCredential(PasswordForm selected_form, bool auth_success);
 
   // Validates Mojo request preconditions (e.g., primary main frame, user
   // gesture).
   bool ValidateRequestPreconditions(const std::string& gaia_id,
                                     const std::string& domain,
-                                    const std::string& remote_actor_id);
+                                    const std::string& task_id);
 
-  // Verifies the GAIA ID matches the signed-in user and sync is not in error.
-  bool VerifyUserIdentityAndSyncState(Profile* profile,
-                                      const std::string& gaia_id);
-
-  // Initiates asynchronous queries to the relevant password stores.
-  void QueryPasswordStores(Profile* profile,
-                           const std::string& gaia_id,
-                           const std::string& domain,
-                           const std::string& remote_actor_id,
-                           RequestAgentAuthenticationCallback callback);
+  // Checks if enterprise policy (GeminiSparkSettings) permits remote actor
+  // credential sharing.
+  bool IsAllowedByPolicy(Profile* profile);
 
   // Callback triggered when the user selects a credential or cancels the
   // dialog.
@@ -156,6 +119,7 @@ class RemoteActorCredentialSharingImpl
   DialogFactory dialog_factory_;
 
   std::optional<PendingRequest> pending_request_;
+  std::unique_ptr<RemoteActorCredentialSharingController> controller_;
   std::unique_ptr<RemoteActorSelectionDialogController> dialog_controller_;
   std::unique_ptr<device_reauth::DeviceAuthenticator> device_authenticator_;
 

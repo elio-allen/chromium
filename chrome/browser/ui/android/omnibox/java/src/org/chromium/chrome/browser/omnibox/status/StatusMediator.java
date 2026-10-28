@@ -16,8 +16,8 @@ import android.view.View.OnClickListener;
 
 import androidx.annotation.ColorInt;
 import androidx.annotation.ColorRes;
-import androidx.annotation.DimenRes;
 import androidx.annotation.DrawableRes;
+import androidx.annotation.IntDef;
 import androidx.annotation.StringRes;
 import androidx.annotation.VisibleForTesting;
 
@@ -30,11 +30,12 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.omnibox.FuseboxSessionState;
 import org.chromium.chrome.browser.omnibox.LocationBarDataProvider;
+import org.chromium.chrome.browser.omnibox.OmniboxUrlUtils;
 import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.SearchEngineService;
 import org.chromium.chrome.browser.omnibox.SearchEngineService.SearchEngineIconObserver;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxLayoutMode;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxState;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxLayoutMode;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxState;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxFeatureUtils;
 import org.chromium.chrome.browser.omnibox.status.StatusCoordinator.PageInfoAction;
 import org.chromium.chrome.browser.omnibox.status.StatusProperties.PermissionIconResource;
@@ -52,10 +53,10 @@ import org.chromium.chrome.browser.util.BrowserUiUtils;
 import org.chromium.components.browser_ui.util.DrawableUtils;
 import org.chromium.components.content_settings.CookieControlsBridge;
 import org.chromium.components.content_settings.CookieControlsObserver;
-import org.chromium.components.embedder_support.util.UrlUtilities;
-import org.chromium.components.metrics.OmniboxEventProtos.OmniboxEventProto.PageClassification;
+import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteInput.AutocompleteState;
+import org.chromium.components.omnibox.AutocompleteInput.DisplayState;
 import org.chromium.components.omnibox.AutocompleteInput.SiteSearchData;
 import org.chromium.components.omnibox.AutocompleteRequestType;
 import org.chromium.components.omnibox.OmniboxCapabilities;
@@ -76,6 +77,10 @@ import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
 
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 import java.util.Objects;
 
 /** Contains the controller logic of the Status component. */
@@ -86,12 +91,38 @@ public class StatusMediator
                 SearchEngineIconObserver,
                 PermissionStatusHandler.Delegate {
 
-    static final String COOKIE_CONTROLS_ICON = "COOKIE_CONTROLS_ICON";
+    @IntDef({
+        StatusIconType.NONE,
+        StatusIconType.HUB_OR_TAB_SEARCH,
+        StatusIconType.PREVIEW_GLOBE,
+        StatusIconType.PREVIEW_FAVICON,
+        StatusIconType.AIM_SPARK,
+        StatusIconType.FUSEBOX_PLUS_BUTTON,
+        StatusIconType.SEARCH_ENGINE,
+        StatusIconType.FOCUSED_NAVIGATION,
+        StatusIconType.CLAPPER_QUIET_PERMISSION,
+        StatusIconType.SECURITY,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    @Target(ElementType.TYPE_USE)
+    @interface StatusIconType {
+        int NONE = 0;
+        int HUB_OR_TAB_SEARCH = 1;
+        int PREVIEW_GLOBE = 2;
+        int PREVIEW_FAVICON = 3;
+        int AIM_SPARK = 4;
+        int FUSEBOX_PLUS_BUTTON = 5;
+        int SEARCH_ENGINE = 6;
+        int FOCUSED_NAVIGATION = 7;
+        int CLAPPER_QUIET_PERMISSION = 8;
+        int SECURITY = 9;
+    }
 
     private final PropertyModel mModel;
     private final OneshotSupplier<TemplateUrlService> mTemplateUrlServiceSupplier;
     private final MonotonicObservableSupplier<Profile> mProfileSupplier;
     private final Context mContext;
+    private final OmniboxResourceProvider mResourceProvider;
     private final LocationBarDataProvider mLocationBarDataProvider;
     private final PermissionStatusHandler mPermissionStatusHandler;
     private final Handler mIconTaskHandler = new Handler();
@@ -109,6 +140,10 @@ public class StatusMediator
             this::onPreviewMatchUrlChanged;
     private final Callback<@AutocompleteRequestType Integer> mOnAutocompleteRequestTypeChanged =
             this::onAutocompleteRequestTypeChanged;
+    private final Callback<@DisplayState Integer> mOnDisplayStateChanged =
+            this::onDisplayStateChanged;
+    private final Callback<@AutocompleteState Integer> mOnAutocompleteStateChanged =
+            this::onAutocompleteStateChanged;
 
     private boolean mUrlHasFocus;
     private boolean mVerboseStatusSpaceAvailable;
@@ -144,6 +179,7 @@ public class StatusMediator
     private @DrawableRes int mStatusIconOverrideResId = Resources.ID_NULL;
 
     /**
+     * @param resourceProvider Provides omnibox-specific resources.
      * @param model The {@link PropertyModel} for this mediator.
      * @param context The {@link Context} for this Status component.
      * @param locationBarDataProvider Provides data to the location bar.
@@ -154,11 +190,11 @@ public class StatusMediator
      * @param windowAndroid The current {@link WindowAndroid}.
      * @param pageInfoAction Callback to display the page info UI surface.
      * @param fuseboxStateSupplier Notifies about the state of the fusebox.
-     * @param onPlusButtonClicked Toggle the fusebox attachments menu when plus button used.
      * @param fuseboxLayoutModeSupplier Notifies about the layout mode of the fusebox.
-     * @param previewMatchUrlSupplier Holds the url of a preview match, null otherwise.
+     * @param onPlusButtonClicked Toggle the fusebox attachments menu when plus button used.
      */
     public StatusMediator(
+            OmniboxResourceProvider resourceProvider,
             PropertyModel model,
             Context context,
             LocationBarDataProvider locationBarDataProvider,
@@ -172,6 +208,7 @@ public class StatusMediator
             NonNullObservableSupplier<Integer> fuseboxLayoutModeSupplier,
             Runnable onPlusButtonClicked) {
         mContext = context;
+        mResourceProvider = resourceProvider;
         initBackgroundDrawables(context);
         mModel = model;
         mModel.set(StatusProperties.USE_WIDE_STATUS_ICON, false);
@@ -244,8 +281,20 @@ public class StatusMediator
         if (mInputSessionState != null) {
             mInputSessionState
                     .getAutocompleteInput()
+                    .getRequestTypeSupplier()
+                    .removeObserver(mOnAutocompleteRequestTypeChanged);
+            mInputSessionState
+                    .getAutocompleteInput()
                     .getPreviewMatchUrlSupplier()
                     .removeObserver(mOnPreviewMatchUrlChanged);
+            mInputSessionState
+                    .getAutocompleteInput()
+                    .getDisplayStateSupplier()
+                    .removeObserver(mOnDisplayStateChanged);
+            mInputSessionState
+                    .getAutocompleteInput()
+                    .getAutocompleteStateSupplier()
+                    .removeObserver(mOnAutocompleteStateChanged);
         }
         mImageSupplier.destroy();
     }
@@ -355,12 +404,9 @@ public class StatusMediator
         updateStatusViewVisibility();
         updateStatusViewMinWidth();
 
-        @DimenRes
-        int cornerRes =
-                OmniboxFeatures.sPreviewMatchFavicons.isEnabled()
-                        ? R.dimen.omnibox_small_icon_rounding_radius
-                        : R.dimen.omnibox_search_engine_logo_composed_half_size;
-        mModel.set(StatusProperties.STATUS_ICON_CORNER_RADIUS, cornerRes);
+        mModel.set(
+                StatusProperties.STATUS_ICON_CORNER_RADIUS,
+                mResourceProvider.getStatusIconCornerRadiusRes(/* focused= */ true));
     }
 
     void endInput() {
@@ -373,8 +419,9 @@ public class StatusMediator
         updateStatusViewVisibility();
         updateStatusViewMinWidth();
 
-        @DimenRes int cornerRes = R.dimen.omnibox_search_engine_logo_composed_half_size;
-        mModel.set(StatusProperties.STATUS_ICON_CORNER_RADIUS, cornerRes);
+        mModel.set(
+                StatusProperties.STATUS_ICON_CORNER_RADIUS,
+                mResourceProvider.getStatusIconCornerRadiusRes(/* focused= */ false));
     }
 
     private void setFuseboxSessionState(@Nullable FuseboxSessionState sessionState) {
@@ -382,29 +429,22 @@ public class StatusMediator
 
         if (mInputSessionState != null) {
             setSiteSearchDataSupplier(null);
-            mInputSessionState
-                    .getAutocompleteInput()
-                    .getRequestTypeSupplier()
-                    .removeObserver(mOnAutocompleteRequestTypeChanged);
-            mInputSessionState
-                    .getAutocompleteInput()
-                    .getPreviewMatchUrlSupplier()
-                    .removeObserver(mOnPreviewMatchUrlChanged);
+            AutocompleteInput input = mInputSessionState.getAutocompleteInput();
+            input.getRequestTypeSupplier().removeObserver(mOnAutocompleteRequestTypeChanged);
+            input.getPreviewMatchUrlSupplier().removeObserver(mOnPreviewMatchUrlChanged);
+            input.getDisplayStateSupplier().removeObserver(mOnDisplayStateChanged);
+            input.getAutocompleteStateSupplier().removeObserver(mOnAutocompleteStateChanged);
         }
 
         mInputSessionState = sessionState;
 
         if (mInputSessionState != null) {
-            setSiteSearchDataSupplier(
-                    mInputSessionState.getAutocompleteInput().getSiteSearchDataSupplier());
-            mInputSessionState
-                    .getAutocompleteInput()
-                    .getRequestTypeSupplier()
-                    .addSyncObserver(mOnAutocompleteRequestTypeChanged);
-            mInputSessionState
-                    .getAutocompleteInput()
-                    .getPreviewMatchUrlSupplier()
-                    .addSyncObserverAndCall(mOnPreviewMatchUrlChanged);
+            AutocompleteInput input = mInputSessionState.getAutocompleteInput();
+            setSiteSearchDataSupplier(input.getSiteSearchDataSupplier());
+            input.getRequestTypeSupplier().addSyncObserver(mOnAutocompleteRequestTypeChanged);
+            input.getPreviewMatchUrlSupplier().addSyncObserverAndCall(mOnPreviewMatchUrlChanged);
+            input.getDisplayStateSupplier().addSyncObserver(mOnDisplayStateChanged);
+            input.getAutocompleteStateSupplier().addSyncObserver(mOnAutocompleteStateChanged);
         }
     }
 
@@ -413,17 +453,16 @@ public class StatusMediator
         // underway, making the onUrlChanged fail to detect the user is navigating out of the NTP.
         var url = mLocationBarDataProvider.getCurrentGurl();
         boolean isRegularNtpUrl =
-                url != null
-                        && UrlUtilities.isNtpUrl(url)
-                        && !mLocationBarDataProvider.isIncognitoBranded();
+                OmniboxUrlUtils.isNtpUrl(url) && !mLocationBarDataProvider.isIncognitoBranded();
 
-        mModel.set(
-                StatusProperties.USE_WIDE_STATUS_ICON,
-                mUrlHasFocus
-                        || isRegularNtpUrl
-                        || PageClassificationUtils.isHubOrTabSearch(
-                                mLocationBarDataProvider.getPageClassification(
-                                        /* prefetch= */ false)));
+        @PageClassification
+        int pageClassification =
+                mLocationBarDataProvider.getPageClassification(/* prefetch= */ false);
+        boolean useWideStatusIcon =
+                PageClassificationUtils.isHubOrTabSearch(pageClassification)
+                        || mUrlHasFocus
+                        || isRegularNtpUrl;
+        mModel.set(StatusProperties.USE_WIDE_STATUS_ICON, useWideStatusIcon);
     }
 
     public void setUseSmallWidget(boolean useSmallWidget) {
@@ -480,13 +519,12 @@ public class StatusMediator
         }
         mModel.set(StatusProperties.VERBOSE_STATUS_TEXT_VISIBLE, newVisibility);
 
-        applyStatusIconAndTooltipProperties(newVisibility);
+        applyBackgroundAndTooltipProperties();
     }
 
     /** Update color theme for all status components. */
     private void updateColorTheme() {
-        final @ColorInt int separatorColor =
-                OmniboxResourceProvider.getStatusSeparatorColor(mContext, mBrandedColorScheme);
+        final @ColorInt int separatorColor = mResourceProvider.getStatusSeparatorColor();
         mModel.set(StatusProperties.SEPARATOR_COLOR, separatorColor);
         mNavigationIconTintRes = ThemeUtils.getThemedToolbarIconTintRes(mBrandedColorScheme);
 
@@ -500,10 +538,10 @@ public class StatusMediator
 
     private @ColorInt int getTextColor() {
         if (mPageIsPaintPreview) {
-            return OmniboxResourceProvider.getStatusPreviewTextColor(mContext, mBrandedColorScheme);
+            return mResourceProvider.getStatusPreviewTextColor();
         }
         if (mPageIsOffline) {
-            return OmniboxResourceProvider.getStatusOfflineTextColor(mContext, mBrandedColorScheme);
+            return mResourceProvider.getStatusOfflineTextColor();
         }
         return 0;
     }
@@ -526,8 +564,10 @@ public class StatusMediator
      * no longer pointing to NTP, but the navigation not yet completed).
      */
     private boolean isNtpVisible() {
-        return mLocationBarDataProvider.getNewTabPageDelegate() != null
-                && mLocationBarDataProvider.getNewTabPageDelegate().isCurrentlyVisible();
+        return (mLocationBarDataProvider.getNewTabPageDelegate() != null
+                        && mLocationBarDataProvider.getNewTabPageDelegate().isCurrentlyVisible())
+                || (!mLocationBarDataProvider.isIncognitoBranded()
+                        && OmniboxUrlUtils.isNtpUrl(mLocationBarDataProvider.getCurrentGurl()));
     }
 
     private boolean shouldShowNtpPlusButton() {
@@ -552,17 +592,19 @@ public class StatusMediator
      * no longer pointing to NTP, but the navigation not yet completed).
      */
     private boolean isIncognitoNtpVisible() {
-        return mLocationBarDataProvider.getNewTabPageDelegate() != null
-                && mLocationBarDataProvider
-                        .getNewTabPageDelegate()
-                        .isIncognitoNewTabPageCurrentlyVisible();
+        return (mLocationBarDataProvider.getNewTabPageDelegate() != null
+                        && mLocationBarDataProvider
+                                .getNewTabPageDelegate()
+                                .isIncognitoNewTabPageCurrentlyVisible())
+                || (mLocationBarDataProvider.isIncognitoBranded()
+                        && OmniboxUrlUtils.isNtpUrl(mLocationBarDataProvider.getCurrentGurl()));
     }
 
     @Override
     public void showPermissionIcon(PermissionIconResource icon) {
         mModel.set(StatusProperties.STATUS_ICON_RESOURCE, icon);
         mModel.set(StatusProperties.STATUS_ICON_DESCRIPTION_RES, icon.getContentDescriptionRes());
-        mModel.set(StatusProperties.STATUS_CLICK_LISTENER, this::onClickOpenPageInfo);
+        setStatusClickListener(this::onClickOpenPageInfo);
 
         updateStatusViewVisibility();
     }
@@ -581,97 +623,89 @@ public class StatusMediator
         Bitmap bitmap = null;
         Drawable customDrawable = null;
 
-        boolean previewMatchFaviconsEnabled = OmniboxFeatures.sPreviewMatchFavicons.isEnabled();
-        @AutocompleteRequestType
-        int requestType =
-                mInputSessionState == null
-                        ? AutocompleteRequestType.SEARCH
-                        : mInputSessionState.getAutocompleteInput().getRequestType();
-        @AutocompleteState
-        int autocompleteState =
-                mInputSessionState == null
-                        ? AutocompleteState.DISABLED
-                        : mInputSessionState.getAutocompleteInput().getAutocompleteState();
-        // TODO(b/542569045): Replace AutocompleteState check with DisplayState !=
-        // DisplayState.WEBSITE when DisplayState lands.
-        boolean isAutocompleteActive =
-                autocompleteState == AutocompleteState.ENABLED
-                        || autocompleteState == AutocompleteState.STANDBY;
-
-        if (PageClassificationUtils.isHubOrTabSearch(
-                mLocationBarDataProvider.getPageClassification(/* prefetch= */ false))) {
-            mPermissionStatusHandler.reset(/* shouldDismissNativePrompt= */ false);
-            updateStatusViewVisibility();
-            boolean hasIconOverride = mStatusIconOverrideResId != Resources.ID_NULL;
-            iconRes = hasIconOverride ? mStatusIconOverrideResId : R.drawable.ic_arrow_back_24dp;
-            tintRes = ThemeUtils.getThemedToolbarIconTintRes(mBrandedColorScheme);
-            doubleTapDescriptionRes =
-                    hasIconOverride
-                            ? Resources.ID_NULL
-                            : R.string.accessibility_toolbar_exit_hub_search;
-            applyStatusIconAndTooltipProperties(
-                    mModel.get(StatusProperties.VERBOSE_STATUS_TEXT_VISIBLE));
-            clickListener = hasIconOverride ? null : mOnStatusIconNavigateBackButtonPress;
-        } else if (isAutocompleteActive && previewMatchFaviconsEnabled && mShowPreviewMatchGlobe) {
-            mPermissionStatusHandler.reset(/* shouldDismissNativePrompt= */ false);
-            iconRes = R.drawable.ic_globe_24dp;
-            tintRes = mNavigationIconTintRes;
-        } else if (isAutocompleteActive
-                && previewMatchFaviconsEnabled
-                && mPreviewMatchFavicon != null) {
-            mPermissionStatusHandler.reset(/* shouldDismissNativePrompt= */ false);
-            customDrawable = mPreviewMatchFavicon;
-        } else if (OmniboxCapabilities.isDesktopPlatform()
-                && mInputSessionState != null
-                && ToolModeUtils.isAimRequest(requestType)) {
-            mPermissionStatusHandler.reset(/* shouldDismissNativePrompt= */ false);
-            tintRes = mNavigationIconTintRes;
-            iconRes = R.drawable.search_spark_black_24dp;
-            descRes = R.string.accessibility_omnibox_open_context_popup;
-            doubleTapDescriptionRes = Resources.ID_NULL;
-        } else if (mFuseboxLayoutModeSupplier.get() == FuseboxLayoutMode.TOOLBAR
-                && (mFuseboxStateSupplier.get() == FuseboxState.COMPACT
-                        || shouldShowNtpPlusButton())) {
-            mPermissionStatusHandler.reset(/* shouldDismissNativePrompt= */ false);
-            tintRes = mNavigationIconTintRes;
-            iconRes = R.drawable.ic_add_round_20dp_with_inset;
-            clickListener = mFuseboxOnPlusButtonClicked;
-            descRes = R.string.accessibility_omnibox_open_context_popup;
-            doubleTapDescriptionRes = Resources.ID_NULL;
-        } else if (isContextualTasksFusebox()) {
-            mPermissionStatusHandler.reset(/* shouldDismissNativePrompt= */ false);
-            // No icon shown for Fusebox.
-        } else if (maybeUpdateStatusIconForSearchEngineIcon()) {
-            mPermissionStatusHandler.reset(/* shouldDismissNativePrompt= */ true);
-            // No need to proceed further if we've already updated it for the search engine icon.
-            return;
-        } else if (mUrlHasFocus) {
-            mPermissionStatusHandler.reset(/* shouldDismissNativePrompt= */ true);
-            iconRes =
-                    isUrlBarTextSearch()
-                            ? R.drawable.ic_suggestion_magnifier
-                            : R.drawable.ic_globe_24dp;
-            tintRes = mNavigationIconTintRes;
-        } else if (mPermissionStatusHandler.isClapperQuietIconShowing()) {
-            return;
-        } else if (mSecurityIconRes != Resources.ID_NULL) {
-            if (mPageSecurityLevel == ConnectionSecurityLevel.SECURE
-                    && (isPageInfoMovedToAppMenu() || !mShowStatusIconForSecureOrigins)) {
-                mIsSecurityViewShown = false;
-                if (mOnStatusViewHiddenForPageInfoRemoval != null) {
-                    mOnStatusViewHiddenForPageInfoRemoval.run();
+        @StatusIconType int iconType = resolveStatusIconType();
+        switch (iconType) {
+            case StatusIconType.HUB_OR_TAB_SEARCH -> {
+                mPermissionStatusHandler.reset(/* shouldDismissNativePrompt= */ false);
+                updateStatusViewVisibility();
+                boolean hasIconOverride = mStatusIconOverrideResId != Resources.ID_NULL;
+                iconRes =
+                        hasIconOverride ? mStatusIconOverrideResId : R.drawable.ic_arrow_back_24dp;
+                tintRes = ThemeUtils.getThemedToolbarIconTintRes(mBrandedColorScheme);
+                doubleTapDescriptionRes =
+                        hasIconOverride
+                                ? Resources.ID_NULL
+                                : R.string.accessibility_toolbar_exit_hub_search;
+                applyBackgroundAndTooltipProperties();
+                clickListener = hasIconOverride ? null : mOnStatusIconNavigateBackButtonPress;
+            }
+            case StatusIconType.PREVIEW_GLOBE -> {
+                mPermissionStatusHandler.reset(/* shouldDismissNativePrompt= */ false);
+                iconRes = R.drawable.ic_globe_24dp;
+                tintRes = mNavigationIconTintRes;
+            }
+            case StatusIconType.PREVIEW_FAVICON -> {
+                mPermissionStatusHandler.reset(/* shouldDismissNativePrompt= */ false);
+                customDrawable = mPreviewMatchFavicon;
+            }
+            case StatusIconType.AIM_SPARK -> {
+                mPermissionStatusHandler.reset(/* shouldDismissNativePrompt= */ false);
+                tintRes = mNavigationIconTintRes;
+                iconRes = R.drawable.search_spark_black_24dp;
+                doubleTapDescriptionRes = Resources.ID_NULL;
+            }
+            case StatusIconType.FUSEBOX_PLUS_BUTTON -> {
+                mPermissionStatusHandler.reset(/* shouldDismissNativePrompt= */ false);
+                tintRes = mNavigationIconTintRes;
+                iconRes = R.drawable.ic_add_round_20dp_with_inset;
+                clickListener = mFuseboxOnPlusButtonClicked;
+                descRes = R.string.accessibility_omnibox_open_context_popup;
+                doubleTapDescriptionRes = Resources.ID_NULL;
+            }
+            case StatusIconType.SEARCH_ENGINE -> {
+                maybeUpdateStatusIconForSearchEngineIcon();
+                mPermissionStatusHandler.reset(/* shouldDismissNativePrompt= */ true);
+                // No need to proceed further if we've already updated it for the search engine
+                // icon.
+                return;
+            }
+            case StatusIconType.FOCUSED_NAVIGATION -> {
+                mPermissionStatusHandler.reset(/* shouldDismissNativePrompt= */ true);
+                iconRes =
+                        isUrlBarTextSearch()
+                                ? R.drawable.ic_suggestion_magnifier
+                                : R.drawable.ic_globe_24dp;
+                tintRes = mNavigationIconTintRes;
+            }
+            case StatusIconType.CLAPPER_QUIET_PERMISSION -> {
+                return;
+            }
+            case StatusIconType.SECURITY -> {
+                if (mUrlHasFocus) {
+                    mPermissionStatusHandler.reset(/* shouldDismissNativePrompt= */ true);
                 }
-            } else {
-                mIsSecurityViewShown = true;
-                iconRes = mSecurityIconRes;
-                tintRes = mSecurityIconTintRes;
-                if (isPageInfoMovedToAppMenu()) {
-                    toastRes = Resources.ID_NULL;
-                    clickListener = null;
+                if (mPageSecurityLevel == ConnectionSecurityLevel.SECURE
+                        && (isPageInfoMovedToAppMenu() || !mShowStatusIconForSecureOrigins)) {
+                    mIsSecurityViewShown = false;
+                    if (mOnStatusViewHiddenForPageInfoRemoval != null) {
+                        mOnStatusViewHiddenForPageInfoRemoval.run();
+                    }
                 } else {
-                    toastRes = R.string.accessibility_menu_info;
-                    clickListener = this::onClickOpenPageInfo;
+                    mIsSecurityViewShown = true;
+                    iconRes = mSecurityIconRes;
+                    tintRes = mSecurityIconTintRes;
+                    if (isPageInfoMovedToAppMenu()) {
+                        toastRes = Resources.ID_NULL;
+                        clickListener = null;
+                    } else {
+                        toastRes = R.string.accessibility_menu_info;
+                        clickListener = this::onClickOpenPageInfo;
+                    }
                 }
+            }
+            case StatusIconType.NONE -> {}
+            default -> {
+                assert false : "Unexpected StatusIconType: " + iconType;
             }
         }
 
@@ -700,9 +734,59 @@ public class StatusMediator
         mModel.set(
                 StatusProperties.STATUS_ACCESSIBILITY_DOUBLE_TAP_DESCRIPTION_RES,
                 doubleTapDescriptionRes);
-        mModel.set(StatusProperties.STATUS_CLICK_LISTENER, clickListener);
+        setStatusClickListener(clickListener);
 
         updateStatusViewVisibility();
+    }
+
+    private @StatusIconType int resolveStatusIconType() {
+        boolean previewMatchFaviconsEnabled = OmniboxFeatures.sPreviewMatchFavicons.isEnabled();
+        @AutocompleteRequestType int requestType = AutocompleteRequestType.SEARCH;
+        @DisplayState int displayState = DisplayState.WEBSITE;
+        if (mInputSessionState != null) {
+            AutocompleteInput autocompleteInput = mInputSessionState.getAutocompleteInput();
+            requestType = autocompleteInput.getRequestType();
+            displayState = autocompleteInput.getDisplayState();
+        }
+        boolean shouldShowFavicon =
+                displayState == DisplayState.SUGGESTIONS
+                        || displayState == DisplayState.DRAFTING
+                        || displayState == DisplayState.DRAFTING_NO_FOCUS;
+
+        if (PageClassificationUtils.isHubOrTabSearch(
+                mLocationBarDataProvider.getPageClassification(/* prefetch= */ false))) {
+            return StatusIconType.HUB_OR_TAB_SEARCH;
+        } else if (shouldShowFavicon && previewMatchFaviconsEnabled && mShowPreviewMatchGlobe) {
+            return StatusIconType.PREVIEW_GLOBE;
+        } else if (shouldShowFavicon
+                && previewMatchFaviconsEnabled
+                && mPreviewMatchFavicon != null) {
+            return StatusIconType.PREVIEW_FAVICON;
+        } else if (OmniboxCapabilities.isDesktopPlatform()
+                && mInputSessionState != null
+                && ToolModeUtils.isAimRequest(requestType)) {
+            return StatusIconType.AIM_SPARK;
+        } else if (mFuseboxLayoutModeSupplier.get() == FuseboxLayoutMode.TOOLBAR
+                && (mFuseboxStateSupplier.get() == FuseboxState.COMPACT
+                        || shouldShowNtpPlusButton())) {
+            return StatusIconType.FUSEBOX_PLUS_BUTTON;
+        } else if (shouldDisplaySearchEngineIcon()) {
+            return StatusIconType.SEARCH_ENGINE;
+        } else if (mUrlHasFocus && !isInStandbyOnWebpage()) {
+            return StatusIconType.FOCUSED_NAVIGATION;
+        } else if (mPermissionStatusHandler.isClapperQuietIconShowing()) {
+            return StatusIconType.CLAPPER_QUIET_PERMISSION;
+        } else if (mSecurityIconRes != Resources.ID_NULL) {
+            return StatusIconType.SECURITY;
+        }
+        return StatusIconType.NONE;
+    }
+
+    @VisibleForTesting
+    void setStatusClickListener(@Nullable OnClickListener listener) {
+        mModel.set(StatusProperties.STATUS_CLICK_LISTENER, listener);
+        mModel.set(StatusProperties.STATUS_VIEW_HOVER_ENABLED, listener != null);
+        applyBackgroundAndTooltipProperties();
     }
 
     private void onFuseboxStateChanged(@FuseboxState int state) {
@@ -713,6 +797,21 @@ public class StatusMediator
         updateLocationBarIcon(IconTransitionType.CROSSFADE);
     }
 
+    private void onDisplayStateChanged(@DisplayState int state) {
+        updateLocationBarIcon(IconTransitionType.CROSSFADE);
+    }
+
+    private void onAutocompleteStateChanged(@AutocompleteState int state) {
+        updateLocationBarIcon(IconTransitionType.CROSSFADE);
+    }
+
+    private boolean isInStandbyOnWebpage() {
+        return mInputSessionState != null
+                && mInputSessionState.getAutocompleteInput().isStandby()
+                && !isNtpVisible()
+                && !isIncognitoNtpVisible();
+    }
+
     /** Returns true if the security icon has been set for the search engine icon. */
     @VisibleForTesting
     boolean maybeUpdateStatusIconForSearchEngineIcon() {
@@ -721,7 +820,7 @@ public class StatusMediator
 
         mModel.set(
                 StatusProperties.STATUS_ICON_RESOURCE, getStatusIconResourceForSearchEngineIcon());
-        mModel.set(StatusProperties.STATUS_CLICK_LISTENER, null);
+        setStatusClickListener(null);
         updateStatusViewVisibility();
         return true;
     }
@@ -732,8 +831,7 @@ public class StatusMediator
      */
     boolean shouldDisplaySearchEngineIcon() {
         if (PageClassificationUtils.isHubOrTabSearch(
-                        mLocationBarDataProvider.getPageClassification(/* prefetch= */ false))
-                || isContextualTasksFusebox()) {
+                        mLocationBarDataProvider.getPageClassification(/* prefetch= */ false))) {
             return false;
         }
 
@@ -743,26 +841,36 @@ public class StatusMediator
         }
 
         if (mUrlHasFocus) {
+            if (isInStandbyOnWebpage()) {
+                return false;
+            }
             return true;
         }
 
         return (isNtpVisible() || isIncognitoNtpVisible()) && mProfileSupplier.get() != null;
     }
 
-    private boolean hasPendingNonNtpNavigation() {
+    private @Nullable NavigationEntry getPendingEntry() {
         Tab tab = mLocationBarDataProvider.getTab();
-        if (tab == null) return false;
+        if (tab == null) return null;
 
         WebContents webContents = tab.getWebContents();
-        if (webContents == null) return false;
+        if (webContents == null) return null;
 
         NavigationController navigationController = webContents.getNavigationController();
-        if (navigationController == null) return false;
+        if (navigationController == null) return null;
 
-        NavigationEntry pendingEntry = navigationController.getPendingEntry();
-        if (pendingEntry == null) return false;
+        return navigationController.getPendingEntry();
+    }
 
-        return !UrlUtilities.isNtpUrl(pendingEntry.getUrl());
+    private @Nullable GURL getPendingUrl() {
+        NavigationEntry pendingEntry = getPendingEntry();
+        return pendingEntry != null ? pendingEntry.getUrl() : null;
+    }
+
+    private boolean hasPendingNonNtpNavigation() {
+        GURL url = getPendingUrl();
+        return url != null && !OmniboxUrlUtils.isNtpUrl(url);
     }
 
     /** Returns status icon resource for the user-selected default search engine. */
@@ -832,15 +940,19 @@ public class StatusMediator
 
     private void onPreviewMatchUrlChanged(@Nullable GURL url) {
         if (!OmniboxFeatures.sPreviewMatchFavicons.isEnabled()) {
-            if ((mPreviewMatchFetchedUrl == null) != (url == null)) {
-                mPreviewMatchFetchedUrl = url;
+            boolean wasUrl =
+                    mPreviewMatchFetchedUrl != null
+                            && !OmniboxUrlUtils.isNtpUrl(mPreviewMatchFetchedUrl);
+            boolean isUrl = url != null && !OmniboxUrlUtils.isNtpUrl(url);
+            mPreviewMatchFetchedUrl = url;
+            if (wasUrl != isUrl) {
                 updateLocationBarIcon(IconTransitionType.CROSSFADE);
             }
             return;
         }
 
         mPreviewMatchFetchedUrl = url;
-        if (url == null) {
+        if (url == null || OmniboxUrlUtils.isNtpUrl(url)) {
             mPreviewMatchFavicon = null;
             mShowPreviewMatchGlobe = false;
             updateLocationBarIcon(IconTransitionType.CROSSFADE);
@@ -947,18 +1059,8 @@ public class StatusMediator
                 });
     }
 
-    void setTranslationX(float translationX) {
-        mModel.set(StatusProperties.TRANSLATION_X, translationX);
-    }
-
-    void setTooltipText(@StringRes int tooltipTextResId) {
-        applyStatusIconAndTooltipProperties(
-                mModel.get(StatusProperties.VERBOSE_STATUS_TEXT_VISIBLE));
-    }
-
     void setBackground() {
-        applyStatusIconAndTooltipProperties(
-                mModel.get(StatusProperties.VERBOSE_STATUS_TEXT_VISIBLE));
+        applyBackgroundAndTooltipProperties();
     }
 
     public void onUrlChanged() {
@@ -1003,33 +1105,36 @@ public class StatusMediator
         mOnStatusIconNavigateBackButtonPress = listener;
     }
 
-    private void applyStatusIconAndTooltipProperties(boolean verboseStatusTextVisible) {
-        if (!PageClassificationUtils.isHubOrTabSearch(
-                mLocationBarDataProvider.getPageClassification(/* prefetch= */ false))) {
-            Drawable background;
-            if (isPageInfoMovedAndConnectionNotSecure()) {
-                background = null;
-            } else if (mLocationBarDataProvider.isIncognitoBranded()) {
-                background =
-                        verboseStatusTextVisible
-                                ? mVerboseStatusBackgroundIncognito
-                                : mDefaultStatusBackgroundIncognito;
-            } else {
-                background =
-                        verboseStatusTextVisible
-                                ? mVerboseStatusBackground
-                                : mDefaultStatusBackground;
-            }
-            mModel.set(StatusProperties.STATUS_VIEW_BACKGROUND, background);
-            mModel.set(
-                    StatusProperties.STATUS_VIEW_TOOLTIP_TEXT,
-                    isPageInfoMovedToAppMenu()
-                            ? Resources.ID_NULL
-                            : R.string.accessibility_menu_info);
-        } else {
+    private void applyBackgroundAndTooltipProperties() {
+        boolean isHubOrTabSearch =
+                PageClassificationUtils.isHubOrTabSearch(
+                        mLocationBarDataProvider.getPageClassification(/* prefetch= */ false));
+        boolean hasClickListener = mModel.get(StatusProperties.STATUS_CLICK_LISTENER) != null;
+
+        if (isHubOrTabSearch || !hasClickListener) {
             mModel.set(StatusProperties.STATUS_VIEW_TOOLTIP_TEXT, Resources.ID_NULL);
             mModel.set(StatusProperties.STATUS_VIEW_BACKGROUND, null);
+            return;
         }
+
+        boolean verboseStatusTextVisible = mModel.get(StatusProperties.VERBOSE_STATUS_TEXT_VISIBLE);
+        Drawable background;
+        if (isPageInfoMovedAndConnectionNotSecure()) {
+            background = null;
+        } else if (mLocationBarDataProvider.isIncognitoBranded()) {
+            background =
+                    verboseStatusTextVisible
+                            ? mVerboseStatusBackgroundIncognito
+                            : mDefaultStatusBackgroundIncognito;
+        } else {
+            background =
+                    verboseStatusTextVisible ? mVerboseStatusBackground : mDefaultStatusBackground;
+        }
+
+        mModel.set(StatusProperties.STATUS_VIEW_BACKGROUND, background);
+        mModel.set(
+                StatusProperties.STATUS_VIEW_TOOLTIP_TEXT,
+                isPageInfoMovedToAppMenu() ? Resources.ID_NULL : R.string.accessibility_menu_info);
     }
 
     private void initBackgroundDrawables(Context context) {
@@ -1059,11 +1164,6 @@ public class StatusMediator
     }
 
     private void updateStatusViewVisibility() {
-        if (isContextualTasksFusebox()) {
-            setShowStatusView(false);
-            return;
-        }
-
         setShowStatusView(
                 mUrlHasFocus
                         || PageClassificationUtils.isHubOrTabSearch(
@@ -1085,19 +1185,15 @@ public class StatusMediator
             return;
         }
 
-        if (UrlUtilities.isNtpUrl(mLocationBarDataProvider.getCurrentGurl())) return;
+        if (OmniboxUrlUtils.isNtpUrl(mLocationBarDataProvider.getCurrentGurl())) return;
 
         openPageInfo(mLocationBarDataProvider.getTab());
     }
 
-    private boolean isContextualTasksFusebox() {
-        return mLocationBarDataProvider.getPageClassification(/* prefetch= */ false)
-                == PageClassification.CO_BROWSING_COMPOSEBOX_VALUE;
-    }
-
     private boolean isUrlBarTextSearch() {
-        return (mInputSessionState == null
-                || mInputSessionState.getAutocompleteInput().getPreviewMatchUrl() == null);
+        if (mInputSessionState == null) return true;
+        GURL previewMatchUrl = mInputSessionState.getAutocompleteInput().getPreviewMatchUrl();
+        return previewMatchUrl == null || OmniboxUrlUtils.isNtpUrl(previewMatchUrl);
     }
 
     private boolean isPageInfoMovedToAppMenu() {

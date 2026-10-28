@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 #import "base/functional/bind.h"
-#import "base/strings/sys_string_conversions.h"
 #import "ios/chrome/browser/level_up/model/task_info.h"
 #import "ios/chrome/browser/level_up/model/tasks/task_factories.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
@@ -24,28 +23,30 @@ class TabGroupsTaskInfo : public TaskInfo {
     return l10n_util::GetStringUTF8(IDS_IOS_LEVEL_UP_FEATURE_TAB_GROUPS);
   }
   std::string GetTaskDescription() const override {
-    return "Stay organized with tab groups";
+    return l10n_util::GetStringUTF8(
+        IDS_IOS_LEVEL_UP_FEATURE_TAB_GROUPS_DESCRIPTION);
   }
   Symbol GetIconSymbol() const override { return SymbolTabs; }
   LevelUpTaskCategory GetCategory() const override {
     return LevelUpTaskCategory::kProductivity;
   }
-  std::string GetTriggerUserAction() const override {
-    return "MobileTabGroupUserCreatedNewGroup";
+  std::vector<std::string> GetTriggerUserActions() const override {
+    return {"MobileTabGroupUserCreatedNewGroup"};
   }
   std::string GetCompletionSnackbarMessage() const override {
     return l10n_util::GetStringUTF8(IDS_IOS_LEVEL_UP_TASK_COMPLETED_TAB_GROUPS);
   }
   TaskInfo::NavigationAction GetNavigationAction() const override {
-    return base::BindRepeating(^(CommandDispatcher* dispatcher) {
-      id<SceneCommands> sceneHandler =
-          HandlerForProtocol(dispatcher, SceneCommands);
-      [sceneHandler displayTabGridInMode:TabGridOpeningMode::kRegular];
+    return base::BindRepeating(
+        ^(CommandDispatcher* dispatcher, Browser* browser) {
+          id<SceneCommands> sceneHandler =
+              HandlerForProtocol(dispatcher, SceneCommands);
+          [sceneHandler displayTabGridInMode:TabGridOpeningMode::kRegular];
 
-      id<TabGridCommands> tabGridHandler =
-          HandlerForProtocol(dispatcher, TabGridCommands);
-      [tabGridHandler presentCreateTabGroupBubble];
-    });
+          id<TabGridCommands> tabGridHandler =
+              HandlerForProtocol(dispatcher, TabGridCommands);
+          [tabGridHandler presentCreateTabGroupBubble];
+        });
   }
 };
 

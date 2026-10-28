@@ -29,13 +29,13 @@
 #include "components/payments/content/payment_app.h"
 #include "components/payments/content/payment_response_helper.h"
 #include "components/payments/content/service_worker_payment_app.h"
-#include "components/payments/content/web_payments_web_data_service.h"
 #include "components/payments/core/error_strings.h"
 #include "components/payments/core/features.h"
 #include "components/payments/core/method_strings.h"
 #include "components/payments/core/payment_prefs.h"
 #include "components/payments/core/payment_request_data_util.h"
 #include "components/payments/core/payments_experimental_features.h"
+#include "components/payments/core/web_payments_web_data_service.h"
 #include "components/webauthn/core/browser/internal_authenticator.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -386,7 +386,7 @@ void PaymentRequestState::GeneratePaymentResponse() {
   // Once the response is ready, will call back into OnPaymentResponseReady.
   response_helper_ = std::make_unique<PaymentResponseHelper>(
       app_locale_, spec_, selected_app_, payment_request_delegate_,
-      selected_shipping_profile_, selected_contact_profile_,
+      selected_shipping_profile_, selected_contact_profile_, journey_logger_,
       weak_ptr_factory_.GetWeakPtr());
 }
 
@@ -750,8 +750,13 @@ bool PaymentRequestState::user_interaction_in_web_payment_app() const {
 void PaymentRequestState::set_user_interaction_in_web_payment_app(
     bool user_interaction) {
   user_interaction_in_web_payment_app_ = user_interaction;
-  if (user_interaction_in_web_payment_app_ && response_helper_) {
-    response_helper_->OnUserInteractionCaptured();
+  if (user_interaction_in_web_payment_app_) {
+    if (journey_logger_) {
+      journey_logger_->SetPaymentAppUserInteractionCaptured();
+    }
+    if (response_helper_) {
+      response_helper_->OnUserInteractionCaptured();
+    }
   }
 }
 

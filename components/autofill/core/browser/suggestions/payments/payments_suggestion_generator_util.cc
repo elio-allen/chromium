@@ -33,14 +33,13 @@
 #include "base/time/time.h"
 #include "base/types/optional_ref.h"
 #include "build/build_config.h"
-#include "components/autofill/core/browser/autofill_browser_util.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/payments/autofill_wallet_usage_data.h"
 #include "components/autofill/core/browser/data_model/payments/bnpl_issuer.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/data_quality/autofill_data_util.h"
-#include "components/autofill/core/browser/field_type_utils.h"
+#include "components/autofill/core/browser/field_type_util.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
@@ -862,6 +861,13 @@ std::vector<CreditCard> GetTouchToFillCardsToSuggest(
     const AutofillClient& client,
     const FormFieldData& trigger_field,
     FieldType trigger_field_type) {
+  // Do not suggest credit cards if the payments data category is blocked by
+  // enterprise policy for the current website.
+  if (client.IsAutofillTypeBlockedByPolicy(
+          client.GetLastCommittedPrimaryMainFrameURL(),
+          AutofillClient::AutofillPolicyDataCategory::kPayments)) {
+    return {};
+  }
   // TouchToFill actually has a trigger field which must be classified in some
   // way, but we intentionally fetch suggestions irrelevant of them.
   std::vector<CreditCard> cards_to_suggest = GetOrderedCardsToSuggest(
@@ -986,7 +992,9 @@ std::vector<Suggestion> GetCreditCardSuggestionsForTouchToFill(
       bnpl_manager->SetIsCardNumberFieldEmpty(
           IsCardNumberFieldEmpty(form_structure));
     }
-    manager.GetCreditCardFormEventLogger().OnBnplSuggestionShown();
+    manager.GetCreditCardFormEventLogger().OnBnplSuggestionShown(
+        /*pay_later_tab_shown=*/base::FeatureList::IsEnabled(
+            features::kAutofillEnablePayNowPayLaterTabs));
     manager.client()
         .GetPersonalDataManager()
         .payments_data_manager()
@@ -1073,7 +1081,7 @@ bool IsCreditCardFooterSuggestion(
     case SuggestionType::kManageCreditCard:
     case SuggestionType::kMaximizeCreditCardBenefitsEntry:
     case SuggestionType::kScanCreditCard:
-    case SuggestionType::kUndoOrClear:
+    case SuggestionType::kUndo:
       return true;
     case SuggestionType::kAccountStoragePasswordEntry:
     case SuggestionType::kAddressEntry:
@@ -1086,14 +1094,17 @@ bool IsCreditCardFooterSuggestion(
     case SuggestionType::kAtMemoryGenericError:
     case SuggestionType::kAtMemoryInactivityNudge:
     case SuggestionType::kAtMemoryNoConnection:
+    case SuggestionType::kAtMemoryOpenGemini:
     case SuggestionType::kAtMemorySearchAffordance:
     case SuggestionType::kAtMemorySearchResult:
+    case SuggestionType::kAtMemoryShortcutSettingsPromo:
     case SuggestionType::kAtMemorySourceAttribution:
     case SuggestionType::kAutocompleteAtMemoryButton:
     case SuggestionType::kAutocompleteEntry:
     case SuggestionType::kAutofillAiOtherOrders:
     case SuggestionType::kAutofillAiOtherShipments:
     case SuggestionType::kAutofillAiPrivateInferenceNotice:
+    case SuggestionType::kAutofillAiSourceAttribution:
     case SuggestionType::kBackupPasswordEntry:
     case SuggestionType::kBnplEntry:
     case SuggestionType::kComposeDisable:
@@ -1112,6 +1123,7 @@ bool IsCreditCardFooterSuggestion(
     case SuggestionType::kFillPassword:
     case SuggestionType::kFreeformFooter:
     case SuggestionType::kGeneratePasswordEntry:
+    case SuggestionType::kGmailOneTimePasswordEntry:
     case SuggestionType::kIbanEntry:
     case SuggestionType::kIdentityCredential:
     case SuggestionType::kInsecureContextPaymentDisabledMessage:
@@ -1124,17 +1136,17 @@ bool IsCreditCardFooterSuggestion(
     case SuggestionType::kManageAutofillAiTravel:
     case SuggestionType::kManageIban:
     case SuggestionType::kManageLoyaltyCard:
+    case SuggestionType::kManageOffers:
     case SuggestionType::kManageEnhancedAutofill:
     case SuggestionType::kMerchantPromoCodeEntry:
-    case SuggestionType::kMixedFormMessage:
     case SuggestionType::kOneTimePasswordEntry:
-    case SuggestionType::kOpenGemini:
+    case SuggestionType::kOpenGmailForOtps:
     case SuggestionType::kPasswordEntry:
     case SuggestionType::kPasswordFieldByFieldFilling:
     case SuggestionType::kPendingStateSignin:
     case SuggestionType::kPersonalContextNotice:
+    case SuggestionType::kRemoveAutofillAi:
     case SuggestionType::kSaveAndFillCreditCardEntry:
-    case SuggestionType::kSeePromoCodeDetails:
     case SuggestionType::kTitle:
     case SuggestionType::kTroubleSigningInEntry:
     case SuggestionType::kViewPasswordDetails:
@@ -1337,15 +1349,16 @@ Suggestion CreateCreditCardSuggestion(
         l10n_util::GetStringUTF16(IDS_AUTOFILL_A11Y_ANNOUNCE_FILLED_FORM);
   }
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+    BUILDFLAG(IS_CHROMEOS)
   // Newly-synced cards start with a `use_count()` of 1.
   if (credit_card.card_creation_source() ==
           CreditCard::CardCreationSource::kCreationSourceNonChromePayments &&
-      credit_card.usage_history().use_count() == 1 &&
-      base::FeatureList::IsEnabled(
-          features::kAutofillEnableDownstreamCardAwarenessIph)) {
+      credit_card.usage_history().use_count() == 1) {
     suggestion.iph_metadata = Suggestion::IPHMetadata(
         &feature_engagement::kIPHAutofillDownstreamCardAwarenessFeature);
   }
+#endif
 
   return suggestion;
 }
@@ -1480,8 +1493,9 @@ bool ShouldShowScanCreditCard(const FormStructure& form,
 
   bool is_card_number_field =
       trigger_field.Type().GetCreditCardType() == CREDIT_CARD_NUMBER &&
-      base::ContainsOnlyChars(StripCardNumberSeparators(trigger_field.value()),
-                              u"0123456789");
+      base::ContainsOnlyChars(
+          StripSeparatorsAndNormalizeDigits(trigger_field.value()),
+          u"0123456789");
 
   if (!is_card_number_field) {
     return false;

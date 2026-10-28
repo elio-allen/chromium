@@ -7,12 +7,11 @@
 
 #include <memory>
 
-#include "base/containers/flat_map.h"
-#include "base/sequence_checker.h"
 #include "base/types/pass_key.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "extensions/common/extension_id.h"
 #include "mojo/public/cpp/bindings/binder_map.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace content {
 class BrowserContext;
@@ -30,21 +29,37 @@ class Extension;
 // `ExtensionMojoBinderRegistry` KeyedService for a given BrowserContext.
 class ExtensionMojoBinderProvider {
  public:
-  virtual ~ExtensionMojoBinderProvider() = default;
+  explicit ExtensionMojoBinderProvider(ExtensionId extension_id);
+  virtual ~ExtensionMojoBinderProvider();
 
   // Returns the ID of the component extension supported by this provider.
-  virtual ExtensionId GetExtensionId() const = 0;
+  const ExtensionId& extension_id() const { return extension_id_; }
 
+  // Returns true if Mojo JS bindings should be enabled in this extension's
+  // document contexts. Defaults to false.
+  virtual bool IsMojoJsEnabledForFrame() const;
+
+  // Returns true if Mojo JS bindings should be enabled in this extension's
+  // service worker contexts. Defaults to false.
+  virtual bool IsMojoJsEnabledForServiceWorker() const;
+
+  // Registers Mojo interface binders for document frames belonging to this
+  // extension.
   virtual void PopulateFrameBinders(
       mojo::BinderMapWithContext<content::RenderFrameHost*>& binder_map,
       content::RenderFrameHost* render_frame_host,
-      const Extension* extension) {}
+      const Extension& extension) {}
 
+  // Registers Mojo interface binders for service workers belonging to this
+  // extension.
   virtual void PopulateServiceWorkerBinders(
       mojo::BinderMapWithContext<const content::ServiceWorkerVersionBaseInfo&>&
           binder_map,
       content::BrowserContext* browser_context,
-      const Extension* extension) {}
+      const Extension& extension) {}
+
+ private:
+  const ExtensionId extension_id_;
 };
 
 // A registry for extension-scoped Mojo interface binder providers. It decouples
@@ -68,11 +83,11 @@ class ExtensionMojoBinderRegistry : public KeyedService {
                         std::unique_ptr<ExtensionMojoBinderProvider> provider);
 
   // Populates the binder map with Mojo binders provided by the registered
-  // extension provider for the given render frame.
+  // extension provider for the given document.
   void PopulateFrameBinders(
       mojo::BinderMapWithContext<content::RenderFrameHost*>* binder_map,
       content::RenderFrameHost* render_frame_host,
-      const Extension* extension);
+      const Extension& extension);
 
   // Populates the binder map with Mojo binders provided by the registered
   // extension provider for the given service worker.
@@ -80,10 +95,15 @@ class ExtensionMojoBinderRegistry : public KeyedService {
       mojo::BinderMapWithContext<const content::ServiceWorkerVersionBaseInfo&>*
           binder_map,
       content::BrowserContext* browser_context,
-      const Extension* extension);
+      const Extension& extension);
 
-  // Returns true if `extension` is allowed to use MojoJS bindings.
-  bool IsMojoJsEnabled(const Extension* extension) const;
+  // Returns true if `extension` is allowed to use MojoJS bindings in document
+  // contexts.
+  bool IsMojoJsEnabledForFrame(const Extension& extension) const;
+
+  // Returns true if `extension` is allowed to use MojoJS bindings in service
+  // worker contexts.
+  bool IsMojoJsEnabledForServiceWorker(const Extension& extension) const;
 
   void ClearProvidersForTesting();
 
@@ -92,12 +112,10 @@ class ExtensionMojoBinderRegistry : public KeyedService {
       std::unique_ptr<ExtensionMojoBinderProvider> provider);
 
   ExtensionMojoBinderProvider* GetProviderIfAllowed(
-      const Extension* extension) const;
+      const Extension& extension) const;
 
-  base::flat_map<ExtensionId, std::unique_ptr<ExtensionMojoBinderProvider>>
-      providers_;
-
-  SEQUENCE_CHECKER(sequence_checker_);
+  absl::flat_hash_map<ExtensionId, std::unique_ptr<ExtensionMojoBinderProvider>>
+      providers_map_;
 };
 
 }  // namespace extensions

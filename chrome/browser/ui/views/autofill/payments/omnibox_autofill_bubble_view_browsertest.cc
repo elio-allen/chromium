@@ -15,14 +15,15 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/autofill/payments/omnibox_autofill_bubble_controller.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_actions.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/views/autofill/payments/omnibox_autofill_suggestion_view.h"
 #include "chrome/browser/ui/views/autofill/payments/payments_view_util.h"
+#include "chrome/browser/ui/views/autofill/popup/popup_cell_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/tabs/public/tab_interface.h"
@@ -271,6 +272,32 @@ IN_PROC_BROWSER_TEST_F(OmniboxAutofillBubbleViewBrowserTest,
   // Close bubble.
   bubble_view->Hide();
   EXPECT_FALSE(action->GetIsShowingBubble());
+}
+
+IN_PROC_BROWSER_TEST_F(OmniboxAutofillBubbleViewBrowserTest,
+                       SuggestionButtonAccessibleName) {
+  auto* controller = GetBubbleController();
+  ASSERT_TRUE(controller);
+
+  std::vector<Suggestion> suggestions;
+  Suggestion suggestion(u"Visa •••• 1111", SuggestionType::kCreditCardEntry);
+  suggestion.labels = {{Suggestion::Text(u"05/29")}};
+  suggestions.emplace_back(suggestion);
+
+  controller->Initialize(suggestions, base::DoNothing(), base::DoNothing(),
+                         base::DoNothing(), base::DoNothing(),
+                         base::DoNothing());
+
+  controller->QueueOrShowBubble();
+
+  auto* bubble_view = GetBubbleView();
+  ASSERT_TRUE(bubble_view);
+
+  std::vector<views::Button*> buttons = GetSuggestions(bubble_view);
+  ASSERT_EQ(buttons.size(), 1u);
+
+  EXPECT_EQ(buttons[0]->GetAccessibleName(),
+            popup_cell_utils::GetVoiceOverStringFromSuggestion(suggestion));
 }
 
 }  // namespace

@@ -19,10 +19,6 @@
 #include "components/policy/core/common/policy_types.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 
-#if BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/policy/android/cloud_management_shared_preferences.h"
-#endif  // BUILDFLAG(IS_ANDROID)
-
 namespace enterprise::test {
 
 ManagementContextMixinBrowser::ManagementContextMixinBrowser(
@@ -37,10 +33,6 @@ ManagementContextMixinBrowser::ManagementContextMixinBrowser(
     management_context_.is_cloud_machine_managed = true;
     browser_dm_token_storage_.SetEnrollmentToken(kEnrollmentToken);
     browser_dm_token_storage_.SetDMToken(kBrowserDmToken);
-#if BUILDFLAG(IS_ANDROID)
-    policy::android::SaveDmTokenInSharedPreferences(
-        std::string(kBrowserDmToken));
-#endif  // BUILDFLAG(IS_ANDROID)
   }
 }
 
@@ -99,11 +91,23 @@ void ManagementContextMixinBrowser::SetUpDefaultCommandLine(
 void ManagementContextMixinBrowser::SetCloudMachinePolicies(
     base::flat_map<std::string, std::optional<base::Value>> policy_entries) {
   CHECK(management_context_.is_cloud_machine_managed);
+  SetMachinePolicies(std::move(policy_entries), policy::POLICY_SOURCE_CLOUD);
+}
+
+void ManagementContextMixinBrowser::SetPlatformPolicies(
+    base::flat_map<std::string, std::optional<base::Value>> policy_entries) {
+  CHECK(management_context_.is_platform_managed);
+  SetMachinePolicies(std::move(policy_entries), policy::POLICY_SOURCE_PLATFORM);
+}
+
+void ManagementContextMixinBrowser::SetMachinePolicies(
+    base::flat_map<std::string, std::optional<base::Value>> policy_entries,
+    policy::PolicySource source) {
   policy::PolicyMap policy_map;
 
   for (auto& policy_entry : policy_entries) {
     policy_map.Set(policy_entry.first, policy::POLICY_LEVEL_MANDATORY,
-                   policy::POLICY_SCOPE_MACHINE, policy::POLICY_SOURCE_CLOUD,
+                   policy::POLICY_SCOPE_MACHINE, source,
                    std::move(policy_entry.second), nullptr);
   }
 

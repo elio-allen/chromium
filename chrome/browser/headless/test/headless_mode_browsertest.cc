@@ -11,6 +11,7 @@
 // providing a compile time condition over the entire file.
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 #include <string>
+#include <string_view>
 
 #include "base/check_deref.h"
 #include "base/command_line.h"
@@ -32,8 +33,9 @@
 #include "chrome/browser/headless/test/headless_mode_browsertest_utils.h"
 #include "chrome/browser/infobars/confirm_infobar_creator.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/exclusive_access/exclusive_access_bubble_views.h"
 #include "chrome/browser/ui/views/frame/app_menu_button.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -67,6 +69,7 @@
 #include "ui/display/display_switches.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/gfx/switches.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/bubble/bubble_dialog_model_host.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
@@ -121,7 +124,7 @@ void HeadlessModeBrowserTest::AppendHeadlessCommandLineSwitches(
 }
 
 content::WebContents* HeadlessModeBrowserTest::GetActiveWebContents() {
-  return browser()->tab_strip_model()->GetActiveWebContents();
+  return browser()->GetTabStripModel()->GetActiveWebContents();
 }
 
 void HeadlessModeBrowserTest::FlushPostedTasks() {
@@ -393,9 +396,9 @@ IN_PROC_BROWSER_TEST_F(HeadlessModeBrowserTest, HeadlessClipboardCopyPaste) {
   ui::Clipboard* clipboard = ui::Clipboard::GetForCurrentThread();
   ASSERT_TRUE(clipboard);
 
-  static const struct ClipboardBufferInfo {
+  static constexpr struct ClipboardBufferInfo {
     ui::ClipboardBuffer buffer;
-    std::u16string paste_text;
+    std::u16string_view paste_text;
   } clipboard_buffers[] = {
       {ui::ClipboardBuffer::kCopyPaste, u"kCopyPaste"},
       {ui::ClipboardBuffer::kSelection, u"kSelection"},
@@ -437,7 +440,7 @@ class TestBubbleDelegate : public ui::DialogModelDelegate {
   void OnOkButton() { dialog_model()->host()->Close(); }
 };
 
-Widget* ShowTestBubble(Browser* browser) {
+Widget* ShowTestBubble(BrowserWindowInterface* browser) {
   views::BubbleAnchor anchor = BrowserView::GetBrowserViewForBrowser(browser)
                                    ->toolbar_button_provider()
                                    ->GetAppMenuControl()

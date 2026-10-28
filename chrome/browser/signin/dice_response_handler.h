@@ -16,7 +16,9 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "base/types/expected.h"
 #include "components/keyed_service/core/keyed_service.h"
@@ -205,6 +207,7 @@ class DiceResponseHandler : public KeyedService {
     // The following fields are empty if the binding key wasn't generated.
     std::string binding_registration_token_;
     std::vector<uint8_t> wrapped_binding_key_;
+    base::WeakPtrFactory<DiceTokenFetcher> weak_ptr_factory_{this};
   };
 
   // Manages a session of concurrent token fetches for a single Dice header.
@@ -252,12 +255,17 @@ class DiceResponseHandler : public KeyedService {
     enum class FetchMode { kAll, kInitiatorFirst };
     FetchMode GetFetchMode() const;
     void NotifySessionComplete();
+    bool IsMultiAccount() const { return signin_info_.accounts().size() > 1; }
 
     const raw_ptr<DiceResponseHandler> handler_;
     std::unique_ptr<ProcessDiceHeaderDelegate> delegate_;
     signin::DiceResponseParams::SigninInfo signin_info_;
     std::vector<std::unique_ptr<DiceTokenFetcher>> token_fetchers_;
     bool session_completed_notified_ = false;
+
+    // Performance telemetry:
+    base::TimeTicks session_start_time_;
+    bool session_duration_recorded_ = false;
   };
 
   // Deletes the session.
@@ -283,7 +291,7 @@ class DiceResponseHandler : public KeyedService {
           account_infos);
 
   // Called when an account has no authorization code due to an outage.
-  void OnNoAuthorizationCode();
+  void OnNoAuthorizationCode(const CoreAccountId& account_id);
   // Called to unlock the reconcilor after a SLO outage.
   void OnTimeoutUnlockReconcilor();
 

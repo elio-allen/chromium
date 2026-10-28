@@ -87,8 +87,8 @@ public class FacilitatedPaymentsPaymentMethodsViewBridge {
      * <p>If a Facilitated Payments bottom sheet is being shown, then the FOP selector replaces the
      * screen being shown. If not, opens a new bottom sheet and shows the FOP selector screen.
      *
-     * <p>The bottom sheet may not be shown in some cases. {@see
-     * BottomSheetController#requestShowContent}
+     * <p>The bottom sheet may not be shown in some cases. See {@link
+     * BottomSheetController#requestShowContent}.
      *
      * @param bankAccounts User's bank accounts which passed from facilitated payments client.
      */
@@ -119,8 +119,8 @@ public class FacilitatedPaymentsPaymentMethodsViewBridge {
      * the screen being shown. If not, opens a new bottom sheet and shows the progress screen.
      */
     @CalledByNative
-    public void showProgressScreen() {
-        mComponent.showProgressScreen();
+    public void showProgressScreen(@ProgressScreenType int type) {
+        mComponent.showProgressScreen(type);
     }
 
     /**
@@ -142,8 +142,9 @@ public class FacilitatedPaymentsPaymentMethodsViewBridge {
 
     /** Requests to show the Pix account linking prompt in a bottom sheet. */
     @CalledByNative
-    public void showPixAccountLinkingPrompt(int strikeCount) {
-        mComponent.showPixAccountLinkingPrompt(strikeCount);
+    public void showPixAccountLinkingPrompt(
+            int strikeCount, @JniType("std::string") String accountEmail) {
+        mComponent.showPixAccountLinkingPrompt(strikeCount, accountEmail);
     }
 
     /** Requests to show the Pix account linking success screen in a bottom sheet. */

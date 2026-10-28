@@ -9,10 +9,10 @@
 
 #include "base/memory/raw_ref.h"
 #include "build/build_config.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "components/sessions/core/session_id.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 #if BUILDFLAG(IS_OZONE)
 #include "ui/ozone/public/platform_session_manager.h"
@@ -34,16 +34,24 @@ namespace split_tabs {
 class SplitTabId;
 }
 
+struct BrowserWindowCreateParams;
+
 // Helper class to sync tab and window state with SessionService and
 // TabRestoreService to enable session restore. It observes TabStripModel
 // and forwards relevant events.
 class SessionServiceBrowserHelper : public TabStripModelObserver {
  public:
+  DECLARE_USER_DATA(SessionServiceBrowserHelper);
+
   SessionServiceBrowserHelper(TabStripModel* tab_strip_model,
                               SessionID session_id,
                               BrowserWindowInterface::Type browser_type,
                               Profile* profile,
-                              const Browser::CreateParams* create_params);
+                              const BrowserWindowCreateParams* create_params,
+                              ui::UnownedUserDataHost& host);
+
+  // Returns the helper for `browser`, or null if it does not have one.
+  static SessionServiceBrowserHelper* From(BrowserWindowInterface* browser);
   ~SessionServiceBrowserHelper() override;
 
   SessionServiceBrowserHelper(const SessionServiceBrowserHelper&) = delete;
@@ -72,6 +80,9 @@ class SessionServiceBrowserHelper : public TabStripModelObserver {
   void OnSplitTabChanged(const SplitTabChange& change) override;
 
  private:
+  ui::ScopedUnownedUserData<SessionServiceBrowserHelper>
+      scoped_unowned_user_data_;
+
   void SyncHistoryWithTabs(int index);
   void UpdateTabGroupSessionDataForTab(
       tabs::TabInterface* tab,

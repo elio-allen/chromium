@@ -71,7 +71,10 @@ ScopedJavaLocalRef<jobject> OpenContentUri(const FilePath& content_uri,
                                            uint32_t open_flags) {
   JNIEnv* env = android::AttachCurrentThread();
   auto mode = TranslateOpenFlagsToJavaMode(open_flags);
-  CHECK(mode.has_value()) << "Unsupported flags=0x" << std::hex << open_flags;
+  if (!mode.has_value()) {
+    DLOG(ERROR) << "Unsupported flags=0x" << std::hex << open_flags;
+    return nullptr;
+  }
   return Java_ContentUriUtils_openContentUri(env, content_uri.value(), *mode);
 }
 
@@ -149,9 +152,10 @@ static void JNI_ContentUriUtils_AddFileInfoToVector(
                        Time::FromMillisecondsSinceUnixEpoch(last_modified));
 }
 
-bool IsContentUriFromThisApp(const FilePath& content_uri) {
+ContentUriOwner ResolveContentUriOwner(const FilePath& content_uri) {
   JNIEnv* env = android::AttachCurrentThread();
-  return Java_ContentUriUtils_isUriFromThisApp(env, content_uri.value());
+  return static_cast<ContentUriOwner>(
+      Java_ContentUriUtils_resolveContentUriOwner(env, content_uri.value()));
 }
 
 std::string GetContentUriMimeType(const FilePath& content_uri) {

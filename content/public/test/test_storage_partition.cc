@@ -12,6 +12,7 @@
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "services/network/test/test_url_loader_factory.h"
+#include "storage/browser/quota/quota_manager.h"
 
 namespace content {
 
@@ -74,6 +75,10 @@ TestStoragePartition::CreateURLLoaderNetworkObserverForNavigationRequest(
 
 storage::QuotaManager* TestStoragePartition::GetQuotaManager() {
   return quota_manager_;
+}
+
+storage::QuotaManagerProxy* TestStoragePartition::GetQuotaManagerProxy() {
+  return quota_manager_ ? quota_manager_->proxy() : nullptr;
 }
 
 BackgroundSyncContext* TestStoragePartition::GetBackgroundSyncContext() {
@@ -150,7 +155,13 @@ CdmStorageDataModel* TestStoragePartition::GetCdmStorageDataModel() {
 
 network::mojom::DeviceBoundSessionManager*
 TestStoragePartition::GetDeviceBoundSessionManager() {
-  return device_bound_session_manager_;
+  return device_bound_session_manager_.get();
+}
+
+void TestStoragePartition::OverrideDeviceBoundSessionManagerForTesting(
+    std::unique_ptr<network::mojom::DeviceBoundSessionManager>
+        device_bound_session_manager) {
+  device_bound_session_manager_ = std::move(device_bound_session_manager);
 }
 
 DevToolsBackgroundServicesContext*
@@ -223,6 +234,8 @@ void TestStoragePartition::Flush() {}
 
 void TestStoragePartition::ResetURLLoaderFactories() {}
 
+void TestStoragePartition::ClearBluetoothAllowedDevicesMap() {}
+
 void TestStoragePartition::AddObserver(DataRemovalObserver* observer) {
   data_removal_observer_count_++;
 }
@@ -234,8 +247,6 @@ void TestStoragePartition::RemoveObserver(DataRemovalObserver* observer) {
 int TestStoragePartition::GetDataRemovalObserverCount() {
   return data_removal_observer_count_;
 }
-
-void TestStoragePartition::ClearBluetoothAllowedDevicesMapForTesting() {}
 
 void TestStoragePartition::FlushNetworkInterfaceForTesting() {}
 

@@ -11,11 +11,14 @@
 #include "base/allocator/dispatcher/dispatcher.h"
 #include "base/allocator/dispatcher/notification_data.h"
 #include "base/allocator/dispatcher/subsystem.h"
+#include "base/containers/heap_array.h"
 #include "base/debug/alias.h"
+#include "base/features.h"
 #include "base/memory/raw_ptr.h"
 #include "base/rand_util.h"
 #include "base/sampling_heap_profiler/poisson_allocation_sampler.h"
 #include "base/synchronization/waitable_event.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/threading/simple_thread.h"
 #include "build/build_config.h"
 #include "partition_alloc/shim/allocator_shim.h"
@@ -94,8 +97,16 @@ class SamplesCollector : public PoissonAllocationSampler::SamplesObserver {
     }
   }
 
+  void SampleMoved(void* from, void* to) override {
+    if (from == sample_address_) {
+      sample_moved = true;
+      sample_address_ = to;
+    }
+  }
+
   bool sample_added = false;
   bool sample_removed = false;
+  bool sample_moved = false;
 
  private:
   size_t watch_size_;
@@ -416,6 +427,81 @@ TEST_F(SamplingHeapProfilerTest, HookedAllocatorMuted) {
   sampler->RemoveSamplesObserver(&collector);
   EXPECT_TRUE(collector.sample_added);
   EXPECT_TRUE(collector.sample_removed);
+}
+
+// Counting resident bytes is not implemented on Fuchsia.
+#if BUILDFLAG(IS_FUCHSIA)
+#define MAYBE_GetSamplesWithResidency DISABLED_GetSamplesWithResidency
+#else
+#define MAYBE_GetSamplesWithResidency GetSamplesWithResidency
+#endif
+TEST_F(SamplingHeapProfilerTest, MAYBE_GetSamplesWithResidency) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      features::kHeapProfilerIncludeResidency);
+
+  ScopedSuppressRandomnessForTesting suppress;
+  auto* profiler = SamplingHeapProfiler::Get();
+  auto session = profiler->Start(base::ByteSize(1024),
+                                 SamplingHeapProfiler::Priority::kBackground);
+  ASSERT_TRUE(session.has_value());
+
+  auto buffer = base::HeapArray<uint8_t>::WithSize(10000);
+  std::ranges::fill(buffer, 0u);
+  base::debug::Alias(buffer.data());
+
+  std::vector<SamplingHeapProfiler::Sample> samples =
+      profiler->GetSamples(session);
+  profiler->Stop(*session);
+  buffer = base::HeapArray<uint8_t>();
+
+  ASSERT_FALSE(samples.empty());
+  bool found = false;
+  for (const auto& sample : samples) {
+    if (sample.size == 10000) {
+      found = true;
+      ASSERT_TRUE(sample.resident_total.has_value());
+      EXPECT_GT(*sample.resident_total, 0u);
+      break;
+    }
+  }
+  EXPECT_TRUE(found);
+}
+
+TEST_F(SamplingHeapProfilerTest, SampleMoved) {
+  auto* profiler = SamplingHeapProfiler::Get();
+  auto mute_hooks = profiler->MuteHookedSamplesForTesting();
+  ScopedSuppressRandomnessForTesting suppress;
+  auto session = profiler->Start(base::ByteSize(1024),
+                                 SamplingHeapProfiler::Priority::kBackground);
+  ASSERT_TRUE(session.has_value());
+
+  auto* sampler = PoissonAllocationSampler::Get();
+  void* const kAddress1 = reinterpret_cast<void*>(0x1234);
+  void* const kAddress2 = reinterpret_cast<void*>(0x5678);
+  void* const kUnsampledAddress = reinterpret_cast<void*>(0x9abc);
+
+  EXPECT_TRUE(sampler->OnAllocation(AllocationNotificationData(
+      kAddress1, 10000, nullptr, AllocationSubsystem::kManualForTesting)));
+  EXPECT_FALSE(sampler->OnMove(kUnsampledAddress, kAddress2));
+  EXPECT_TRUE(sampler->OnMove(kAddress1, kAddress2));
+
+  std::vector<SamplingHeapProfiler::Sample> samples =
+      profiler->GetSamples(session);
+  ASSERT_EQ(1u, samples.size());
+  EXPECT_EQ(10000u, samples[0].size);
+
+  // Freeing the old address is a no-op since the sample moved to kAddress2.
+  sampler->OnFree(
+      FreeNotificationData(kAddress1, AllocationSubsystem::kManualForTesting));
+  EXPECT_EQ(1u, profiler->GetSamples(session).size());
+
+  // Freeing the new address removes the sample.
+  sampler->OnFree(
+      FreeNotificationData(kAddress2, AllocationSubsystem::kManualForTesting));
+  EXPECT_TRUE(profiler->GetSamples(session).empty());
+
+  profiler->Stop(*session);
 }
 
 }  // namespace base

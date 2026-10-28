@@ -5,12 +5,13 @@
 #include "content/browser/webid/delegation/email_verification_request.h"
 
 #include <optional>
+#include <string>
+#include <string_view>
 
 #include "base/barrier_closure.h"
 #include "base/base64url.h"
-#include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
-#include "base/strings/escape.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/string_view_util.h"
@@ -21,6 +22,7 @@
 #include "content/browser/webid/delegation/evt_verifier.h"
 #include "content/browser/webid/delegation/jwt_signer.h"
 #include "content/browser/webid/delegation/sd_jwt.h"
+#include "content/browser/webid/flags.h"
 #include "content/browser/webid/mappers.h"
 #include "content/browser/webid/webid_utils.h"
 #include "content/public/browser/browser_context.h"
@@ -29,7 +31,6 @@
 #include "content/public/browser/webid/federated_identity_permission_context_delegate.h"
 #include "crypto/hash.h"
 #include "crypto/keypair.h"
-#include "net/base/schemeful_site.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/structured_headers.h"
 #include "third_party/blink/public/mojom/devtools/inspector_issue.mojom.h"
@@ -50,62 +51,71 @@ std::string CreateContentDigestHeader(const std::string& post_data) {
   net::structured_headers::Dictionary dict;
   dict["sha-256"] = net::structured_headers::ParameterizedMember(
       net::structured_headers::Item(
-          std::string(base::as_string_view(digest)),
-          net::structured_headers::Item::kByteSequenceType),
-      {});
+          net::structured_headers::Item::byte_sequence,
+          base::as_string_view(digest)));
   std::optional<std::string> val =
       net::structured_headers::SerializeDictionary(dict);
   CHECK(val);
-  return *val;
+  return *std::move(val);
+}
+
+std::string SerializeSigDictionary(
+    net::structured_headers::ParameterizedMember member) {
+  net::structured_headers::Dictionary dict;
+  dict["sig"] = std::move(member);
+  std::optional<std::string> val =
+      net::structured_headers::SerializeDictionary(dict);
+  CHECK(val);
+  return *std::move(val);
 }
 
 std::string CreateMessageSignatureKey(const sdjwt::Jwk& public_key) {
+  // draft-hardt-httpbis-signature-key-08 Section 3.4 requires `alg` to be
+  // present and fully specified: the verifier takes the algorithm from it
+  // rather than deriving it from `kty` and `crv`. `ExportPublicKey()` populates
+  // it, so the whole JWK is emitted verbatim here, less the private parameter.
+  CHECK(!public_key.alg.empty())
+      << "Missing alg for the hwk scheme: " << public_key.kty;
   net::structured_headers::Parameters params;
-  for (const auto [key, value] : public_key.ToDict()) {
-    if (key == "alg" || key == "d" || !value.is_string()) {
+  for (auto [key, value] : public_key.ToDict()) {
+    if (key == "d") {
       continue;
     }
-    params.emplace_back(key, net::structured_headers::Item(value.GetString()));
+    std::string* str = value.GetIfString();
+    if (!str) {
+      continue;
+    }
+    params.emplace_back(
+        key, net::structured_headers::Item(
+                 net::structured_headers::Item::string, std::move(*str)));
   }
 
-  net::structured_headers::ParameterizedMember member;
-  member.member.emplace_back(
-      net::structured_headers::Item("hwk",
-                                    net::structured_headers::Item::kTokenType),
-      params);
-  member.member_is_inner_list = false;
-
-  net::structured_headers::Dictionary dict;
-  dict["sig"] = std::move(member);
-
-  std::optional<std::string> signature_key_val_opt =
-      net::structured_headers::SerializeDictionary(dict);
-  CHECK(signature_key_val_opt);
-  return *signature_key_val_opt;
+  return SerializeSigDictionary(net::structured_headers::ParameterizedMember(
+      net::structured_headers::Item(net::structured_headers::Item::token,
+                                    "hwk"),
+      std::move(params)));
 }
 
 net::structured_headers::ParameterizedMember CreateMessageSignatureParams(
     base::Time created_time) {
   std::vector<net::structured_headers::ParameterizedItem> list_items;
+  list_items.emplace_back(net::structured_headers::Item(
+                              net::structured_headers::Item::string, "@method"),
+                          net::structured_headers::Parameters());
   list_items.emplace_back(
-      net::structured_headers::Item("@method",
-                                    net::structured_headers::Item::kStringType),
+      net::structured_headers::Item(net::structured_headers::Item::string,
+                                    "@authority"),
+      net::structured_headers::Parameters());
+  list_items.emplace_back(net::structured_headers::Item(
+                              net::structured_headers::Item::string, "@path"),
+                          net::structured_headers::Parameters());
+  list_items.emplace_back(
+      net::structured_headers::Item(net::structured_headers::Item::string,
+                                    "content-digest"),
       net::structured_headers::Parameters());
   list_items.emplace_back(
-      net::structured_headers::Item("@authority",
-                                    net::structured_headers::Item::kStringType),
-      net::structured_headers::Parameters());
-  list_items.emplace_back(
-      net::structured_headers::Item("@path",
-                                    net::structured_headers::Item::kStringType),
-      net::structured_headers::Parameters());
-  list_items.emplace_back(
-      net::structured_headers::Item("content-digest",
-                                    net::structured_headers::Item::kStringType),
-      net::structured_headers::Parameters());
-  list_items.emplace_back(
-      net::structured_headers::Item("signature-key",
-                                    net::structured_headers::Item::kStringType),
+      net::structured_headers::Item(net::structured_headers::Item::string,
+                                    "signature-key"),
       net::structured_headers::Parameters());
 
   net::structured_headers::Parameters params_input;
@@ -113,27 +123,15 @@ net::structured_headers::ParameterizedMember CreateMessageSignatureParams(
                             net::structured_headers::Item(
                                 static_cast<int64_t>(created_time.ToTimeT())));
 
-  net::structured_headers::ParameterizedMember member_input(
-      std::move(list_items), std::move(params_input));
-  member_input.member_is_inner_list = true;
-  return member_input;
-}
-
-std::string SerializeSignatureInput(
-    const net::structured_headers::ParameterizedMember& params) {
-  net::structured_headers::Dictionary dict_input;
-  dict_input["sig"] = params;
-  std::optional<std::string> signature_input_val_opt =
-      net::structured_headers::SerializeDictionary(dict_input);
-  CHECK(signature_input_val_opt);
-  return *signature_input_val_opt;
+  return net::structured_headers::ParameterizedMember(std::move(list_items),
+                                                      std::move(params_input));
 }
 
 std::string CreateMessageSignature(
     const GURL& issuance_endpoint,
     const std::string& content_digest_val,
     const std::string& signature_key_val,
-    const net::structured_headers::ParameterizedMember& signature_params,
+    net::structured_headers::ParameterizedMember signature_params,
     const crypto::keypair::PrivateKey& private_key) {
   std::string authority = std::string(issuance_endpoint.host());
   // RFC 9421 Section 2.2.3 specifies that the @authority component must be
@@ -146,33 +144,38 @@ std::string CreateMessageSignature(
     authority += issuance_endpoint.port();
   }
 
+  const net::structured_headers::InnerList* inner_list =
+      signature_params.GetIfInnerList();
+  CHECK(inner_list);
+
   // We should include the cookie header, but it is not available at this point
   // in time.
   // https://github.com/dickhardt/email-verification/issues/11
   std::string signature_base;
   for (const net::structured_headers::ParameterizedItem& param :
-       signature_params.member) {
-    std::string component_name = param.item.GetString();
-    std::string component_value;
-    if (component_name == "@method") {
+       inner_list->items) {
+    const std::string* component_name = param.item.GetIfString();
+    CHECK(component_name);
+    std::string_view component_value;
+    if (*component_name == "@method") {
       component_value = "POST";
-    } else if (component_name == "@authority") {
+    } else if (*component_name == "@authority") {
       component_value = authority;
-    } else if (component_name == "@path") {
+    } else if (*component_name == "@path") {
       component_value = issuance_endpoint.path();
-    } else if (component_name == "content-digest") {
+    } else if (*component_name == "content-digest") {
       component_value = content_digest_val;
-    } else if (component_name == "signature-key") {
+    } else if (*component_name == "signature-key") {
       component_value = signature_key_val;
     } else {
       NOTREACHED();
     }
-    base::StringAppendF(&signature_base, "\"%s\": %s\n", component_name.c_str(),
-                        component_value.c_str());
+    base::StringAppendF(&signature_base, "\"%s\": %s\n", *component_name,
+                        component_value);
   }
 
   net::structured_headers::List list_wrapper;
-  list_wrapper.push_back(signature_params);
+  list_wrapper.push_back(std::move(signature_params));
   std::optional<std::string> serialized_params =
       net::structured_headers::SerializeList(list_wrapper);
   CHECK(serialized_params);
@@ -180,23 +183,17 @@ std::string CreateMessageSignature(
   // trailing newline:
   // https://datatracker.ietf.org/doc/html/rfc9421#create-sig-input
   base::StringAppendF(&signature_base, "\"@signature-params\": %s",
-                      serialized_params->c_str());
+                      *serialized_params);
 
   sdjwt::Signer http_signer = sdjwt::CreateJwtSigner(private_key);
   std::optional<std::vector<uint8_t>> signature_opt =
       std::move(http_signer).Run(signature_base);
   CHECK(signature_opt);
 
-  net::structured_headers::Dictionary dict;
-  dict["sig"] = net::structured_headers::ParameterizedMember(
+  return SerializeSigDictionary(net::structured_headers::ParameterizedMember(
       net::structured_headers::Item(
-          std::string(signature_opt->begin(), signature_opt->end()),
-          net::structured_headers::Item::kByteSequenceType),
-      net::structured_headers::Parameters());
-  std::optional<std::string> signature_val_opt =
-      net::structured_headers::SerializeDictionary(dict);
-  CHECK(signature_val_opt);
-  return *signature_val_opt;
+          net::structured_headers::Item::byte_sequence,
+          base::as_string_view(*signature_opt))));
 }
 
 net::HttpRequestHeaders CreateMessageSignatureHeaders(
@@ -212,22 +209,22 @@ net::HttpRequestHeaders CreateMessageSignatureHeaders(
   std::string signature_key_val = CreateMessageSignatureKey(*public_key);
   net::structured_headers::ParameterizedMember signature_params =
       CreateMessageSignatureParams(created_time);
-  std::string signature_input_val = SerializeSignatureInput(signature_params);
-  std::string signature_val =
-      CreateMessageSignature(issuance_endpoint, content_digest_val,
-                             signature_key_val, signature_params, private_key);
+  std::string signature_input_val = SerializeSigDictionary(signature_params);
+  std::string signature_val = CreateMessageSignature(
+      issuance_endpoint, content_digest_val, signature_key_val,
+      std::move(signature_params), private_key);
 
   net::HttpRequestHeaders extra_headers;
-  extra_headers.SetHeader("Content-Digest", content_digest_val);
-  extra_headers.SetHeader("Signature-Key", signature_key_val);
-  extra_headers.SetHeader("Signature-Input", signature_input_val);
-  extra_headers.SetHeader("Signature", signature_val);
+  extra_headers.SetHeader("Content-Digest", std::move(content_digest_val));
+  extra_headers.SetHeader("Signature-Key", std::move(signature_key_val));
+  extra_headers.SetHeader("Signature-Input", std::move(signature_input_val));
+  extra_headers.SetHeader("Signature", std::move(signature_val));
   return extra_headers;
 }
 
 }  // namespace
 
-std::optional<std::string> GetDomainFromEmail(const std::string& email) {
+std::optional<std::string> GetDomainFromEmail(std::string_view email) {
   auto parts = base::RSplitStringOnce(email, "@");
 
   if (!parts) {
@@ -241,12 +238,13 @@ std::optional<std::string> GetDomainFromEmail(const std::string& email) {
   // Use GURL to validate that the domain is a valid host.
   // TODO(crbug.com/380367784): consider better ways to validate if
   // the email domain is well formed.
-  GURL url("https://" + std::string(parts->second));
-  if (!url.is_valid() || !url.has_host() || url.GetHost() != parts->second) {
+  GURL url(base::StrCat({"https://", parts->second}));
+  if (!url.is_valid() || !url.has_host() ||
+      !base::EqualsCaseInsensitiveASCII(url.GetHost(), parts->second)) {
     return std::nullopt;
   }
 
-  return std::string(parts->second);
+  return url.GetHost();
 }
 
 EmailVerificationRequest::EmailVerificationRequest(
@@ -273,44 +271,6 @@ EmailVerificationRequest::EmailVerificationRequest(
       render_frame_host_(render_frame_host.GetWeakPtr()) {}
 
 EmailVerificationRequest::~EmailVerificationRequest() {
-  observers_.Notify(&Observer::OnRequestDestroyed);
-}
-
-void EmailVerificationRequest::AddObserver(Observer* observer) {
-  observers_.AddObserver(observer);
-}
-
-void EmailVerificationRequest::RemoveObserver(Observer* observer) {
-  observers_.RemoveObserver(observer);
-}
-
-sdjwt::Jwt EmailVerificationRequest::CreateRequestToken(
-    const std::string& email,
-    const sdjwt::Jwk& public_key,
-    const url::Origin& issuer) {
-  sdjwt::Header header;
-  header.alg = public_key.alg;
-  header.typ = "JWT";
-  header.jwk = public_key;
-  CHECK(header.jwk);
-
-  base::Time now = base::Time::Now();
-  // TODO(crbug.com/380367784): figure out what's the right
-  // expiration time for the request token.
-  base::TimeDelta ttl = base::Minutes(5);
-  base::Time expiration = now + ttl;
-
-  sdjwt::Payload payload;
-  payload.email = email;
-  payload.aud = issuer.Serialize();
-  payload.exp = expiration;
-  payload.iat = now;
-
-  sdjwt::Jwt jwt;
-  jwt.header = *header.ToJson();
-  jwt.payload = *payload.ToJson();
-
-  return jwt;
 }
 
 // The email verification process starts once the user
@@ -320,20 +280,29 @@ sdjwt::Jwt EmailVerificationRequest::CreateRequestToken(
 
 void EmailVerificationRequest::CheckIfVerifiable(
     const std::string& email,
+    base::OnceClosure on_dns_resolved_callback,
     EmailVerifier::IsVerifiableCallback callback) {
-  observers_.Notify(&Observer::OnIsVerifiableStart);
+  is_verifiable_start_time_ = base::TimeTicks::Now();
   if (!render_frame_host_) {
-    std::move(callback).Run(std::nullopt);
+    CompleteIsVerifiableRequest(
+        std::move(callback), std::nullopt,
+        EmailVerificationRequestResult::kRpOriginIsOpaque);
     return;
   }
 
   if (render_frame_host_->GetLastCommittedOrigin().opaque() ||
-      render_frame_host_->IsNestedWithinFencedFrame() ||
-      !IsSameOriginWithAncestors(render_frame_host_->GetLastCommittedOrigin(),
-                                 render_frame_host_.get())) {
+      render_frame_host_->IsNestedWithinFencedFrame()) {
     CompleteIsVerifiableRequest(
         std::move(callback), std::nullopt,
         EmailVerificationRequestResult::kRpOriginIsOpaque);
+    return;
+  }
+
+  if (!IsSameOriginWithAncestors(render_frame_host_->GetLastCommittedOrigin(),
+                                 render_frame_host_.get())) {
+    CompleteIsVerifiableRequest(
+        std::move(callback), std::nullopt,
+        EmailVerificationRequestResult::kCrossOriginIframeNotSupported);
     return;
   }
 
@@ -348,20 +317,24 @@ void EmailVerificationRequest::CheckIfVerifiable(
                                 EmailVerificationRequestResult::kInvalidEmail);
     return;
   }
-  std::string hostname = "_email-verification." + *domain;
+  std::string hostname = base::StrCat({"_email-verification.", *domain});
 
   dns_request_->SendRequest(
-      hostname, base::BindOnce(&EmailVerificationRequest::OnDnsRequestComplete,
-                               weak_ptr_factory_.GetWeakPtr(), email,
-                               std::move(callback)));
+      hostname,
+      base::BindOnce(&EmailVerificationRequest::OnDnsRequestComplete,
+                     weak_ptr_factory_.GetWeakPtr(), email,
+                     std::move(on_dns_resolved_callback), std::move(callback)));
 }
 
 void EmailVerificationRequest::OnDnsRequestComplete(
     const std::string& email,
+    base::OnceClosure on_dns_resolved_callback,
     EmailVerifier::IsVerifiableCallback callback,
     const std::optional<std::vector<std::string>>& text_records) {
   if (!render_frame_host_) {
-    std::move(callback).Run(std::nullopt);
+    CompleteIsVerifiableRequest(
+        std::move(callback), std::nullopt,
+        EmailVerificationRequestResult::kRpOriginIsOpaque);
     return;
   }
   // Step 3.2: when the DNS response is received, the browser
@@ -373,7 +346,7 @@ void EmailVerificationRequest::OnDnsRequestComplete(
     return;
   }
 
-  const std::string& record = (*text_records)[0];
+  const std::string_view record = text_records->front();
   static constexpr char kIssPrefix[] = "iss=";
   if (!base::StartsWith(record, kIssPrefix, base::CompareCase::SENSITIVE)) {
     CompleteIsVerifiableRequest(
@@ -382,7 +355,7 @@ void EmailVerificationRequest::OnDnsRequestComplete(
     return;
   }
 
-  std::string iss = record.substr(sizeof(kIssPrefix) - 1);
+  const std::string_view iss = record.substr(sizeof(kIssPrefix) - 1);
   if (iss.empty()) {
     CompleteIsVerifiableRequest(
         std::move(callback), std::nullopt,
@@ -390,7 +363,32 @@ void EmailVerificationRequest::OnDnsRequestComplete(
     return;
   }
 
-  GURL issuer("https://" + iss);
+  // The record carries `iss=` followed by a host name (§3.1), and the issuer
+  // identifier is "https://" followed by that host, with no port, path or
+  // trailing slash (§3.2):
+  // https://dickhardt.github.io/email-verification/draft-hardt-email-verification.html#name-dns-delegation
+  // https://dickhardt.github.io/email-verification/draft-hardt-email-verification.html#name-issuer-identifier
+  // Reject anything that is not exactly a canonical host, e.g. one with a
+  // port, path, query, userinfo or uppercase letters, rather than letting GURL
+  // normalize it into a different identifier.
+  // Tests serve the issuer on an ephemeral port, so a port is allowed there.
+  const std::string issuer_spec = base::StrCat({"https://", iss});
+  GURL issuer(issuer_spec);
+  url::Origin issuer_origin = url::Origin::Create(issuer);
+  const bool is_valid_issuer = IsPreservePortsForTestingEnabled()
+                                   ? (!issuer_origin.opaque() &&
+                                      issuer_origin.Serialize() == issuer_spec)
+                                   : (issuer_origin.host() == iss);
+  if (!is_valid_issuer) {
+    CompleteIsVerifiableRequest(
+        std::move(callback), std::nullopt,
+        EmailVerificationRequestResult::kDnsInvalidRecord);
+    return;
+  }
+
+  if (on_dns_resolved_callback) {
+    std::move(on_dns_resolved_callback).Run();
+  }
 
   auto well_known = base::MakeRefCounted<WellKnownOrError>();
   auto accounts = base::MakeRefCounted<AccountsOrError>();
@@ -398,18 +396,16 @@ void EmailVerificationRequest::OnDnsRequestComplete(
   // Create a barrier closure that will run OnAccountStatusFetched when called
   // twice.
   base::RepeatingClosure barrier = base::BarrierClosure(
-      2,
-      base::BindOnce(&EmailVerificationRequest::OnAccountStatusFetched,
-                     weak_ptr_factory_.GetWeakPtr(), well_known, accounts,
-                     url::Origin::Create(issuer), email, std::move(callback)));
+      2, base::BindOnce(&EmailVerificationRequest::OnAccountStatusFetched,
+                        weak_ptr_factory_.GetWeakPtr(), well_known, accounts,
+                        issuer_origin, email, std::move(callback)));
 
   // --- Task 1: Fetch .well-known/email-verification ---
   network_manager_->FetchWellKnown(
       issuer,
       base::BindOnce(
           &EmailVerificationRequest::OnEmailVerificationWellKnownFetched,
-          weak_ptr_factory_.GetWeakPtr(), barrier, url::Origin::Create(issuer),
-          well_known));
+          weak_ptr_factory_.GetWeakPtr(), barrier, well_known));
 
   // --- Task 2: Verify User is Logged In with the provided Email ---
   // If the issuer is found, the browser fetches the issuer's
@@ -418,7 +414,7 @@ void EmailVerificationRequest::OnDnsRequestComplete(
                                   ->GetFederatedIdentityPermissionContext();
   std::optional<bool> login_status =
       permission_delegate
-          ? permission_delegate->GetIdpSigninStatus(url::Origin::Create(issuer))
+          ? permission_delegate->GetIdpSigninStatus(issuer_origin)
           : std::nullopt;
 
   // Treat "unknown" login state as "logged-in" to avoid stopping early
@@ -434,13 +430,12 @@ void EmailVerificationRequest::OnDnsRequestComplete(
   idp_network_manager_->FetchWellKnown(
       issuer,
       base::BindOnce(&EmailVerificationRequest::OnWebIdentityWellKnownFetched,
-                     weak_ptr_factory_.GetWeakPtr(),
-                     url::Origin::Create(issuer), email, barrier, accounts));
+                     weak_ptr_factory_.GetWeakPtr(), std::move(issuer_origin),
+                     barrier, accounts));
 }
 
 void EmailVerificationRequest::OnEmailVerificationWellKnownFetched(
     base::RepeatingClosure barrier,
-    const url::Origin& issuer,
     scoped_refptr<WellKnownOrError> well_known,
     FetchStatus status,
     EmailVerifierNetworkRequestManager::WellKnown fetched_well_known) {
@@ -456,7 +451,6 @@ void EmailVerificationRequest::OnEmailVerificationWellKnownFetched(
 
 void EmailVerificationRequest::OnWebIdentityWellKnownFetched(
     const url::Origin& issuer,
-    const std::string& email,
     base::RepeatingClosure barrier,
     scoped_refptr<AccountsOrError> accounts,
     FetchStatus status,
@@ -485,11 +479,10 @@ void EmailVerificationRequest::OnWebIdentityWellKnownFetched(
   idp_network_manager_->SendAccountsRequest(
       url::Origin::Create(well_known.accounts), well_known.accounts,
       base::BindOnce(&EmailVerificationRequest::OnAccountsResponseReceived,
-                     weak_ptr_factory_.GetWeakPtr(), email, barrier, accounts));
+                     weak_ptr_factory_.GetWeakPtr(), barrier, accounts));
 }
 
 void EmailVerificationRequest::OnAccountsResponseReceived(
-    const std::string& email,
     base::RepeatingClosure barrier,
     scoped_refptr<AccountsOrError> accounts,
     FetchStatus status,
@@ -553,7 +546,7 @@ void EmailVerificationRequest::OnAccountStatusFetched(
 
   EmailVerifier::Result result;
   result.email = email;
-  result.issuer_site = net::SchemefulSite(issuer_origin.GetURL());
+  result.issuer_origin = issuer_origin;
   result.issuance_endpoint = well_known->data->issuance_endpoint;
   result.jwks_uri = well_known->data->jwks_uri;
   result.signing_alg_values_supported =
@@ -567,18 +560,26 @@ void EmailVerificationRequest::Verify(
     const EmailVerifier::Result& result,
     const std::string& nonce,
     EmailVerifier::OnEmailVerifiedCallback callback) {
-  observers_.Notify(&Observer::OnVerifyStart);
+  verify_start_time_ = base::TimeTicks::Now();
   if (!render_frame_host_) {
-    std::move(callback).Run(std::nullopt);
+    CompleteVerifyRequest(std::move(callback), std::nullopt,
+                          EmailVerificationRequestResult::kRpOriginIsOpaque);
     return;
   }
-  // Both conditions are met! Proceed to create token and send request.
+  // Both conditions are met! Proceed to generate keypair and send request.
 
   // TODO(crbug.com/380367784): understand and document why RSA was
   // preferred over ECDSA here.
   std::unique_ptr<crypto::keypair::PrivateKey> private_key;
   for (const auto& supported_alg : result.signing_alg_values_supported) {
-    if (supported_alg == "EdDSA") {
+    // The Email Verification Protocol requires issuers to advertise
+    // fully-specified identifiers, so "Ed25519" is the spelling to expect
+    // here.
+    //
+    // TODO(crbug.com/561405995): drop "EdDSA" once no deployed issuer
+    // advertises it. It is accepted alongside "Ed25519" only while deployed
+    // issuers migrate off it.
+    if (supported_alg == "Ed25519" || supported_alg == "EdDSA") {
       private_key = std::make_unique<crypto::keypair::PrivateKey>(
           crypto::keypair::PrivateKey::GenerateEd25519());
       break;
@@ -595,6 +596,15 @@ void EmailVerificationRequest::Verify(
     // algorithm here (should we reject? ignore?).
   }
 
+  // `signing_alg_values_supported` is optional, and the Email Verification
+  // Protocol defaults it to Ed25519 when the issuer does not advertise
+  // anything. An issuer that does advertise algorithms, but none that are
+  // supported here, is still an error rather than a silent fallback.
+  if (!private_key && result.signing_alg_values_supported.empty()) {
+    private_key = std::make_unique<crypto::keypair::PrivateKey>(
+        crypto::keypair::PrivateKey::GenerateEd25519());
+  }
+
   if (!private_key) {
     CompleteVerifyRequest(
         std::move(callback), std::nullopt,
@@ -602,23 +612,9 @@ void EmailVerificationRequest::Verify(
     return;
   }
 
-  std::optional<sdjwt::Jwk> public_key = sdjwt::ExportPublicKey(*private_key);
-  CHECK(public_key);
-
-  sdjwt::Jwt jwt = CreateRequestToken(
-      result.email, *public_key, url::Origin::Create(result.issuance_endpoint));
-
-  sdjwt::Signer signer = sdjwt::CreateJwtSigner(*private_key);
-  CHECK(jwt.Sign(std::move(signer)));
-
-  sdjwt::JSONString request_token = jwt.Serialize();
-  CHECK(!request_token->empty());
-
-  // We pass the request_token for backwards compatibility, and the email
-  // address for spec compliance.
-  std::string post_data =
-      "request_token=" + request_token.value() +
-      "&email=" + base::EscapeUrlEncodedData(result.email, /*use_plus=*/true);
+  base::DictValue post_dict;
+  post_dict.Set("email", result.email);
+  std::string post_data = *base::WriteJson(post_dict);
 
   // Create shared objects to hold the results
   scoped_refptr<TokenResultOrError> token =
@@ -664,7 +660,7 @@ void EmailVerificationRequest::Verify(
              std::optional<base::DictValue> result) {
             if (status.parse_status != ParseStatus::kSuccess) {
               jwks->data = base::unexpected(
-                  EmailVerificationRequestResult::kJwksHttpNotFound);
+                  JwksParseStatusToEvpRequestStatus(status.parse_status));
             } else {
               jwks->data = std::move(*result);
             }
@@ -682,7 +678,8 @@ void EmailVerificationRequest::OnTokenAndKeysFetchComplete(
     const std::string& email,
     EmailVerifier::OnEmailVerifiedCallback callback) {
   if (!render_frame_host_) {
-    std::move(callback).Run(std::nullopt);
+    CompleteVerifyRequest(std::move(callback), std::nullopt,
+                          EmailVerificationRequestResult::kRpOriginIsOpaque);
     return;
   }
   // Step 5: Token Presentation
@@ -737,6 +734,8 @@ void EmailVerificationRequest::OnTokenAndKeysFetchComplete(
   CHECK(holder_pub_key);
 
   sdjwt::Header header;
+  // Matches what the browser conveyed in the Signature-Key header, and so what
+  // the issuer echoes back in `cnf.jwk`.
   header.alg = holder_pub_key->alg;
   header.typ = "kb+jwt";
 
@@ -791,29 +790,34 @@ void EmailVerificationRequest::CompleteIsVerifiableRequest(
     EmailVerifier::IsVerifiableCallback callback,
     std::optional<EmailVerifier::Result> response,
     blink::mojom::EmailVerificationRequestResult status) {
+  CHECK(!is_verifiable_start_time_.is_null());
+  base::TimeDelta duration = base::TimeTicks::Now() - is_verifiable_start_time_;
   base::UmaHistogramEnumeration("Blink.Evp.Status.IsVerifiable", status);
-  observers_.Notify(&Observer::OnIsVerifiableComplete, status);
+  base::UmaHistogramMediumTimes("Blink.Evp.Timing.IsVerifiable", duration);
   if (status != EmailVerificationRequestResult::kSuccess) {
     MaybeAddDevToolsIssue(status);
   }
-  std::move(callback).Run(std::move(response));
+  std::move(callback).Run(std::move(response), status, duration);
 }
 
 void EmailVerificationRequest::CompleteVerifyRequest(
     EmailVerifier::OnEmailVerifiedCallback callback,
     std::optional<std::string> response,
     blink::mojom::EmailVerificationRequestResult status) {
+  CHECK(!verify_start_time_.is_null());
+  base::TimeDelta duration = base::TimeTicks::Now() - verify_start_time_;
   base::UmaHistogramEnumeration("Blink.Evp.Status.Verify", status);
-  observers_.Notify(&Observer::OnVerifyComplete, status);
+  base::UmaHistogramMediumTimes("Blink.Evp.Timing.Verify", duration);
   if (status != EmailVerificationRequestResult::kSuccess) {
     MaybeAddDevToolsIssue(status);
   }
-  std::move(callback).Run(std::move(response));
+  std::move(callback).Run(std::move(response), status, duration);
 }
 
 void EmailVerificationRequest::MaybeAddDevToolsIssue(
     EmailVerificationRequestResult status) {
-  DCHECK_NE(status, EmailVerificationRequestResult::kSuccess);
+  CHECK_NE(status, EmailVerificationRequestResult::kSuccess,
+           base::NotFatalUntil::M158);
 
   if (!render_frame_host_) {
     return;
@@ -831,6 +835,7 @@ void EmailVerificationRequest::MaybeAddDevToolsIssue(
       return;
 
     case EmailVerificationRequestResult::kRpOriginIsOpaque:
+    case EmailVerificationRequestResult::kCrossOriginIframeNotSupported:
     case EmailVerificationRequestResult::kInvalidEmail:
     case EmailVerificationRequestResult::kDnsInvalidRecord:
     case EmailVerificationRequestResult::kWellKnownHttpNotFound:

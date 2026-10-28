@@ -30,6 +30,7 @@
 #include "third_party/blink/renderer/platform/loader/fetch/resource_request.h"
 #include "third_party/blink/renderer/platform/network/network_state_notifier.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 
 namespace blink {
 
@@ -141,13 +142,13 @@ TEST_P(LazyLoadImagesParamsTest, NearViewport) {
   unset_resource.emplace("https://example.com/unset.png", "image/png");
   LoadURL("https://example.com/");
 
-  main_resource.Complete(String::Format(
+  main_resource.Complete(Format(
       R"HTML(
         <head>
           <link rel='stylesheet' href='https://example.com/style.css' />
         </head>
         <body onload='console.log("main body onload");'>
-        <div style='height: %dpx;'></div>
+        <div style='height: {}px;'></div>
         <img src='https://example.com/eager.png' loading='eager'
              onload='console.log("eager onload");' />
         <img src='https://example.com/lazy.png' loading='lazy'
@@ -226,13 +227,13 @@ TEST_P(LazyLoadImagesParamsTest, FarFromViewport) {
 
   LoadURL("https://example.com/");
 
-  main_resource.Complete(String::Format(
+  main_resource.Complete(Format(
       R"HTML(
         <head>
           <link rel='stylesheet' href='https://example.com/style.css' />
         </head>
         <body onload='console.log("main body onload");'>
-        <div style='height: %dpx;'></div>
+        <div style='height: {}px;'></div>
         <img src='https://example.com/eager.png' loading='eager'
              onload='console.log("eager onload");' />
         <img src='https://example.com/lazy.png' loading='lazy'
@@ -328,14 +329,14 @@ class LazyLoadImagesTest : public SimTest {
   }
 
   String MakeMainResourceString(const char* image_attributes) {
-    return UNSAFE_TODO(String::Format(
+    return Format(
         R"HTML(
         <body onload='console.log("main body onload");'>
-        <div style='height: %dpx;'></div>
-        <img src='https://example.com/image.png' %s
+        <div style='height: {}px;'></div>
+        <img src='https://example.com/image.png' {}
              onload='console.log("image onload");' />
         </body>)HTML",
-        kViewportHeight + kLoadingDistanceThreshold + 100, image_attributes));
+        kViewportHeight + kLoadingDistanceThreshold + 100, image_attributes);
   }
 
   void LoadMainResourceWithImageFarFromViewport(
@@ -390,7 +391,7 @@ TEST_F(LazyLoadImagesTest, LoadAllImagesIfPrinting) {
   EXPECT_TRUE(ConsoleMessages().Contains("main body onload"));
   EXPECT_FALSE(ConsoleMessages().Contains("child frame element onload"));
 
-  Element* img = GetDocument().getElementById(AtomicString("my_image"));
+  Element* img = GetElementById("my_image");
   ASSERT_TRUE(img);
 
   test::RunPendingTasks();
@@ -418,14 +419,14 @@ TEST_F(LazyLoadImagesTest, LoadAllImagesIfPrintingIFrame) {
   SimRequest iframe_resource("https://example.com/iframe.html", "text/html");
 
   const String main_resource =
-      String::Format(R"HTML(
+      Format(R"HTML(
     <body onload='console.log("main body onload");'>
-    <div style='height: %dpx;'></div>
+    <div style='height: {}px;'></div>
     <iframe id='iframe' src='iframe.html'></iframe>
     <img src='https://example.com/top-image.png' loading='lazy'
          onload='console.log("main body image onload");'>
     </body>)HTML",
-                     kViewportHeight + kLoadingDistanceThreshold + 100);
+             kViewportHeight + kLoadingDistanceThreshold + 100);
   LoadMainResourceWithImageFarFromViewport(main_resource);
 
   iframe_resource.Complete(R"HTML(
@@ -441,8 +442,7 @@ TEST_F(LazyLoadImagesTest, LoadAllImagesIfPrintingIFrame) {
   EXPECT_FALSE(ConsoleMessages().Contains("main body image onload"));
   EXPECT_FALSE(ConsoleMessages().Contains("iframe image onload"));
 
-  auto* iframe = To<HTMLIFrameElement>(
-      GetDocument().getElementById(AtomicString("iframe")));
+  auto* iframe = To<HTMLIFrameElement>(GetElementById("iframe"));
   ASSERT_TRUE(iframe);
   ASSERT_TRUE(iframe->ContentFrame());
 
@@ -479,8 +479,7 @@ TEST_F(LazyLoadImagesTest, AttributeChangedFromLazyToEager) {
 
   SimSubresourceRequest full_resource("https://example.com/image.png",
                                       "image/png");
-  GetDocument()
-      .getElementById(AtomicString("my_image"))
+  GetElementById("my_image")
       ->setAttribute(html_names::kLoadingAttr, AtomicString("eager"));
 
   test::RunPendingTasks();
@@ -503,8 +502,7 @@ TEST_F(LazyLoadImagesTest, AttributeChangedFromAutoToEager) {
 
   SimSubresourceRequest full_resource("https://example.com/image.png",
                                       "image/png");
-  GetDocument()
-      .getElementById(AtomicString("my_image"))
+  GetElementById("my_image")
       ->setAttribute(html_names::kLoadingAttr, AtomicString("eager"));
 
   EXPECT_TRUE(ConsoleMessages().Contains("main body onload"));
@@ -520,8 +518,7 @@ TEST_F(LazyLoadImagesTest, AttributeChangedFromUnsetToEager) {
 
   SimSubresourceRequest full_resource("https://example.com/image.png",
                                       "image/png");
-  GetDocument()
-      .getElementById(AtomicString("my_image"))
+  GetElementById("my_image")
       ->setAttribute(html_names::kLoadingAttr, AtomicString("eager"));
 
   EXPECT_TRUE(ConsoleMessages().Contains("main body onload"));
@@ -535,10 +532,10 @@ TEST_F(LazyLoadImagesTest, AttributeChangedFromUnsetToEager) {
 TEST_F(LazyLoadImagesTest, ImageInsideLazyLoadedFrame) {
   SimRequest main_resource("https://example.com/", "text/html");
   LoadURL("https://example.com/");
-  main_resource.Complete(String::Format(
+  main_resource.Complete(Format(
       R"HTML(
         <body onload='console.log("main body onload");'>
-        <div style='height: %dpx;'></div>
+        <div style='height: {}px;'></div>
         <iframe src='https://example.com/child_frame.html' loading='lazy'
                 id='child_frame' width='300px' height='300px'
                 onload='console.log("child frame onload");'></iframe>
@@ -646,9 +643,9 @@ TEST_F(LazyLoadImagesTest, LazyLoadFileUrls) {
   SimSubresourceRequest image_resource("file:///image.png", "image/png");
 
   LoadURL("file:///test.html");
-  main_resource.Complete(String::Format(
+  main_resource.Complete(Format(
       R"HTML(
-        <div style='height: %dpx;'></div>
+        <div style='height: {}px;'></div>
         <img id='lazy' src='file:///image.png' loading='lazy'/>
       )HTML",
       kViewportHeight + kLoadingDistanceThreshold + 100));
@@ -656,8 +653,7 @@ TEST_F(LazyLoadImagesTest, LazyLoadFileUrls) {
   Compositor().BeginFrame();
   test::RunPendingTasks();
 
-  auto* lazy =
-      To<HTMLImageElement>(GetDocument().getElementById(AtomicString("lazy")));
+  auto* lazy = To<HTMLImageElement>(GetElementById("lazy"));
   EXPECT_FALSE(lazy->CachedImage()->IsLoading());
 
   // Scroll down such that the image is visible.
@@ -677,10 +673,10 @@ TEST_F(LazyLoadImagesTest, LazyLoadFileUrls) {
 TEST_F(LazyLoadImagesTest, GarbageCollectDeferredLazyLoadImages) {
   SimRequest main_resource("https://example.com/", "text/html");
   LoadURL("https://example.com/");
-  main_resource.Complete(String::Format(
+  main_resource.Complete(Format(
       R"HTML(
         <body>
-        <div style='height: %dpx;'></div>
+        <div style='height: {}px;'></div>
         <img src='https://example.com/image.png' loading='lazy'>
         </body>)HTML",
       kViewportHeight + kLoadingDistanceThreshold + 100));
@@ -730,10 +726,10 @@ TEST_F(LazyLoadImagesTest, CollectedObserverTargetDoesNotCrashOnPrint) {
 TEST_F(LazyLoadImagesTest, DeferredLazyLoadImagesKeptAliveForDecodeRequest) {
   SimRequest main_resource("https://example.com/", "text/html");
   LoadURL("https://example.com/");
-  main_resource.Complete(String::Format(
+  main_resource.Complete(Format(
       R"HTML(
         <body>
-        <div style='height: %dpx;'></div>
+        <div style='height: {}px;'></div>
         <img src='https://example.com/image.png' loading='lazy'>
         </body>)HTML",
       kViewportHeight + kLoadingDistanceThreshold + 100));

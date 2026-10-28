@@ -7,6 +7,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
 #include "build/build_config.h"
@@ -16,6 +17,9 @@
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/segmentation_platform/segmentation_platform_service_factory.h"
+#include "chrome/browser/ui/hats/hats_service.h"
+#include "chrome/browser/ui/hats/hats_service_factory.h"
+#include "chrome/browser/ui/hats/survey_config.h"
 #include "chrome/browser/ui/webid/account_selection_view.h"
 #include "chrome/browser/webid/identity_provider_permission_request.h"
 #include "components/favicon/content/content_favicon_driver.h"
@@ -25,10 +29,13 @@
 #include "components/segmentation_platform/public/features.h"
 #include "components/segmentation_platform/public/result.h"
 #include "components/segmentation_platform/public/segmentation_platform_service.h"
+#include "content/public/browser/page.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/webid/federated_embedder_login_request.h"
 #include "content/public/browser/webid/identity_credential_source.h"
 #include "third_party/blink/public/mojom/webid/federated_request.mojom-shared.h"
+#include "third_party/blink/public/mojom/webid/federated_request.mojom.h"
+#include "url/origin.h"
 
 // We add nognchecks on these includes so that Android bots do not fail
 // dependency checks.
@@ -40,11 +47,36 @@
 
 using content::webid::FederatedLoginResult;
 
+namespace {
+
+// Triggers HaT survey about the personalization experience with FedCM. Only
+// shows the survey when the user did not close or switch the tab and the user
+// is eligible according to the HaTS guidelines.
+void MaybeTriggerPersonalizationAndTrustHatsSurvey(
+    content::WebContents* web_contents,
+    const std::string& trigger) {
+  if (!web_contents) {
+    return;
+  }
+  Profile* profile =
+      Profile::FromBrowserContext(web_contents->GetBrowserContext());
+  if (HatsService* hats_service = HatsServiceFactory::GetForProfile(
+          profile, /*create_if_necessary=*/true)) {
+    // Launch survey with delay of 0ms in order to avoid running it
+    // synchronously which might disrupt tear-down on dismissal surveys.
+    hats_service->LaunchDelayedSurveyForWebContents(trigger, web_contents,
+                                                    /*timeout_ms=*/0);
+  }
+}
+
+}  // namespace
+
 IdentityDialogController::IdentityDialogController(
     content::WebContents* rp_web_contents,
     segmentation_platform::SegmentationPlatformService* service,
     optimization_guide::OptimizationGuideDecider* decider)
-    : rp_web_contents_(rp_web_contents),
+    : content::WebContentsObserver(rp_web_contents),
+      rp_web_contents_(rp_web_contents),
       segmentation_platform_service_(service),
       optimization_guide_decider_(decider) {
   Profile* profile = Profile::FromBrowserContext(
@@ -114,7 +146,8 @@ void IdentityDialogController::OnActorTaskStateChanged(actor::ActorTask& task) {
 
   tabs::TabInterface* tab =
       tabs::TabInterface::MaybeGetFromContents(rp_web_contents_);
-  if (!tab || !task.IsActingOnTab(tab->GetHandle())) {
+  if (!tab || !task.IsActingOnActorSurface(
+                  actor::ActorSurfaceHandle::From(tab->GetHandle()))) {
     if (acting_task_id_ == task_id) {
       // The task we thought was acting on this tab is no longer active, so we
       // clear the task ID.
@@ -418,6 +451,32 @@ bool IdentityDialogController::ShowVerifyingDialog(
   return false;
 }
 
+bool IdentityDialogController::ShowNativeAppUi(
+    const content::NativeAppRequestOptions& request_options,
+    DismissCallback dismiss_callback,
+    NativeAppResultCallback native_result_callback) {
+  // The native app UI is an active mode surface, so it is subject to the same
+  // restriction as ShowAccountsDialog(): when an actor is driving the tab we
+  // must not hand control to a third party application on the user's behalf.
+  if (!ShouldShowFedCmUi()) {
+    return false;
+  }
+
+  on_dismiss_ = std::move(dismiss_callback);
+  on_native_result_ = std::move(native_result_callback);
+
+  if (!TrySetAccountView()) {
+    NotifyEmbedderOfResult(FederatedLoginResult::kFrameNotActive);
+    return false;
+  }
+
+  if (account_view_->ShowNativeAppUi(request_options)) {
+    DidInvokeShowUi();
+    return true;
+  }
+  return false;
+}
+
 void IdentityDialogController::OnLoginToIdP(const GURL& idp_config_url,
                                             const GURL& idp_login_url) {
   CHECK(on_login_);
@@ -434,6 +493,40 @@ void IdentityDialogController::OnAccountsDisplayed() {
   std::move(on_accounts_displayed_).Run();
 }
 
+void IdentityDialogController::OnNativeAppResult(const std::string& token) {
+  on_dismiss_.Reset();
+  if (on_native_result_) {
+    std::move(on_native_result_)
+        .Run(content::IdentityRequestDialogController::NativeAppResult{
+            content::IdentityRequestDialogController::NativeAppResult::Type::
+                kToken,
+            token});
+  }
+}
+
+void IdentityDialogController::OnNativeAppError(
+    const content::IdentityCredentialTokenError& error) {
+  on_dismiss_.Reset();
+  if (on_native_result_) {
+    std::move(on_native_result_)
+        .Run(content::IdentityRequestDialogController::NativeAppResult{
+            content::IdentityRequestDialogController::NativeAppResult::Type::
+                kError,
+            "", error});
+  }
+}
+
+void IdentityDialogController::OnNativeAppLoginFinished() {
+  on_dismiss_.Reset();
+  if (on_native_result_) {
+    std::move(on_native_result_)
+        .Run(content::IdentityRequestDialogController::NativeAppResult{
+            content::IdentityRequestDialogController::NativeAppResult::Type::
+                kLoginFinished,
+            ""});
+  }
+}
+
 void IdentityDialogController::OnAccountSelected(
     const GURL& idp_config_url,
     const std::string& account_id,
@@ -445,6 +538,7 @@ void IdentityDialogController::OnAccountSelected(
   }
   CHECK(on_account_selection_);
 
+  was_account_explicitly_selected_ = true;
   CollectTrainingData(UserAction::kSuccess);
 
   // We only allow dismiss after account selection on active modes and not on
@@ -461,6 +555,7 @@ void IdentityDialogController::OnAccountSelected(
 }
 
 void IdentityDialogController::OnDismiss(DismissReason dismiss_reason) {
+  on_native_result_.Reset();
   // |OnDismiss| can be called after |OnAccountSelected| which sets the callback
   // to null.
   if (!on_dismiss_) {
@@ -471,12 +566,22 @@ void IdentityDialogController::OnDismiss(DismissReason dismiss_reason) {
     if (dismiss_reason == DismissReason::kCloseButton ||
         dismiss_reason == DismissReason::kSwipe) {
       CollectTrainingData(UserAction::kClosed);
+      if (on_account_selection_) {
+        // Only trigger if the user dismissed the account selection dialog
+        // without selecting an account (excludes error/failure dialogs and
+        // post-selection cancellation in active mode).
+        MaybeTriggerPersonalizationAndTrustHatsSurvey(
+            web_contents(),
+            kHatsSurveyTriggerAutofillPersonalizationAndTrustFedCmDismissed);
+      }
     } else {
       CollectTrainingData(UserAction::kIgnored);
     }
   }
 
+  was_account_explicitly_selected_ = false;
   on_account_selection_.Reset();
+  on_native_result_.Reset();
   std::move(on_dismiss_).Run(dismiss_reason);
 
   // Do not access member variables from this point onwards because
@@ -499,12 +604,21 @@ content::WebContents* IdentityDialogController::GetWebContents() {
   return rp_web_contents_;
 }
 
+void IdentityDialogController::OnFedCmFederatedLogin(bool success) {
+  if (success && was_account_explicitly_selected_) {
+    MaybeTriggerPersonalizationAndTrustHatsSurvey(
+        web_contents(),
+        kHatsSurveyTriggerAutofillPersonalizationAndTrustFedCmAccepted);
+  }
+  was_account_explicitly_selected_ = false;
+}
+
 void IdentityDialogController::ShowUrl(LinkType type, const GURL& url) {
   if (!account_view_) {
     return;
   }
   // Cannot be invoked if FedCM UI is being shown.
-  DCHECK(ShouldShowFedCmUi());
+  CHECK(ShouldShowFedCmUi(), base::NotFatalUntil::M162);
   account_view_->ShowUrl(type, url);
 }
 
@@ -513,8 +627,10 @@ content::WebContents* IdentityDialogController::ShowModalDialog(
     blink::mojom::RpMode rp_mode,
     DismissCallback dismiss_callback,
     content::IdentityRequestDialogController::ShownModalAsyncCallback
-        on_shown_async) {
+        on_shown_async,
+    NativeAppResultCallback native_result_callback) {
   on_dismiss_ = std::move(dismiss_callback);
+  on_native_result_ = std::move(native_result_callback);
   rp_mode_ = rp_mode;
   if (!TrySetAccountView()) {
     NotifyEmbedderOfResult(FederatedLoginResult::kFrameNotActive);

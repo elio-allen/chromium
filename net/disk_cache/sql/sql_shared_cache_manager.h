@@ -5,10 +5,13 @@
 #ifndef NET_DISK_CACHE_SQL_SQL_SHARED_CACHE_MANAGER_H_
 #define NET_DISK_CACHE_SQL_SQL_SHARED_CACHE_MANAGER_H_
 
+#include <map>
 #include <memory>
 #include <utility>
 #include <vector>
 
+#include "base/containers/flat_map.h"
+#include "base/containers/queue.h"
 #include "base/containers/unique_ptr_adapters.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback_forward.h"
@@ -29,6 +32,7 @@
 namespace disk_cache {
 
 class BackendCleanupTracker;
+class SharedCacheClientRemote;
 class SqlPersistentStore;
 
 // Manages the creation, lookup, and lifecycle of `SqlSharedCache` instances.
@@ -72,7 +76,41 @@ class NET_EXPORT_PRIVATE SqlSharedCacheManager {
   void DeleteResources(std::vector<SqlSharedCacheResourceId> resources,
                        base::OnceClosure callback);
 
+  // Asynchronously copies eligible entries into their corresponding isolated
+  // shared cache databases grouped by NetworkIsolationKey. Unprocessed entries
+  // are returned via `callback`.
+  void ProcessSharedCacheEligibleEntries(
+      std::map<net::NetworkIsolationKey,
+               base::queue<SqlPersistentStore::SharedCacheEligibleEntry>>
+          entries,
+      scoped_refptr<base::RefCountedData<std::atomic_bool>> abort_flag,
+      base::OnceCallback<void(
+          std::vector<SqlPersistentStore::SharedCacheEligibleEntry>)> callback,
+      base::RepeatingCallback<void(const CacheEntryKey&)>
+          on_entry_copied_callback = {});
+
+  // Registers a remote shared cache client for the given NetworkIsolationKey.
+  // The client will be notified with a read-only database connection once
+  // available.
+  void RegisterClient(const net::NetworkIsolationKey& network_isolation_key,
+                      std::unique_ptr<SharedCacheClientRemote> client);
+
+  // Sets a flag to simulate index database operation failures for testing.
+  void SetSimulateDbFailureForTesting(bool fail);
+
+  size_t GetSharedCachesSizeForTest() const { return shared_caches_.size(); }
+
+  size_t GetSharedCachesByDbIdSizeForTest() const {
+    return shared_caches_by_shared_cache_db_id_.size();
+  }
+
+  size_t GetSharedCachesByNikSizeForTest() const {
+    return shared_caches_by_nik_string_.size();
+  }
+
  private:
+  friend class SqlSharedCacheManagerTest;
+
   // Handle used to signal completion of a serialized database operation.
   // When destroyed, `FinishDbOperation()` is invoked to run the next queued
   // operation.
@@ -118,6 +156,49 @@ class NET_EXPORT_PRIVATE SqlSharedCacheManager {
           grouped_resources,
       base::OnceClosure callback,
       DbOperationHandle db_operation_handle);
+
+  void DoProcessSharedCacheEligibleEntries(
+      std::map<net::NetworkIsolationKey,
+               base::queue<SqlPersistentStore::SharedCacheEligibleEntry>>
+          entries,
+      scoped_refptr<base::RefCountedData<std::atomic_bool>> abort_flag,
+      base::OnceCallback<void(
+          std::vector<SqlPersistentStore::SharedCacheEligibleEntry>)> callback,
+      base::RepeatingCallback<void(const CacheEntryKey&)>
+          on_entry_copied_callback,
+      DbOperationHandle db_operation_handle);
+
+  void ProcessNextNikGroup(
+      base::queue<base::queue<SqlPersistentStore::SharedCacheEligibleEntry>>
+          groups,
+      scoped_refptr<base::RefCountedData<std::atomic_bool>> abort_flag,
+      std::vector<SqlPersistentStore::SharedCacheEligibleEntry> all_unprocessed,
+      base::OnceCallback<void(
+          std::vector<SqlPersistentStore::SharedCacheEligibleEntry>)> callback,
+      base::RepeatingCallback<void(const CacheEntryKey&)>
+          on_entry_copied_callback);
+  void OnGetSharedCacheForProcess(
+      net::NetworkIsolationKey current_nik,
+      base::queue<base::queue<SqlPersistentStore::SharedCacheEligibleEntry>>
+          groups,
+      scoped_refptr<base::RefCountedData<std::atomic_bool>> abort_flag,
+      std::vector<SqlPersistentStore::SharedCacheEligibleEntry> all_unprocessed,
+      base::OnceCallback<void(
+          std::vector<SqlPersistentStore::SharedCacheEligibleEntry>)> callback,
+      base::RepeatingCallback<void(const CacheEntryKey&)>
+          on_entry_copied_callback,
+      scoped_refptr<SqlSharedCacheHandle> handle);
+  void OnProcessEntryCompleted(
+      scoped_refptr<SqlSharedCacheHandle> handle,
+      base::queue<base::queue<SqlPersistentStore::SharedCacheEligibleEntry>>
+          groups,
+      scoped_refptr<base::RefCountedData<std::atomic_bool>> abort_flag,
+      std::vector<SqlPersistentStore::SharedCacheEligibleEntry> all_unprocessed,
+      base::OnceCallback<void(
+          std::vector<SqlPersistentStore::SharedCacheEligibleEntry>)> callback,
+      base::RepeatingCallback<void(const CacheEntryKey&)>
+          on_entry_copied_callback,
+      base::queue<SqlPersistentStore::SharedCacheEligibleEntry> results);
 
   const raw_ref<SqlPersistentStore> store_;
   const base::FilePath directory_;

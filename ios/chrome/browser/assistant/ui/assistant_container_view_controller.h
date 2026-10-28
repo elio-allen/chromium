@@ -7,6 +7,7 @@
 
 #import <UIKit/UIKit.h>
 
+#import <optional>
 #import <vector>
 
 #import "ios/chrome/browser/assistant/ui/assistant_container_animatable.h"
@@ -26,6 +27,11 @@ enum class AssistantContainerDetent : NSInteger;
 // The available detents for the container. Can't be empty.
 @property(nonatomic, assign) std::vector<AssistantContainerDetent> detents;
 
+// The largest detent that doesn't dim the view underneath the sheet.
+// Detents larger than this detent dim the background and prevent interaction
+// with the view underneath. Defaults to `kDefaultLargestUndimmedDetent`.
+@property(nonatomic, assign) AssistantContainerDetent largestUndimmedDetent;
+
 // The presentation context of the container.
 @property(nonatomic, assign) AssistantPresentationContext presentationContext;
 
@@ -39,6 +45,10 @@ enum class AssistantContainerDetent : NSInteger;
 // The height to use for the minimized detent. Defaults to
 // kAssistantContainerMinimizedDetentHeight.
 @property(nonatomic, assign) NSInteger minimizedDetentHeight;
+
+// An optional height to use for the medium detent.
+// If specified, `computeMediumDetentHeight` will return this value.
+@property(nonatomic, assign) std::optional<NSInteger> mediumDetentHeight;
 
 // The delegate for the container events.
 @property(nonatomic, weak) id<AssistantContainerDelegate> delegate;
@@ -59,6 +69,10 @@ enum class AssistantContainerDetent : NSInteger;
 // Returns the height of a given detent, or kInvalidDetentHeight if the detent
 // is invalid or height is not yet calculated.
 - (NSInteger)heightForDetent:(AssistantContainerDetent)detent;
+
+// Animates the container to a specific detent using default duration and curve.
+// If the detent is not found, acts as a no-op.
+- (void)animateToDetent:(AssistantContainerDetent)detent;
 
 // Animates the container to a specific detent.
 // If the detent is not found, acts as a no-op.

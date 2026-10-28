@@ -16,12 +16,13 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
-#include "components/autofill/core/browser/at_memory/at_memory_enablement_utils.h"
+#include "components/autofill/core/browser/at_memory/at_memory_enablement_util.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/data_quality/autofill_data_util.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
+#include "components/autofill/core/browser/permissions/autofill_policy_service.h"
 #include "components/autofill/core/browser/single_field_fillers/autocomplete/autocomplete_history_manager.h"
 #include "components/autofill/core/browser/studies/autofill_experiments.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
@@ -123,6 +124,19 @@ void AutocompleteSuggestionGenerator::GenerateSuggestions(
       IsInAutofillSuggestionsDisabledExperiment()) {
     std::move(callback).Run({SuggestionDataSource::kAutocomplete, {}});
     return;
+  }
+
+  if (trigger_autofill_field) {
+    const GURL& url = client.GetLastCommittedPrimaryMainFrameURL();
+    if (std::ranges::any_of(
+            AutofillPolicyService::GetAutofillPolicyDataCategoriesForType(
+                trigger_autofill_field->Type()),
+            [&](AutofillClient::AutofillPolicyDataCategory category) {
+              return client.IsAutofillTypeBlockedByPolicy(url, category);
+            })) {
+      std::move(callback).Run({SuggestionDataSource::kAutocomplete, {}});
+      return;
+    }
   }
 
   if (!profile_database_) {

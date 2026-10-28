@@ -9,6 +9,7 @@ import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.graphics.Picture;
 import android.net.Uri;
 import android.net.http.SslError;
@@ -279,7 +280,9 @@ public abstract class AwContentsClient {
 
     private static void recordSendBrowsingIntentState(@SendIntentState int activityStarted) {
         RecordHistogram.recordEnumeratedHistogram(
-                "Android.WebView.SendBrowsingIntent", activityStarted, SendIntentState.MAX_VALUE);
+                "Android.WebView.SendBrowsingIntent",
+                activityStarted,
+                SendIntentState.MAX_VALUE + 1);
     }
 
     public static Uri[] parseFileChooserResult(int resultCode, Intent intent) {
@@ -679,6 +682,7 @@ public abstract class AwContentsClient {
 
     /**
      * Called whenever there is a new content picture available.
+     *
      * @param picture New picture.
      */
     public abstract void onNewPicture(Picture picture);
@@ -694,4 +698,6 @@ public abstract class AwContentsClient {
     public abstract void onRendererResponsive(AwRenderProcess renderProcess);
 
     public abstract boolean onRenderProcessGone(AwRenderProcessGoneDetail detail);
+
+    public abstract void onReceivedThemeColor(Color color);
 }

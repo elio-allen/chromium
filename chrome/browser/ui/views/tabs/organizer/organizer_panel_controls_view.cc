@@ -16,17 +16,22 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/compositor/layer.h"
-#include "ui/gfx/geometry/point.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/actions/action_view_controller.h"
 #include "ui/views/controls/button/label_button.h"
-#include "ui/views/layout/delegating_layout_manager.h"
+#include "ui/views/layout/flex_layout.h"
+#include "ui/views/layout/flex_layout_types.h"
+#include "ui/views/layout/layout_types.h"
 #include "ui/views/layout/proposed_layout.h"
 #include "ui/views/view_class_properties.h"
 
 OrganizerPanelControlsView::OrganizerPanelControlsView(
     actions::ActionItem* root_action_item) {
-  SetLayoutManager(std::make_unique<views::DelegatingLayoutManager>(this));
+  SetOrientation(views::LayoutOrientation::kHorizontal);
+  SetCrossAxisAlignment(views::LayoutAlignment::kCenter);
+  SetMainAxisAlignment(views::LayoutAlignment::kEnd);
+  SetProperty(views::kFlexBehaviorKey,
+              views::FlexSpecification(GetDefaultFlexRule()));
 
   toggle_organizer_panel_action_item_ =
       actions::ActionManager::Get().FindAction(kActionToggleOrganizerPanel,
@@ -47,61 +52,15 @@ OrganizerPanelControlsView::OrganizerPanelControlsView(
                                          : kCloseChromeRefreshOldIcon,
                                      ui::kColorIcon));
   organizer_button_->SetProperty(views::kElementIdentifierKey,
-                                 kOrganizerPanelButtonElementId);
+                                 kOrganizerPanelCloseButtonElementId);
   UpdateTooltipText();
 
   ConfigureInkDrop(organizer_button_);
 
-  SetProperty(views::kElementIdentifierKey,
-              kOrganizerPanelControlsViewElementId);
+  SetProperty(views::kElementIdentifierKey, kOrganizerPanelControlsElementId);
 }
 
 OrganizerPanelControlsView::~OrganizerPanelControlsView() = default;
-
-views::ProposedLayout OrganizerPanelControlsView::CalculateProposedLayout(
-    const views::SizeBounds& size_bounds) const {
-  views::ProposedLayout layout;
-  gfx::Size host_size =
-      gfx::Size(size_bounds.width().is_bounded() ? size_bounds.width().value()
-                                                 : parent()->width(),
-                GetLayoutConstant(
-                    LayoutConstant::kVerticalTabStripTopButtonContainerHeight));
-
-  CHECK(organizer_button_);
-
-  const gfx::Size organizer_button_pref_size =
-      organizer_button_->GetPreferredSize();
-
-  int current_x = host_size.width();
-  int current_y = host_size.height();
-
-  // Calculate bounds to right-align the button horizontally and center it
-  // vertically within the available space.
-  gfx::Rect organizer_button_bounds(
-      current_x - organizer_button_pref_size.width(),
-      current_y -
-          (GetLayoutConstant(
-               LayoutConstant::kVerticalTabStripTopButtonContainerHeight) +
-           organizer_button_pref_size.height()) /
-              2,
-      organizer_button_pref_size.width(), organizer_button_pref_size.height());
-  layout.child_layouts.emplace_back(
-      organizer_button_.get(), organizer_button_->GetVisible(),
-      organizer_button_bounds, views::SizeBounds(organizer_button_pref_size));
-
-  layout.host_size = host_size;
-
-  return layout;
-}
-
-bool OrganizerPanelControlsView::IsPositionInWindowCaption(
-    const gfx::Point& point) {
-  if (organizer_button_ && IsHitInView(organizer_button_, point)) {
-    return false;
-  }
-
-  return true;
-}
 
 void OrganizerPanelControlsView::UpdateTooltipText() {
   auto organizer_button_text =

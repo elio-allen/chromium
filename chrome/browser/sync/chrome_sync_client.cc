@@ -34,7 +34,6 @@
 #include "components/trusted_vault/trusted_vault_service.h"
 #include "content/public/browser/browser_thread.h"
 
-namespace browser_sync {
 namespace {
 
 using content::BrowserThread;
@@ -159,6 +158,10 @@ bool ChromeSyncClient::IsCustomPassphraseAllowed() {
   return true;
 }
 
+bool ChromeSyncClient::ArePasskeysLocked() {
+  return false;
+}
+
 void ChromeSyncClient::RegisterTrustedVaultAutoUpgradeSyntheticFieldTrial(
     const syncer::TrustedVaultAutoUpgradeSyntheticFieldTrialGroup& group) {
   CHECK(group.is_valid());
@@ -199,5 +202,3 @@ void ChromeSyncClient::RegisterTrustedVaultAutoUpgradeSyntheticFieldTrial(
 bool ChromeSyncClient::IsMetricsAndCrashReportingEnabled() {
   return ChromeMetricsServiceAccessor::IsMetricsAndCrashReportingEnabled();
 }
-
-}  // namespace browser_sync

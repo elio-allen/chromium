@@ -4,16 +4,20 @@
 
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 
+#include <string_view>
+
+#include "base/run_loop.h"
 #include "base/scoped_observation.h"
 #include "base/test/bind.h"
+#include "base/test/gmock_callback_support.h"
 #include "build/build_config.h"
 #include "chrome/browser/devtools/devtools_window_testing.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/themes/custom_theme_supplier.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/views/chrome_views_delegate.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
@@ -45,9 +49,8 @@ namespace {
 
 class MockCustomThemeSupplier : public CustomThemeSupplier {
  public:
-  MockCustomThemeSupplier() : CustomThemeSupplier(ThemeType::kExtension) {
-    set_extension_id("mock_extension_id");
-  }
+  MockCustomThemeSupplier() : CustomThemeSupplier(ThemeType::kExtension) {}
+  std::string_view extension_id() const override { return "mock_extension_id"; }
   bool HasCustomImage(int id) const override { return id == IDR_THEME_TOOLBAR; }
 
  protected:
@@ -110,7 +113,7 @@ IN_PROC_BROWSER_TEST_F(BrowserWidgetTest, WebAppsHasBoundsOnOpen) {
   webapps::AppId app_id = web_app::test::InstallWebApp(browser()->GetProfile(),
                                                        std::move(web_app_info));
 
-  Browser* app_browser =
+  BrowserWindowInterface* app_browser =
       web_app::LaunchWebAppBrowser(browser()->GetProfile(), app_id);
   ASSERT_EQ(app_browser->GetType(), BrowserWindowInterface::Type::TYPE_APP);
   app_browser->GetWindow()->Close();
@@ -156,9 +159,12 @@ IN_PROC_BROWSER_TEST_F(BrowserWidgetTest, ChildWidgetsReceiveThemeUpdates) {
   // Propagate a browser theme change notification to the root BrowserWidget
   // widget and ensure the child widget is forwarded the theme change
   // notification.
-  EXPECT_CALL(widget_child_observer, OnWidgetThemeChanged(testing::_)).Times(1);
+  base::RunLoop run_loop;
+  EXPECT_CALL(widget_child_observer, OnWidgetThemeChanged(testing::_))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
   static_cast<BrowserWidget*>(browser_view->GetWidget())
       ->UserChangedTheme(BrowserThemeChangeType::kBrowserTheme);
+  run_loop.Run();
 }
 
 // Regression test for crbug.com/40070763. Ensures that browser theme change
@@ -195,7 +201,8 @@ class BrowserWidgetColorProviderTest : public BrowserWidgetTest {
   }
 
  protected:
-  ui::ColorProviderKey GetColorProviderKey(Browser* browser) {
+  ui::ColorProviderKey GetColorProviderKey(
+      const BrowserWindowInterface* browser) {
     return GetBrowserWidget(browser)->GetColorProviderKeyForTesting();
   }
 
@@ -231,7 +238,7 @@ class BrowserWidgetColorProviderTest : public BrowserWidgetTest {
     GetThemeService(profile)->SetBrowserColorVariant(color_variant);
   }
 
-  BrowserWidget* GetBrowserWidget(Browser* browser) {
+  BrowserWidget* GetBrowserWidget(const BrowserWindowInterface* browser) {
     return static_cast<BrowserWidget*>(
         BrowserView::GetBrowserViewForBrowser(browser)->GetWidget());
   }
@@ -282,7 +289,7 @@ IN_PROC_BROWSER_TEST_F(BrowserWidgetColorProviderTest,
 IN_PROC_BROWSER_TEST_F(BrowserWidgetColorProviderTest,
                        IncognitoAlwaysDarkMode) {
   // Create an incognito browser.
-  Browser* incognito_browser = CreateIncognitoBrowser(profile());
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser(profile());
 
   // The incognito browser should reflect the dark color mode irrespective of
   // the current BrowserColorScheme.
@@ -373,7 +380,7 @@ IN_PROC_BROWSER_TEST_F(BrowserWidgetColorProviderTest,
 IN_PROC_BROWSER_TEST_F(BrowserWidgetColorProviderTest,
                        IncognitoAlwaysIgnoresUserColor) {
   // Create an incognito browser.
-  Browser* incognito_browser = CreateIncognitoBrowser(profile());
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser(profile());
   views::Widget* incognito_browser_frame = GetBrowserWidget(incognito_browser);
 
   // Set the user color in both the OS and the profile pref.
@@ -420,7 +427,7 @@ IN_PROC_BROWSER_TEST_F(BrowserWidgetColorProviderTest,
 IN_PROC_BROWSER_TEST_F(BrowserWidgetColorProviderTest,
                        IncognitoIsAlwaysGrayscale) {
   // Create an incognito browser.
-  Browser* incognito_browser = CreateIncognitoBrowser(profile());
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser(profile());
 
   // Set the is_grayscale pref to false. The incognito browser should force the
   // is_grayscale setting to true.

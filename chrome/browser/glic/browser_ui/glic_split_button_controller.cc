@@ -11,6 +11,7 @@
 #include "base/feature_list.h"
 #include "base/notimplemented.h"
 #include "build/build_config.h"
+#include "chrome/browser/glic/browser_ui/activity_list_bubble/glic_activity_list_bubble_controller.h"
 #include "chrome/browser/glic/browser_ui/glic_actor_nudge_controller.h"
 #include "chrome/browser/glic/browser_ui/glic_button_controller.h"
 #include "chrome/browser/glic/browser_ui/glic_nudge_controller.h"
@@ -28,10 +29,6 @@
 #include "chrome/common/chrome_features.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/tabs/public/tab_interface.h"
-
-#if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/actor/ui/task_list_bubble/actor_task_list_bubble_controller.h"
-#endif
 
 namespace glic {
 
@@ -58,17 +55,17 @@ GlicSplitButtonController::GlicSplitButtonController(
   glic_button_controller_ = std::make_unique<GlicButtonController>(
       browser->GetProfile(), *browser, this, glic_service);
 
-  if (base::FeatureList::IsEnabled(features::kGlicActor) &&
-      base::FeatureList::IsEnabled(features::kGlicActorUi) &&
-      features::kGlicActorUiTaskIcon.Get() &&
+  if (((base::FeatureList::IsEnabled(features::kGlicActor) &&
+        base::FeatureList::IsEnabled(features::kGlicActorUi) &&
+        features::kGlicActorUiTaskIcon.Get()) ||
+       base::FeatureList::IsEnabled(features::kGlicActivityHub)) &&
       browser->GetProfile()->IsRegularProfile()) {
-// TODO(crbug.com/518584352): Port this to Android.
-#if !BUILDFLAG(IS_ANDROID)
-    actor_task_list_bubble_controller_ =
-        std::make_unique<ActorTaskListBubbleController>(browser);
-#endif
-    glic_actor_nudge_controller_ =
-        std::make_unique<GlicActorNudgeController>(browser, this);
+    activity_list_bubble_controller_ =
+        std::make_unique<GlicActivityListBubbleController>(browser, *this);
+    if (!base::FeatureList::IsEnabled(features::kGlicActivityHub)) {
+      glic_actor_nudge_controller_ =
+          std::make_unique<GlicActorNudgeController>(browser, this);
+    }
   }
 }
 
@@ -94,7 +91,6 @@ void GlicSplitButtonController::OnGlicButtonClicked() {
     return;
   }
 
-// TODO(crbug.com/537848713): Maybe port to Android.
 #if !BUILDFLAG(IS_ANDROID)
   // Indicate that the glic button was pressed so that we can either close the
   // IPH promo (if present) or note that it has already been used to prevent
@@ -113,7 +109,7 @@ void GlicSplitButtonController::OnGlicButtonClicked() {
   tabs::TabInterface* active_tab =
       TabListInterface::From(browser_)->GetActiveTab();
   if (!is_panel_showing && prompt_suggestion && !prompt_suggestion->empty() &&
-      active_tab) {
+      active_tab && GlicEnabling::IsEnabledForProfile(browser_->GetProfile())) {
     glic::GlicInvokeOptions options(glic::Target(*active_tab),
                                     GetInvocationSource(*delegate));
     options.prompts.push_back(std::move(*prompt_suggestion));
@@ -174,6 +170,11 @@ mojom::InvocationSource GlicSplitButtonController::GetInvocationSource(
 base::WeakPtr<GlicSplitButtonController>
 GlicSplitButtonController::GetWeakPtr() {
   return weak_factory_.GetWeakPtr();
+}
+
+void GlicSplitButtonController::SetActorNudgeControllerForTesting(
+    std::unique_ptr<GlicActorNudgeController> controller) {
+  glic_actor_nudge_controller_ = std::move(controller);
 }
 
 }  // namespace glic

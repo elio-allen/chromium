@@ -18,6 +18,8 @@ struct TabData {
   int64_t id;
   std::string title;
   GURL url;
+  base::Time last_active_time;
+  base::TimeDelta last_foreground_duration;
 };
 
 // Represents unconfirmed (Auto Group Suggestions from the Context Hub Auto

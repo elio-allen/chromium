@@ -38,7 +38,6 @@ BASE_FEATURE(kFastMemoryCacheWithDevTools, base::FEATURE_ENABLED_BY_DEFAULT);
 #include <memory>
 #include <optional>
 
-#include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
@@ -58,7 +57,6 @@ BASE_FEATURE(kFastMemoryCacheWithDevTools, base::FEATURE_ENABLED_BY_DEFAULT);
 #include "third_party/blink/public/common/client_hints/client_hints.h"
 #include "third_party/blink/public/common/device_memory/approximated_device_memory.h"
 #include "third_party/blink/public/common/permissions_policy/document_policy_features.h"
-#include "third_party/blink/public/common/switches.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
 #include "third_party/blink/public/mojom/loader/request_context_frame_type.mojom-blink.h"
 #include "third_party/blink/public/platform/modules/service_worker/web_service_worker_network_provider.h"
@@ -148,26 +146,17 @@ namespace {
 // structured headers as described in
 // https://www.rfc-editor.org/rfc/rfc8941.html.
 const AtomicString SerializeStringHeader(const std::string& str) {
-  std::string output;
-
-  // See https://crbug.com/1416925.
-  if (str.empty() &&
-      !base::FeatureList::IsEnabled(
-          blink::features::kQuoteEmptySecChUaStringHeadersConsistently)) {
-    return AtomicString(output.c_str());
-  }
-
-  output =
-      net::structured_headers::SerializeItem(net::structured_headers::Item(str))
-          .value_or(std::string());
+  std::string output = net::structured_headers::SerializeItem(
+                           net::structured_headers::ItemView(
+                               net::structured_headers::ItemView::string, str))
+                           .value_or(std::string());
 
   return AtomicString(output.c_str());
 }
 
 AtomicString GenerateBoolHeaderValue(bool value) {
-  const std::string output = net::structured_headers::SerializeItem(
-                                 net::structured_headers::Item(value))
-                                 .value_or(std::string());
+  const std::string output =
+      net::structured_headers::SerializeItem(value).value_or(std::string());
   return AtomicString(output.c_str());
 }
 
@@ -470,9 +459,22 @@ void FrameFetchContext::PrepareRequest(
 // calculation for resource timing and dev tools.
 void FrameFetchContext::FillInitiatorInfo(FetchInitiatorInfo& initiator_info) {
   CHECK(RuntimeEnabledFeatures::ResourceTimingInitiatorEnabled());
+  // A module script reaches one of three branches below depending on how it is
+  // requested:
+  //   - Statically imported (import "leaf.js";): the imported-module branch
+  //     just below. |initiator_info.referrer| is the importing module's URL.
+  //     Unlike the stylesheet case, it is non-empty even when the document
+  //     imports the module itself, e.g.
+  //       <script type="module">import "leaf.js";</script>
+  //   - Dynamically imported (import("leaf.js")), or loaded by a module script
+  //     element that JavaScript adds to the document (e.g. via
+  //     document.createElement("script")): the running-script branch, since a
+  //     script is executing when the fetch is initiated.
+  //   - Loaded directly by the parser (<script type="module" src="leaf.js">):
+  //     the document-fallback branch at the end.
   if (initiator_info.is_imported_module && !initiator_info.referrer.empty()) {
-    // TODO(crbug.com/40919714): Fill |initiator_url|.
     // Initiator is a referrer of an imported js file.
+    initiator_info.initiator_url = KURL(initiator_info.referrer);
     return;
   }
   bool was_requested_by_stylesheet =
@@ -482,7 +484,6 @@ void FrameFetchContext::FillInitiatorInfo(FetchInitiatorInfo& initiator_info) {
   // the document.
   if (was_requested_by_stylesheet && !initiator_info.referrer.empty()) {
     initiator_info.initiator_url = KURL(initiator_info.referrer);
-
     return;
   }
 
@@ -931,12 +932,6 @@ void FrameFetchContext::AddReducedAcceptLanguageIfNecessary(
     return;
   }
 
-  // Skip if enterprise policy disabled the feature.
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          blink::switches::kDisableReduceAcceptLanguage)) {
-    return;
-  }
-
   if (!request.Url().ProtocolIsInHttpFamily()) {
     return;
   }
@@ -1182,12 +1177,14 @@ void FrameFetchContext::CountDeprecation(WebFeature feature) const {
 }
 
 bool FrameFetchContext::ShouldBlockWebSocketByMixedContentCheck(
-    const KURL& url) const {
+    const KURL& url,
+    network::mojom::blink::IPAddressSpace target_address_space) const {
   if (GetResourceFetcherProperties().IsDetached()) {
     // TODO(yhirano): Implement the detached case.
     return false;
   }
-  return !MixedContentChecker::IsWebSocketAllowed(*this, GetFrame(), url);
+  return !MixedContentChecker::IsWebSocketAllowed(*this, GetFrame(), url,
+                                                  target_address_space);
 }
 
 std::unique_ptr<WebSocketHandshakeThrottle>

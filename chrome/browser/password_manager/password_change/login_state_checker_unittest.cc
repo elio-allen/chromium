@@ -11,17 +11,23 @@
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/types/expected.h"
 #include "chrome/browser/optimization_guide/mock_optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/password_manager/password_change/annotated_page_content_capturer.h"
 #include "chrome/browser/password_manager/password_change/fake_annotated_page_content_capturer.h"
+#include "chrome/browser/password_manager/password_change/features.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/stub_password_manager_client.h"
+#include "content/public/test/navigation_simulator.h"
+#include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
+#include "net/base/net_errors.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -131,6 +137,7 @@ class LoginStateCheckerTest : public ChromeRenderViewHostTestHarness {
 };
 
 TEST_F(LoginStateCheckerTest, UserIsLoggedInOnFirstAttempt) {
+  base::HistogramTester histogram_tester;
   base::test::TestFuture<LoginCheckResult> future;
   EXPECT_CALL(*optimization_service(), ExecuteModel)
       .WillOnce(WithArg<3>(&PostResponse<ResponseType::kSuccess>));
@@ -142,9 +149,20 @@ TEST_F(LoginStateCheckerTest, UserIsLoggedInOnFirstAttempt) {
       ->SimulateResponse(optimization_guide::AIPageContentResult());
   EXPECT_THAT(future.Take(),
               HasLoginCheckStatus(LoginCheckResult::Status::kLoggedIn));
+
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.PasswordChange.LoginCheckResult",
+      LoginCheckResult::Status::kLoggedIn, 1);
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.PasswordChange.LoginCheckAttempts", 1, 1);
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.PasswordChange.LoginCheckError", 0);
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.PasswordChange.LoginCheckDuration", 1);
 }
 
 TEST_F(LoginStateCheckerTest, UserIsLoggedInOnSecondAttempt) {
+  base::HistogramTester histogram_tester;
   base::test::TestFuture<LoginCheckResult> future;
   {
     InSequence s;
@@ -170,9 +188,20 @@ TEST_F(LoginStateCheckerTest, UserIsLoggedInOnSecondAttempt) {
       ->SimulateResponse(optimization_guide::AIPageContentResult());
   EXPECT_THAT(future.Take(),
               HasLoginCheckStatus(LoginCheckResult::Status::kLoggedIn));
+
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.PasswordChange.LoginCheckResult",
+      LoginCheckResult::Status::kLoggedIn, 1);
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.PasswordChange.LoginCheckAttempts", 2, 1);
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.PasswordChange.LoginCheckError", 0);
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.PasswordChange.LoginCheckDuration", 1);
 }
 
 TEST_F(LoginStateCheckerTest, FailsAfterUnexpectedResponse) {
+  base::HistogramTester histogram_tester;
   base::test::TestFuture<LoginCheckResult> future;
   EXPECT_CALL(*optimization_service(), ExecuteModel)
       .WillOnce(WithArg<3>(&PostResponse<ResponseType::kUnexpected>));
@@ -184,6 +213,17 @@ TEST_F(LoginStateCheckerTest, FailsAfterUnexpectedResponse) {
       ->SimulateResponse(optimization_guide::AIPageContentResult());
   EXPECT_THAT(future.Take(),
               HasLoginCheckStatus(LoginCheckResult::Status::kError));
+
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.PasswordChange.LoginCheckResult",
+      LoginCheckResult::Status::kError, 1);
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.PasswordChange.LoginCheckAttempts", 1, 1);
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.PasswordChange.LoginCheckError",
+      LoginCheckResult::LoginCheckError::kFailedToParseResponse, 1);
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.PasswordChange.LoginCheckDuration", 1);
 }
 
 TEST_F(LoginStateCheckerTest, UnexpectedResponseOnSecondAttempt) {
@@ -213,6 +253,7 @@ TEST_F(LoginStateCheckerTest, UnexpectedResponseOnSecondAttempt) {
 }
 
 TEST_F(LoginStateCheckerTest, ExceedsMaxLoginChecksAndFails) {
+  base::HistogramTester histogram_tester;
   base::test::TestFuture<LoginCheckResult> future;
   EXPECT_CALL(*optimization_service(), ExecuteModel)
       .Times(LoginStateChecker::kMaxLoginChecks)
@@ -239,6 +280,15 @@ TEST_F(LoginStateCheckerTest, ExceedsMaxLoginChecksAndFails) {
   static_cast<content::WebContentsObserver*>(checker.get())
       ->DidFinishNavigation(nullptr);
   EXPECT_FALSE(checker->capturer());
+
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.PasswordChange.LoginCheckResult",
+      LoginCheckResult::Status::kLoggedOut, 1);
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.PasswordChange.LoginCheckAttempts",
+      LoginStateChecker::kMaxLoginChecks, 1);
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.PasswordChange.LoginCheckDuration", 1);
 }
 
 TEST_F(LoginStateCheckerTest, CachesPageContentIfRequestInFlight) {
@@ -395,9 +445,10 @@ TEST_F(LoginStateCheckerTest, NoRequestWithEmptyCachedPageContent) {
 }
 
 TEST_F(LoginStateCheckerTest, FailsAfterErrorInTheResponse) {
+  base::HistogramTester histogram_tester;
   base::test::TestFuture<LoginCheckResult> future;
   EXPECT_CALL(*optimization_service(), ExecuteModel)
-      .WillOnce(WithArg<3>(&PostResponse<ResponseType::kUnexpected>));
+      .WillOnce(WithArg<3>(&PostResponse<ResponseType::kError>));
 
   std::unique_ptr<LoginStateChecker> checker =
       CreateChecker(future.GetRepeatingCallback());
@@ -406,6 +457,17 @@ TEST_F(LoginStateCheckerTest, FailsAfterErrorInTheResponse) {
       ->SimulateResponse(optimization_guide::AIPageContentResult());
   EXPECT_THAT(future.Take(),
               HasLoginCheckStatus(LoginCheckResult::Status::kError));
+
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.PasswordChange.LoginCheckResult",
+      LoginCheckResult::Status::kError, 1);
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.PasswordChange.LoginCheckAttempts", 1, 1);
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.PasswordChange.LoginCheckError",
+      LoginCheckResult::LoginCheckError::kLoginFailed, 1);
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.PasswordChange.LoginCheckDuration", 1);
 }
 
 TEST_F(LoginStateCheckerTest, RetryLoginCheck) {
@@ -446,7 +508,11 @@ TEST_F(LoginStateCheckerTest, EmitsHistogramOnCaptureFailure) {
   EXPECT_CALL(*optimization_service(), ExecuteModel).Times(0);
 
   static_cast<FakeAnnotatedPageContentCapturer*>(checker->capturer())
-      ->SimulateResponse(base::unexpected("Capture failed"));
+      ->SimulateResponse(
+          base::unexpected(optimization_guide::AIPageContentError{
+              optimization_guide::AIPageContentExtractionStatus::
+                  kMainFrameNotLive,
+              "Capture failed"}));
 
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.PasswordChange.FailedCapturingPageContent",
@@ -468,6 +534,182 @@ TEST_F(LoginStateCheckerTest, UsesPrivateAiServiceType) {
   std::unique_ptr<LoginStateChecker> checker =
       CreateChecker(future.GetRepeatingCallback(),
                     optimization_guide::ModelExecutionServiceType::kPrivateAi);
+
+  ASSERT_TRUE(checker->capturer());
+  static_cast<FakeAnnotatedPageContentCapturer*>(checker->capturer())
+      ->SimulateResponse(optimization_guide::AIPageContentResult());
+  EXPECT_THAT(future.Take(),
+              HasLoginCheckStatus(LoginCheckResult::Status::kLoggedIn));
+}
+
+TEST_F(LoginStateCheckerTest, LoginCheckTimesOut) {
+  base::HistogramTester histogram_tester;
+  base::test::TestFuture<LoginCheckResult> future;
+  std::unique_ptr<LoginStateChecker> checker =
+      CreateChecker(future.GetRepeatingCallback(),
+                    optimization_guide::ModelExecutionServiceType::kPrivateAi);
+  ASSERT_TRUE(checker->capturer());
+
+  // Fast forward time past the timeout without providing a response.
+  task_environment()->FastForwardBy(LoginStateChecker::kLoginCheckTimeout);
+
+  EXPECT_TRUE(future.IsReady());
+  LoginCheckResult result = future.Take();
+  EXPECT_EQ(result.status, LoginCheckResult::Status::kError);
+
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.PasswordChange.LoginCheckResult",
+      LoginCheckResult::Status::kError, 1);
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.PasswordChange.LoginCheckAttempts", 0, 1);
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.PasswordChange.LoginCheckError",
+      LoginCheckResult::LoginCheckError::kTimeout, 1);
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.PasswordChange.LoginCheckDuration", 1);
+}
+
+TEST_F(LoginStateCheckerTest, LoginCheckTimesOutDuringModelExecution) {
+  base::test::TestFuture<LoginCheckResult> future;
+  // Model execution is initiated but does not respond.
+  EXPECT_CALL(*optimization_service(), ExecuteModel).Times(1);
+
+  std::unique_ptr<LoginStateChecker> checker =
+      CreateChecker(future.GetRepeatingCallback(),
+                    optimization_guide::ModelExecutionServiceType::kPrivateAi);
+  ASSERT_TRUE(checker->capturer());
+  static_cast<FakeAnnotatedPageContentCapturer*>(checker->capturer())
+      ->SimulateResponse(optimization_guide::AIPageContentResult());
+
+  // Fast forward past the timeout.
+  task_environment()->FastForwardBy(LoginStateChecker::kLoginCheckTimeout);
+
+  EXPECT_TRUE(future.IsReady());
+  LoginCheckResult result = future.Take();
+  EXPECT_EQ(result.status, LoginCheckResult::Status::kError);
+}
+
+TEST_F(LoginStateCheckerTest, TimerResetOnSuccessfulLogin) {
+  base::test::TestFuture<LoginCheckResult> future;
+  EXPECT_CALL(*optimization_service(), ExecuteModel)
+      .WillOnce(WithArg<3>(&PostResponse<ResponseType::kSuccess>));
+
+  std::unique_ptr<LoginStateChecker> checker =
+      CreateChecker(future.GetRepeatingCallback(),
+                    optimization_guide::ModelExecutionServiceType::kPrivateAi);
+  ASSERT_TRUE(checker->capturer());
+  static_cast<FakeAnnotatedPageContentCapturer*>(checker->capturer())
+      ->SimulateResponse(optimization_guide::AIPageContentResult());
+
+  EXPECT_THAT(future.Take(),
+              HasLoginCheckStatus(LoginCheckResult::Status::kLoggedIn));
+
+  // Advancing time past the timeout should NOT trigger any new callback.
+  task_environment()->FastForwardBy(LoginStateChecker::kLoginCheckTimeout);
+  EXPECT_FALSE(future.IsReady());
+}
+
+TEST_F(LoginStateCheckerTest, NoTimeoutWhenFeatureFlagDisabled) {
+  base::test::TestFuture<LoginCheckResult> future;
+  std::unique_ptr<LoginStateChecker> checker =
+      CreateChecker(future.GetRepeatingCallback());
+  ASSERT_TRUE(checker->capturer());
+
+  // Fast forward time past the timeout duration.
+  task_environment()->FastForwardBy(LoginStateChecker::kLoginCheckTimeout);
+
+  // Since flag is disabled, timer should not fire.
+  EXPECT_FALSE(future.IsReady());
+}
+
+TEST_F(LoginStateCheckerTest, RecordsLoginCheckDurationOnSuccess) {
+  constexpr base::TimeDelta kExpectedDurationTime = base::Seconds(4);
+  base::HistogramTester histogram_tester;
+  base::test::TestFuture<LoginCheckResult> future;
+  EXPECT_CALL(*optimization_service(), ExecuteModel)
+      .WillOnce(WithArg<3>(&PostResponse<ResponseType::kSuccess>));
+
+  std::unique_ptr<LoginStateChecker> checker =
+      CreateChecker(future.GetRepeatingCallback());
+  ASSERT_TRUE(checker->capturer());
+
+  // Simulate 4 seconds of page capture / user navigation time
+  task_environment()->FastForwardBy(kExpectedDurationTime);
+
+  static_cast<FakeAnnotatedPageContentCapturer*>(checker->capturer())
+      ->SimulateResponse(optimization_guide::AIPageContentResult());
+  EXPECT_THAT(future.Take(),
+              HasLoginCheckStatus(LoginCheckResult::Status::kLoggedIn));
+
+  // Verify a sample was placed in the bucket representing ~4 seconds
+  histogram_tester.ExpectTimeBucketCount(
+      "PasswordManager.PasswordChange.LoginCheckDuration",
+      kExpectedDurationTime, 1);
+}
+
+TEST_F(LoginStateCheckerTest, SubframeNavigationIgnored) {
+  base::test::TestFuture<LoginCheckResult> future;
+  EXPECT_CALL(*optimization_service(), ExecuteModel).Times(0);
+
+  NavigateAndCommit(GURL("https://example.com"));
+
+  std::unique_ptr<LoginStateChecker> checker =
+      CreateChecker(future.GetRepeatingCallback());
+  ASSERT_TRUE(checker->capturer());
+
+  content::RenderFrameHost* child_rfh =
+      content::RenderFrameHostTester::For(main_rfh())
+          ->AppendChild("child_frame");
+  content::NavigationSimulator::NavigateAndCommitFromDocument(
+      GURL("https://example.com/subframe"), child_rfh);
+
+  // Capturer is not reset because subframe navigation is ignored.
+  EXPECT_TRUE(checker->capturer());
+}
+
+TEST_F(LoginStateCheckerTest, UncommittedNavigationIgnored) {
+  base::test::TestFuture<LoginCheckResult> future;
+  EXPECT_CALL(*optimization_service(), ExecuteModel).Times(0);
+
+  NavigateAndCommit(GURL("https://example.com"));
+
+  std::unique_ptr<LoginStateChecker> checker =
+      CreateChecker(future.GetRepeatingCallback());
+  ASSERT_TRUE(checker->capturer());
+
+  auto simulator = content::NavigationSimulator::CreateBrowserInitiated(
+      GURL("https://example.com/failed"), web_contents());
+  simulator->Fail(net::ERR_ABORTED);
+
+  // Capturer is not reset because uncommitted navigation is ignored.
+  EXPECT_TRUE(checker->capturer());
+}
+
+TEST_F(LoginStateCheckerTest,
+       PrimaryMainFrameCommittedNavigationTriggersRecheck) {
+  base::test::TestFuture<LoginCheckResult> future;
+  {
+    InSequence s;
+    EXPECT_CALL(*optimization_service(), ExecuteModel)
+        .WillOnce(WithArg<3>(&PostResponse<ResponseType::kFailure>));
+    EXPECT_CALL(*optimization_service(), ExecuteModel)
+        .WillOnce(WithArg<3>(&PostResponse<ResponseType::kSuccess>));
+  }
+
+  NavigateAndCommit(GURL("https://example.com"));
+
+  std::unique_ptr<LoginStateChecker> checker =
+      CreateChecker(future.GetRepeatingCallback());
+  ASSERT_TRUE(checker->capturer());
+
+  static_cast<FakeAnnotatedPageContentCapturer*>(checker->capturer())
+      ->SimulateResponse(optimization_guide::AIPageContentResult());
+  EXPECT_THAT(future.Take(),
+              HasLoginCheckStatus(LoginCheckResult::Status::kLoggedOut));
+
+  // Primary main frame committed navigation.
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("https://example.com/next"));
 
   ASSERT_TRUE(checker->capturer());
   static_cast<FakeAnnotatedPageContentCapturer*>(checker->capturer())

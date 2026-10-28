@@ -18,67 +18,67 @@ import org.chromium.chrome.browser.bricks.theme.ChromeMaterialTheme
 
 /**
  * A Compose-based variant of MaterialSwitchWithTitleAndSummary designed for Java interoperability.
- * Extends [AbstractComposeView] and provides a traditional Java View API (setTitleText, setSummaryText, setChecked, setOnCheckedChangeListener).
+ * Extends [AbstractComposeView] and provides a traditional Java View API (setTitleText,
+ * setSummaryText, setChecked, setOnCheckedChangeListener).
  */
-class ComposeMaterialSwitchWithTitleAndSummary @JvmOverloads constructor(
-    context: Context,
-    attrs: AttributeSet? = null
+class ComposeMaterialSwitchWithTitleAndSummary
+@JvmOverloads
+constructor(
+  context: Context,
+  attrs: AttributeSet? = null,
 ) : AbstractComposeView(context, attrs), Checkable {
 
-    private var mTitleText by mutableStateOf("")
-    private var mSummaryText by mutableStateOf("")
-    private var mChecked by mutableStateOf(false)
-    private var mEnabled by mutableStateOf(true)
-    private var mListener: CompoundButton.OnCheckedChangeListener? = null
-    private val mSwitch by lazy { Switch(context) }
+  private var mTitleText by mutableStateOf("")
+  private var mSummaryText by mutableStateOf("")
+  private var mChecked by mutableStateOf(false)
+  private var mEnabled by mutableStateOf(isEnabled)
+  private var mListener: CompoundButton.OnCheckedChangeListener? = null
+  private val mSwitch by lazy { Switch(context) }
 
-    @Composable
-    override fun Content() {
-        ChromeMaterialTheme {
-            ComposeSwitchWithTitleAndSummary(
-                title = mTitleText,
-                summary = mSummaryText,
-                checked = mChecked,
-                onCheckedChange = { newChecked ->
-                    if (mEnabled && mChecked != newChecked) {
-                        mChecked = newChecked
-                        mListener?.onCheckedChanged(mSwitch, mChecked)
-                    }
-                },
-                enabled = mEnabled
-            )
-        }
+  @Composable
+  override fun Content() {
+    ChromeMaterialTheme {
+      ComposeSwitchWithTitleAndSummary(
+        title = mTitleText,
+        summary = mSummaryText,
+        checked = mChecked,
+        onCheckedChange = { newChecked ->
+          if (mEnabled) {
+            setChecked(newChecked)
+          }
+        },
+        enabled = mEnabled,
+      )
     }
+  }
 
-    fun setTitleText(title: String) {
-        mTitleText = title
+  fun setTitleText(title: String) {
+    mTitleText = title
+  }
+
+  fun setSummaryText(summary: String) {
+    mSummaryText = summary
+  }
+
+  override fun setChecked(checked: Boolean) {
+    if (mChecked != checked) {
+      mChecked = checked
+      mListener?.onCheckedChanged(mSwitch, mChecked)
     }
+  }
 
-    fun setSummaryText(summary: String) {
-        mSummaryText = summary
-    }
+  override fun isChecked(): Boolean = mChecked
 
-    override fun setChecked(checked: Boolean) {
-        if (mChecked != checked) {
-            mChecked = checked
-            mListener?.onCheckedChanged(mSwitch, mChecked)
-        }
-    }
+  override fun toggle() {
+    setChecked(!mChecked)
+  }
 
-    override fun isChecked(): Boolean = mChecked
+  override fun setEnabled(enabled: Boolean) {
+    super.setEnabled(enabled)
+    mEnabled = enabled
+  }
 
-    override fun toggle() {
-        setChecked(!mChecked)
-    }
-
-    override fun setEnabled(enabled: Boolean) {
-        super.setEnabled(enabled)
-        mEnabled = enabled
-    }
-
-    override fun isEnabled(): Boolean = mEnabled
-
-    fun setOnCheckedChangeListener(listener: CompoundButton.OnCheckedChangeListener?) {
-        mListener = listener
-    }
+  fun setOnCheckedChangeListener(listener: CompoundButton.OnCheckedChangeListener?) {
+    mListener = listener
+  }
 }

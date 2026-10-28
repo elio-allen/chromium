@@ -28,9 +28,9 @@
 #include "base/functional/bind.h"
 #include "chromeos/ash/components/audio/sounds.h"
 #include "ui/aura/client/aura_constants.h"
-#include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animation_element.h"
 #include "ui/compositor/layer_animation_observer.h"
+#include "ui/compositor/layer_solid_color.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/display/screen.h"
 #include "ui/display/tablet_state.h"
@@ -302,7 +302,7 @@ void BackdropController::UpdateBackdrop() {
 }
 
 aura::Window* BackdropController::GetTopmostWindowWithBackdrop() {
-  const aura::Window::Windows windows = container_->children();
+  const aura::Window::Windows& windows = container_->children();
   for (aura::Window* window : std::views::reverse(windows)) {
     if (window == backdrop_window_)
       continue;
@@ -569,7 +569,7 @@ void BackdropController::Hide(bool destroy, bool animate) {
   DCHECK(backdrop_window_);
   base::AutoReset<bool> lock(&is_hiding_backdrop_, true);
 
-  const aura::Window::Windows windows = container_->children();
+  const aura::Window::Windows& windows = container_->children();
   auto window_iter = std::ranges::find(windows, backdrop_window_);
   ++window_iter;
   if (window_iter != windows.end()) {

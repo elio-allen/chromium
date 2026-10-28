@@ -12,12 +12,13 @@
 #include "base/memory/ref_counted.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "components/lens/lens_overlay_invocation_source.h"
 #include "components/omnibox/browser/actions/omnibox_action_concepts.h"
 #include "components/omnibox/browser/autocomplete_match_type.h"
 #include "components/omnibox/browser/buildflags.h"
 #include "components/search_engines/template_url.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/image/image.h"
 #include "url/gurl.h"
@@ -108,7 +109,9 @@ class OmniboxAction : public base::RefCountedThreadSafe<OmniboxAction> {
 
     // Opens the lens overlay. If `show` is true, the overlay UI is presented
     // and if it's false then lens is used to contextualize without showing UI.
-    virtual void OpenLensOverlay(bool show) = 0;
+    virtual void OpenLensOverlay(
+        bool show,
+        lens::LensOverlayInvocationSource invocation_source) = 0;
 
     // Returns true if the client should open the Cobrowse panel (bypassing
     // Lens).
@@ -128,7 +131,7 @@ class OmniboxAction : public base::RefCountedThreadSafe<OmniboxAction> {
     // params that are attached to the URL.
     virtual void IssueContextualSearchRequest(
         const GURL& destination_url,
-        AutocompleteMatchType::Type match_type,
+        omnibox::AutocompleteMatchType match_type,
         bool is_zero_prefix_suggestion) = 0;
   };
 
@@ -151,9 +154,9 @@ class OmniboxAction : public base::RefCountedThreadSafe<OmniboxAction> {
     using OpenUrlCallback =
         base::OnceCallback<void(const GURL& destination_url,
                                 TemplateURLRef::PostContent* post_content,
-                                WindowOpenDisposition disposition,
+                                ui::mojom::WindowOpenDisposition disposition,
                                 ui::PageTransition transition,
-                                AutocompleteMatchType::Type match_type,
+                                omnibox::AutocompleteMatchType match_type,
                                 base::TimeTicks match_selection_timestamp,
                                 bool destination_url_entered_without_scheme,
                                 bool destination_url_entered_with_http_scheme,
@@ -164,12 +167,12 @@ class OmniboxAction : public base::RefCountedThreadSafe<OmniboxAction> {
     ExecutionContext(Client& client,
                      OpenUrlCallback callback,
                      base::TimeTicks match_selection_timestamp,
-                     WindowOpenDisposition disposition);
+                     ui::mojom::WindowOpenDisposition disposition);
     ~ExecutionContext();
     const raw_ref<Client, FlakyDanglingUntriaged> client_;
     OpenUrlCallback open_url_callback_;
     base::TimeTicks match_selection_timestamp_;
-    WindowOpenDisposition disposition_;
+    ui::mojom::WindowOpenDisposition disposition_;
   };
 
   OmniboxAction(

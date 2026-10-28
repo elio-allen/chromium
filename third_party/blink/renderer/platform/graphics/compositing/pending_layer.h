@@ -39,6 +39,7 @@ class PLATFORM_EXPORT PendingLayer {
 
   PendingLayer(const PaintArtifact&,
                const PaintChunk& first_chunk,
+               DOMNodeId canvas_drawable_id = kInvalidDOMNodeId,
                CompositingType = kOther);
 
   void Trace(Visitor*) const;
@@ -81,16 +82,19 @@ class PLATFORM_EXPORT PendingLayer {
     chunks_.SetPaintArtifact(paint_artifact);
   }
 
-  std::optional<CanvasChildPaintRecord> GetCanvasChildPaintRecord() const {
+  std::optional<CanvasDrawablePaintRecord> GetCanvasDrawablePaintRecord()
+      const {
     return content_layer_client_
-               ? content_layer_client_->GetCanvasChildPaintRecord()
+               ? content_layer_client_->GetCanvasDrawablePaintRecord()
                : std::nullopt;
   }
-  const CanvasChildPaintState* canvas_child_paint_state() const {
+  const CanvasDrawablePaintState* canvas_drawable_paint_state() const {
     return content_layer_client_
-               ? content_layer_client_->canvas_child_paint_state()
+               ? content_layer_client_->canvas_drawable_paint_state()
                : nullptr;
   }
+
+  DOMNodeId CanvasDrawableId() const { return canvas_drawable_id_; }
 
   using IsCompositedScrollFunction =
       PropertyTreeState::IsCompositedScrollFunction;
@@ -199,10 +203,6 @@ class PLATFORM_EXPORT PendingLayer {
   // draw a solid color (see comment above `solid_color_chunk_index_`).
   bool IsSolidColor() const { return solid_color_chunk_index_ != kNotFound; }
 
-  int MergedAcrossCompositingBoundaryCount() const {
-    return merged_across_compositing_boundary_count_;
-  }
-
  private:
   // Checks basic merge-ability with `guest` and calls
   // PropertyTreeState::CanUpcastWith().
@@ -271,9 +271,7 @@ class PLATFORM_EXPORT PendingLayer {
   cc::HitTestOpaqueness hit_test_opaqueness_ =
       cc::HitTestOpaqueness::kTransparent;
 
-  // For metrics.
-  int merged_across_compositing_boundary_count_ = 0;
-
+  DOMNodeId canvas_drawable_id_ = kInvalidDOMNodeId;
   bool has_text_ = false;
   bool draws_content_ = false;
   bool text_known_to_be_on_opaque_background_ = false;

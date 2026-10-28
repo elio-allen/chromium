@@ -4,20 +4,24 @@
 
 #include "chrome/browser/ui/waap/initial_webui_window_metrics_manager.h"
 
+#include "base/check.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/waap/initial_webui_metrics_dispatcher.h"
 #include "chrome/browser/ui/waap/waap_ui_metrics_service.h"
+#include "third_party/blink/public/common/features.h"
 #include "ui/base/base_window.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 namespace {
 
+// Tracks process-wide startup metrics. Startup metrics must be recorded at
+// most once per browser process lifecycle across all windows.
+// Declared in the anonymous namespace so `ResetForTesting()` can reset state
+// between tests.
 bool g_is_startup_first_paint_recorded = false;
-bool g_is_startup_reload_first_paint_recorded = false;
-bool g_is_startup_reload_first_contentful_paint_recorded = false;
-bool g_is_startup_process_recorded = false;
 bool g_process_startup_delta_recorded = false;
 
 }  // namespace
@@ -28,15 +32,27 @@ InitialWebUIWindowMetricsManager::InitialWebUIWindowMetricsManager(
     BrowserWindowInterface* browser)
     : waap_service_(WaapUIMetricsService::Get(browser->GetProfile())),
       browser_(browser),
+      metrics_dispatcher_(
+          std::make_unique<InitialWebUINativeMetricsDispatcher>(waap_service_,
+                                                                this)),
       scoped_data_holder_(browser->GetUnownedUserDataHost(), *this),
       was_created_with_existing_windows_(
           ProfileBrowserCollection::GetForProfile(browser->GetProfile())
               ->GetSize() > 0) {}
 
+InitialWebUIMetricsDispatcher*
+InitialWebUIWindowMetricsManager::GetMetricsDispatcher() {
+  return metrics_dispatcher_.get();
+}
+
 InitialWebUIWindowMetricsManager::~InitialWebUIWindowMetricsManager() {
-  if (!waap_service_) {
-    return;
-  }
+  CHECK(waap_service_);
+  RecordUnpaintedTermination(UnpaintedTerminationReason::kWindowClosed);
+
+  // TODO(crbug.com/552776216): Skip recording ClosedBeforeFirstPaint metrics
+  // when `should_skip_latency_metrics_` is true (e.g. for minimized windows) to
+  // avoid logging background idle duration before window closure.
+
   if (!g_is_startup_first_paint_recorded &&
       !skip_startup_metrics_for_testing_ &&
       window_show_first_requested_time_.has_value()) {
@@ -48,6 +64,86 @@ InitialWebUIWindowMetricsManager::~InitialWebUIWindowMetricsManager() {
         creation_source_, was_created_with_existing_windows_,
         *new_window_start_time_, base::TimeTicks::Now());
   }
+}
+
+void InitialWebUIWindowMetricsManager::RecordUnpaintedTermination(
+    UnpaintedTerminationReason reason) {
+  if (unpainted_termination_recorded_ || should_skip_latency_metrics_ ||
+      reload_button_first_paint_time_.has_value()) {
+    return;
+  }
+  unpainted_termination_recorded_ = true;
+
+  if (browser_window_first_paint_time_.has_value()) {
+    RecordPaintedAtBrowserFirstPaint(/*painted=*/false);
+    RecordPaintedWithin10Seconds(/*painted=*/false);
+    if (reason == UnpaintedTerminationReason::kWindowClosed) {
+      waap_service_->OnReloadButtonBrowserWindowClosedBeforePaint(
+          base::TimeTicks::Now() - *browser_window_first_paint_time_);
+    }
+  }
+
+  using waap::InitialWebUISurfaceSyncResult;
+  const bool closed = (reason == UnpaintedTerminationReason::kWindowClosed);
+  RecordSurfaceSyncResult(
+      browser_window_first_paint_time_.has_value()
+          ? (closed ? InitialWebUISurfaceSyncResult::
+                          kDeadlineExceededClosedBeforePaint
+                    : InitialWebUISurfaceSyncResult::
+                          kDeadlineExceededRenderProcessGone)
+          : (closed ? InitialWebUISurfaceSyncResult::
+                          kClosedBeforeBrowserPresentation
+                    : InitialWebUISurfaceSyncResult::
+                          kRenderProcessGoneBeforeBrowserPresentation));
+}
+
+void InitialWebUIWindowMetricsManager::RecordPaintedAtBrowserFirstPaint(
+    bool painted) {
+  if (!painted_at_browser_first_paint_recorded_) {
+    painted_at_browser_first_paint_recorded_ = true;
+    waap_service_->OnReloadButtonPaintedAtBrowserFirstPaint(painted);
+  }
+}
+
+void InitialWebUIWindowMetricsManager::RecordPaintedWithin10Seconds(
+    bool painted) {
+  if (!painted_within_10s_recorded_) {
+    painted_within_10s_recorded_ = true;
+    unpainted_10s_timer_.Stop();
+    waap_service_->OnReloadButtonPaintedWithin10SecondsAfterBrowserPaint(
+        painted);
+  }
+}
+
+void InitialWebUIWindowMetricsManager::RecordSurfaceSyncResult(
+    waap::InitialWebUISurfaceSyncResult result) {
+  if (!surface_sync_result_recorded_ &&
+      base::FeatureList::IsEnabled(blink::features::kInitialWebUISurfaceSync)) {
+    surface_sync_result_recorded_ = true;
+    waap_service_->OnInitialWebUISurfaceSyncResult(result);
+  }
+}
+
+void InitialWebUIWindowMetricsManager::
+    RecordSurfaceSyncTimeToPaintAfterDeadline(base::TimeDelta delta) {
+  if (!surface_sync_result_recorded_ &&
+      base::FeatureList::IsEnabled(blink::features::kInitialWebUISurfaceSync)) {
+    waap_service_->OnSurfaceSyncTimeToPaintAfterDeadline(delta);
+  }
+}
+
+void InitialWebUIWindowMetricsManager::OnReloadButtonRenderProcessGone() {
+  CHECK(waap_service_);
+  RecordUnpaintedTermination(UnpaintedTerminationReason::kRenderProcessGone);
+}
+
+void InitialWebUIWindowMetricsManager::OnUnpainted10sTimeout() {
+  if (should_skip_latency_metrics_) {
+    return;
+  }
+  CHECK(waap_service_);
+  RecordPaintedAtBrowserFirstPaint(/*painted=*/false);
+  RecordPaintedWithin10Seconds(/*painted=*/false);
 }
 
 InitialWebUIWindowMetricsManager* InitialWebUIWindowMetricsManager::From(
@@ -78,14 +174,12 @@ void InitialWebUIWindowMetricsManager::OnBrowserWindowShowRequested(
 
 void InitialWebUIWindowMetricsManager::OnBrowserWindowFirstPresentation(
     base::TimeTicks timestamp) {
-  if (should_skip_latency_metrics_) {
+  if (should_skip_latency_metrics_ || timestamp.is_null()) {
     return;
   }
   // Ensures only one startup window is recorded per browser process.
   bool& is_startup_first_paint_recorded = g_is_startup_first_paint_recorded;
-  if (!waap_service_) {
-    return;
-  }
+  CHECK(waap_service_);
 
   if (window_show_first_requested_time_.has_value()) {
     // Record ShowRequestedToFirstPaint metric.
@@ -103,6 +197,24 @@ void InitialWebUIWindowMetricsManager::OnBrowserWindowFirstPresentation(
 
   if (!browser_window_first_paint_time_.has_value()) {
     browser_window_first_paint_time_ = timestamp;
+    const bool reload_button_painted =
+        reload_button_first_paint_time_.has_value();
+    if (reload_button_painted) {
+      if (!unpainted_termination_recorded_) {
+        RecordPaintedAtBrowserFirstPaint(/*painted=*/true);
+        RecordPaintedWithin10Seconds(/*painted=*/true);
+        RecordSurfaceSyncResult(
+            waap::InitialWebUISurfaceSyncResult::kReadyWithinDeadline);
+      }
+    } else if (!unpainted_termination_recorded_) {
+      unpainted_10s_timer_.Start(
+          FROM_HERE, base::Seconds(10),
+          base::BindOnce(
+              &InitialWebUIWindowMetricsManager::OnUnpainted10sTimeout,
+              weak_ptr_factory_.GetWeakPtr()));
+    } else {
+      RecordPaintedAtBrowserFirstPaint(/*painted=*/false);
+    }
     RecordPaintDeltaIfAvailable();
   }
 
@@ -120,38 +232,47 @@ void InitialWebUIWindowMetricsManager::OnBrowserWindowFirstPresentation(
 }
 
 void InitialWebUIWindowMetricsManager::OnBrowserWindowCreated() {
-  if (waap_service_) {
-    waap_service_->OnBrowserWindowCreated();
-  }
-}
-
-void InitialWebUIWindowMetricsManager::OnReloadButtonCreated() {
-  if (waap_service_) {
-    waap_service_->OnReloadButtonCreated();
-  }
+  CHECK(waap_service_);
+  waap_service_->OnBrowserWindowCreated();
 }
 
 void InitialWebUIWindowMetricsManager::OnReloadButtonFirstPaint(
-    base::TimeTicks timestamp) {
-  if (should_skip_latency_metrics_) {
+    base::TimeTicks timestamp,
+    bool is_startup) {
+  if (should_skip_latency_metrics_ || timestamp.is_null()) {
     return;
   }
-  // Ensures only one startup reload button is recorded per browser process.
-  bool& is_startup_first_paint_recorded =
-      g_is_startup_reload_first_paint_recorded;
-  if (!waap_service_) {
-    return;
-  }
+  CHECK(waap_service_);
 
   if (!reload_button_first_paint_time_.has_value()) {
     reload_button_first_paint_time_ = timestamp;
+    if (browser_window_first_paint_time_.has_value() &&
+        !unpainted_termination_recorded_) {
+      const bool painted_at_first_paint =
+          timestamp <= *browser_window_first_paint_time_;
+      RecordPaintedAtBrowserFirstPaint(painted_at_first_paint);
+
+      const bool painted_within_10s =
+          (timestamp - *browser_window_first_paint_time_) <= base::Seconds(10);
+      RecordPaintedWithin10Seconds(painted_within_10s);
+      if (!surface_sync_result_recorded_) {
+        const base::TimeDelta delta =
+            timestamp - *browser_window_first_paint_time_;
+        if (delta <= base::TimeDelta()) {
+          RecordSurfaceSyncResult(
+              waap::InitialWebUISurfaceSyncResult::kReadyWithinDeadline);
+        } else {
+          RecordSurfaceSyncTimeToPaintAfterDeadline(delta);
+          RecordSurfaceSyncResult(waap::InitialWebUISurfaceSyncResult::
+                                      kDeadlineExceededPaintedLater);
+        }
+      }
+    }
     RecordPaintDeltaIfAvailable();
   }
 
-  if (!is_startup_first_paint_recorded && !skip_startup_metrics_for_testing_) {
-    is_startup_first_paint_recorded = true;
+  if (is_startup) {
     is_new_window_reload_button_first_paint_recorded_ = true;
-    waap_service_->OnFirstPaint(timestamp);
   } else if (!is_new_window_reload_button_first_paint_recorded_ &&
              new_window_start_time_.has_value()) {
     is_new_window_reload_button_first_paint_recorded_ = true;
@@ -162,22 +283,15 @@ void InitialWebUIWindowMetricsManager::OnReloadButtonFirstPaint(
 }
 
 void InitialWebUIWindowMetricsManager::OnReloadButtonFirstContentfulPaint(
-    base::TimeTicks timestamp) {
-  if (should_skip_latency_metrics_) {
+    base::TimeTicks timestamp,
+    bool is_startup) {
+  if (should_skip_latency_metrics_ || timestamp.is_null()) {
     return;
   }
-  // Ensures only one startup reload button is recorded per browser process.
-  bool& is_startup_first_contentful_paint_recorded =
-      g_is_startup_reload_first_contentful_paint_recorded;
-  if (!waap_service_) {
-    return;
-  }
+  CHECK(waap_service_);
 
-  if (!is_startup_first_contentful_paint_recorded &&
-      !skip_startup_metrics_for_testing_) {
-    is_startup_first_contentful_paint_recorded = true;
+  if (is_startup) {
     is_new_window_reload_button_first_contentful_paint_recorded_ = true;
-    waap_service_->OnFirstContentfulPaint(timestamp);
   } else if (!is_new_window_reload_button_first_contentful_paint_recorded_ &&
              new_window_start_time_.has_value()) {
     is_new_window_reload_button_first_contentful_paint_recorded_ = true;
@@ -187,32 +301,13 @@ void InitialWebUIWindowMetricsManager::OnReloadButtonFirstContentfulPaint(
   }
 }
 
-void InitialWebUIWindowMetricsManager::
-    OnReloadButtonRendererProcessCreatedAndLaunched(
-        base::TimeTicks created_timestamp,
-        base::TimeTicks launched_timestamp) {
-  if (should_skip_latency_metrics_) {
-    return;
-  }
-  // Ensures only one startup process launch is recorded per browser process.
-  bool& is_startup_process_recorded = g_is_startup_process_recorded;
-  if (!waap_service_) {
-    return;
-  }
-
-  if (!is_startup_process_recorded && !skip_startup_metrics_for_testing_) {
-    is_startup_process_recorded = true;
-    waap_service_->OnReloadButtonRendererProcessCreatedAndLaunched(
-        created_timestamp, launched_timestamp);
-  }
-}
-
 void InitialWebUIWindowMetricsManager::SkipStartupForTesting() {
   skip_startup_metrics_for_testing_ = true;
 }
 
 void InitialWebUIWindowMetricsManager::RecordPaintDeltaIfAvailable() {
-  if (!waap_service_ || !browser_window_first_paint_time_.has_value() ||
+  CHECK(waap_service_);
+  if (!browser_window_first_paint_time_.has_value() ||
       !reload_button_first_paint_time_.has_value()) {
     return;
   }
@@ -230,6 +325,10 @@ void InitialWebUIWindowMetricsManager::RecordPaintDeltaIfAvailable() {
 
   base::TimeDelta delta =
       *reload_button_first_paint_time_ - *browser_window_first_paint_time_;
+
+  if (!unpainted_termination_recorded_) {
+    waap_service_->OnBrowserPaintToReloadButtonPaint(delta);
+  }
 
   // We only care about positive deltas.
   if (delta.is_negative()) {
@@ -253,8 +352,6 @@ void InitialWebUIWindowMetricsManager::RecordPaintDeltaIfAvailable() {
 // static
 void InitialWebUIWindowMetricsManager::ResetForTesting() {
   g_is_startup_first_paint_recorded = false;
-  g_is_startup_reload_first_paint_recorded = false;
-  g_is_startup_reload_first_contentful_paint_recorded = false;
-  g_is_startup_process_recorded = false;
   g_process_startup_delta_recorded = false;
+  WaapUIMetricsService::ResetForTesting();
 }

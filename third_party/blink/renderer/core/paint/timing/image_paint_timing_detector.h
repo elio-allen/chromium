@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "base/functional/callback_forward.h"
+#include "base/functional/function_ref.h"
 #include "base/time/time.h"
 #include "third_party/blink/public/common/performance/largest_contentful_paint_type.h"
 #include "third_party/blink/renderer/core/core_export.h"
@@ -26,10 +27,10 @@
 #include "ui/gfx/geometry/rect_conversions.h"
 
 namespace blink {
-struct DOMPaintTimingInfo;
 class LargestContentfulPaintManager;
 class LayoutObject;
 class MediaTiming;
+class PaintTimingClient;
 class PaintTimingDetector;
 class PropertyTreeStateOrAlias;
 class StyleImage;
@@ -69,10 +70,8 @@ class CORE_EXPORT ImagePaintTimingDetector final
 
   // Records an image paint for <img> tags, background images, <video> poster
   // images, and first video frames. The `StyleImage` will be nullptr unless
-  // there is a background image. Returns true if the image is a candidate for
-  // Largest Contentful Paint, i.e. if the image is larger on screen than the
-  // current LCP candidate.
-  bool RecordImage(const LayoutObject&,
+  // there is a background image.
+  void RecordImage(const LayoutObject& image_layout_object,
                    const gfx::Size& intrinsic_size,
                    const MediaTiming&,
                    const PropertyTreeStateOrAlias& current_paint_properties,
@@ -83,23 +82,30 @@ class CORE_EXPORT ImagePaintTimingDetector final
   // image-finished time if it's not already set.
   void NotifyImageFinished(const LayoutObject&, const MediaTiming*);
 
+  // Notifies the detector that a background image has finished loading. Sets
+  // the image-finished time if it's not already set.
+  void NotifyBackgroundImageFinished(const StyleImage*);
+
   // Notifies the detector that an image was removed. Removes the image data
   // from the relevant collections and notifies clients of the removal if the
   // image is pending.
   void NotifyImageRemoved(const LayoutObject&, const MediaTiming*);
 
-  // Clears `images_queued_for_paint_time_` when hard LCP is stopped due to
-  // input.
-  //
-  // TODO(crbug.com/503691215, crbug.com/454082773): This should be removed and
-  // the decision should be left up to individual clients.
-  void StopRecordEntries();
+  // Returns the set of `ImageRecord`s that are sufficiently loaded and need
+  // paint and presentation time for the current frame. Called by `PaintTiming`
+  // at the current frame's paint stage.
+  HeapVector<Member<ImageRecord>> TakeImageRecordsOnPaintFinished();
 
-  OptionalPaintTimingDetectorCallback<ImageRecord> TakePaintTimingCallback();
+  // Returns the set of `ImageRecord`s representing animated images that need
+  // the first animated frame timestamp set to the presentation time of the
+  // current frame. Called by `PaintTiming` at the current frame's paint stage.
+  HeapVector<Member<ImageRecord>> TakeAnimatedImageRecordsOnPaintFinished();
 
-  // Called when documentElement changes from zero to nonzero opacity. Makes the
-  // largest image that was hidden due to this a Largest Contentful Paint
-  // candidate.
+  // Called at the start of paint when the documentElement is not invisible
+  // (i.e. has nonzero opacity) and there might be ignored content. Makes the
+  // largest image that was previously painted while the documentElement was
+  // invisible eligible for paint timing. Does nothing if no ignored content was
+  // previously painted.
   void ReportLargestIgnoredImage();
 
   // Called when the "src" attribute changes on a <video> element and the change
@@ -108,12 +114,22 @@ class CORE_EXPORT ImagePaintTimingDetector final
 
   void Trace(Visitor*) const;
 
+  // Returns the load time for the image associated with the `LayoutObject` and
+  // `MediaTiming` pair. Note that a given image resource, represented by a
+  // `MediaTiming`, may be used for multiple `LayoutObject`s.
+  base::TimeTicks LoadTime(const LayoutObject*, const MediaTiming*) const;
+
+  // Returns the load time for the background image associated with the given
+  // `StyleImage`. Note that the `StyleImage` can apply to multiple nodes, and a
+  // node can have multiple associated `StyleImage`s.
+  base::TimeTicks LoadTime(const StyleImage&) const;
+
+  // Returns true if any of the persistent data structures (persisting across
+  // frames, i.e. pending images, recorded images, or load times), have entries.
+  // Used for testing image removal cleanup.
+  bool HasPersistentImageStateForTest() const;
+
  private:
-  friend class ImagePaintTimingDetectorTest;
-  friend class LargestContentfulPaintCalculatorTest;
-
-  void SendRectsToHud();
-
   // Returns the viewport size, initializing the cached `viewport_size_` if
   // needed.
   uint64_t ViewportSize();
@@ -122,33 +138,11 @@ class CORE_EXPORT ImagePaintTimingDetector final
 
   // Removes the image data associated with the `MediaRecordIdHash` from all
   // collections.
-  ImageRecord* RemoveRecord(MediaRecordIdHash);
+  void RemoveRecord(MediaRecordIdHash);
 
-  inline ImageRecord* GetPendingImage(MediaRecordIdHash record_id_hash) {
-    auto it = pending_images_.find(record_id_hash);
-    return it == pending_images_.end() ? nullptr : it->value.Get();
-  }
+  base::TimeTicks LoadTime(MediaRecordIdHash) const;
 
-  void OnFirstAnimatedFramePainted(MediaRecordIdHash);
-
-  void OnImageLoaded(ImageRecord*, const StyleImage*);
-
-  void AssignPaintTimeToRegisteredQueuedRecords(
-      uint32_t last_queued_frame_index,
-      const base::TimeTicks&,
-      const DOMPaintTimingInfo&,
-      HeapVector<Member<ImageRecord>>& settled_records);
-
-  inline void QueueToMeasurePaintTime(ImageRecord* record) {
-    CHECK(record);
-    record->SetFrameIndex(frame_index_);
-    images_queued_for_paint_time_.push_back(record);
-    added_entry_in_latest_frame_ = true;
-  }
-
-  // Used to decide which frame a record belongs to, monotonically increasing.
-  uint32_t frame_index_ = 1;
-  bool added_entry_in_latest_frame_ = false;
+  void ForEachPaintTimingClient(base::FunctionRef<void(PaintTimingClient*)>);
 
   // We cache the viewport size computation to avoid performing it on every
   // image. This value is reset when paint is finished and is computed if unset
@@ -157,23 +151,31 @@ class CORE_EXPORT ImagePaintTimingDetector final
 
   Member<PaintTimingDetector> paint_timing_detector_;
 
-  // MediaRecordId for images for which we have seen a first paint. A
-  // MediaRecordId is added to this set regardless of whether the image could be
-  // an LCP candidate.
+  // `MediaRecordId` of images for which we have seen a first paint.
   HashSet<MediaRecordIdHash> recorded_images_;
 
-  // Map of MediaRecordId to ImageRecord for images for which the first paint
-  // has been seen but which do not have the paint time set yet. This may
-  // contain only images which are potential LCP candidates.
+  // Map of `MediaRecordId` to `ImageRecord` for images for which the first
+  // paint has been seen but which are not yet sufficiently loaded.
   HeapHashMap<MediaRecordIdHash, Member<ImageRecord>> pending_images_;
 
-  // |ImageRecord|s waiting for paint time are stored in this map
-  // until they get a presentation time.
-  HeapDeque<Member<ImageRecord>> images_queued_for_paint_time_;
+  // `ImageRecord`s that were marked as sufficiently loaded and painted in this
+  // frame. These correspond to the images ready to be reported to clients. This
+  // set is returned and cleared in `TakeImageRecordsOnPaintFinished()`.
+  HeapVector<Member<ImageRecord>> images_queued_for_paint_time_;
+
+  // Animated image `ImageRecord`s that were painted this frame that need the
+  // first animated frame time set. This set is returned and cleared in
+  // `TakeAnimatedImageRecordsOnPaintFinished()`.
+  HeapVector<Member<ImageRecord>> animated_images_queued_for_first_frame_time_;
 
   // Map containing timestamps of when LayoutObject::ImageNotifyFinished is
   // first called.
   HashMap<MediaRecordIdHash, base::TimeTicks> image_finished_times_;
+
+  // Map containing timestamps of when a background (style) images are finished
+  // loading.
+  HeapHashMap<WeakMember<const StyleImage>, base::TimeTicks>
+      background_image_finished_times_;
 };
 
 }  // namespace blink

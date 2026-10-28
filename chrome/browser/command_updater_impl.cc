@@ -11,6 +11,7 @@
 #include "base/observer_list.h"
 #include "chrome/browser/command_observer.h"
 #include "chrome/browser/command_updater_delegate.h"
+#include "ui/base/window_open_disposition.h"
 
 struct CommandUpdaterImpl::Command {
   // Empty optional means not specified yet and thus implicitly disabled.
@@ -36,19 +37,11 @@ bool CommandUpdaterImpl::IsCommandEnabled(int id) const {
   return *command->second->enabled;
 }
 
-bool CommandUpdaterImpl::ExecuteCommandImpl(
-    int id,
-    base::TimeTicks time_stamp,
-    std::optional<actions::ActionInvocationContext> context) {
-  return ExecuteCommandWithDispositionImpl(
-      id, WindowOpenDisposition::CURRENT_TAB, time_stamp, std::move(context));
-}
-
-bool CommandUpdaterImpl::ExecuteCommandWithDispositionImpl(
+bool CommandUpdaterImpl::ExecuteCommandWithDispositionAndContext(
     int id,
     WindowOpenDisposition disposition,
-    base::TimeTicks time_stamp,
-    std::optional<actions::ActionInvocationContext> context) {
+    std::optional<actions::ActionInvocationContext> context,
+    base::TimeTicks time_stamp) {
   if (SupportsCommand(id) && IsCommandEnabled(id)) {
     delegate_->HandleCommandWithDisposition(id, disposition, time_stamp);
     return true;
@@ -101,7 +94,7 @@ CommandUpdaterImpl::GetCommand(int id, bool create) {
   if (supported)
     return commands_[id].get();
 
-  DCHECK(create);
+  CHECK(create, base::NotFatalUntil::M162);
   std::unique_ptr<Command>& entry = commands_[id];
   entry = std::make_unique<Command>();
   return entry.get();

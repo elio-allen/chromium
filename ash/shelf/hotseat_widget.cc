@@ -21,7 +21,8 @@
 #include "ash/shelf/shelf_navigation_widget.h"
 #include "ash/shelf/shelf_view.h"
 #include "ash/shell.h"
-#include "ash/style/system_shadow.h"
+#include "ash/style/style_util.h"
+#include "ash/style/system_decoration.h"
 #include "ash/system/status_area_widget.h"
 #include "ash/wm/overview/overview_controller.h"
 #include "base/i18n/rtl.h"
@@ -485,7 +486,7 @@ class HotseatWidgetDelegateView : public HotseatTransitionAnimator::Observer,
   // to.
   SkColor target_color_ = SK_ColorTRANSPARENT;
 
-  std::unique_ptr<SystemShadow> shadow_;
+  std::unique_ptr<SystemDecoration> shadow_;
 
   // The type of highlight border.
   views::HighlightBorder::Type border_type_;
@@ -509,11 +510,12 @@ void HotseatWidgetDelegateView::Init(ScrollableShelfView* scrollable_shelf_view,
       background_container_view->AddChildView(std::make_unique<views::View>());
   translucent_background_->SetPaintToLayer();
   translucent_background_->layer()->SetFillsBoundsOpaquely(false);
-  translucent_background_->layer()->SetName("hotseat/Background");
+  translucent_background_->layer()->SetName(
+      "HotseatWidget:TranslucentBackground");
 
   // Create a shadow and stack at the bottom.
-  shadow_ = SystemShadow::CreateShadowOnTextureLayer(
-      SystemShadow::Type::kElevation12);
+  shadow_ =
+      SystemDecoration::Create(SystemDecoration::ShadowType::kElevation12);
   auto* parent_layer = translucent_background_->layer()->parent();
   auto* shadow_layer = shadow_->GetLayer();
   parent_layer->Add(shadow_layer);
@@ -550,7 +552,8 @@ void HotseatWidgetDelegateView::UpdateTranslucentBackground() {
   // Update the shadow content bounds and corner radius.
   shadow_->GetLayer()->SetVisible(true);
   gfx::Rect background_bounds = translucent_background_->bounds();
-  shadow_->SetRoundedCornerRadius(background_bounds.height() / 2);
+  shadow_->SetRoundedCorners(
+      gfx::RoundedCornersF(background_bounds.height() / 2.0f));
   shadow_->SetContentBounds(background_bounds);
 }
 
@@ -644,7 +647,7 @@ void HotseatWidgetDelegateView::SetBackgroundBlur(bool enable_blur) {
   if (translucent_background_->layer()->background_blur() != blur_radius) {
     translucent_background_->layer()->SetBackgroundBlur(blur_radius);
     translucent_background_->layer()->SetBackdropFilterQuality(
-        ColorProvider::kBackgroundBlurQuality);
+        StyleUtil::kBackgroundBlurQuality);
   }
 }
 

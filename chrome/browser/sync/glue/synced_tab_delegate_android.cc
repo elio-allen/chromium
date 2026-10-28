@@ -13,6 +13,7 @@
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/browser/ui/sync/tab_contents_synced_tab_delegate.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sync_sessions/features.h"
 #include "components/sync_sessions/sync_sessions_client.h"
 #include "components/sync_sessions/synced_window_delegate.h"
@@ -95,12 +96,15 @@ SyncedTabDelegateAndroid::ReadPlaceholderTabSnapshotIfItShouldSync(
 }
 
 void SyncedTabDelegateAndroid::SetWebContents(
-    content::WebContents* web_contents) {
-  TabContentsSyncedTabDelegate::SetWebContents(web_contents);
+    content::WebContents* web_contents,
+    tasks::TaskTabHelper* task_tab_helper,
+    SupervisedUserNavigationObserver* supervised_user_navigation_observer) {
+  TabContentsSyncedTabDelegate::SetWebContents(
+      web_contents, task_tab_helper, supervised_user_navigation_observer);
 }
 
 void SyncedTabDelegateAndroid::ResetWebContents() {
-  TabContentsSyncedTabDelegate::SetWebContents(nullptr);
+  TabContentsSyncedTabDelegate::SetWebContents(nullptr, nullptr, nullptr);
 }
 
 SessionID SyncedTabDelegateAndroid::SessionIdFromAndroidId(int android_tab_id) {

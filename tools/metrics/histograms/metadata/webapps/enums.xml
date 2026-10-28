@@ -388,6 +388,16 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(chrome/browser/ui/web_applications/web_app_launch_process.cc:LaunchUrlInScopeResult) -->
 
+<!-- LINT.IfChange(ManagedConfigurationRetryReason) -->
+
+<enum name="ManagedConfigurationRetryReason">
+  <int value="0" label="Download failed"/>
+  <int value="1" label="Invalid JSON"/>
+  <int value="2" label="Store write failed"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/device_api/managed_configuration_api.h:ManagedConfigurationRetryReason) -->
+
 <enum name="ManagedSessionType">
   <int value="0" label="Managed User Session"/>
   <int value="1" label="Managed Guest Session"/>
@@ -555,6 +565,35 @@ chromium-metrics-reviews@google.com.
   <int value="10" label="Failure web apps not user installable"/>
   <int value="11" label="Failure limit per prompt is exceeded"/>
 </enum>
+
+<!-- LINT.IfChange(WebappAddToHomescreenAnyPageDecision) -->
+
+<enum name="WebappAddToHomescreenAnyPageDecision">
+  <int value="0" label="Crafted WebAPK (promotable manifest)"/>
+  <int value="1" label="DIY WebAPK: no manifest"/>
+  <int value="2" label="DIY WebAPK: manifest 404 / unparsable"/>
+  <int value="3" label="DIY WebAPK: manifest not promotable"/>
+  <int value="4"
+      label="Shortcut: ineligible (incognito, insecure origin, empty
+             manifest, non-http(s), manifest URLs not WebAPK compatible)"/>
+  <int value="5"
+      label="Shortcut: reset (navigation, manifest URL change, renderer gone)"/>
+  <int value="6" label="Shortcut: data fetch timed out"/>
+  <int value="7" label="Shortcut: no icon (flag off)"/>
+  <int value="8" label="Shortcut: not installable at root scope (flag off)"/>
+  <int value="9" label="Shortcut: other error (flag on)"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/webapps/browser/android/add_to_homescreen_data_fetcher.h:WebappAddToHomescreenAnyPageDecision) -->
+
+<!-- LINT.IfChange(WebappAddToHomescreenAnyPagePrimaryIconSource) -->
+
+<enum name="WebappAddToHomescreenAnyPagePrimaryIconSource">
+  <int value="0" label="Downloaded (manifest icon or favicon)"/>
+  <int value="1" label="Generated monogram"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/webapps/browser/android/add_to_homescreen_data_fetcher.h:WebappAddToHomescreenAnyPagePrimaryIconSource) -->
 
 <!-- LINT.IfChange(WebAppApplyManifestMigrationResult) -->
 
@@ -937,6 +976,7 @@ chromium-metrics-reviews@google.com.
   <int value="7" label="No custom id field in manifest"/>
   <int value="8" label="Manifest id mismatch"/>
   <int value="9" label="Install in progress"/>
+  <int value="10" label="No icons in manifest"/>
 </enum>
 
 <!-- LINT.ThenChange(/chrome/browser/web_applications/web_install_service_impl.h:WebInstallServiceResult) -->

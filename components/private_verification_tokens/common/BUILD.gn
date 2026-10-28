@@ -70,6 +70,7 @@ source_set("private_verification_tokens_fetcher_unittest") {
   sources = [ "private_verification_tokens_fetcher_unittest.cc" ]
   deps = [
     ":private_verification_tokens_fetcher",
+    ":private_verification_tokens_parameters",
     "//base",
     "//base/test:test_support",
     "//services/network:test_support",
@@ -150,6 +151,10 @@ source_set("private_verification_tokens_parameters_unittest") {
   ]
 }
 
+source_set("private_verification_tokens_metrics") {
+  sources = [ "private_verification_tokens_metrics.h" ]
+}
+
 source_set("private_verification_tokens_issuer_config") {
   sources = [
     "private_verification_tokens_issuer_config.cc",
@@ -161,6 +166,7 @@ source_set("private_verification_tokens_issuer_config") {
     "//url",
   ]
   deps = [
+    ":private_verification_tokens_metrics",
     ":private_verification_tokens_parameters",
     ":private_verification_tokens_public_key",
     "//net",
@@ -172,48 +178,54 @@ source_set("private_verification_tokens_issuer_config_unittest") {
   sources = [ "private_verification_tokens_issuer_config_unittest.cc" ]
   deps = [
     ":private_verification_tokens_issuer_config",
+    ":private_verification_tokens_metrics",
     ":private_verification_tokens_parameters",
+    ":test_support",
     "//base",
+    "//base/test:test_support",
     "//testing/gmock",
     "//testing/gtest",
     "//url",
   ]
 }
 
-# ATHM (Anonymous Tokens with Hidden Metadata): a cxx bridge over
+source_set("test_support") {
+  testonly = true
+  sources = [ "private_verification_tokens_test_util.h" ]
+  public_deps = [
+    "//base",
+    "//components/private_verification_tokens/common/athm_ffi:athm_ffi_bindings",
+  ]
+}
+
+# ATHM (Anonymous Tokens with Hidden Metadata): Crubit bindings over
 # //third_party/anonymous_tokens:athm and the C++ that calls it.
 if (enable_rust) {
-  import("//build/rust/rust_static_library.gni")
-
-  rust_static_library("athm_ffi") {
-    crate_root = "athm_ffi.rs"
-    sources = [ "athm_ffi.rs" ]
-    cxx_bindings = [ "athm_ffi.rs" ]
-    allow_unsafe = true  # Required for the cxx FFI layer.
-    deps = [ "//third_party/anonymous_tokens:athm" ]
-    visibility = [ ":*" ]
-  }
-
-  # Test issuer modeled on network::TestTrustTokenIssuer: holds the secret ATHM
-  # key material and exposes issuer-side (Issue/Verify) and client-side
-  # (request/finalize) operations over the cxx bridge.
-  source_set("athm_test_issuer") {
-    testonly = true
+  source_set("privacy_pass_athm_batch_request") {
     sources = [
-      "athm_test_issuer.cc",
-      "athm_test_issuer.h",
+      "privacy_pass_athm_batch_request.cc",
+      "privacy_pass_athm_batch_request.h",
     ]
-    public_deps = [ "//base" ]
-    deps = [ ":athm_ffi" ]
+    public_deps = [
+      ":private_verification_tokens_issuer_config",
+      "//base",
+      "//components/private_verification_tokens/common/athm_ffi:athm_ffi_bindings",
+    ]
   }
 
-  source_set("athm_test_issuer_unittest") {
+  source_set("privacy_pass_athm_batch_request_unittest") {
     testonly = true
-    sources = [ "athm_test_issuer_unittest.cc" ]
+    sources = [ "privacy_pass_athm_batch_request_unittest.cc" ]
     deps = [
-      ":athm_test_issuer",
+      ":privacy_pass_athm_batch_request",
+      ":private_verification_tokens_issuer_config",
+      ":private_verification_tokens_parameters",
+      ":private_verification_tokens_public_key",
+      "//base",
+      "//components/private_verification_tokens/common/athm_ffi:athm_ffi_bindings",
       "//testing/gmock",
       "//testing/gtest",
+      "//url",
     ]
   }
 }

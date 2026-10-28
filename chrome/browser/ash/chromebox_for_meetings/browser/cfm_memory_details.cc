@@ -12,6 +12,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/child_process_id.h"
+#include "content/public/common/process_type.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/process_map.h"
 #include "extensions/buildflags/buildflags.h"
@@ -56,7 +57,8 @@ void CfmMemoryDetails::OnDetailsAvailable() {
 }
 
 void CfmMemoryDetails::CollectProcessInformation() {
-  DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M160);
 
   proc_data_list_.reserve(processes().size());
   for (const ProcessData& proc_data : processes()) {
@@ -116,7 +118,8 @@ void CfmMemoryDetails::CollectProcessInformation() {
 }
 
 void CfmMemoryDetails::CollectExtensionsInformation() {
-  DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M160);
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   for (content::RenderProcessHost::iterator it(

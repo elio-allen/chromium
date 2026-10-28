@@ -41,6 +41,7 @@
 #include "ui/gfx/geometry/point_conversions.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/quad_f.h"
+#include "ui/gfx/geometry/size_conversions.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 
 namespace cc {
@@ -159,6 +160,14 @@ InputHandler::ScrollStatus InputHandler::ScrollBegin(ScrollState* scroll_state,
     }
   }
 
+  // A snap fling constraint is valid only for the fling that set it. The
+  // cleanup in ScrollEnd() is deferred while a snap animation runs, so a new
+  // gesture can begin before that cleanup happens. Reset the constraint here so
+  // that it cannot clamp the scroll updates of the new gesture.
+  snap_fling_state_ = kNoFling;
+  fling_snap_constrain_x_ = std::nullopt;
+  fling_snap_constrain_y_ = std::nullopt;
+
   // This allows re-latch to an existing `CurrentlyScrollNode()`, if it is the
   // same scroll type - and animations / snaps have not yet been resolved on it.
   if (CurrentlyScrollingNode() && type == latched_scroll_type_ &&
@@ -189,8 +198,9 @@ InputHandler::ScrollStatus InputHandler::ScrollBegin(ScrollState* scroll_state,
   ElementId target_element_id = scroll_state->target_element_id();
   ScrollTree& scroll_tree = GetScrollTree();
 
-  if (target_element_id && (!scroll_state->main_thread_hit_tested_reasons() ||
-                            scroll_state->is_scrollbar_interaction())) {
+  if (target_element_id &&
+      (scroll_state->main_thread_hit_tested_reasons().empty() ||
+       scroll_state->is_scrollbar_interaction())) {
     TRACE_EVENT_INSTANT("cc", "Latched scroll node provided");
     // If the caller passed in an element_id we can skip all the hit-testing
     // bits and provide a node straight-away.
@@ -205,7 +215,7 @@ InputHandler::ScrollStatus InputHandler::ScrollBegin(ScrollState* scroll_state,
       // scroll in the given direction. This mode is only used when scroll
       // unification is enabled and the targeted scroller comes back from a
       // main thread hit test.
-      DCHECK(scroll_state->main_thread_hit_tested_reasons());
+      DCHECK(!scroll_state->main_thread_hit_tested_reasons().empty());
       starting_node =
           scroll_tree.MutableFindNodeFromElementId(target_element_id);
 
@@ -227,7 +237,7 @@ InputHandler::ScrollStatus InputHandler::ScrollBegin(ScrollState* scroll_state,
 
       // The client should have discarded the scroll when the hit test came back
       // with an invalid element id.
-      CHECK(!scroll_state->main_thread_hit_tested_reasons());
+      CHECK(scroll_state->main_thread_hit_tested_reasons().empty());
 
       ScrollHitTestResult scroll_hit_test =
           HitTestScrollNode(device_viewport_point);
@@ -239,11 +249,9 @@ InputHandler::ScrollStatus InputHandler::ScrollBegin(ScrollState* scroll_state,
         // ElementId of the hit-tested scroll node.
         TRACE_EVENT_INSTANT("cc", "Request Main Thread Hit Test");
         scroll_status.thread = InputHandler::ScrollThread::kScrollOnImplThread;
-        DCHECK(scroll_hit_test.main_thread_hit_test_reasons);
+        DCHECK(!scroll_hit_test.main_thread_hit_test_reasons.empty());
         scroll_status.main_thread_hit_test_reasons =
             scroll_hit_test.main_thread_hit_test_reasons;
-        CHECK(MainThreadScrollingReason::AreHitTestReasons(
-            scroll_status.main_thread_hit_test_reasons));
         return scroll_status;
       }
 
@@ -291,9 +299,7 @@ InputHandler::ScrollStatus InputHandler::ScrollBegin(ScrollState* scroll_state,
 
   ActiveTree().SetCurrentlyScrollingNode(scrolling_node);
   scroll_status.main_thread_repaint_reasons =
-      scroll_tree.GetMainThreadRepaintReasons(*scrolling_node);
-  CHECK(MainThreadScrollingReason::AreRepaintReasons(
-      scroll_status.main_thread_repaint_reasons));
+      scrolling_node->main_thread_repaint_reasons;
   scroll_status.raster_inducing =
       scroll_tree.CanRealizeScrollsOnPendingTree(*scrolling_node);
 
@@ -334,7 +340,7 @@ InputHandler::ScrollStatus InputHandler::RootScrollBegin(
 
   // Since we provided an ElementId, there should never be a need to perform a
   // hit test.
-  DCHECK(!scroll_status.main_thread_hit_test_reasons);
+  DCHECK(scroll_status.main_thread_hit_test_reasons.empty());
 
   return scroll_status;
 }
@@ -363,7 +369,15 @@ InputHandlerScrollResult InputHandler::ScrollUpdate(
     AdjustScrollDeltaForScrollbarSnap(scroll_state);
   }
 
-  bool use_unconstrained = prevent_scroll_axis_locking_.value();
+  // TODO(crbug.com/535432422): Delete unconstrained deltas once
+  // kApplyScrollRailingInRenderer is launched and the legacy path is removed.
+  // When kApplyScrollRailingInRenderer is enabled, the browser will not rail
+  // the deltas so delta_x/delta_y will contain unconstrained values when
+  // necessary (i.e. when axis locking is prevented). Otherwise, explicitly fall
+  // back to unconstrained deltas when axis locking is prevented.
+  bool use_unconstrained =
+      !base::FeatureList::IsEnabled(features::kApplyScrollRailingInRenderer) &&
+      prevent_scroll_axis_locking_;
   float delta_x = use_unconstrained ? scroll_state.delta_x_unconstrained()
                                     : scroll_state.delta_x();
   float delta_y = use_unconstrained ? scroll_state.delta_y_unconstrained()
@@ -1423,6 +1437,9 @@ void InputHandler::DidCommit() {
   if (scroll_elasticity_helper_) {
     scroll_elasticity_helper_->ApplyStretchAmountsToPending();
   }
+  for (const auto& [element_id, target_ids] : updated_snapped_elements_) {
+    ActiveTree().SetTargetSnapAreaElementIds(element_id, target_ids);
+  }
 }
 
 void InputHandler::DidImplSideInvalidate() {
@@ -1514,8 +1531,8 @@ void InputHandler::ScrollOffsetAnimationFinished(ElementId element_id) {
     if (finished_node && finished_node->snap_container_data.has_value()) {
       TargetSnapAreaElementIds target_ids =
           GetAnimatingSnapTargetsForElement(finished_node->element_id);
-      finished_node->snap_container_data.value().SetTargetSnapAreaElementIds(
-          target_ids);
+      ActiveTree().SetTargetSnapAreaElementIds(finished_node->element_id,
+                                               target_ids);
       updated_snapped_elements_[finished_node->element_id] = target_ids;
       SetNeedsCommit();
     }
@@ -1646,9 +1663,7 @@ bool InputHandler::IsHandlingTouchSequence() const {
 bool InputHandler::IsCurrentScrollMainRepainted() const {
   const ScrollNode* scroll_node = CurrentlyScrollingNode();
   if (scroll_node) {
-    uint32_t repaint_reasons =
-        GetScrollTree().GetMainThreadRepaintReasons(*scroll_node);
-    if (repaint_reasons != MainThreadScrollingReason::kNotScrollingOnMain) {
+    if (!scroll_node->main_thread_repaint_reasons.empty()) {
       return true;
     }
   }
@@ -1663,9 +1678,7 @@ bool InputHandler::IsCurrentScrollMainRepainted() const {
     }
     if (const ScrollNode* animating_node =
             scroll_tree.FindNodeFromElementId(entry.first)) {
-      uint32_t repaint_reasons =
-          GetScrollTree().GetMainThreadRepaintReasons(*animating_node);
-      if (repaint_reasons != MainThreadScrollingReason::kNotScrollingOnMain) {
+      if (!animating_node->main_thread_repaint_reasons.empty()) {
         return true;
       }
     }
@@ -1849,8 +1862,8 @@ InputHandler::ScrollHitTestResult InputHandler::HitTestScrollNode(
             layer_impl, first_scrollable_or_opaque_to_hit_test_layer,
             node_to_scroll)) {
       TRACE_EVENT_INSTANT("cc", "Failed Hit Test");
-      result.main_thread_hit_test_reasons =
-          MainThreadScrollingReason::kFailedHitTest;
+      result.main_thread_hit_test_reasons = {
+          MainThreadHitTestReason::kFailedHitTest};
       return result;
     }
 
@@ -1860,8 +1873,8 @@ InputHandler::ScrollHitTestResult InputHandler::HitTestScrollNode(
     // return failure.
     if (ActiveTree().PointHitsMainThreadScrollHitTestRegion(
             device_viewport_point, *layer_impl)) {
-      result.main_thread_hit_test_reasons =
-          MainThreadScrollingReason::kMainThreadScrollHitTestRegion;
+      result.main_thread_hit_test_reasons = {
+          MainThreadHitTestReason::kMainThreadScrollHitTestRegion};
       return result;
     }
 
@@ -2395,8 +2408,13 @@ ScrollNode* InputHandler::FindNodeToLatch(ScrollState* scroll_state,
 }
 
 void InputHandler::UpdateRootLayerStateForSynchronousInputHandler() {
-  if (!input_handler_client_)
+  // If the active tree doesn't have an inner viewport scroll node yet, the
+  // compositor is uninitialized/unactivated and page scale factor defaults to
+  // 1.0. Avoid sending premature scale updates to the client until the root
+  // viewport scroll node is ready.
+  if (!input_handler_client_ || !ActiveTree().InnerViewportScrollNode()) {
     return;
+  }
   input_handler_client_->UpdateRootLayerStateForSynchronousInputHandler(
       ActiveTree().TotalScrollOffset(), ActiveTree().TotalMaxScrollOffset(),
       ActiveTree().ScrollableSize(), ActiveTree().current_page_scale_factor(),
@@ -2417,7 +2435,7 @@ void InputHandler::DidLatchToScroller(const ScrollState& scroll_state,
   latched_scroll_type_ = type;
   last_scroll_begin_state_ = scroll_state;
   prevent_scroll_axis_locking_ =
-      !!CurrentlyScrollingNode()->prevent_scroll_axis_locking;
+      CurrentlyScrollingNode()->prevent_scroll_axis_locking;
 
   ClearAnimatingSnapTargetsForElement(last_latched_scroller_);
 
@@ -2512,7 +2530,8 @@ bool InputHandler::SnapAtScrollEnd(SnapReason reason) {
       EnsureSnapAnimationData(CurrentlyScrollingNode()->element_id);
       SetAnimatingSnapTargetsForElement(CurrentlyScrollingNode()->element_id,
                                         snap.target_element_ids);
-    } else if (data.SetTargetSnapAreaElementIds(snap.target_element_ids)) {
+    } else if (ActiveTree().SetTargetSnapAreaElementIds(
+                   scroll_node->element_id, snap.target_element_ids)) {
       updated_snapped_elements_[scroll_node->element_id] =
           snap.target_element_ids;
     }
@@ -2542,13 +2561,25 @@ bool InputHandler::SnapAtScrollEnd(SnapReason reason) {
     // Forget the scroll container that is currently
     // latched so that any scroll gesture that occurs during the snap
     // animation will be allowed to scroll the appropriate container.
-    ClearCurrentlyScrollingNode();
+    // Only do this when the gesture has ended: triggered from ScrollEnd, or
+    // the GSE already arrived and the scroll-end is deferred. Otherwise the
+    // gesture is still in progress and clearing would stall subsequent
+    // ScrollUpdates (https://crbug.com/504284803). This happens when a smooth
+    // scroll animation finishes before the gesture's scroll-end, e.g. a wheel
+    // tick's smooth animation completes while the user keeps scrolling.
+    bool gesture_ended =
+        reason == SnapReason::kGestureScrollEnd ||
+        deferred_scroll_ends_.contains(scroll_node->element_id);
+    if (gesture_ended) {
+      ClearCurrentlyScrollingNode();
+    }
 
     EnsureSnapAnimationData(scroll_node->element_id);
     // The updated snap target will be set when the animation is completed.
     SetAnimatingSnapTargetsForElement(scroll_node->element_id,
                                       snap.target_element_ids);
-  } else if (data.SetTargetSnapAreaElementIds(snap.target_element_ids)) {
+  } else if (ActiveTree().SetTargetSnapAreaElementIds(
+                 scroll_node->element_id, snap.target_element_ids)) {
     updated_snapped_elements_[scroll_node->element_id] =
         snap.target_element_ids;
     SetNeedsCommit();
@@ -2580,7 +2611,7 @@ void InputHandler::ClearCurrentlyScrollingNode() {
   delta_consumed_for_scroll_gesture_ = false;
   // TODO(crbug.com/479472367): Combine optional field related to latched node
   // into single struct.
-  prevent_scroll_axis_locking_.reset();
+  prevent_scroll_axis_locking_ = false;
   latched_scroll_type_.reset();
   last_scroll_update_state_.reset();
   last_scroll_begin_state_.reset();
@@ -2635,7 +2666,12 @@ void InputHandler::UpdateScrollSourceInfo(const ScrollState& scroll_state,
 // ancestor along the scroll tree.
 bool InputHandler::IsScrolledBy(LayerImpl* child, ScrollNode* ancestor) {
   DCHECK(ancestor && (ancestor->user_scrollable_horizontal ||
-                      ancestor->user_scrollable_vertical));
+                      ancestor->user_scrollable_vertical ||
+                      GetViewport().ShouldScroll(*ancestor)));
+  if (!ancestor->user_scrollable_horizontal &&
+      !ancestor->user_scrollable_vertical) {
+    return false;
+  }
   if (!child)
     return false;
   DCHECK_EQ(child->layer_tree_impl(), &ActiveTree());

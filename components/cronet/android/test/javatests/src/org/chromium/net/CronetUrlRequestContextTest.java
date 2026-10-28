@@ -86,7 +86,6 @@ public class CronetUrlRequestContextTest {
     private static final String TAG = "CronetUrlReqCtxTest";
     // URLs used for tests.
     private static final String MOCK_CRONET_TEST_FAILED_URL = "http://mock.failed.request/-2";
-    private static final String MOCK_CRONET_TEST_SUCCESS_URL = "http://mock.http/success.txt";
     private static final int MAX_FILE_SIZE = 1000000000;
 
     private NativeTestServer mNativeTestServer;
@@ -526,8 +525,9 @@ public class CronetUrlRequestContextTest {
                                 traceNetLogSystemPropertyValue == null
                                         ? Map.of()
                                         : Map.of(
-                                                CronetLibraryLoader
-                                                        .TRACE_NET_LOG_SYSTEM_PROPERTY_KEY,
+                                                // LINT.IfChange(trace_netlog_property)
+                                                "debug.cronet.trace_netlog",
+                                                // LINT.ThenChange(//components/cronet/android/java/src/org/chromium/net/impl/DebugFlags.java:trace_netlog_property)
                                                 traceNetLogSystemPropertyValue));
                 var withBuildOverride =
                         new AndroidOsBuild.WithOverrideForTesting(
@@ -2228,10 +2228,11 @@ public class CronetUrlRequestContextTest {
         builder.setExperimentalOptions("");
         builder.setStoragePath(getTestStorage(mTestRule.getTestFramework().getContext()));
         builder.enablePublicKeyPinningBypassForLocalTrustAnchors(false);
+        CronetEngineBuilderImpl builderImpl = CronetTestUtil.getCronetEngineBuilderImpl(builder);
         CronetUrlRequestContextTestJni.get()
                 .verifyUrlRequestContextConfig(
                         CronetUrlRequestContext.createNativeUrlRequestContextConfig(
-                                CronetTestUtil.getCronetEngineBuilderImpl(builder)),
+                                builderImpl, builderImpl.experimentalOptions()),
                         getTestStorage(mTestRule.getTestFramework().getContext()));
     }
 
@@ -2257,10 +2258,12 @@ public class CronetUrlRequestContextTest {
         builder.setUserAgent("efgh");
         builder.setStoragePath(getTestStorage(mTestRule.getTestFramework().getContext()));
         builder.enablePublicKeyPinningBypassForLocalTrustAnchors(false);
+        CronetEngineBuilderImpl quicOffBuilderImpl =
+                CronetTestUtil.getCronetEngineBuilderImpl(builder);
         CronetUrlRequestContextTestJni.get()
                 .verifyUrlRequestContextQuicOffConfig(
                         CronetUrlRequestContext.createNativeUrlRequestContextConfig(
-                                CronetTestUtil.getCronetEngineBuilderImpl(builder)),
+                                quicOffBuilderImpl, quicOffBuilderImpl.experimentalOptions()),
                         getTestStorage(mTestRule.getTestFramework().getContext()));
     }
 
@@ -2562,7 +2565,7 @@ public class CronetUrlRequestContextTest {
     }
 
     /**
-     * @returns the thread priority of {@code engine}'s network thread.
+     * @return the thread priority of {@code engine}'s network thread.
      */
     private static class ApiHelper {
         public static boolean doesContextExistForNetwork(CronetEngine engine, Network network)
@@ -2582,7 +2585,7 @@ public class CronetUrlRequestContextTest {
     }
 
     /**
-     * @returns the thread priority of {@code engine}'s network thread.
+     * @return the thread priority of {@code engine}'s network thread.
      */
     private FutureTask<Integer> getThreadPriorityTask() {
         return new FutureTask<>(

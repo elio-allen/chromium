@@ -8,6 +8,7 @@
 
 #include "cc/trees/sticky_position_constraint.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
@@ -44,22 +45,19 @@ TransformCompositingBoundaryType InSameTransformCompositingBoundary(
   const auto* composited_ancestor2 = t2.NearestDirectlyCompositedAncestor();
   if (composited_ancestor1 != composited_ancestor2) {
     if (composited_ancestor1 && composited_ancestor2) {
-      if (RuntimeEnabledFeatures::MergeFixedLayersEnabled() &&
-          composited_ancestor1->CanMergeForFixedPosition(
+      if (composited_ancestor1->CanMergeForFixedPosition(
               *composited_ancestor2)) {
         return kThroughMergeableComposited;
       }
-      if (RuntimeEnabledFeatures::MergeStickyLayersEnabled()) {
-        switch (composited_ancestor1->CanMergeForStickyPosition(
-            *composited_ancestor2)) {
-          case cc::StickyPositionConstraint::CanMergeResult::kCannotMerge:
-            break;
-          case cc::StickyPositionConstraint::CanMergeResult::kCanAlwaysMerge:
-            return kThroughMergeableComposited;
-          case cc::StickyPositionConstraint::CanMergeResult::
-              kCanMergeWithinScrollRange:
-            return kThroughMergeableCompositedScrollRangeDependent;
-        }
+      switch (composited_ancestor1->CanMergeForStickyPosition(
+          *composited_ancestor2)) {
+        case cc::StickyPositionConstraint::CanMergeResult::kCannotMerge:
+          break;
+        case cc::StickyPositionConstraint::CanMergeResult::kCanAlwaysMerge:
+          return kThroughMergeableComposited;
+        case cc::StickyPositionConstraint::CanMergeResult::
+            kCanMergeWithinScrollRange:
+          return kThroughMergeableCompositedScrollRangeDependent;
       }
     }
     return kNotSameBoundary;
@@ -137,8 +135,6 @@ std::optional<PropertyTreeState::UpcastResult> PropertyTreeState::CanUpcastWith(
       if (same_boundary == kThroughMergeableCompositedScrollRangeDependent) {
         scroll_range_dependent = true;
       }
-      CHECK(RuntimeEnabledFeatures::MergeFixedLayersEnabled() ||
-            RuntimeEnabledFeatures::MergeStickyLayersEnabled());
       const auto* composited1 = Transform().NearestDirectlyCompositedAncestor();
       const auto* composited2 =
           guest.Transform().NearestDirectlyCompositedAncestor();
@@ -194,8 +190,31 @@ std::optional<PropertyTreeState::UpcastResult> PropertyTreeState::CanUpcastWith(
       scroll_range_dependent);
 }
 
+void PropertyTreeStateOrAlias::StripTaintedFilters() {
+  if (Effect().Unalias().IsInDrawableCanvasSubtree()) {
+    return;
+  }
+
+  const EffectPaintPropertyNodeOrAlias* effect = &Effect();
+  while (!effect->Unalias().IsInDrawableCanvasSubtree() &&
+         effect->Unalias().IsInTaintedSubtree()) {
+    effect = effect->Parent();
+    DCHECK(effect);
+  }
+  SetEffect(*effect);
+
+  const ClipPaintPropertyNodeOrAlias* clip = &Clip();
+  while (clip->Unalias().PixelMovingFilter() &&
+         !clip->Unalias().PixelMovingFilter()->IsInDrawableCanvasSubtree() &&
+         clip->Unalias().PixelMovingFilter()->IsInTaintedSubtree()) {
+    clip = clip->Parent();
+    DCHECK(clip);
+  }
+  SetClip(*clip);
+}
+
 String PropertyTreeStateOrAlias::ToString() const {
-  return String::Format("t:%p c:%p e:%p", transform_, clip_, effect_);
+  return Format("t:{} c:{} e:{}", transform_, clip_, effect_);
 }
 
 #if DCHECK_IS_ON()

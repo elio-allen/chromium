@@ -38,7 +38,6 @@
 #include "chromecast/browser/cast_browser_process.h"
 #include "chromecast/browser/cast_content_browser_client.h"
 #include "chromecast/browser/cast_feature_list_creator.h"
-#include "chromecast/browser/cast_feature_update_observer.h"
 #include "chromecast/browser/cast_system_memory_pressure_evaluator.h"
 #include "chromecast/browser/cast_system_memory_pressure_evaluator_adjuster.h"
 #include "chromecast/browser/cast_web_service.h"
@@ -52,11 +51,6 @@
 #include "chromecast/browser/service_manager_connection.h"
 #include "chromecast/browser/service_manager_context.h"
 #include "chromecast/chromecast_buildflags.h"
-#include "chromecast/common/mojom/constants.mojom.h"
-#include "chromecast/external_mojo/broker_service/broker_service.h"
-#include "chromecast/external_mojo/external_service_support/external_connector.h"
-#include "chromecast/external_mojo/external_service_support/external_service.h"
-#include "chromecast/external_mojo/public/cpp/common.h"
 #include "chromecast/graphics/cast_window_manager.h"
 #include "chromecast/media/base/key_systems_common.h"
 #include "chromecast/media/common/media_pipeline_backend_manager.h"
@@ -66,8 +60,6 @@
 #include "chromecast/public/cast_media_shlib.h"
 #include "chromecast/service/cast_service.h"
 #include "chromecast/ui/display_settings_manager_impl.h"
-#include "components/heap_profiling/multi_process/client_connection_manager.h"
-#include "components/heap_profiling/multi_process/supervisor.h"
 #include "components/input/switches.h"
 #include "components/memory_pressure/multi_source_memory_pressure_monitor.h"
 #include "components/prefs/pref_service.h"
@@ -104,6 +96,8 @@
 #include "components/crash/content/browser/child_exit_observer_android.h"
 #include "components/crash/content/browser/child_process_crash_observer_android.h"
 #include "net/android/network_change_notifier_factory_android.h"
+#include "ui/events/devices/device_data_manager.h"
+#include "ui/events/devices/input_device_observer_android.h"
 #elif BUILDFLAG(IS_FUCHSIA)
 #include "chromecast/net/network_change_notifier_factory_fuchsia.h"
 #else
@@ -131,10 +125,6 @@
 #else
 #include "chromecast/graphics/cast_window_manager_default.h"  // nogncheck
 #endif
-
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_FUCHSIA)
-#include "device/bluetooth/cast/bluetooth_adapter_cast.h"
-#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_FUCHSIA)
 
 #if !BUILDFLAG(IS_FUCHSIA)
 #include "chromecast/base/cast_sys_info_util.h"
@@ -250,14 +240,6 @@ void DeregisterKillOnAlarm() {
 }
 
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_FUCHSIA)
-
-std::unique_ptr<heap_profiling::ClientConnectionManager>
-CreateClientConnectionManager(
-    base::WeakPtr<heap_profiling::Controller> controller_weak_ptr,
-    heap_profiling::Mode mode) {
-  return std::make_unique<heap_profiling::ClientConnectionManager>(
-      std::move(controller_weak_ptr), mode);
-}
 
 #if defined(USE_AURA)
 
@@ -386,6 +368,11 @@ CastBrowserMainParts::CastBrowserMainParts(
 }
 
 CastBrowserMainParts::~CastBrowserMainParts() {
+#if BUILDFLAG(IS_ANDROID)
+  if (ui::DeviceDataManager::HasInstance()) {
+    ui::InputDeviceObserverAndroid::GetInstance()->Shutdown();
+  }
+#endif
   if (cast_content_browser_client_->GetMediaTaskRunner() &&
       media_pipeline_backend_manager_) {
     // Make sure that media_pipeline_backend_manager_ is destroyed after any
@@ -425,22 +412,6 @@ metrics::MetricsHelperImpl* CastBrowserMainParts::metrics_helper() {
 
 content::BrowserContext* CastBrowserMainParts::browser_context() {
   return cast_browser_process_->browser_context();
-}
-
-external_mojo::BrokerService* CastBrowserMainParts::broker_service() {
-  CHECK(broker_service_);
-  return broker_service_.get();
-}
-
-external_service_support::ExternalConnector* CastBrowserMainParts::connector() {
-  CHECK(connector_);
-  return connector_.get();
-}
-
-external_service_support::ExternalConnector*
-CastBrowserMainParts::media_connector() {
-  CHECK(media_connector_);
-  return media_connector_.get();
 }
 
 CastWebService* CastBrowserMainParts::web_service() {
@@ -501,6 +472,9 @@ int CastBrowserMainParts::PreCreateThreads() {
   child_exit_observer_ = std::make_unique<crash_reporter::ChildExitObserver>();
   child_exit_observer_->RegisterClient(
       std::make_unique<crash_reporter::ChildProcessCrashObserver>());
+  if (!ui::DeviceDataManager::HasInstance()) {
+    ui::InputDeviceObserverAndroid::GetInstance()->Initialize();
+  }
 #endif
 
   service_connector_ = cast_content_browser_client_->CreateServiceConnector();
@@ -523,26 +497,8 @@ int CastBrowserMainParts::PreCreateThreads() {
   return 0;
 }
 
-void CastBrowserMainParts::PostCreateThreads() {
-  if (GetSwitchValueBoolean(switches::kInProcessBroker, true)) {
-    auto* service_manager_connector =
-        ServiceManagerConnection::GetForProcess()->GetConnector();
-    broker_service_ = std::make_unique<external_mojo::BrokerService>(
-        service_manager_connector);
-    connector_ = external_service_support::ExternalConnector::Create(
-        broker_service_->CreateConnector());
-  } else {
-    connector_ = external_service_support::ExternalConnector::Create(
-        external_mojo::GetBrokerPath());
-  }
-  media_connector_ = connector_->Clone();
-  browser_service_ =
-      std::make_unique<external_service_support::ExternalService>();
-  heap_profiling::Supervisor* supervisor =
-      heap_profiling::Supervisor::GetInstance();
-  supervisor->SetClientConnectionManagerConstructor(
-      &CreateClientConnectionManager);
-  supervisor->Start(base::NullCallback());
+int CastBrowserMainParts::PostCreateThreads() {
+  return content::RESULT_CODE_NORMAL_EXIT;
 }
 
 int CastBrowserMainParts::PreMainMessageLoopRun() {
@@ -555,12 +511,6 @@ int CastBrowserMainParts::PreMainMessageLoopRun() {
             monitor->CreateVoter()));
   }
 
-  // base::Unretained() is safe because the browser client will outlive any
-  // component in the browser; this factory method will not be called after
-  // the browser starts to tear down.
-  device::BluetoothAdapterCast::SetFactory(base::BindRepeating(
-      &CastContentBrowserClient::CreateBluetoothAdapter,
-      base::Unretained(cast_browser_process_->browser_client())));
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_FUCHSIA)
 
   cast_content_browser_client_->SetPersistentCookieAccessSettings(
@@ -604,9 +554,7 @@ int CastBrowserMainParts::PreMainMessageLoopRun() {
   }
 #endif
 
-  window_manager_ = std::make_unique<CastWindowManagerAura>(
-      CAST_IS_DEBUG_BUILD() ||
-      GetSwitchValueBoolean(switches::kEnableInput, false));
+  window_manager_ = std::make_unique<CastWindowManagerAura>();
   window_manager_->Setup();
 
   display_change_observer_ = std::make_unique<DisplayConfiguratorObserver>(
@@ -640,10 +588,6 @@ int CastBrowserMainParts::PreMainMessageLoopRun() {
 
   web_service_ = std::make_unique<CastWebService>(
       cast_browser_process_->browser_context(), window_manager_.get());
-  browser_service_->AddInterface<::chromecast::mojom::CastWebService>(
-      web_service_.get());
-  connector()->RegisterService(::chromecast::mojom::kCastBrowserServiceName,
-                               browser_service_.get());
 
   cast_browser_process_->SetCastService(
       cast_browser_process_->browser_client()->CreateCastService(
@@ -664,12 +608,6 @@ int CastBrowserMainParts::PreMainMessageLoopRun() {
   content::RenderFrameHost::AllowInjectingJavaScript();
 
   cast_browser_process_->cast_service()->Start();
-
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kUseCastBrowserPrefConfig)) {
-    feature_update_observer_ = std::make_unique<CastFeatureUpdateObserver>(
-        connector(), cast_browser_process_->pref_service());
-  }
 
   return content::RESULT_CODE_NORMAL_EXIT;
 }

@@ -6,6 +6,8 @@
 
 #include <stddef.h>
 
+#include <cmath>
+#include <limits>
 #include <memory>
 #include <tuple>
 #include <utility>
@@ -470,8 +472,16 @@ CreateWebMouseEvent(const std::string& event_type,
       return base::unexpected(Response::InvalidParams(
           "'deltaX' and 'deltaY' are expected for mouseWheel event"));
     }
-    wheel_event->delta_x = static_cast<float>(-delta_x.value());
-    wheel_event->delta_y = static_cast<float>(-delta_y.value());
+    const double scaled_delta_x = -delta_x.value() * scale_factor;
+    const double scaled_delta_y = -delta_y.value() * scale_factor;
+    if (!std::isfinite(scaled_delta_x) || !std::isfinite(scaled_delta_y) ||
+        std::abs(scaled_delta_x) > std::numeric_limits<float>::max() ||
+        std::abs(scaled_delta_y) > std::numeric_limits<float>::max()) {
+      return base::unexpected(
+          Response::InvalidParams("Wheel deltas exceed the supported range"));
+    }
+    wheel_event->delta_x = static_cast<float>(scaled_delta_x);
+    wheel_event->delta_y = static_cast<float>(scaled_delta_y);
     if (wheel_event->delta_x != 0.0f) {
       wheel_event->wheel_ticks_x = wheel_event->delta_x > 0.0f ? 1.0f : -1.0f;
     }
@@ -1401,8 +1411,7 @@ void InputHandler::HandleMouseEvent(
   RenderWidgetHostImpl* widget_host =
       host_ ? host_->GetRenderWidgetHost() : nullptr;
   if (!widget_host || !widget_host->delegate() ||
-      !widget_host->delegate()->GetInputEventRouter() ||
-      !widget_host->GetView()) {
+      !widget_host->GetInputEventRouter() || !widget_host->GetView()) {
     callback->sendFailure(Response::InternalError());
     return;
   }
@@ -1449,8 +1458,7 @@ void InputHandler::DispatchDragEvent(
   RenderWidgetHostImpl* widget_host =
       host_ ? host_->GetRenderWidgetHost() : nullptr;
   if (!widget_host || !widget_host->delegate() ||
-      !widget_host->delegate()->GetInputEventRouter() ||
-      !widget_host->GetView()) {
+      !widget_host->GetInputEventRouter() || !widget_host->GetView()) {
     callback->sendFailure(Response::InternalError());
     return;
   }
@@ -1551,7 +1559,7 @@ void InputHandler::OnWidgetForDispatchDragEvent(
 }
 
 float InputHandler::ScaleFactor() {
-  DCHECK(web_contents_);
+  CHECK(web_contents_, base::NotFatalUntil::M159);
   // Browser zoom
   RenderWidgetHostImpl* widget_host_for_zoom_level =
       (host_ && host_->GetRenderWidgetHost())
@@ -1705,8 +1713,7 @@ void InputHandler::DispatchWebTouchEvent(
   RenderWidgetHostImpl* widget_host =
       host_ ? host_->GetRenderWidgetHost() : nullptr;
   if (!widget_host || !widget_host->delegate() ||
-      !widget_host->delegate()->GetInputEventRouter() ||
-      !widget_host->GetView()) {
+      !widget_host->GetInputEventRouter() || !widget_host->GetView()) {
     callback->sendFailure(Response::InternalError());
     return;
   }

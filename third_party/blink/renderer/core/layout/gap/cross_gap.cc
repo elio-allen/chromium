@@ -4,6 +4,10 @@
 
 #include "third_party/blink/renderer/core/layout/gap/cross_gap.h"
 
+#include <utility>
+
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
+
 namespace blink {
 
 void CrossGapRange::Increment(wtf_size_t cross_gap_index) {
@@ -45,9 +49,9 @@ String CrossGap::ToString(bool verbose) const {
     if (gap_segment_state_ranges_.has_value()) {
       segment_state_ranges_str = "[";
       for (const auto& range : gap_segment_state_ranges_.value()) {
-        segment_state_ranges_str = StrCat(
-            {segment_state_ranges_str, "[", String::Number(range.start), ", ",
-             String::Number(range.end), ") ", range.state.ToString(), ", "});
+        segment_state_ranges_str =
+            Format("{}[{}, {}) {}, ", segment_state_ranges_str, range.start,
+                   range.end, range.state.ToString());
       }
       segment_state_ranges_str = StrCat({segment_state_ranges_str, "]"});
     }
@@ -117,7 +121,7 @@ void CrossGap::AdjustGapSegmentStateRangesForFragmentation(
       ranges[range_start_idx - 1].end > first_track_in_next_fragment) {
     --range_start_idx;
   }
-  gap_segment_state_ranges_ = adjusted_ranges;
+  gap_segment_state_ranges_ = std::move(adjusted_ranges);
 }
 
 }  // namespace blink

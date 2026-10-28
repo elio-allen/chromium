@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 """Plugin to find Java inline FQN violations."""
-# pylint: disable=line-too-long
 
 import re
 import subprocess
@@ -14,7 +13,8 @@ FILE_EXTENSIONS = [".java"]
 
 FQN_REGEX = re.compile(
     r"\b(org\.chromium|android|com\.google|androidx|java|javax)"
-    r"(?:\.[a-zA-Z0-9_]+)+\b")
+    r"(?:\.[a-zA-Z0-9_]+)+\b"
+)
 URL_REGEX = re.compile(r"https?://\S+")
 
 
@@ -56,13 +56,20 @@ def is_valid_import(fqn, search_root):
         test_fqn = ".".join(parts[:i])
         regex_fqn = test_fqn.replace(".", r"\.")
         try:
-            res = subprocess.run([
-                "git", "grep", "-q", "-E", f"import (static )?{regex_fqn}[;.]",
-                "--", ":/*.java"
-            ],
-                                 cwd=search_root,
-                                 capture_output=True,
-                                 check=False)
+            res = subprocess.run(
+                [
+                    "git",
+                    "grep",
+                    "-q",
+                    "-E",
+                    f"import (static )?{regex_fqn}[;.]",
+                    "--",
+                    ":/*.java",
+                ],
+                cwd=search_root,
+                capture_output=True,
+                check=False,
+            )
             if res.returncode == 0:
                 return True
         except Exception:
@@ -91,10 +98,14 @@ def check_file(file_path, search_root):
 
 if __name__ == "__main__":
     import sys
-    print("ERROR: This script is a plugin and cannot be run directly.",
-          file=sys.stderr)
+
+    print(
+        "ERROR: This script is a plugin and cannot be run directly.",
+        file=sys.stderr,
+    )
     print("Please run the central hub runner instead:", file=sys.stderr)
     print(
         f"  python3 agents/projects/code-health/hub/scripts/candidate_finder.py find --plugin {__file__}",
-        file=sys.stderr)
+        file=sys.stderr,
+    )
     sys.exit(1)

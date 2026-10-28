@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/check_deref.h"
 #include "base/check_is_test.h"
 #include "base/feature_list.h"
 #include "base/features.h"
@@ -282,7 +283,7 @@ class KeepAliveURLLoader::ForwardingClient final
 
   // network::mojom::URLLoaderClient overrides:
   void OnReceiveEarlyHints(network::mojom::EarlyHintsPtr early_hints) override {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
     TRACE_EVENT("loading",
                 "KeepAliveURLLoader::ForwardingClient::OnReceiveEarlyHints",
                 "request_id", request_id());
@@ -297,7 +298,7 @@ class KeepAliveURLLoader::ForwardingClient final
   void OnUploadProgress(int64_t current_position,
                         int64_t total_size,
                         base::OnceCallback<void()> callback) override {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
     TRACE_EVENT("loading",
                 "KeepAliveURLLoader::ForwardingClient::OnUploadProgress",
                 "request_id", request_id());
@@ -311,7 +312,7 @@ class KeepAliveURLLoader::ForwardingClient final
   }
 
   void OnTransferSizeUpdated(int32_t transfer_size_diff) override {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
     TRACE_EVENT("loading",
                 "KeepAliveURLLoader::ForwardingClient::OnTransferSizeUpdated",
                 "request_id", request_id());
@@ -325,7 +326,7 @@ class KeepAliveURLLoader::ForwardingClient final
 
   void OnReceiveRedirect(const net::RedirectInfo& redirect_info,
                          network::mojom::URLResponseHeadPtr head) override {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
     CHECK(IsConnected());
     target_->OnReceiveRedirect(redirect_info, std::move(head));
   }
@@ -334,7 +335,7 @@ class KeepAliveURLLoader::ForwardingClient final
       network::mojom::URLResponseHeadPtr head,
       mojo::ScopedDataPipeConsumerHandle body,
       std::optional<mojo_base::BigBuffer> cached_metadata) override {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
     CHECK(IsConnected());
     target_->OnReceiveResponse(std::move(head), std::move(body),
                                std::move(cached_metadata));
@@ -342,7 +343,7 @@ class KeepAliveURLLoader::ForwardingClient final
 
   void OnComplete(
       const network::URLLoaderCompletionStatus& completion_status) override {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
     CHECK(IsConnected());
     target_->OnComplete(completion_status);
   }
@@ -451,11 +452,12 @@ KeepAliveURLLoader::KeepAliveURLLoader(
                                   // `this` owns `request_trackers_`, so it is
                                   // safe to use.
                                   base::Unretained(this)))),
+      browser_context_(CHECK_DEREF(storage_partition->browser_context())),
       storage_partition_(storage_partition),
       initial_url_(resource_request.url),
       last_url_(resource_request.url),
       throttles_getter_(throttles_getter) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   CHECK(network_loader_factory_);
   CHECK(policy_container_host_);
   CHECK(!resource_request.trusted_params);
@@ -471,6 +473,9 @@ KeepAliveURLLoader::KeepAliveURLLoader(
   if (IsFetchLater()) {
     base::UmaHistogramBoolean("FetchLater.Browser.Total", true);
   }
+
+  GetContentClient()->browser()->OnFetchKeepAliveRequestCreated(
+      *browser_context_);
 }
 
 void KeepAliveURLLoader::Start() {
@@ -537,6 +542,8 @@ KeepAliveURLLoader::~KeepAliveURLLoader() {
   if (IsStarted()) {
     GetContentClient()->browser()->OnKeepaliveRequestFinished();
   }
+  GetContentClient()->browser()->OnFetchKeepAliveRequestDestroyed(
+      *browser_context_);
 }
 
 void KeepAliveURLLoader::set_on_delete_callback(
@@ -580,7 +587,7 @@ bool KeepAliveURLLoader::IsContextDetached() const {
 void KeepAliveURLLoader::FollowRedirect(
     network::HttpRequestHeadersUpdateParams headers_update_params,
     const std::optional<GURL>& new_url) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   TRACE_EVENT("loading", "KeepAliveURLLoader::FollowRedirect", "request_id",
               request_id_, "url", new_url);
 
@@ -606,7 +613,7 @@ void KeepAliveURLLoader::FollowRedirect(
 
 void KeepAliveURLLoader::SetPriority(net::RequestPriority priority,
                                      int intra_priority_value) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   TRACE_EVENT("loading", "KeepAliveURLLoader::SetPriority", "request_id",
               request_id_);
 
@@ -617,7 +624,7 @@ void KeepAliveURLLoader::SetPriority(net::RequestPriority priority,
 void KeepAliveURLLoader::EndReceiveRedirect(
     const net::RedirectInfo& redirect_info,
     network::mojom::URLResponseHeadPtr head) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   did_encounter_redirect_ = true;
   CHECK_GT(redirect_limit_, 0u);
   if (--redirect_limit_ == 0) {
@@ -702,7 +709,7 @@ void KeepAliveURLLoader::OnReceiveResponse(
     network::mojom::URLResponseHeadPtr response,
     mojo::ScopedDataPipeConsumerHandle body,
     std::optional<mojo_base::BigBuffer> cached_metadata) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   TRACE_EVENT("loading", "KeepAliveURLLoader::OnReceiveResponse", "request_id",
               request_id_, "url", last_url_);
 
@@ -788,7 +795,7 @@ void KeepAliveURLLoader::NotifyOnCompleteForTestAndDevTools(
 
 void KeepAliveURLLoader::OnComplete(
     const network::URLLoaderCompletionStatus& completion_status) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   TRACE_EVENT("loading", "KeepAliveURLLoader::OnComplete", "request_id",
               request_id_);
   if (IsAttemptingRetry(/*include_failed_retry=*/false)) {
@@ -907,8 +914,9 @@ base::TimeDelta KeepAliveURLLoader::UpdateNextRetryDelay() {
 bool KeepAliveURLLoader::IsEligibleForRetry(
     std::optional<network::URLLoaderCompletionStatus> completion_status) const {
   auto retry_options = resource_request_.fetch_retry_options;
-  if (!retry_options.has_value()) {
-    // The fetch must opt-in to retry.
+  if (!retry_options.has_value() ||
+      !base::FeatureList::IsEnabled(blink::features::kFetchRetry)) {
+    // The fetch must opt-in to retry and the feature must be enabled.
     return false;
   }
 
@@ -1095,7 +1103,7 @@ bool KeepAliveURLLoader::HasReceivedResponse() const {
 }
 
 void KeepAliveURLLoader::ForwardURLLoad() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   CHECK(IsRendererConnected());
   CHECK(stored_url_load_);
 
@@ -1173,7 +1181,7 @@ bool KeepAliveURLLoader::IsRendererConnected() const {
 
 net::Error KeepAliveURLLoader::WillFollowRedirect(
     const net::RedirectInfo& redirect_info) const {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   // TODO(crbug.com/40236167): Add logic to handle redirecting to extensions
   // from `ChromeContentRendererClient::IsSafeRedirectTarget()`.
@@ -1251,7 +1259,7 @@ bool KeepAliveURLLoader::RetryOrDelayErrorIfNeeded(
 
 void KeepAliveURLLoader::CancelWithStatus(
     const network::URLLoaderCompletionStatus& status) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   TRACE_EVENT("loading", "KeepAliveURLLoader::CancelWithStatus", "request_id",
               request_id_);
   if (IsAttemptingRetry(/*include_failed_retry=*/false)) {
@@ -1305,7 +1313,7 @@ void KeepAliveURLLoader::CancelWithStatusInternal(
 
 // Browser -> Renderer connection
 void KeepAliveURLLoader::ForwardingClient::OnDisconnected() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   TRACE_EVENT("loading", "KeepAliveURLLoader::ForwardingClient::OnDisconnected",
               "request_id", request_id());
 
@@ -1327,7 +1335,7 @@ void KeepAliveURLLoader::ForwardingClient::OnDisconnected() {
 
 // Browser <- Renderer connection.
 void KeepAliveURLLoader::OnURLLoaderDisconnected() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   TRACE_EVENT("loading", "KeepAliveURLLoader::OnURLLoaderDisconnected",
               "request_id", request_id_);
   for (auto& request_tracker : request_trackers_) {
@@ -1486,39 +1494,35 @@ void KeepAliveURLLoader::LogFetchKeepAliveRequestMetric(
   const std::string histogram_name = base::StrCat(
       {"FetchKeepAlive.Requests2.", request_state_name, ".Browser"});
 
-  // When under the experiment keep a local cache of resolved histograms to
-  // avoid contention on the global lock that is taken by histogram functions.
-  if (base::features::IsReducePPMsEnabled()) {
-    static base::NoDestructor<
-        absl::flat_hash_map<std::string, base::HistogramBase*>>
-        histograms;
+  // Keep a local cache of resolved histograms to avoid contention on the global
+  // lock that is taken by histogram functions.
+  static base::NoDestructor<
+      absl::flat_hash_map<std::string, base::HistogramBase*>>
+      histograms;
 
-    // Verify that `histograms` is not read/modified by more than one thread.
-    // Since it's static it will be used by any code that calls into the
-    // function.
-    static WrappedThreadChecker* thread_checker = new WrappedThreadChecker;
-    thread_checker->Check();
+  // Verify that `histograms` is not read/modified by more than one thread.
+  // Since it's static it will be used by any code that calls into the
+  // function.
+  static WrappedThreadChecker* thread_checker = new WrappedThreadChecker;
+  thread_checker->Check();
 
-    auto it = histograms->find(histogram_name);
-    if (it != histograms->end()) {
-      it->second->Add(static_cast<int32_t>(sample_type));
-    } else {
-      // TODO(crbug.com/424432184): This is messy and leaks information from
-      // LinearHistogram. If the experiment succeeds implement
-      // GetUmaHistogramEnumerationFactory before cleaning up the flag.
-      int32_t max_value =
-          static_cast<int32_t>(FetchKeepAliveRequestMetricType::kMaxValue);
-      base::HistogramBase* histo = base::LinearHistogram::FactoryGet(
-          histogram_name, /*minimum=*/1,
-          /*maximum=*/max_value + 1,
-          /*bucket_count=*/max_value + 2,
-          base::HistogramBase::kUmaTargetedHistogramFlag);
-      histo->Add(static_cast<int32_t>(sample_type));
-
-      (*histograms)[histogram_name] = histo;
-    }
+  auto it = histograms->find(histogram_name);
+  if (it != histograms->end()) {
+    it->second->Add(static_cast<int32_t>(sample_type));
   } else {
-    base::UmaHistogramEnumeration(histogram_name, sample_type);
+    // TODO(crbug.com/424432184): This is messy and leaks information from
+    // LinearHistogram. If the experiment succeeds implement
+    // GetUmaHistogramEnumerationFactory before cleaning up the flag.
+    int32_t max_value =
+        static_cast<int32_t>(FetchKeepAliveRequestMetricType::kMaxValue);
+    base::HistogramBase* histo = base::LinearHistogram::FactoryGet(
+        histogram_name, /*minimum=*/1,
+        /*maximum=*/max_value + 1,
+        /*bucket_count=*/max_value + 2,
+        base::HistogramBase::kUmaTargetedHistogramFlag);
+    histo->Add(static_cast<int32_t>(sample_type));
+
+    (*histograms)[histogram_name] = histo;
   }
 
   if (bool is_context_detached = !GetInitiator();

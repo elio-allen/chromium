@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_UI_VIEWS_OMNIBOX_OMNIBOX_FULL_POPUP_WEBUI_CONTENT_H_
 
 #include <memory>
+#include <optional>
 #include <string_view>
 
 #include "base/memory/weak_ptr.h"
@@ -41,8 +42,28 @@ class OmniboxFullPopupWebUIContent
 
   bool EscClosesUI() const override;
 
-  void CloseUI() override;
+  void Clear() override;
 
+  // Requests the WebUI searchbox context menu at `screen_point`, shown once
+  // the popup widget is active and the `<input>` is focused.
+  bool RequestContextMenu(const gfx::Point& screen_point,
+                          ui::mojom::MenuSourceType source_type);
+
+  void OnPopupWidgetActivationChanged(bool active);
+
+  // Whether the popup has presented a frame since it was last shown.
+  void OnPopupWidgetPresentedChanged(bool presented);
+
+  void CancelPendingContextMenuRequest();
+
+  // content::WebContentsObserver:
+  void OnFocusChangedInPage(
+      const content::FocusedNodeDetails& details) override;
+
+ private:
+  friend class OmniboxFullPopupWebUIContentBrowserTest;
+
+  void OnClearCallback();
   // ui::SimpleMenuModel::Delegate:
   void ExecuteCommand(int command_id, int event_flags) override;
   bool GetAcceleratorForCommandId(int command_id,
@@ -63,10 +84,26 @@ class OmniboxFullPopupWebUIContent
                          const content::ContextMenuParams& params) override;
 
   void ShowContextMenuComplete(const content::ContextMenuParams& params);
+  void ShowPendingContextMenuIfReady();
+
+  OmniboxPopupHandler* GetPopupHandler() {
+    return const_cast<OmniboxPopupHandler*>(
+        std::as_const(*this).GetPopupHandler());
+  }
+  const OmniboxPopupHandler* GetPopupHandler() const;
 
   content::ContextMenuParams params_;
   std::unique_ptr<ui::SimpleMenuModel> menu_model_;
   std::unique_ptr<views::MenuRunner> menu_runner_;
+
+  struct ContextMenuRequest {
+    // In screen coordinates; converted when the menu is shown, since the popup
+    // may not be positioned yet when the request is made.
+    gfx::Point screen_point;
+    ui::mojom::MenuSourceType source_type;
+  };
+  std::optional<ContextMenuRequest> pending_context_menu_request_;
+  bool popup_presented_ = false;
 
   base::WeakPtrFactory<OmniboxFullPopupWebUIContent> weak_ptr_factory_{this};
 };

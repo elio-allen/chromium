@@ -8,14 +8,6 @@ import {KeywordType, SelectionDirection, SelectionLineState, SelectionStep} from
 
 import {kDefaultSelection} from './searchbox_match.js';
 
-export type {
-  Action,
-  AutocompleteMatch,
-  AutocompleteResult,
-  OmniboxPopupSelection,
-};
-export {SelectionDirection, SelectionLineState, SelectionStep};
-
 export function selectionsEqual(
     a: OmniboxPopupSelection, b: OmniboxPopupSelection): boolean {
   return a.line === b.line && a.state === b.state &&
@@ -28,7 +20,27 @@ export function selectionToString(s: OmniboxPopupSelection): string {
 
 export function selectionIsNativelySupported(s: OmniboxPopupSelection):
     boolean {
-  return s.state !== SelectionLineState.kFocusedButtonContextEntrypoint;
+  return s.state !== SelectionLineState.kFocusedButtonContextEntrypoint &&
+      s.state !== SelectionLineState.kFocusedButtonVoiceSearch &&
+      s.state !== SelectionLineState.kFocusedButtonLensSearch &&
+      s.state !== SelectionLineState.kFocusedButtonContextualChip;
+}
+
+function findSelectionIndex(
+    selections: OmniboxPopupSelection[],
+    target: OmniboxPopupSelection): number {
+  let index = selections.findIndex(s => selectionsEqual(target, s));
+  if (index < 0 && target.state === SelectionLineState.kKeywordMode) {
+    index = selections.findIndex(
+        s =>
+            selectionsEqual({...target, state: SelectionLineState.kNormal}, s));
+  }
+  if (index < 0 && target.state === SelectionLineState.kNormal) {
+    index = selections.findIndex(
+        s => selectionsEqual(
+            {...target, state: SelectionLineState.kKeywordMode}, s));
+  }
+  return index;
 }
 
 function getSelectionsForMatch(
@@ -38,7 +50,9 @@ function getSelectionsForMatch(
   }
   const selections: OmniboxPopupSelection[] = [{
     line: matchIndex,
-    state: SelectionLineState.kNormal,
+    state: match.keywordModel?.type === KeywordType.kInstant ?
+        SelectionLineState.kKeywordMode :
+        SelectionLineState.kNormal,
     actionIndex: 0,
   }];
   if (match.keywordModel?.type === KeywordType.kChip) {
@@ -78,10 +92,10 @@ export function getMatchSelections(result: AutocompleteResult|null):
 }
 
 type Constructor<T> = new (...args: any[]) => T;
-type AbstractConstructor<T> = abstract new (...args: any[]) => T;
 
 export interface SearchboxSelectionMixinInterface {
   isAimButtonVisible: boolean;
+  inKeywordMode: boolean;
   showContextEntrypoint: boolean;
 
   selection: OmniboxPopupSelection;
@@ -90,6 +104,10 @@ export interface SearchboxSelectionMixinInterface {
   getAvailableSelections(result: AutocompleteResult|null):
       OmniboxPopupSelection[];
 
+  stepCyclesSelection(
+      result: AutocompleteResult|null, from: OmniboxPopupSelection,
+      direction: SelectionDirection, step: SelectionStep): boolean;
+
   getNextSelection(
       result: AutocompleteResult|null, from: OmniboxPopupSelection,
       direction: SelectionDirection,
@@ -97,19 +115,29 @@ export interface SearchboxSelectionMixinInterface {
 
   onSelectionChanged(e: CustomEvent<{value: OmniboxPopupSelection}>): void;
   isAiModeVirtualFocused(): boolean;
+  isContextEntrypointVirtualFocused(): boolean;
 }
 
 export type SearchboxSelectionMixinBase = CrLitElement;
 
 export const SearchboxSelectionMixin = <
     T extends Constructor<SearchboxSelectionMixinBase>>(
-    superClass: T): T&AbstractConstructor<SearchboxSelectionMixinInterface> => {
-  abstract class SearchboxSelectionMixin extends superClass implements
+    superClass: T): T&Constructor<SearchboxSelectionMixinInterface> => {
+  class SearchboxSelectionMixin extends superClass implements
       SearchboxSelectionMixinInterface {
     private selection_: OmniboxPopupSelection = kDefaultSelection;
 
-    abstract get isAimButtonVisible(): boolean;
-    abstract get showContextEntrypoint(): boolean;
+    get isAimButtonVisible(): boolean {
+      return false;
+    }
+
+    get inKeywordMode(): boolean {
+      return false;
+    }
+
+    get showContextEntrypoint(): boolean {
+      return false;
+    }
 
     get selection(): OmniboxPopupSelection {
       return this.selection_;
@@ -134,6 +162,11 @@ export const SearchboxSelectionMixin = <
       return this.selection_.state === SelectionLineState.kFocusedButtonAim;
     }
 
+    isContextEntrypointVirtualFocused(): boolean {
+      return this.selection_.state ===
+          SelectionLineState.kFocusedButtonContextEntrypoint;
+    }
+
     getAvailableSelections(result: AutocompleteResult|null):
         OmniboxPopupSelection[] {
       if (!result) {
@@ -150,28 +183,73 @@ export const SearchboxSelectionMixin = <
       }
 
       if (this.isAimButtonVisible) {
-        const insertionIndex =
-            available.length > 0 && result.matches[0]?.allowedToBeDefaultMatch ?
-            1 :
-            0;
-        available.splice(insertionIndex, 0, {
-          line: result.matches.findIndex(
-              (m: AutocompleteMatch) => m.allowedToBeDefaultMatch),
-          state: SelectionLineState.kFocusedButtonAim,
-          actionIndex: 0,
-        });
-        if (!result.matches[0]?.allowedToBeDefaultMatch) {
-          // If there is no default match, we need a generic selection to
-          // represent the input field so that it can be focused.
+        const firstMatch = result.matches[0];
+        const defaultMatch =
+            firstMatch?.allowedToBeDefaultMatch ? firstMatch : null;
+        // If there is no default match, we need a generic selection to
+        // represent the input field so that it can be focused.
+        if (!defaultMatch) {
           available.splice(0, 0, {
             line: -1,
             state: SelectionLineState.kNormal,
             actionIndex: 0,
           });
         }
+
+        const secondMatch = result.matches[1];
+        // Suppress focusing the AIM button to preserve user muscle memory and
+        // align with `OmniboxPopupSelection::GetAllAvailableSelectionsSorted()`
+        // when:
+        // - In keyword mode (e.g. 'youtube<tab>query').
+        // - The default match has a keyword chip (e.g. 'youtube').
+        // - The default match has action chips (e.g. switch to tab).
+        // - The 2nd match has an instant keyword (e.g. '@gemini').
+        // - The 2nd match is a pedal suggestion (e.g. 'create doc').
+        const suppressAim = this.inKeywordMode ||
+            !!defaultMatch?.keywordModel || !!defaultMatch?.actions.length ||
+            secondMatch?.keywordModel?.type === KeywordType.kInstant ||
+            secondMatch?.type === 'pedal';
+        if (!suppressAim) {
+          available.splice(1, 0, {
+            line: defaultMatch ? 0 : -1,
+            state: SelectionLineState.kFocusedButtonAim,
+            actionIndex: 0,
+          });
+        }
       }
 
       return available;
+    }
+
+    /**
+     * Determines whether stepping from `from` in `direction` with `step`
+     * granularity wraps around (cycles) the available selections.
+     */
+    stepCyclesSelection(
+        result: AutocompleteResult|null, from: OmniboxPopupSelection,
+        direction: SelectionDirection, step: SelectionStep): boolean {
+      const available = this.getAvailableSelections(result);
+      if (available.length === 0) {
+        return true;
+      }
+
+      const fromIndex = findSelectionIndex(available, from);
+      // When starting from the input (not in available selections), stepping
+      // backward immediately cycles/exits, while stepping forward enters the
+      // first available selection without cycling.
+      if (fromIndex < 0) {
+        return direction === SelectionDirection.kBackward;
+      }
+
+      // Compute the next selection target.
+      const next = this.getNextSelection(result, from, direction, step);
+      const nextIndex = findSelectionIndex(available, next);
+      if (nextIndex < 0) {
+        return true;
+      }
+      return direction === SelectionDirection.kForward ?
+          nextIndex <= fromIndex :
+          nextIndex >= fromIndex;
     }
 
     getNextSelection(
@@ -183,13 +261,12 @@ export const SearchboxSelectionMixin = <
         return from;
       }
       const isNormal = (selection: OmniboxPopupSelection) =>
-          selection.state === SelectionLineState.kNormal;
-      let fromIndex = available.findIndex(s => selectionsEqual(from, s));
-      if (fromIndex < 0 && from.state === SelectionLineState.kKeywordMode) {
-        fromIndex = available.findIndex(
-            s => selectionsEqual(
-                {...from, state: SelectionLineState.kNormal}, s));
-      }
+          (selection.state === SelectionLineState.kNormal ||
+           (selection.state === SelectionLineState.kKeywordMode &&
+            result?.matches[selection.line]?.keywordModel?.type ===
+                KeywordType.kInstant)) &&
+          selection.line !== -1;
+      let fromIndex = findSelectionIndex(available, from);
 
       const selectionsList = [...available];
       if (fromIndex < 0) {
@@ -197,20 +274,33 @@ export const SearchboxSelectionMixin = <
         fromIndex = 0;
       }
       if (step === SelectionStep.kAllLines) {
+        if (direction === SelectionDirection.kBackward && from.line === -1) {
+          return from;
+        }
         const normalIndex = direction === SelectionDirection.kBackward ?
             selectionsList.findIndex(isNormal) :
             selectionsList.findLastIndex(isNormal);
         return normalIndex < 0 ? from : selectionsList[normalIndex]!;
       }
 
+      const currentNormalIndex =
+          (from.line >= 0 &&
+           from.state !== SelectionLineState.kFocusedButtonAim) ?
+          selectionsList.findIndex(s => isNormal(s) && s.line === from.line) :
+          -1;
+      if (step === SelectionStep.kWholeLine && currentNormalIndex >= 0 &&
+          selectionsList.filter(isNormal).length === 1) {
+        return selectionsList[currentNormalIndex]!;
+      }
       const remainder = (lhs: number, rhs: number) => ((lhs % rhs) + rhs) % rhs;
       for (let offset = 1; offset < selectionsList.length; offset++) {
         const offsetDirection =
             direction === SelectionDirection.kForward ? offset : -offset;
-        const index =
-            remainder(fromIndex + offsetDirection, selectionsList.length);
+        const newIndex = fromIndex + offsetDirection;
+        const index = remainder(newIndex, selectionsList.length);
         const selection = selectionsList[index]!;
-        if (step === SelectionStep.kStateOrLine || isNormal(selection)) {
+        if (step === SelectionStep.kStateOrLine ||
+            (isNormal(selection) && index !== currentNormalIndex)) {
           return selection;
         }
       }

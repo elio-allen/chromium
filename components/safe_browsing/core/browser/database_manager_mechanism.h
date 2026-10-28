@@ -5,9 +5,11 @@
 #ifndef COMPONENTS_SAFE_BROWSING_CORE_BROWSER_DATABASE_MANAGER_MECHANISM_H_
 #define COMPONENTS_SAFE_BROWSING_CORE_BROWSER_DATABASE_MANAGER_MECHANISM_H_
 
+#include "base/memory/scoped_refptr.h"
 #include "base/sequence_checker.h"
+#include "base/task/sequenced_task_runner.h"
 #include "components/safe_browsing/core/browser/db/database_manager.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/safe_browsing_lookup_mechanism.h"
 #include "url/gurl.h"
 
@@ -25,7 +27,8 @@ class DatabaseManagerMechanism : public SafeBrowsingLookupMechanism,
       scoped_refptr<SafeBrowsingDatabaseManager> database_manager,
       CheckBrowseUrlType check_type,
       bool check_allowlist,
-      base::WeakPtr<V5GetHashProtocolManager> v5_get_hash_protocol_manager);
+      base::WeakPtr<V5GetHashProtocolManager> v5_get_hash_protocol_manager,
+      scoped_refptr<base::SequencedTaskRunner> custom_callback_task_runner);
 
   DatabaseManagerMechanism(const DatabaseManagerMechanism&) = delete;
   DatabaseManagerMechanism& operator=(const DatabaseManagerMechanism&) = delete;
@@ -57,6 +60,8 @@ class DatabaseManagerMechanism : public SafeBrowsingLookupMechanism,
                               SBThreatType threat_type) override;
   base::WeakPtr<V5GetHashProtocolManager> GetV5GetHashProtocolManager()
       override;
+  scoped_refptr<base::SequencedTaskRunner> GetCustomCallbackTaskRunner()
+      override;
 
   ThreatSource GetThreatSource() const;
 
@@ -65,6 +70,8 @@ class DatabaseManagerMechanism : public SafeBrowsingLookupMechanism,
 
   SEQUENCE_CHECKER(sequence_checker_);
 
+  // TODO(crbug.com/394329657): Remove check_allowlist_ as the
+  // safe-browsing-sync-checker-check-allowlist flag has been removed.
   // If the allowlist should be checked first before checking the blocklist.
   const bool check_allowlist_;
 
@@ -83,6 +90,10 @@ class DatabaseManagerMechanism : public SafeBrowsingLookupMechanism,
 
   // The protocol manager used for Safe Browsing v5 get hash requests.
   base::WeakPtr<V5GetHashProtocolManager> v5_get_hash_protocol_manager_;
+
+  // Optional UI-thread task runner used to dispatch asynchronous local database
+  // lookup replies for this mechanism.
+  scoped_refptr<base::SequencedTaskRunner> custom_callback_task_runner_;
 
   base::WeakPtrFactory<DatabaseManagerMechanism> weak_factory_{this};
 };

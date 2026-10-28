@@ -65,6 +65,7 @@ base::TimeDelta GetDefaultLocalChangeNudgeDelay(DataType data_type) {
       // coalescing.
       return kBigLocalChangeNudgeDelay;
     case OUTGOING_PASSWORD_SHARING_INVITATION:
+    case SEND_TAB_TO_SELF:
     case SHARING_MESSAGE:
       // Sharing messages are time-sensitive, so use a small nudge delay.
       return kMinLocalChangeNudgeDelay;
@@ -73,7 +74,6 @@ base::TimeDelta GetDefaultLocalChangeNudgeDelay(DataType data_type) {
     case AUTOFILL_WALLET_CREDENTIAL:
     case AUTOFILL_WALLET_DATA:
     case AUTOFILL_WALLET_METADATA:
-    case AUTOFILL_WALLET_OFFER:
     case AUTOFILL_WALLET_USAGE:
     case COLLABORATION_GROUP:
     case CONTACT_INFO:
@@ -98,19 +98,15 @@ base::TimeDelta GetDefaultLocalChangeNudgeDelay(DataType data_type) {
     case PRINTERS_AUTHORIZATION_SERVERS:
     case READING_LIST:
     case USER_CONSENTS:
-    case SEND_TAB_TO_SELF:
     case SECURITY_EVENTS:
     case SHARED_TAB_GROUP_DATA:
     case WIFI_CONFIGURATIONS:
     case WEB_APPS:
-    case WEB_APKS:
     case OS_PREFERENCES:
     case OS_PRIORITY_PREFERENCES:
     case WORKSPACE_DESK:
     case NIGORI:
     case WEBAUTHN_CREDENTIAL:
-    case PLUS_ADDRESS:
-    case PLUS_ADDRESS_SETTING:
     case AUTOFILL_VALUABLE:
     case AUTOFILL_VALUABLE_METADATA:
     case ACCOUNT_SETTING:
@@ -123,6 +119,7 @@ base::TimeDelta GetDefaultLocalChangeNudgeDelay(DataType data_type) {
     case THEMES_ANDROID:
     case NOTEBOOK:
     case JOURNEY:
+    case AUTOFILL_ENTITY_SUPPRESSION:
       return kMediumLocalChangeNudgeDelay;
     case UNSPECIFIED:
       NOTREACHED();
@@ -155,7 +152,6 @@ bool CanGetCommitsFromExtensions(DataType data_type) {
     case AUTOFILL_WALLET_CREDENTIAL:
     case AUTOFILL_WALLET_DATA:
     case AUTOFILL_WALLET_METADATA:
-    case AUTOFILL_WALLET_OFFER:
     case AUTOFILL_WALLET_USAGE:
     case THEMES:
     case THEMES_IOS:
@@ -179,7 +175,6 @@ bool CanGetCommitsFromExtensions(DataType data_type) {
     case SECURITY_EVENTS:
     case WIFI_CONFIGURATIONS:
     case WEB_APPS:
-    case WEB_APKS:
     case OS_PREFERENCES:
     case OS_PRIORITY_PREFERENCES:
     case WORKSPACE_DESK:
@@ -189,8 +184,6 @@ bool CanGetCommitsFromExtensions(DataType data_type) {
     case OUTGOING_PASSWORD_SHARING_INVITATION:
     case SHARED_TAB_GROUP_DATA:
     case COLLABORATION_GROUP:
-    case PLUS_ADDRESS:
-    case PLUS_ADDRESS_SETTING:
     case PRODUCT_COMPARISON:
     case COOKIES:
     case AUTOFILL_VALUABLE:
@@ -205,6 +198,7 @@ bool CanGetCommitsFromExtensions(DataType data_type) {
     case THEMES_ANDROID:
     case NOTEBOOK:
     case JOURNEY:
+    case AUTOFILL_ENTITY_SUPPRESSION:
       return false;
     case UNSPECIFIED:
       NOTREACHED();

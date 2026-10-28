@@ -145,6 +145,7 @@ class PLATFORM_EXPORT MultiBufferDataSource
   bool DidRedirect() const override { return did_redirect_; }
 
   GURL GetUrlAfterRedirects() const override;
+  GURL GetUrlDataOrigin() const override;
 
   // media::DataSource implementation.
   // Called from demuxer thread.
@@ -206,8 +207,6 @@ class PLATFORM_EXPORT MultiBufferDataSource
   void StartCallback();
 
   // Check if we've moved to a new url and update has_signgle_origin_.
-  void UpdateSingleOrigin();
-
   // MultiBufferReader progress callback.
   void ProgressCallback(int64_t begin, int64_t end);
 

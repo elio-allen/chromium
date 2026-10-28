@@ -13,6 +13,8 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/public/cpp/notification_utils.h"
+#include "base/check_deref.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
@@ -25,11 +27,13 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
+#include "base/test/scoped_amount_of_physical_memory_override.h"
 #include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/values.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_list_prefs.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_test.h"
+#include "chrome/browser/ash/arc/arc_migration_guide_notification.h"
 #include "chrome/browser/ash/arc/arc_optin_uma.h"
 #include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/ash/arc/optin/arc_terms_of_service_oobe_negotiator.h"
@@ -40,13 +44,12 @@
 #include "chrome/browser/ash/arc/test/test_arc_session_manager.h"
 #include "chrome/browser/ash/login/demo_mode/demo_setup_controller.h"
 #include "chrome/browser/ash/login/oobe_screen.h"
-#include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
 #include "chrome/browser/ash/login/wizard_controller.h"
 #include "chrome/browser/ash/policy/arc/fake_android_management_client.h"
 #include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
+#include "chrome/browser/consent_auditor/consent_auditor_factory.h"
 #include "chrome/browser/global_features.h"
-#include "chrome/browser/notifications/notification_display_service_tester.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/prefs/browser_prefs.h"
 #include "chrome/browser/prefs/pref_service_syncable_util.h"
@@ -58,6 +61,7 @@
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/concierge/concierge_client.h"
 #include "chromeos/ash/components/dbus/dlcservice/dlcservice_client.h"
 #include "chromeos/ash/components/dbus/dlcservice/fake_dlcservice_client.h"
@@ -86,6 +90,7 @@
 #include "components/services/app_service/public/cpp/app_service_registry.h"
 #include "components/session_manager/core/fake_session_manager_delegate.h"
 #include "components/session_manager/core/session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/sync/test/fake_sync_change_processor.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
@@ -93,6 +98,7 @@
 #include "components/user_manager/known_user.h"
 #include "components/user_manager/scoped_user_manager.h"
 #include "components/user_manager/test_helper.h"
+#include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_manager_impl.h"
 #include "components/user_manager/user_names.h"
@@ -103,6 +109,7 @@
 #include "google_apis/gaia/gaia_urls.h"
 #include "net/http/http_status_code.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/message_center/message_center.h"
 
 // TODO(b/254819616): Replace base::RunLoop().RunUntilIdle() with
 // task_environment_.RunUntilIdle() or Run() & Quit() to make the tests less
@@ -190,11 +197,14 @@ class ShowErrorObserver : public ArcSessionManagerObserver {
 
 class ArcSessionManagerInLoginScreenTest : public testing::Test {
  public:
-  ArcSessionManagerInLoginScreenTest()
-      : fake_user_manager_(std::make_unique<ash::FakeChromeUserManager>()) {
+  ArcSessionManagerInLoginScreenTest() {
     ash::ConciergeClient::InitializeFake(/*fake_cicerone_client=*/nullptr);
     ash::DlcserviceClient::InitializeFake();
     ash::SessionManagerClient::InitializeFakeInMemory();
+
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(
+            TestingBrowserProcess::GetGlobal()->local_state());
 
     ArcSessionManager::SetUiEnabledForTesting(false);
     SetArcBlockedDueToIncompatibleFileSystemForTesting(false);
@@ -217,6 +227,7 @@ class ArcSessionManagerInLoginScreenTest : public testing::Test {
     arc_session_manager_.reset();
     arc_dlc_installer_.reset();
     arc_service_manager_.reset();
+    user_session_test_environment_.reset();
     ash::SessionManagerClient::Shutdown();
     ash::DlcserviceClient::Shutdown();
     ash::ConciergeClient::Shutdown();
@@ -235,11 +246,11 @@ class ArcSessionManagerInLoginScreenTest : public testing::Test {
 
  private:
   content::BrowserTaskEnvironment task_environment_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
   std::unique_ptr<ArcServiceManager> arc_service_manager_;
   std::unique_ptr<ArcDlcInstaller> arc_dlc_installer_;
   std::unique_ptr<ArcSessionManager> arc_session_manager_;
-  user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
-      fake_user_manager_;
 };
 
 // We expect mini instance starts to run if EmitLoginPromptVisible signal is
@@ -324,6 +335,12 @@ class ArcSessionManagerTestBase : public testing::Test {
     ash::DlcserviceClient::InitializeFake();
     chromeos::PowerManagerClient::InitializeFake();
     ash::SessionManagerClient::InitializeFakeInMemory();
+    // Default physical memory to 8GB so tests run deterministically regardless
+    // of host test runner RAM size.
+    memory_override_ =
+        std::make_unique<base::test::ScopedAmountOfPhysicalMemoryOverride>(
+            base::GiB(8));
+
     ash::UpstartClient::InitializeFake();
 
     SetArcAvailableCommandLineForTesting(
@@ -421,6 +438,27 @@ class ArcSessionManagerTestBase : public testing::Test {
         /*new_user=*/false, /*has_active_session=*/false);
   }
 
+  // Helper method to simulate successful ARC OOBE provisioning for testing.
+  void SimulateOobeProvisioning() {
+    PrefService* const prefs = profile()->GetPrefs();
+    prefs->SetBoolean(prefs::kArcTermsAccepted, true);
+    prefs->SetBoolean(prefs::kArcProvisioningInitiatedFromOobe, true);
+
+    arc_session_manager()->SetProfile(profile());
+    arc_session_manager()->Initialize(
+        ConsentAuditorFactory::GetForProfile(profile()));
+    arc_session_manager()->RequestEnable();
+    arc_session_manager()->StartArcForTesting();
+
+    EXPECT_EQ(ArcSessionManager::State::ACTIVE, arc_session_manager()->state());
+
+    arc::mojom::ArcSignInResultPtr result =
+        arc::mojom::ArcSignInResult::NewSuccess(
+            arc::mojom::ArcSignInSuccess::SUCCESS);
+    arc_session_manager()->OnProvisioningFinished(
+        ArcProvisioningResult(std::move(result)));
+  }
+
  private:
   void StartPreferenceSyncing() const {
     PrefServiceSyncableFromProfile(profile_.get())
@@ -442,6 +480,8 @@ class ArcSessionManagerTestBase : public testing::Test {
   std::unique_ptr<ArcDlcInstaller> arc_dlc_installer_;
   std::unique_ptr<ArcSessionManager> arc_session_manager_;
   std::unique_ptr<ash::AuthEventsRecorder> auth_events_recorder_;
+  std::unique_ptr<base::test::ScopedAmountOfPhysicalMemoryOverride>
+      memory_override_;
 };
 
 class ArcSessionManagerTest : public ArcSessionManagerTestBase {
@@ -470,13 +510,27 @@ class ArcSessionManagerTest : public ArcSessionManagerTestBase {
   raw_ptr<ash::FakeResourcedClient> resourced_client_ = nullptr;
 };
 
+class ArcSessionManagerNotificationTest : public ArcSessionManagerTest {
+ public:
+  void SetUp() override {
+    ArcSessionManagerTest::SetUp();
+    message_center::MessageCenter::Initialize();
+  }
+
+  void TearDown() override {
+    message_center::MessageCenter::Shutdown();
+    ArcSessionManagerTest::TearDown();
+  }
+};
+
 TEST_F(ArcSessionManagerTest, BaseWorkflow) {
   EXPECT_TRUE(arc_session_manager()->sign_in_start_time().is_null());
   EXPECT_TRUE(arc_session_manager()->pre_start_time().is_null());
   EXPECT_TRUE(arc_session_manager()->start_time().is_null());
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
 
   // By default ARC is not enabled.
   EXPECT_EQ(ArcSessionManager::State::STOPPED, arc_session_manager()->state());
@@ -523,7 +577,8 @@ TEST_F(ArcSessionManagerTest, SignedInWorkflow) {
   prefs->SetBoolean(prefs::kArcSignedIn, true);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
 
   // By default ARC is not enabled.
   EXPECT_EQ(ArcSessionManager::State::STOPPED, arc_session_manager()->state());
@@ -546,7 +601,8 @@ TEST_F(ArcSessionManagerTest, SignedInWorkflowWithArcOnDemand) {
   prefs->SetBoolean(prefs::kArcPackagesIsUpToDate, true);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
 
   // By default ARC is not enabled.
   EXPECT_EQ(ArcSessionManager::State::STOPPED, arc_session_manager()->state());
@@ -574,7 +630,8 @@ TEST_F(ArcSessionManagerTest, SignedInWorkflowWithDeferringArcActivation) {
   prefs->SetBoolean(prefs::kArcSignedIn, true);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
 
   base::HistogramTester histogram_tester;
 
@@ -623,7 +680,8 @@ TEST_F(ArcSessionManagerTest,
   prefs->SetBoolean(prefs::kArcSignedIn, true);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
 
   base::HistogramTester histogram_tester;
 
@@ -692,7 +750,8 @@ TEST_F(ArcSessionManagerTest,
                    std::move(history));
   }
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
 
   base::HistogramTester histogram_tester;
 
@@ -737,7 +796,8 @@ TEST_F(ArcSessionManagerTest,
   prefs->SetBoolean(prefs::kArcSignedIn, true);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
 
   arc_session_manager()->AllowActivation(
       ArcSessionManager::AllowActivationReason::kUserLaunchAction);
@@ -757,7 +817,8 @@ TEST_F(ArcSessionManagerTest, SignedInWorkflow_ActivationIsAlreadyAllowed) {
   prefs->SetBoolean(prefs::kArcSignedIn, true);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
 
   // By default ARC is not enabled.
   EXPECT_EQ(ArcSessionManager::State::STOPPED, arc_session_manager()->state());
@@ -772,30 +833,34 @@ TEST_F(ArcSessionManagerTest, SignedInWorkflow_ActivationIsAlreadyAllowed) {
 
 // Tests that tying to enable ARC++ with an incompatible file system fails and
 // shows the user a notification to that effect.
-TEST_F(ArcSessionManagerTest, MigrationGuideNotification) {
+TEST_F(ArcSessionManagerNotificationTest, MigrationGuideNotification) {
   ArcSessionManager::SetUiEnabledForTesting(true);
   ArcSessionManager::EnableCheckAndroidManagementForTesting(false);
   SetArcBlockedDueToIncompatibleFileSystemForTesting(true);
 
-  NotificationDisplayServiceTester notification_service(profile());
-
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   base::RunLoop().RunUntilIdle();
 
   EXPECT_EQ(ArcSessionManager::State::STOPPED, arc_session_manager()->state());
-  auto notifications = notification_service.GetDisplayedNotificationsForType(
-      NotificationHandler::Type::TRANSIENT);
-  ASSERT_EQ(1U, notifications.size());
-  EXPECT_EQ("arc_fs_migration/suggest", notifications[0].id());
+  EXPECT_EQ(
+      1U,
+      message_center::MessageCenter::Get()->GetVisibleNotifications().size());
+  const user_manager::User& user = CHECK_DEREF(
+      ash::BrowserContextHelper::Get()->GetUserByBrowserContext(profile()));
+  EXPECT_TRUE(message_center::MessageCenter::Get()->FindVisibleNotificationById(
+      ash::CreateUserScopedNotificationId(kSuggestNotificationId,
+                                          user.username_hash())));
 }
 
 // Tests that OnArcInitialStart is called  after the successful ARC provisioning
 // on the first start after OptIn.
 TEST_F(ArcSessionManagerTest, ArcInitialStartFirstProvisioning) {
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
 
   ArcInitialStartHandler start_handler(arc_session_manager());
   EXPECT_FALSE(start_handler.was_called());
@@ -830,7 +895,8 @@ TEST_F(ArcSessionManagerTest, ArcInitialStartNextProvisioning) {
   prefs->SetBoolean(prefs::kArcSignedIn, true);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
 
   ArcInitialStartHandler start_handler(arc_session_manager());
 
@@ -850,7 +916,8 @@ TEST_F(ArcSessionManagerTest, IncompatibleFileSystemBlocksTermsOfService) {
   SetArcBlockedDueToIncompatibleFileSystemForTesting(true);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
 
   // Enables ARC first time. ToS negotiation should NOT happen.
   arc_session_manager()->RequestEnable();
@@ -870,7 +937,8 @@ TEST_F(ArcSessionManagerTest, IncompatibleFileSystemBlocksArcStart) {
   prefs->SetBoolean(prefs::kArcSignedIn, true);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
 
   // Enables ARC second time. ARC should NOT start.
   arc_session_manager()->RequestEnable();
@@ -885,7 +953,8 @@ TEST_F(ArcSessionManagerTest, CancelFetchingDisablesArc) {
 
   // Starts ARC.
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   base::RunLoop().RunUntilIdle();
   ASSERT_EQ(ArcSessionManager::State::CHECKING_REQUIREMENTS,
@@ -911,7 +980,8 @@ TEST_F(ArcSessionManagerTest, CloseUIKeepsArcEnabled) {
   // Starts ARC.
   SetArcPlayStoreEnabledForProfile(profile(), true);
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   base::RunLoop().RunUntilIdle();
   ASSERT_EQ(ArcSessionManager::State::CHECKING_REQUIREMENTS,
@@ -939,7 +1009,8 @@ TEST_F(ArcSessionManagerTest, Provisioning_Success) {
   ASSERT_FALSE(prefs->GetBoolean(prefs::kArcSignedIn));
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   ASSERT_EQ(ArcSessionManager::State::CHECKING_REQUIREMENTS,
             arc_session_manager()->state());
@@ -969,7 +1040,8 @@ TEST_F(ArcSessionManagerTest, Provisioning_Success) {
 
 TEST_F(ArcSessionManagerTest, Provisioning_SigninErrorMetric) {
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   arc_session_manager()->EmulateRequirementCheckCompletionForTesting();
 
@@ -988,7 +1060,8 @@ TEST_F(ArcSessionManagerTest, Provisioning_SigninErrorMetric) {
 
 TEST_F(ArcSessionManagerTest, Provisioning_DpcErrorMetric) {
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   arc_session_manager()->EmulateRequirementCheckCompletionForTesting();
 
@@ -1007,7 +1080,8 @@ TEST_F(ArcSessionManagerTest, Provisioning_DpcErrorMetric) {
 
 TEST_F(ArcSessionManagerTest, Provisioning_CheckinErrorMetric) {
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   arc_session_manager()->EmulateRequirementCheckCompletionForTesting();
 
@@ -1026,7 +1100,8 @@ TEST_F(ArcSessionManagerTest, Provisioning_CheckinErrorMetric) {
 
 TEST_F(ArcSessionManagerTest, Provisioning_SuccessMetric_Unmanaged) {
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   arc_session_manager()->EmulateRequirementCheckCompletionForTesting();
 
@@ -1047,7 +1122,8 @@ TEST_F(ArcSessionManagerTest, Provisioning_SuccessMetric_Unmanaged) {
 
 TEST_F(ArcSessionManagerTest, Provisioning_SuccessMetric_Managed) {
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   arc_session_manager()->EmulateRequirementCheckCompletionForTesting();
   profile()->GetProfilePolicyConnector()->OverrideIsManagedForTesting(true);
@@ -1077,7 +1153,8 @@ TEST_F(ArcSessionManagerTest, PlayStoreSuppressed) {
   prefs->SetBoolean(prefs::kArcProvisioningInitiatedFromOobe, true);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   arc_session_manager()->StartArcForTesting();
 
@@ -1101,6 +1178,77 @@ TEST_F(ArcSessionManagerTest, PlayStoreSuppressed) {
   arc_session_manager()->Shutdown();
 }
 
+TEST_F(ArcSessionManagerTest, PostOobeProvisioningShutdown_4GbDevice) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(arc::kShutDownArcPostOobeProvisioning);
+  base::CommandLine::ForCurrentProcess()->AppendSwitch(
+      ash::switches::kEnableArcVm);
+  base::test::ScopedAmountOfPhysicalMemoryOverride memory_override(
+      base::GiB(4));
+
+  SimulateOobeProvisioning();
+
+  // On 4GB device, provisioning initiated from OOBE shuts down ARCVM and
+  // transitions state to READY.
+  EXPECT_EQ(ArcSessionManager::State::READY, arc_session_manager()->state());
+
+  // Subsequent user action (e.g. launching Play Store) activates ARCVM.
+  arc_session_manager()->AllowActivation(
+      ArcSessionManager::AllowActivationReason::kUserLaunchAction);
+  EXPECT_EQ(ArcSessionManager::State::ACTIVE, arc_session_manager()->state());
+
+  arc_session_manager()->Shutdown();
+}
+
+TEST_F(ArcSessionManagerTest, PostOobeProvisioningShutdown_8GbDevice) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(arc::kShutDownArcPostOobeProvisioning);
+  base::CommandLine::ForCurrentProcess()->AppendSwitch(
+      ash::switches::kEnableArcVm);
+  base::test::ScopedAmountOfPhysicalMemoryOverride memory_override(
+      base::GiB(8));
+
+  SimulateOobeProvisioning();
+
+  // On 8GB device, ARCVM remains active after OOBE provisioning.
+  EXPECT_EQ(ArcSessionManager::State::ACTIVE, arc_session_manager()->state());
+
+  arc_session_manager()->Shutdown();
+}
+
+TEST_F(ArcSessionManagerTest, PostOobeProvisioningShutdown_FeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(arc::kShutDownArcPostOobeProvisioning);
+  base::CommandLine::ForCurrentProcess()->AppendSwitch(
+      ash::switches::kEnableArcVm);
+  base::test::ScopedAmountOfPhysicalMemoryOverride memory_override(
+      base::GiB(4));
+
+  SimulateOobeProvisioning();
+
+  // When feature is disabled, ARCVM remains active even on 4GB device.
+  EXPECT_EQ(ArcSessionManager::State::ACTIVE, arc_session_manager()->state());
+
+  arc_session_manager()->Shutdown();
+}
+
+TEST_F(ArcSessionManagerTest, PostOobeProvisioningShutdown_ManagedUser) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(arc::kShutDownArcPostOobeProvisioning);
+  base::CommandLine::ForCurrentProcess()->AppendSwitch(
+      ash::switches::kEnableArcVm);
+  base::test::ScopedAmountOfPhysicalMemoryOverride memory_override(
+      base::GiB(4));
+  profile()->GetProfilePolicyConnector()->OverrideIsManagedForTesting(true);
+
+  SimulateOobeProvisioning();
+
+  // For managed users, ARCVM remains active even on 4GB device.
+  EXPECT_EQ(ArcSessionManager::State::ACTIVE, arc_session_manager()->state());
+
+  arc_session_manager()->Shutdown();
+}
+
 TEST_F(ArcSessionManagerTest, InitiatedFromOobeIsResetOnOptOut) {
   // Set up the situation that terms were accepted in the previous session.
   PrefService* const prefs = profile()->GetPrefs();
@@ -1110,7 +1258,8 @@ TEST_F(ArcSessionManagerTest, InitiatedFromOobeIsResetOnOptOut) {
   prefs->SetBoolean(prefs::kArcProvisioningInitiatedFromOobe, true);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   EXPECT_TRUE(prefs->GetBoolean(prefs::kArcProvisioningInitiatedFromOobe));
   // Disabling ARC resets suppress state
@@ -1129,7 +1278,8 @@ TEST_F(ArcSessionManagerTest, Provisioning_Restart) {
   prefs->SetBoolean(prefs::kArcSignedIn, true);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->AllowActivation(
       ArcSessionManager::AllowActivationReason::kImmediateActivation);
   arc_session_manager()->RequestEnable();
@@ -1158,7 +1308,8 @@ TEST_F(ArcSessionManagerTest, RemoveDataDir) {
   // preference is false for managed user, i.e., data dir is being removed at
   // beginning.
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestArcDataRemoval();
   EXPECT_TRUE(
       profile()->GetPrefs()->GetBoolean(prefs::kArcDataRemoveRequested));
@@ -1198,7 +1349,8 @@ TEST_F(ArcSessionManagerTest, RemoveDataDir_Restart) {
   PrefService* const prefs = profile()->GetPrefs();
   prefs->SetBoolean(prefs::kArcDataRemoveRequested, true);
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   EXPECT_TRUE(
       profile()->GetPrefs()->GetBoolean(prefs::kArcDataRemoveRequested));
@@ -1222,7 +1374,8 @@ TEST_F(ArcSessionManagerTest, ArcVmDataMigrationInProgress_WipeData) {
   SetArcVmDataMigrationStatus(prefs, ArcVmDataMigrationStatus::kStarted);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   base::RunLoop().RunUntilIdle();
 
   // The migration status should be reset to finished and data removal
@@ -1251,7 +1404,8 @@ TEST_F(ArcSessionManagerTest, ArcVmDataMigration_Unprovisioned_ForcedFinished) {
   SetArcVmDataMigrationStatus(prefs, ArcVmDataMigrationStatus::kUnnotified);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   base::RunLoop().RunUntilIdle();
 
   // Migration status should be forced to finished for unprovisioned users.
@@ -1270,7 +1424,8 @@ TEST_F(ArcSessionManagerTest, RegularToChildTransition) {
   base::test::ScopedFeatureList feature_list;
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   EXPECT_FALSE(
       profile()->GetPrefs()->GetBoolean(prefs::kArcDataRemoveRequested));
@@ -1293,7 +1448,8 @@ TEST_F(ArcSessionManagerTest, SetArcSignedIn) {
   prefs->SetBoolean(prefs::kArcSignedIn, true);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
 
   // By default ARC is not enabled.
   EXPECT_EQ(ArcSessionManager::State::STOPPED, arc_session_manager()->state());
@@ -1315,7 +1471,8 @@ TEST_F(ArcSessionManagerTest, SetArcSignedIn) {
 TEST_F(ArcSessionManagerTest, ClearArcSignedIn) {
   // Start ARC.
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   base::RunLoop().RunUntilIdle();
   ASSERT_EQ(ArcSessionManager::State::CHECKING_REQUIREMENTS,
@@ -1342,7 +1499,8 @@ TEST_F(ArcSessionManagerTest, ClearArcTransitionOnShutdown) {
 
   // Initialize ARC.
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   base::RunLoop().RunUntilIdle();
   ASSERT_EQ(ArcSessionManager::State::CHECKING_REQUIREMENTS,
@@ -1375,7 +1533,8 @@ TEST_F(ArcSessionManagerTest, ClearArcTransitionOnArcDataRemoval) {
 
   // Initialize ARC.
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(ArcSessionManager::State::CHECKING_REQUIREMENTS,
@@ -1404,7 +1563,8 @@ TEST_F(ArcSessionManagerTest, ClearArcTransitionOnArcDataRemoval) {
 
 TEST_F(ArcSessionManagerTest, IgnoreSecondErrorReporting) {
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   arc_session_manager()->EmulateRequirementCheckCompletionForTesting();
   EXPECT_EQ(ArcSessionManager::State::ACTIVE, arc_session_manager()->state());
@@ -1432,7 +1592,8 @@ TEST_F(ArcSessionManagerTest, IgnoreSecondErrorReporting) {
 // Test case when skipped ToS flag is not set during the ARC boot.
 TEST_F(ArcSessionManagerTest, SkippedTermsOfServiceNegotiationFalse) {
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
 
   // On initial start skipped ToS flag is not set.
   EXPECT_FALSE(arc_session_manager()->skipped_terms_of_service_negotiation());
@@ -1462,7 +1623,8 @@ TEST_F(ArcSessionManagerTest, SkippedTermsOfServiceNegotiationTrue) {
   prefs->SetBoolean(prefs::kArcSignedIn, true);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   EXPECT_FALSE(arc_session_manager()->skipped_terms_of_service_negotiation());
   arc_session_manager()->AllowActivation(
       ArcSessionManager::AllowActivationReason::kImmediateActivation);
@@ -1481,7 +1643,8 @@ TEST_F(ArcSessionManagerTest, SkippedTermsOfServiceNegotiationTrue) {
 TEST_F(ArcSessionManagerTest,
        SkippedTermsOfServiceNegotiationOnInternalRestart) {
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->AllowActivation(
       ArcSessionManager::AllowActivationReason::kImmediateActivation);
   arc_session_manager()->RequestEnable();
@@ -1520,10 +1683,12 @@ TEST_F(ArcSessionManagerTest, DataCleanUpOnFirstStart) {
       ash::switches::kArcDataCleanupOnStart);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
 
-  ArcPlayStoreEnabledPreferenceHandler handler(profile(),
-                                               arc_session_manager());
+  ArcPlayStoreEnabledPreferenceHandler handler(
+      profile(), arc_session_manager(),
+      ConsentAuditorFactory::GetForProfile(profile()));
   handler.Start();
 
   EXPECT_EQ(ArcSessionManager::State::REMOVING_DATA_DIR,
@@ -1559,10 +1724,12 @@ TEST_F(ArcSessionManagerTest, DataCleanUpOnNextStart) {
   prefs->SetBoolean(prefs::kArcEnabled, true);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
 
-  ArcPlayStoreEnabledPreferenceHandler handler(profile(),
-                                               arc_session_manager());
+  ArcPlayStoreEnabledPreferenceHandler handler(
+      profile(), arc_session_manager(),
+      ConsentAuditorFactory::GetForProfile(profile()));
   handler.Start();
 
   EXPECT_EQ(ArcSessionManager::State::REMOVING_DATA_DIR,
@@ -1577,7 +1744,8 @@ TEST_F(ArcSessionManagerTest, DataCleanUpOnNextStart) {
 TEST_F(ArcSessionManagerTest, RequestDisableDoesNotRemoveData) {
   // Start ARC.
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   base::RunLoop().RunUntilIdle();
   ASSERT_EQ(ArcSessionManager::State::CHECKING_REQUIREMENTS,
@@ -1597,7 +1765,8 @@ TEST_F(ArcSessionManagerTest, RequestDisableDoesNotRemoveData) {
 TEST_F(ArcSessionManagerTest, RequestDisableWithArcDataRemoval) {
   // Start ARC.
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   base::RunLoop().RunUntilIdle();
   ASSERT_EQ(ArcSessionManager::State::CHECKING_REQUIREMENTS,
@@ -1618,7 +1787,8 @@ TEST_F(ArcSessionManagerTest, TimerWithDefaultTimeoutWhenDlcDisabled) {
   // Do not set kEnableArcVm switch. This makes IsArcVmDlcEnabled() return
   // false.
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   arc_session_manager()->EmulateRequirementCheckCompletionForTesting();
 
@@ -1732,7 +1902,8 @@ class ProvisioningErrorDisplayTest
     ArcSessionManagerTest::SetUp();
 
     arc_session_manager()->SetProfile(profile());
-    arc_session_manager()->Initialize();
+    arc_session_manager()->Initialize(
+        ConsentAuditorFactory::GetForProfile(profile()));
     arc_session_manager()->RequestEnable();
   }
 
@@ -1765,7 +1936,8 @@ TEST_F(ArcSessionManagerArcAlwaysStartTest, BaseWorkflow) {
   EXPECT_TRUE(arc_session_manager()->start_time().is_null());
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
 
   // By default ARC is not enabled.
   EXPECT_EQ(ArcSessionManager::State::STOPPED, arc_session_manager()->state());
@@ -1866,7 +2038,8 @@ TEST_P(ArcSessionManagerPolicyTest, SkippingTerms) {
   }
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
 
   // Terms of Service are skipped if ARC is enabled by policy AND (both policies
@@ -1957,7 +2130,8 @@ class ArcSessionManagerPublicSessionTest : public ArcSessionManagerTestBase {
 
 TEST_F(ArcSessionManagerPublicSessionTest, AuthFailure) {
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   EXPECT_EQ(ArcSessionManager::State::ACTIVE, arc_session_manager()->state());
 
@@ -2018,7 +2192,8 @@ class ArcSessionOobeOptInNegotiatorTest
     }
 
     arc_session_manager()->SetProfile(profile());
-    arc_session_manager()->Initialize();
+    arc_session_manager()->Initialize(
+        ConsentAuditorFactory::GetForProfile(profile()));
 
     if (IsArcPlayStoreEnabledForProfile(profile())) {
       arc_session_manager()->RequestEnable();
@@ -2231,7 +2406,8 @@ INSTANTIATE_TEST_SUITE_P(All,
 //   * ARC++ Container is restarted on retry.
 TEST_P(ArcSessionRetryTest, ContainerRestarted) {
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
 
   EXPECT_EQ(ArcSessionManager::State::CHECKING_REQUIREMENTS,
@@ -2334,7 +2510,8 @@ TEST_F(ArcSessionManagerTest, RequestArcEnableMemoryMargin) {
                                  ash::kCrOSMemoryPressureSignalStudyNonArc},
                                 {});
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
 
   arc_session_manager()->RequestEnable();
 
@@ -2348,7 +2525,8 @@ TEST_F(ArcSessionManagerTest, RequestArcDisableMemoryMargin) {
                                  ash::kCrOSMemoryPressureSignalStudyNonArc},
                                 {});
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
 
   arc_session_manager()->RequestDisable();
@@ -2411,7 +2589,8 @@ TEST_P(ArcTransitionToManagedTest, TransitionFlow) {
 
   // Initialize ARC.
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->AllowActivation(
       ArcSessionManager::AllowActivationReason::kImmediateActivation);
   arc_session_manager()->RequestEnable();
@@ -2475,7 +2654,8 @@ TEST_F(ArcSessionManagerTimerTest, TimerNotStartedWhenAlreadyProvisioned) {
   profile()->GetPrefs()->SetBoolean(prefs::kArcSignedIn, true);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
 
   arc_session_manager()->AllowActivation(
@@ -2494,7 +2674,8 @@ TEST_F(ArcSessionManagerTimerTest,
   EXPECT_FALSE(observer.error_info().has_value());
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   arc_session_manager()->EmulateRequirementCheckCompletionForTesting();
 
@@ -2522,7 +2703,8 @@ TEST_F(ArcSessionManagerTimerTest,
   EXPECT_FALSE(observer.error_info().has_value());
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   arc_session_manager()->EmulateRequirementCheckCompletionForTesting();
 
@@ -2560,7 +2742,8 @@ TEST_F(ArcSessionManagerTimerTest,
   EXPECT_FALSE(observer.error_info().has_value());
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   arc_session_manager()->EmulateRequirementCheckCompletionForTesting();
 
@@ -2594,7 +2777,8 @@ TEST_F(ArcSessionManagerTimerTest,
   EXPECT_FALSE(observer.error_info().has_value());
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   arc_session_manager()->RequestEnable();
   arc_session_manager()->EmulateRequirementCheckCompletionForTesting();
 

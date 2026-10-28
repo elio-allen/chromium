@@ -12,16 +12,20 @@
 #include "content/public/browser/child_process_security_policy.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/security_principal.h"
+#include "content/public/browser/site_instance.h"
 #include "extensions/browser/api/messaging/channel_endpoint.h"
 #include "extensions/browser/api/messaging/extension_message_port.h"
 #include "extensions/browser/api/messaging/message_service.h"
 #include "extensions/browser/bad_message.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_util.h"
 #include "extensions/browser/process_map.h"
 #include "extensions/browser/script_injection_tracker.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_features.h"
+#include "extensions/common/manifest.h"
 #include "extensions/common/trace_util.h"
 #include "ipc/constants.mojom.h"
 #include "url/origin_debug.h"
@@ -73,17 +77,57 @@ bool IsPortContextSandboxed(RenderProcessHost& process,
   return frame->IsSandboxed(network::mojom::WebSandboxFlags::kOrigin);
 }
 
+// Returns true if `process` can legitimately claim to host an extension context
+// with access to extension messaging APIs for `extension_id`.
+// `allow_unprivileged_context` indicates whether unprivileged extension
+// contexts (specifically, webview guests owned by `extension_id` that load
+// webview-accessible extension resources) are allowed for the messaging API.
+bool CanProcessHostExtensionMessaging(RenderProcessHost& process,
+                                      const ExtensionId& extension_id,
+                                      const PortContext& source_context,
+                                      bool allow_unprivileged_context) {
+  ProcessMap* process_map = ProcessMap::Get(process.GetBrowserContext());
+  if (process_map->Contains(extension_id, process.GetID())) {
+    // A trusted extension process is always valid for messaging.
+    return true;
+  }
+
+  // There are two cases in which extension contexts might *not* be hosted in
+  // the extension process: a manifest-sandboxed extension page (or sandboxed
+  // data:/srcdoc subframe), or a webview-accessible resource in a webview.
+  // The former, being sandboxed, does *not* have access to extension APIs,
+  // including messaging, so we only need to check whether this is for a
+  // webview-accessible resource. These are classified as "unprivileged"
+  // contexts.
+  if (!allow_unprivileged_context || !source_context.is_for_render_frame() ||
+      !process_map->IsWebViewProcessForExtension(extension_id,
+                                                 process.GetID())) {
+    return false;
+  }
+
+  content::RenderFrameHost* frame = content::RenderFrameHost::FromID(
+      process.GetDeprecatedID(), source_context.frame->routing_id);
+  // Even in a webview owned by `extension_id`, a manifest-sandboxed extension
+  // page (or sandboxed data:/srcdoc subframe) is placed in a sandboxed
+  // SiteInstance and does not have access to extension APIs.
+  return frame &&
+         !frame->GetSiteInstance()->GetSecurityPrincipal().IsSandboxed();
+}
+
 // Returns true if `source_endpoint_type` and `source_endpoint_extension_id` can
 // be legitimately claimed/used by `process`.  Otherwise reports a bad IPC
 // message and returns false (expecting the caller to not take any action based
 // on the rejected, untrustworthy endpoint). `source_context` provides
 // additional information about the source, such as whether it refers to a frame
-// or a worker.
+// or a worker. `allow_unprivileged_context` indicates whether unprivileged
+// extension contexts (such as webviews loading webview-accessible extension
+// resources) are allowed.
 bool IsValidMessagingSource(
     RenderProcessHost& process,
     mojom::MessagingEndpointType source_endpoint_type,
     const std::optional<ExtensionId>& source_endpoint_extension_id,
-    const PortContext& source_context) {
+    const PortContext& source_context,
+    bool allow_unprivileged_context) {
   switch (source_endpoint_type) {
     case MessagingEndpoint::Type::kNativeApp:
       // Requests for channels initiated by native applications don't originate
@@ -113,13 +157,11 @@ bool IsValidMessagingSource(
             bad_message::EMF_INVALID_EXTENSION_ID_FOR_EXTENSION_SOURCE);
         return false;
       }
-      if (!ProcessMap::Get(process.GetBrowserContext())
-               ->Contains(*source_endpoint_extension_id, process.GetID())) {
-        // The process isn't in the extension process map. This is legitimately
-        // possible for extension frames that are marked as sandboxed in their
-        // manifests. However, these frames do *not* have access to extension
-        // APIs, including messaging. As such, we consider this an invalid
-        // messaging attempt and kill the renderer.
+      if (!CanProcessHostExtensionMessaging(
+              process, *source_endpoint_extension_id, source_context,
+              allow_unprivileged_context)) {
+        // The process isn't allowed to use this extension messaging API for
+        // `source_endpoint_extension_id`. Kill the renderer.
         bad_message::ReceivedBadMessage(
             &process, bad_message::EMF_INVALID_MESSAGE_FROM_SANDBOXED_PROCESS);
         return false;
@@ -294,13 +336,11 @@ bool IsValidSourceUrl(content::RenderProcessHost& process,
   url::SchemeHostPort precursor_origin =
       base_origin.GetTupleOrPrecursorTupleIfOpaque();
   if (precursor_origin.scheme() == kExtensionScheme &&
-      !ProcessMap::Get(process.GetBrowserContext())
-           ->Contains(precursor_origin.host(), process.GetID())) {
-    // The process isn't in the extension process map. This is legitimately
-    // possible for extension frames that are marked as sandboxed in their
-    // manifests. However, these frames do *not* have access to extension APIs,
-    // including messaging. As such, we consider this an invalid messaging
-    // attempt and kill the renderer.
+      !CanProcessHostExtensionMessaging(process, precursor_origin.host(),
+                                        source_context,
+                                        /*allow_unprivileged_context=*/true)) {
+    // The process isn't allowed to use extension messaging. Kill the
+    // renderer.
     bad_message::ReceivedBadMessage(
         &process, bad_message::EMF_INVALID_MESSAGE_FROM_SANDBOXED_PROCESS);
     return false;
@@ -474,9 +514,15 @@ void MessageService::OpenChannelToExtension(
   ScopedExternalConnectionInfoCrashKeys info_crash_keys(info);
   debug::ScopedPortContextCrashKeys port_context_crash_keys(
       source.port_context());
+  if (channel_type == mojom::ChannelType::kNative) {
+    bad_message::ReceivedBadMessage(process,
+                                    bad_message::EMF_INVALID_CHANNEL_TYPE);
+    return;
+  }
   if (!IsValidMessagingSource(*process, info.source_endpoint.type,
                               info.source_endpoint.extension_id,
-                              source.port_context()) ||
+                              source.port_context(),
+                              /*allow_unprivileged_context=*/true) ||
       !IsValidMessagingTarget(*process, info.source_endpoint, info.target_id) ||
       !IsValidSourceUrl(*process, info.source_url, source.port_context()) ||
       !IsValidSourceContext(*process, source.port_context())) {
@@ -501,6 +547,7 @@ void MessageService::OpenChannelToNativeApp(
     const ChannelEndpoint& source,
     const PortId& source_port_id,
     const std::string& native_app_name,
+    const SigningCertificates& android_certificates,
     mojo::PendingAssociatedRemote<extensions::mojom::MessagePort> port,
     mojo::PendingAssociatedReceiver<extensions::mojom::MessagePortHost>
         port_host) {
@@ -512,14 +559,54 @@ void MessageService::OpenChannelToNativeApp(
   }
   debug::ScopedPortContextCrashKeys port_context_crash_keys(
       source.port_context());
-  if (!IsValidSourceContext(*process, source.port_context())) {
+
+#if BUILDFLAG(IS_ANDROID)
+  // TODO(crbug.com/515159909): The `extension_id` and IsValidMessagingSource
+  // checks are needed for Android. Consolidate these checks in a follow-up if
+  // they can be used for other platforms as well.
+  std::optional<ExtensionId> extension_id =
+      ValidateSourceContextAndExtractExtensionId(*process,
+                                                 source.port_context());
+  if (!extension_id || !IsValidMessagingSource(
+                           *process, mojom::MessagingEndpointType::kExtension,
+                           extension_id, source.port_context(),
+                           /*allow_unprivileged_context=*/false)) {
     // No need to call ReceivedBadMessage here, because it will be called (when
     // appropriate) within IsValidSourceContext.
     return;
   }
 
+  const Extension* extension = ExtensionRegistry::Get(source.browser_context())
+                                   ->enabled_extensions()
+                                   .GetByID(*extension_id);
+  if (!extension) {
+    // The extension may have legitimately been unloaded while the IPC is in
+    // flight. Gracefully drop the message on the floor without terminating
+    // the renderer.
+    return;
+  }
+
+  // Renderer bindings enforce that packed extensions specify signing
+  // certificates for the target app. An empty list indicates a compromised
+  // renderer.
+  if (!Manifest::IsUnpackedLocation(extension->location()) &&
+      android_certificates.empty()) {
+    bad_message::ReceivedBadMessage(
+        process,
+        bad_message::MS_EMPTY_ANDROID_CERTIFICATES_FOR_PACKED_EXTENSION);
+    return;
+  }
+#else
+  if (!IsValidSourceContext(*process, source.port_context())) {
+    // No need to call ReceivedBadMessage here, because it will be called (when
+    // appropriate) within IsValidSourceContext.
+    return;
+  }
+#endif  // BUILDFLAG(IS_ANDROID)
+
   OpenChannelToNativeAppImpl(source, source_port_id, native_app_name,
-                             std::move(port), std::move(port_host));
+                             android_certificates, std::move(port),
+                             std::move(port_host));
 }
 
 void MessageService::OpenChannelToTab(
@@ -539,6 +626,13 @@ void MessageService::OpenChannelToTab(
   if (!process) {
     return;
   }
+  debug::ScopedPortContextCrashKeys port_context_crash_keys(
+      source.port_context());
+  if (channel_type == mojom::ChannelType::kNative) {
+    bad_message::ReceivedBadMessage(process,
+                                    bad_message::EMF_INVALID_CHANNEL_TYPE);
+    return;
+  }
   std::optional<ExtensionId> extension_id =
       ValidateSourceContextAndExtractExtensionId(*process,
                                                  source.port_context());
@@ -548,7 +642,8 @@ void MessageService::OpenChannelToTab(
       mojom::MessagingEndpointType::kExtension;
   if (!extension_id ||
       !IsValidMessagingSource(*process, endpoint_type, extension_id,
-                              source.port_context())) {
+                              source.port_context(),
+                              /*allow_unprivileged_context=*/false)) {
     // No need to call ReceivedBadMessage here, because it will be called (when
     // appropriate) within ValidateSourceContextAndExtractExtensionId() or
     // IsValidMessagingSource().

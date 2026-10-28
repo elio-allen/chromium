@@ -107,7 +107,7 @@ bool IsWhitespaceForRebalance(const Text& text_node, UChar character) {
   if (IsWhitespace(character)) {
     if (character == uchar::kLineFeed) {
       return !text_node.GetLayoutObject() ||
-             text_node.GetLayoutObject()->StyleRef().ShouldCollapseBreaks();
+             text_node.GetLayoutObject()->Style().ShouldCollapseBreaks();
     }
     return true;
   }
@@ -769,7 +769,7 @@ bool CompositeEditCommand::CanRebalance(const Position& position) const {
     return false;
 
   LayoutText* layout_text = text_node->GetLayoutObject();
-  if (layout_text && layout_text->StyleRef().ShouldPreserveWhiteSpaces()) {
+  if (layout_text && layout_text->Style().ShouldPreserveWhiteSpaces()) {
     return false;
   }
 
@@ -877,7 +877,7 @@ void CompositeEditCommand::PrepareWhitespaceAtPositionForSplit(
   if (text_node->length() == 0)
     return;
   LayoutText* layout_text = text_node->GetLayoutObject();
-  if (layout_text && layout_text->StyleRef().ShouldPreserveWhiteSpaces()) {
+  if (layout_text && layout_text->Style().ShouldPreserveWhiteSpaces()) {
     return;
   }
 
@@ -1605,9 +1605,7 @@ std::pair<Position, Position> CompositeEditCommand::ComputeNormalizedMoveRange(
   // the end and before the start are treated as though they were rendered.
   Position start = MostForwardCaretPosition(start_of_paragraph);
   Position end = MostBackwardCaretPosition(end_of_paragraph);
-  if (RuntimeEnabledFeatures::
-          AvoidNormalizingVisiblePositionsWhenStartEqualsEndEnabled() &&
-      start_of_paragraph == end_of_paragraph) {
+  if (start_of_paragraph == end_of_paragraph) {
     start = start_of_paragraph;
     end = end_of_paragraph;
   }
@@ -1769,9 +1767,7 @@ CompositeEditCommand::ComputePreservedVisibleSelectionEndpoints(
 
   const VisiblePosition visible_start = EndingVisibleSelection().VisibleStart();
   const VisiblePosition visible_end = EndingVisibleSelection().VisibleEnd();
-  if (RuntimeEnabledFeatures::
-          HandleDisconnectedSelectionDuringDOMChangesEnabled() &&
-      (visible_start.IsNull() || visible_end.IsNull())) {
+  if (visible_start.IsNull() || visible_end.IsNull()) {
     // A synchronous DOM mutation may invalidate VP endpoints.
     return std::nullopt;
   }
@@ -1789,10 +1785,8 @@ CompositeEditCommand::ComputePreservedDomSelectionEndpoints(
 
   const Position selection_start = EndingDomSelection().Start();
   const Position selection_end = EndingDomSelection().End();
-  if (RuntimeEnabledFeatures::
-          HandleDisconnectedSelectionDuringDOMChangesEnabled() &&
-      (!IsPreservedSelectionEndpointUsable(selection_start) ||
-       !IsPreservedSelectionEndpointUsable(selection_end))) {
+  if (!IsPreservedSelectionEndpointUsable(selection_start) ||
+      !IsPreservedSelectionEndpointUsable(selection_end)) {
     // A synchronous DOM mutation may stale raw-DOM endpoints.
     return std::nullopt;
   }
@@ -2196,7 +2190,7 @@ bool CompositeEditCommand::BreakOutOfEmptyMailBlockquotedParagraph(
   DCHECK(IsA<HTMLBRElement>(caret_pos.AnchorNode()) ||
          (caret_pos.AnchorNode()->IsTextNode() && caret_pos.AnchorNode()
                                                       ->GetLayoutObject()
-                                                      ->StyleRef()
+                                                      ->Style()
                                                       .ShouldPreserveBreaks()))
       << caret_pos;
 

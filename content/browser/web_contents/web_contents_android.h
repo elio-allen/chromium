@@ -215,6 +215,7 @@ class CONTENT_EXPORT WebContentsAndroid {
   void NotifyBrowserControlsHeightChanged(JNIEnv* env);
 
   bool NeedToFireBeforeUnloadOrUnloadEvents(JNIEnv* env);
+  bool NeedToFireBeforeUnload(JNIEnv* env);
 
   base::android::ScopedJavaLocalRef<jobject> GetRenderWidgetHostView(
       JNIEnv* env);
@@ -300,6 +301,9 @@ class CONTENT_EXPORT WebContentsAndroid {
   raw_ptr<WebContentsImpl> web_contents_;
 
   NavigationControllerAndroid navigation_controller_;
+
+  // ID of the Java WebContentsImpl, used to look it up without a global ref.
+  int64_t java_peer_id_;
 
   base::ObserverList<DestructionObserver> destruction_observers_;
 

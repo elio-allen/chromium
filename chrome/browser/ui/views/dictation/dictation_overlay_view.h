@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "base/callback_list.h"
+#include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/views/dictation/ui_state.h"
 #include "content/public/browser/global_dom_node_id.h"
@@ -31,15 +32,19 @@ class Widget;
 
 namespace dictation {
 
-// Small overlay view containing a rounded button that follows the caret during
-// an active dictation stream.
+// Small overlay view containing a teardrop-shaped button that follows the
+// caret during an active dictation stream.
 class DictationOverlayView : public views::BubbleDialogDelegate {
  public:
-  explicit DictationOverlayView(gfx::NativeView parent_window);
+  DictationOverlayView(gfx::NativeView parent_window,
+                       base::RepeatingClosure toggle_active_stream_callback);
   ~DictationOverlayView() override;
 
   DictationOverlayView(const DictationOverlayView&) = delete;
   DictationOverlayView& operator=(const DictationOverlayView&) = delete;
+
+  // views::BubbleDialogDelegate:
+  void OnWidgetInitialized() override;
 
   void Show();
   void UpdatePosition(const gfx::Point& focus_selection_point);
@@ -53,15 +58,16 @@ class DictationOverlayView : public views::BubbleDialogDelegate {
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kViewElementIdForTesting);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kMicButtonElementIdForTesting);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kWaveformElementIdForTesting);
-  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kFinalizingButtonElementIdForTesting);
 
  private:
   void OnFocusSelectionBoundsChanged(
       content::RenderWidgetHostView* render_widget_host_view);
+  void OnFullscreenStateChanged();
   void UpdatePosition(content::RenderFrameHost* target_rfh);
 
   base::CallbackListSubscription focus_selection_bounds_changed_subscription_;
-  content::WeakDocumentPtr last_target_document_;
+  base::CallbackListSubscription fullscreen_subscription_;
+  content::GlobalDOMNodeId last_target_node_id_;
 
   std::unique_ptr<views::Widget> widget_;
   UiState state_ = UiState::kInactive;

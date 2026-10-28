@@ -14,17 +14,18 @@ export function getHtml(this: TopToolbarElement) {
   return html`<!--_html_template_start_-->
 <div id="top-row" data-element-id="kContextualTasksWebUIToolbarElementId">
   <if expr="not is_android">
-    ${this.isPermissionShowing_() ? html`
-      <permission-dashboard
-          .dashboardState="${this.permissionDashboardState}">
-      </permission-dashboard>
-    ` : ''}
+    <permission-dashboard
+        .delegate="${this.permissionChipDelegate_}"
+        .dashboardState="${this.permissionDashboardState}"
+        ?hidden="${!this.isPermissionShowing_()}">
+    </permission-dashboard>
   </if>
   <div class="top-toolbar-logo-container"
       ?hidden="${this.isPermissionShowing_()}">
     ${this.isSidePanelRearchitectureEnabled_ ? html`
       <cr-button class="top-toolbar-logo-button clickable"
           data-element-id="kContextualTasksSuperGButtonElementId"
+          @pointerdown="${this.onLogoPointerdown_}"
           @click="${this.onLogoClick_}">
         ${getLogoHtml()}
       </cr-button>
@@ -79,6 +80,13 @@ export function getHtml(this: TopToolbarElement) {
         ?disabled="${!this.enableOpenInNewTabButton}">
       </cr-icon-button>
     ` : ''}
+    ${this.isSidePanelRearchitectureEnabled_ && this.profileAvatarUrl ? html`
+      <div id="profileIndicator" class="profile-indicator">
+        <img class="profile-avatar-img"
+            src="${this.profileAvatarUrl}"
+            alt="">
+      </div>
+    ` : ''}
     <cr-icon-button id="overflowMenuButton" iron-icon="cr:more-vert"
       data-element-id="kContextualTasksWebUIOverflowMenuElementId"
       class="no-overlap ${this.overflowMenuOpen_ ? 'active' : ''}" title="$i18n{moreOptionsTooltip}"
@@ -90,8 +98,7 @@ export function getHtml(this: TopToolbarElement) {
         @click="${this.onCloseButtonClick_}"
         iron-icon="cr:close"
         title="$i18n{closeTooltip}"
-        aria-label="$i18n{closeTooltip}"
-        rounded-corner="${this.isExpandButtonEnabled ? 'false' : 'true'}">
+        aria-label="$i18n{closeTooltip}">
     </cr-icon-button>
   </div>
 </div>
@@ -106,6 +113,7 @@ export function getHtml(this: TopToolbarElement) {
         .isPinButtonEnabled="${this.isPinButtonEnabled}"
         .isAiPage="${this.isAiPage}"
         .isAimEligible="${this.isAimEligible}"
+        .isCobrowseEligible="${this.isCobrowseEligible}"
         .contextualTasksEnableSpatialModelToolbarLayout="${this.contextualTasksEnableSpatialModelToolbarLayout_}"
         .contextualTasksEnableSpatialModelToolbarLayoutNewThreadInOverflow="${this.contextualTasksEnableSpatialModelToolbarLayoutNewThreadInOverflow_}"
         @pin-click="${this.onPinClick_}"
@@ -113,11 +121,6 @@ export function getHtml(this: TopToolbarElement) {
         @open-changed="${this.onOverflowMenuOpenChanged_}">
     </contextual-tasks-overflow-menu>`}">
   </cr-lazy-render-lit>
-  ${this.showReopenTabs_ ? html`
-    <reopen-tabs
-        @reopen-click="${this.onReopenTabsReopenClick_}"
-        @dismiss-click="${this.onReopenTabsDismissClick_}">
-    </reopen-tabs>` : ''}
   <!--_html_template_end_-->`;
 }
 // clang-format on

@@ -215,46 +215,36 @@ TEST_F(ExtensionUtilUnittest, FixupLongExtensionName) {
   EXPECT_EQ(fixup_extension_name, expected_fixup_extension_name);
 }
 
-// TODO(crbug.com/543216088): Re-enable this test.
-#if defined(UNDEFINED_SANITIZER)
-#define MAYBE_GetCWSWritingReviewUrl DISABLED_GetCWSWritingReviewUrl
-#else
-#define MAYBE_GetCWSWritingReviewUrl GetCWSWritingReviewUrl
-#endif
-TEST_F(ExtensionUtilUnittest, MAYBE_GetCWSWritingReviewUrl) {
-  const ExtensionId kValidId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+using ExtensionUtilDeathTest = testing::Test;
+
+TEST_F(ExtensionUtilDeathTest, GetCWSWritingReviewUrl_InvalidId) {
   const ExtensionId kInvalidId = "invalid_id_format";
 
   for (const char* invalid_id : {kInvalidId.c_str(), "", "../../etc/passwd"}) {
-    EXPECT_DEATH_IF_SUPPORTED(
-        util::GetCWSWritingReviewUrl(invalid_id,
-                                     util::CWSReviewSource::kExtensionsMenu),
-        "");
+    EXPECT_CHECK_DEATH(util::GetCWSWritingReviewUrl(
+        invalid_id, util::CWSReviewSource::kExtensionsMenu));
   }
+}
+
+TEST_F(ExtensionUtilUnittest, GetCWSWritingReviewUrl) {
+  using util::CWSReviewSource;
+  const ExtensionId kValidId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const std::string kExpectedBaseUrl =
+      base::StrCat({"https://chromewebstore.google.com/detail/", kValidId,
+                    "/reviews/my-review?utm_source="});
 
   EXPECT_EQ(
-      util::GetCWSWritingReviewUrl(
-          kValidId, util::CWSReviewSource::kExtensionsMenu)
+      util::GetCWSWritingReviewUrl(kValidId, CWSReviewSource::kExtensionsMenu)
           .spec(),
-      base::StringPrintf("https://chromewebstore.google.com/detail/"
-                         "%s/reviews?action=write&source=extensions_menu",
-                         kValidId.c_str()));
-
+      kExpectedBaseUrl + "ext_review_extensions_menu");
   EXPECT_EQ(
-      util::GetCWSWritingReviewUrl(
-          kValidId, util::CWSReviewSource::kExtensionsPage)
+      util::GetCWSWritingReviewUrl(kValidId, CWSReviewSource::kExtensionsPage)
           .spec(),
-      base::StringPrintf("https://chromewebstore.google.com/detail/"
-                         "%s/reviews?action=write&source=extensions_page",
-                         kValidId.c_str()));
-
+      kExpectedBaseUrl + "ext_review_extensions_page");
   EXPECT_EQ(
-      util::GetCWSWritingReviewUrl(
-          kValidId, util::CWSReviewSource::kContextMenu)
+      util::GetCWSWritingReviewUrl(kValidId, CWSReviewSource::kContextMenu)
           .spec(),
-      base::StringPrintf("https://chromewebstore.google.com/detail/"
-                         "%s/reviews?action=write&source=context_menu",
-                         kValidId.c_str()));
+      kExpectedBaseUrl + "ext_review_context_menu");
 }
 #if BUILDFLAG(IS_CHROMEOS)
 class ExtensionUtilWithSigninProfileUnittest : public ExtensionUtilUnittest {
@@ -409,5 +399,51 @@ TEST_F(ExtensionUtilWithSigninProfileUnittest,
 }
 
 #endif
+
+// The clipboardWrite check behind navigator.clipboard in an extension service
+// worker. The renderer-facing permission query and the browser-side write check
+// both ask this, so each way it can refuse is covered.
+//
+// These live chrome-side rather than next to the helper: clipboardWrite is
+// declared in chrome/common/extensions/api/_permission_features.json, so
+// extensions_unittests cannot build an extension holding it.
+TEST_F(ExtensionUtilUnittest, HasClipboardWritePermission) {
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("allowed")
+          .SetManifestVersion(3)
+          .AddAPIPermission("clipboardWrite")
+          .Build();
+  registrar()->AddExtension(extension.get());
+
+  EXPECT_TRUE(util::HasClipboardWritePermission(extension->id(), profile()));
+}
+
+TEST_F(ExtensionUtilUnittest, HasClipboardWritePermission_WithoutPermission) {
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("no-perm").SetManifestVersion(3).Build();
+  registrar()->AddExtension(extension.get());
+
+  EXPECT_FALSE(util::HasClipboardWritePermission(extension->id(), profile()));
+}
+
+// The permission travels with the extension, so disabling it has to take the
+// clipboard away from a worker that is already running.
+TEST_F(ExtensionUtilUnittest, HasClipboardWritePermission_Disabled) {
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("disabled")
+          .SetManifestVersion(3)
+          .AddAPIPermission("clipboardWrite")
+          .Build();
+  registrar()->AddExtension(extension.get());
+  registrar()->DisableExtension(extension->id(),
+                                {disable_reason::DISABLE_USER_ACTION});
+
+  EXPECT_FALSE(util::HasClipboardWritePermission(extension->id(), profile()));
+}
+
+TEST_F(ExtensionUtilUnittest, HasClipboardWritePermission_UnknownExtension) {
+  EXPECT_FALSE(util::HasClipboardWritePermission(
+      "abcdefghijklmnopabcdefghijklmnop", profile()));
+}
 
 }  // namespace extensions

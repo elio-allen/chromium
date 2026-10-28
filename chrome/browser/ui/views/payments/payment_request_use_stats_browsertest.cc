@@ -6,9 +6,9 @@
 #include "chrome/browser/ui/views/payments/payment_request_browsertest_base.h"
 #include "chrome/browser/ui/views/payments/payment_request_dialog_view_ids.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
-#include "components/autofill/core/browser/data_manager/addresses/address_data_manager_test_utils.h"
+#include "components/autofill/core/browser/data_manager/addresses/address_data_manager_test_util.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/test_utils/test_autofill_clock.h"
 #include "content/public/test/browser_test.h"
 
@@ -34,7 +34,7 @@ IN_PROC_BROWSER_TEST_F(PaymentRequestShippingAddressUseStatsTest,
                     &payment_method_name);
 
   NavigateTo("/payment_request_free_shipping_test.html");
-  autofill::TestAutofillClock test_clock;
+  autofill::TestAutofillClockDeprecated test_clock;
   test_clock.SetNow(kSomeDate);
 
   // Create two addresses, one with a higher frequency score so that it is
@@ -81,7 +81,7 @@ IN_PROC_BROWSER_TEST_F(PaymentRequestContactAddressUseStatsTest,
                     &payment_method_name);
 
   NavigateTo("/payment_request_name_test.html");
-  autofill::TestAutofillClock test_clock;
+  autofill::TestAutofillClockDeprecated test_clock;
   test_clock.SetNow(kSomeDate);
 
   // Create two addresses, one with a higher frequency score so that it is
@@ -128,7 +128,7 @@ IN_PROC_BROWSER_TEST_F(PaymentRequestSameShippingAndContactAddressUseStatsTest,
                     &payment_method_name);
 
   NavigateTo("/payment_request_contact_details_and_free_shipping_test.html");
-  autofill::TestAutofillClock test_clock;
+  autofill::TestAutofillClockDeprecated test_clock;
   test_clock.SetNow(kSomeDate);
 
   // Create two addresses, one with a higher frequency score so that it is

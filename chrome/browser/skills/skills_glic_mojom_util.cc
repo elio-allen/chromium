@@ -8,6 +8,7 @@
 
 #include "base/check.h"
 #include "base/notreached.h"
+#include "chrome/browser/glic/host/glic.mojom.h"
 #include "components/skills/public/skill.h"
 #include "url/gurl.h"
 
@@ -66,10 +67,14 @@ glic::mojom::SkillPreviewPtr SkillToGlicMojomSkillPreview(
   if (!skill->category.empty()) {
     category = skill->category;
   }
+  std::optional<base::Time> creation_time;
+  if (!skill->creation_time.is_null()) {
+    creation_time = skill->creation_time;
+  }
   return glic::mojom::SkillPreview::New(
       skill->id, skill->name, skill->icon,
       SyncPbToGlicMojomSkillSource(skill->source), skill->description,
-      curated_by, image_url, category);
+      curated_by, image_url, category, creation_time, skill->enabled);
 }
 
 }  // namespace skills

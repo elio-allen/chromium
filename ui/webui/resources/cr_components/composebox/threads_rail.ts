@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
+import '//resources/cr_elements/cr_tooltip/cr_tooltip.js';
 import '//resources/cr_elements/icons.html.js';
 import './icons.html.js';
 
@@ -60,7 +61,15 @@ export class ThreadsRailElement extends ThreadsRailElementBase {
     super.disconnectedCallback();
   }
 
-  protected onShowHistoryClick_(): void {
+  protected onLogoClick_(e: Event): void {
+    e.stopPropagation();
+    const googleBaseUrl = loadTimeData.getString('googleBaseUrl');
+    assert(googleBaseUrl);
+    WindowProxy.getInstance().navigate(googleBaseUrl);
+  }
+
+  protected onShowHistoryClick_(e: Event): void {
+    e.stopPropagation();
     recordAction(ThreadsAction.SHOW_HISTORY_CLICKED);
     // Navigate to the AI Mode search page. This will be intercepted
     // by the co-browse service if the contextual task flag is enabled.

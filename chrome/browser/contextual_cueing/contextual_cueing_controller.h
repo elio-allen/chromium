@@ -7,6 +7,7 @@
 
 #include <limits>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "base/barrier_callback.h"
@@ -15,9 +16,9 @@
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/task/cancelable_task_tracker.h"
-#include "chrome/browser/contextual_cueing/contextual_cueing_enums.h"
 #include "chrome/browser/contextual_cueing/cue_target.h"
 #include "chrome/browser/tab_list/tab_list_interface_observer.h"
+#include "components/contextual_cueing/contextual_cueing_enums.h"
 #include "components/favicon_base/favicon_types.h"
 #include "components/optimization_guide/proto/features/contextual_cueing.pb.h"
 #include "components/page_content_annotations/core/page_content_annotations_service.h"
@@ -25,17 +26,13 @@
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "url/gurl.h"
 
 class BrowserWindowInterface;
 class OptimizationGuideKeyedService;
 class TabListInterface;
 class TemplateURLService;
-
-namespace actions {
-class ActionItem;
-class ActionInvocationContext;
-}  // namespace actions
 
 namespace favicon {
 class FaviconService;
@@ -49,6 +46,7 @@ struct OptimizationGuideModelExecutionResult;
 namespace page_actions {
 class PageActionController;
 class PageActionObserver;
+enum class PageActionPriorityCategory;
 }  // namespace page_actions
 
 namespace signin {
@@ -73,15 +71,15 @@ class ContextualCueingController
           PageContentAnnotationsObserver,
       public TabListInterfaceObserver {
  public:
+  DECLARE_USER_DATA(ContextualCueingController);
+
   explicit ContextualCueingController(tabs::TabInterface* tab);
   ContextualCueingController(const ContextualCueingController&) = delete;
   ContextualCueingController& operator=(const ContextualCueingController&) =
       delete;
   ~ContextualCueingController() override;
 
-  // Get contents' browser's ContextualCueingController if it exists.
-  static ContextualCueingController* GetForWebContents(
-      content::WebContents& contents);
+  static ContextualCueingController* From(tabs::TabInterface* tab);
 
   // Register a cue type. Feature code provides a CueTarget for reporting the
   // feature's cue eligibility and handling clicks. Calling this function for a
@@ -104,14 +102,25 @@ class ContextualCueingController
 
   void OnTabNavigated(tabs::TabInterface* tab);
 
-  void UrlChanged(const GURL& url);
+  // V2 multi-source orchestration entry point. Performs shared pre-checks
+  // (URL eligibility, quota/backoff), then fans out CheckEligibility calls to
+  // all registered targets via base::BarrierCallback.
+  void EvaluateCues();
 
-  // Hide the cue for this tab if it's showing.
+  void OnUrlChanged(const GURL& url);
+
+  // Hide the cue for this tab if it's showing (both the anchored message and
+  // omnibox chip).
   void HideCue();
+
+  // Hide the anchored message for this tab if it's showing, leaving the omnibox
+  // chip visible.
+  void HideAnchoredMessage();
 
   // Returns the CueTarget for the given CueTargetType, or nullptr if there is
   // none.
   CueTarget* GetTarget(CueTargetType type);
+  bool ShouldRecordUcbStats(CueTargetType type) const;
 
   void OnCueInteraction(
       ContextualCueingInteraction interaction_type,
@@ -122,6 +131,9 @@ class ContextualCueingController
       const std::string& cuj,
       CueActionData action,
       std::string cue_id);
+
+  // Called when the anchored contextual cue action is invoked.
+  void OnActionInvoked();
 
  private:
   // Initiates a model execution request to MES for the current window state,
@@ -138,12 +150,6 @@ class ContextualCueingController
       const page_content_annotations::HistoryVisit& visit,
       const page_content_annotations::PageContentAnnotationsResult& result);
 
-  // V2 multi-source orchestration entry point. Called from ActiveTabUrlChanged
-  // when kContextualCueingV2MultiSource is enabled. Performs shared pre-checks
-  // (URL eligibility, quota/backoff), then fans out CheckEligibility calls to
-  // all registered targets via base::BarrierCallback.
-  void EvaluateCues();
-
   // Result of a single target's CheckEligibility round-trip, collected by the
   // barrier and forwarded to OnAllEligibilityChecksComplete.
   struct EligibilityResult {
@@ -159,12 +165,14 @@ class ContextualCueingController
   void OnAllEligibilityChecksComplete(
       base::WeakPtr<content::WebContents> web_contents,
       GURL url,
+      CueIntrusiveness intrusiveness,
       std::vector<EligibilityResult> results);
 
   // Called when a target's ContentGenerator completes. Shows the cue or
   // records a failure.
   void OnContentGenerated(
       CueTargetType type,
+      CueIntrusiveness intrusiveness,
       std::optional<optimization_guide::proto::ContextualCue> cue);
 
   // Retrieves favicon for a specific web contents.
@@ -199,30 +207,59 @@ class ContextualCueingController
   std::pair<std::vector<tabs::TabHandle>, CueTabMetrics> GetTabsToShow(
       const optimization_guide::proto::ContextualCue& cue);
 
-  void ShowCue(CueTargetType cue_type,
-               const CueTarget& target,
-               const optimization_guide::proto::ContextualCue& cue,
-               const std::vector<optimization_guide::proto::Tab>& background_tabs);
+  void ShowCue(
+      CueTargetType cue_type,
+      CueIntrusiveness intrusiveness,
+      const CueTarget& target,
+      const optimization_guide::proto::ContextualCue& cue,
+      const std::vector<optimization_guide::proto::Tab>& background_tabs);
 #if !BUILDFLAG(IS_ANDROID)
   void MaybeShowTabList(
       page_actions::PageActionController* page_action_controller,
       const std::vector<tabs::TabHandle>& tabs_to_show);
 #endif
+  struct ActiveCueData {
+    ActiveCueData(CueTargetType cue_type,
+                  optimization_guide::proto::ContextualCue cue,
+                  std::vector<tabs::TabHandle> tabs_to_show,
+                  std::vector<optimization_guide::proto::Tab> background_tabs,
+                  std::string cuj,
+                  CueActionData action_data,
+                  std::string cue_id);
+    ~ActiveCueData();
+    ActiveCueData(const ActiveCueData&);
+    ActiveCueData& operator=(const ActiveCueData&);
+
+    CueTargetType cue_type;
+    optimization_guide::proto::ContextualCue cue;
+    std::vector<tabs::TabHandle> tabs_to_show;
+    std::vector<optimization_guide::proto::Tab> background_tabs;
+    std::string cuj;
+    CueActionData action_data;
+    std::string cue_id;
+  };
+
   void OnCueClicked(CueTargetType cue_type,
                     optimization_guide::proto::ContextualCue cue,
                     std::vector<tabs::TabHandle> tabs_to_show,
                     std::vector<optimization_guide::proto::Tab> background_tabs,
                     std::string cuj,
                     CueActionData action,
-                    std::string cue_id,
-                    actions::ActionItem*,
-                    actions::ActionInvocationContext);
+                    std::string cue_id);
   void OnCueHidden();
   void OnCueFormFactorShown(CueFormFactor form_factor);
   void OnCueFormFactorHidden(CueFormFactor form_factor);
   void OnFaviconAvailable(tabs::TabHandle handle,
                           const favicon_base::FaviconImageResult& image_result);
   void OnShowCueFailed(ContextualCueingDecision decision);
+
+  // Logs and records a contextual cueing decision for this tab to UKM.
+  void RecordContextualCueingDecision(ContextualCueingDecision decision);
+
+  // Launches the HaTS dismiss survey if eligible and not previously shown for
+  // this cue's category.
+  void MaybeLaunchDismissHatsSurvey(CueTargetType cue_type,
+                                    const std::string& cuj);
 
   void OnSidePanelShown();
 
@@ -243,6 +280,11 @@ class ContextualCueingController
   const raw_ptr<tabs::TabInterface> tab_;
   std::vector<base::CallbackListSubscription> tab_subscriptions_;
   std::set<SessionID> dependencies_;
+  std::optional<ActiveCueData> active_cue_data_;
+  // Watches the window's tab list only while a shown cue depends on other
+  // tabs (`dependencies_`), so that closing one of them hides the cue. Every
+  // tab has a controller, so observing the list unconditionally would make
+  // each tab insertion notify every other tab.
   base::ScopedObservation<TabListInterface, TabListInterfaceObserver>
       tab_list_observation_{this};
   raw_ptr<ContextualCueingService> contextual_cueing_service_;
@@ -264,9 +306,14 @@ class ContextualCueingController
 
 #if !BUILDFLAG(IS_ANDROID)
   std::unique_ptr<page_actions::PageActionObserver> page_action_observer_;
+  std::optional<page_actions::PageActionPriorityCategory>
+      current_anchored_message_priority_;
 #endif
 
   GURL last_logged_active_url_;
+
+  ui::ScopedUnownedUserData<ContextualCueingController>
+      scoped_unowned_user_data_;
 
   base::WeakPtrFactory<ContextualCueingController> weak_ptr_factory_{this};
 };

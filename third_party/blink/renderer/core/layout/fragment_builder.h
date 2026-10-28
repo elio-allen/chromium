@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_LAYOUT_FRAGMENT_BUILDER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_LAYOUT_FRAGMENT_BUILDER_H_
 
+#include "cc/input/scroll_snap_data.h"
 #include "third_party/blink/renderer/core/animation/animation_trigger.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/trigger_scoped_name.h"
@@ -33,6 +34,7 @@ class EarlyBreak;
 class FragmentItemsBuilder;
 class InlineBreakToken;
 class LayoutObject;
+class SnapArea;
 
 class CORE_EXPORT FragmentBuilder {
   STACK_ALLOCATED();
@@ -111,7 +113,7 @@ class CORE_EXPORT FragmentBuilder {
   // Return true when the final size of the fragment has been calculated.
   bool HasFinalSize() const { return has_final_size_; }
 
-  void SetIsHiddenForPaint(bool value) { is_hidden_for_paint_ = value; }
+  void SetIsHiddenDueToLayout(bool value) { is_hidden_due_to_layout_ = value; }
   void SetIsOpaque() { is_opaque_ = true; }
 
   void SetHasCollapsedBorders(bool value) { has_collapsed_borders_ = value; }
@@ -194,6 +196,7 @@ class CORE_EXPORT FragmentBuilder {
   bool HasItems() const { return items_builder_; }
   // The |FragmentItemsBuilder| for the inline formatting context of this box.
   FragmentItemsBuilder* ItemsBuilder() { return items_builder_; }
+  const FragmentItemsBuilder* ItemsBuilder() const { return items_builder_; }
   void SetItemsBuilder(FragmentItemsBuilder* builder) {
     items_builder_ = builder;
   }
@@ -506,14 +509,14 @@ class CORE_EXPORT FragmentBuilder {
         writing_direction_(writing_direction),
         style_variant_(StyleVariant::kStandard),
         previous_break_token_(previous_break_token),
-        is_hidden_for_paint_(space.IsHiddenForPaint()) {
+        is_hidden_due_to_layout_(space.IsHiddenDueToLayout()) {
     DCHECK(style_);
     layout_object_ = node.GetLayoutBox();
   }
 
   GCedHeapVector<SplitAxisItem<LayoutBoxModelObject>>&
   EnsureStickyDescendants();
-  GCedHeapVector<Member<Element>>& EnsureSnapAreas();
+  GCedHeapVector<SnapArea>& EnsureSnapAreas();
 
   void PropagateFromLayoutResultAndFragment(
       const LayoutResult&,
@@ -525,6 +528,11 @@ class CORE_EXPORT FragmentBuilder {
   void PropagateScrollInitialTarget(const PhysicalFragment& child);
 
   PhysicalAxes GetOverflowScrollAxes() const;
+
+  PhysicalAxes GetScrollSnapAxes() const;
+
+  SnapArea ResolveSnapArea(const SnapArea& snap_area,
+                           wtf_size_t parent_snap_area_offset) const;
 
   void PropagateFromFragment(
       const PhysicalFragment& child,
@@ -571,7 +579,7 @@ class CORE_EXPORT FragmentBuilder {
 
   GCedHeapVector<SplitAxisItem<LayoutBoxModelObject>>* sticky_descendants_ =
       nullptr;
-  GCedHeapVector<Member<Element>>* snap_areas_ = nullptr;
+  GCedHeapVector<SnapArea>* snap_areas_ = nullptr;
   // Animation triggers belonging to the element to which this fragment belongs,
   // or an element in its subtree.
   TriggerScopedNameMap* named_triggers_ = nullptr;
@@ -636,7 +644,7 @@ class CORE_EXPORT FragmentBuilder {
   bool has_orthogonal_fallback_size_descendant_ = false;
   bool may_have_descendant_above_block_start_ = false;
   bool is_fragmentation_context_root_ = false;
-  bool is_hidden_for_paint_ = false;
+  bool is_hidden_due_to_layout_ = false;
   bool is_opaque_ = false;
   bool has_collapsed_borders_ = false;
   bool requires_content_before_breaking_ = false;

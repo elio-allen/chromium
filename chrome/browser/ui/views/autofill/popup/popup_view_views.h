@@ -82,7 +82,11 @@ class PopupViewViews : public PopupBaseView,
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(
       kAutofillCreditCardSuggestionEntryElementId);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kAutofillAiOptInIphElementId);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(
+      kAutofillWalletDirectOffersIphElementId);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kAutofillAiValuablesElementId);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(
+      kAutofillAmbientAutofillSpiiDisclaimerElementId);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(
       kAutofillStandaloneCvcSuggestionElementId);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kAutofillSuggestionElementId);
@@ -91,20 +95,28 @@ class PopupViewViews : public PopupBaseView,
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(
       kAutofillAccountNameEmailSuggestionElementId);
 
-  using RowPointer = std::variant<PopupRowView*,
-                                  PopupInteractiveRowView*,
-                                  PopupSeparatorView*,
-                                  PopupTitleView*,
-                                  PopupWarningView*,
-                                  PopupLoadingView*,
-                                  PopupCenteredTextView*,
-                                  PopupBnplFootnoteView*>;
+  using RowPointer = std::variant<raw_ptr<PopupRowView>,
+                                  raw_ptr<PopupInteractiveRowView>,
+                                  raw_ptr<PopupSeparatorView>,
+                                  raw_ptr<PopupTitleView>,
+                                  raw_ptr<PopupWarningView>,
+                                  raw_ptr<PopupLoadingView>,
+                                  raw_ptr<PopupCenteredTextView>,
+                                  raw_ptr<PopupBnplFootnoteView>>;
 
   // The maximum width of the popup.
   static constexpr int kAutofillPopupMaxWidth = 456;
 
-  // The width of the @memory popup.
+  // The maximum width of an Autofill AI sub-popup.
+  static constexpr int kAutofillAiSubPopupMaxWidth = 320;
+
+  // The width of the AtMemory popup.
   static constexpr int kAtMemoryPopupWidth = 320;
+
+  // The maximum number of entries shown before making the popup scrollable. A
+  // decimal number means the last element will appear "cut-off" to indicate
+  // the scroll area.
+  static constexpr double kAutofillPopupMaxVisibleEntries = 5.3;
 
   // The time it takes for a selected cell to open a sub-popup if it has one.
   static constexpr base::TimeDelta kMouseOpenSubPopupDelay =
@@ -203,12 +215,8 @@ class PopupViewViews : public PopupBaseView,
   // metadata.
   void ShowIPHFeaturePromos();
 
-  // Automatically selects the first interactive row in the popup (or
-  // clears/skips selection) if required by trigger source or suggestion type
-  // default.
-  void MaybeAutoSelectSuggestion(
-      AutoselectFirstSuggestion force_by_trigger_source =
-          AutoselectFirstSuggestion(false));
+  // Automatically selects the first interactive row in the popup.
+  void AutoSelectFirstSuggestion();
 
   // If the current suggestions are for password recovery, announces it to the
   // user.
@@ -216,6 +224,10 @@ class PopupViewViews : public PopupBaseView,
 
   // If the current suggestions are for loading, announces it to the user.
   void MaybeAnnounceLoadingState();
+
+  // Announces the first non-empty `a11y_announcement` found in the current
+  // suggestions.
+  void MaybeAnnounceA11yOverride();
 
   // Announces the title of the currently selected tab in `tabbed_pane_`, if it
   // exists. If the current suggestions also contains a BNPL footnote, announces
@@ -226,17 +238,17 @@ class PopupViewViews : public PopupBaseView,
   // there is such a view at that line number - otherwise the underlying variant
   // will check false.
   PopupInteractiveRowView& GetPopupInteractiveRowViewAt(size_t index) {
-    if (auto* row = std::get_if<PopupRowView*>(&rows_[index])) {
+    if (auto* row = std::get_if<raw_ptr<PopupRowView>>(&rows_[index])) {
       return **row;
     }
-    return *std::get<PopupInteractiveRowView*>(rows_[index]);
+    return *std::get<raw_ptr<PopupInteractiveRowView>>(rows_[index]);
   }
   const PopupInteractiveRowView& GetPopupInteractiveRowViewAt(
       size_t index) const {
-    if (auto* row = std::get_if<PopupRowView*>(&rows_[index])) {
+    if (auto* row = std::get_if<raw_ptr<PopupRowView>>(&rows_[index])) {
       return **row;
     }
-    return *std::get<PopupInteractiveRowView*>(rows_[index]);
+    return *std::get<raw_ptr<PopupInteractiveRowView>>(rows_[index]);
   }
 
   // Returns the `PopupRowView` if a row at the line number `index` is of
@@ -297,7 +309,7 @@ class PopupViewViews : public PopupBaseView,
       const input::NativeWebKeyboardEvent& event);
 
   // Reacts to key events under the assumption that the currently shown popup
-  // contains @memory content.
+  // contains AtMemory content.
   bool HandleKeyPressEventForAtMemory(
       const input::NativeWebKeyboardEvent& event);
 

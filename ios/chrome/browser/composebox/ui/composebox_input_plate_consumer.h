@@ -7,13 +7,9 @@
 
 #import <UIKit/UIKit.h>
 
-#import <unordered_set>
-
 #import "ios/chrome/browser/composebox/ui/composebox_input_item.h"
 
 enum class ComposeboxInputPlateControls : unsigned int;
-enum class ComposeboxModelOption;
-@class ComposeboxServerStrings;
 @class ComposeboxUIInputState;
 
 // Consumer for the composebox composebox.

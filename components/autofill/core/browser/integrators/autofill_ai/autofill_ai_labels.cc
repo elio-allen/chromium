@@ -23,11 +23,11 @@
 #include "base/strings/string_util.h"
 #include "base/types/optional_ref.h"
 #include "components/autofill/core/browser/autofill_format_string.h"
-#include "components/autofill/core/browser/data_model/addresses/autofill_normalization_utils.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_normalization_util.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
-#include "components/autofill/core/browser/data_model/data_model_utils.h"
+#include "components/autofill/core/browser/data_model/data_model_util.h"
 #include "components/autofill/core/browser/filling/field_filling_util.h"
 #include "components/autofill/core/browser/geo/autofill_country.h"
 #include "components/autofill/core/browser/proto/server.pb.h"
@@ -99,18 +99,12 @@ std::pair<std::u16string, DenseSet<AttributeType>> GetValueAndTypesForLabel(
             DenseSet<AttributeType>(kAirports)};
   }
   if (type == AttributeType(kFlightReservationDepartureDate)) {
-    static constexpr char16_t date_format[] = u"MMM d";
     base::optional_ref<const AttributeInstance> attribute =
         entity.attribute(type);
     if (!attribute) {
       return {u"", {type}};
     }
-    std::optional<std::u16string> localized_pattern =
-        data_util::LocalizePattern(date_format, app_locale);
-    AutofillFormatString format_string(
-        data_util::LocalizePattern(date_format, app_locale)
-            .value_or(date_format),
-        FormatString_Type_ICU_DATE);
+    AutofillFormatString format_string(u"", FormatString_Type_ICU_DATE);
     std::u16string value =
         attribute->GetInfo(type.field_type(), app_locale, format_string);
     return {obfuscate_sensitive_types

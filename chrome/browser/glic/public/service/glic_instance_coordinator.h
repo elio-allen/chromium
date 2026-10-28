@@ -17,6 +17,7 @@
 #include "base/scoped_observation_traits.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "chrome/browser/glic/glic_warming_checks.h"
 #include "chrome/browser/glic/host/glic_web_client_access.h"
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/context/glic_sharing_manager.h"
@@ -31,8 +32,6 @@
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/gfx/native_ui_types.h"
-
-class Browser;
 
 namespace content {
 class RenderFrameHost;
@@ -59,8 +58,6 @@ class GlicInstanceCoordinator {
     kNoBoundTabs,
     kTabNotInWindow,
   };
-
-  using StateObserver = PanelStateObserver;
   GlicInstanceCoordinator(const GlicInstanceCoordinator&) = delete;
   GlicInstanceCoordinator& operator=(const GlicInstanceCoordinator&) = delete;
   GlicInstanceCoordinator() = default;
@@ -71,6 +68,9 @@ class GlicInstanceCoordinator {
       const std::string& conversation_id) const = 0;
   virtual ActivateTabResult ActivateTabWithConversation(
       const std::string& conversation_id) = 0;
+  virtual GlicInstance* GetInstanceForConversationId(
+      const std::string& conversation_id) const = 0;
+  virtual GlicInstance* GetInstanceForTaskId(int task_id) const = 0;
   virtual GlicInstance* GetInstanceForTab(
       const tabs::TabInterface* tab) const = 0;
   virtual GlicInstance* GetInstanceForTabGroup(
@@ -105,7 +105,7 @@ class GlicInstanceCoordinator {
 
   // Checks resource constraints (e.g., memory pressure) before readying glic to
   // show. Returns true if preloading proceeded, or false otherwise.
-  virtual bool MaybeStartInitialWarming() = 0;
+  virtual bool MaybeStartWarming(GlicWarmingTrigger trigger) = 0;
 
   // Destroy the glic panel and its web contents.
   virtual void Shutdown() = 0;
@@ -130,6 +130,10 @@ class GlicInstanceCoordinator {
   // tab.
   virtual bool IsPanelShowingForBrowser(
       const BrowserWindowInterface& bwi) const = 0;
+
+  // Returns whether toggling `browser` (or Floaty if null) would close a panel
+  // rather than open one. Best-effort snapshot for labelling UI affordances.
+  virtual bool WouldToggleClose(BrowserWindowInterface* browser) const = 0;
 
   // Registers a callback to be run when any instance opens or closes.
   virtual base::CallbackListSubscription AddGlobalShowHideCallback(

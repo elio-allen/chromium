@@ -24,6 +24,7 @@
 #include "services/network/public/cpp/cors/cors.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/resource_request_body.h"
+#include "services/network/public/cpp/unencoded_digests.h"
 #include "services/network/public/mojom/fetch_api.mojom-shared.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/blink/public/common/blob/blob_utils.h"
@@ -44,7 +45,15 @@ bool IsCorsExposedResponseHeader(
   // Partial Content" range responses. We permit it in URLResponseHead to avoid
   // breaking media playback, while it remains filtered out and hidden from
   // JavaScript's view in the renderer.
-  if (base::ToLowerASCII(name) == "content-range") {
+  if (base::EqualsCaseInsensitiveASCII(name, "content-range")) {
+    return true;
+  }
+  // SRI HTTP message signature and digest headers are required by C++ loaders
+  // and Blink integrity verification to validate message signatures on CORS
+  // responses intercepted by Service Workers.
+  if (base::EqualsCaseInsensitiveASCII(name, "signature") ||
+      base::EqualsCaseInsensitiveASCII(name, "signature-input") ||
+      base::EqualsCaseInsensitiveASCII(name, "unencoded-digest")) {
     return true;
   }
   for (const auto& exposed : cors_exposed_header_names) {
@@ -124,6 +133,11 @@ void SaveResponseHeaders(const mojom::FetchAPIResponse& response,
       out_head->encoded_data_length = 0;
     }
   }
+
+  if (out_head->headers) {
+    out_head->unencoded_digests =
+        network::ParseUnencodedDigestsFromHeaders(*out_head->headers);
+  }
 }
 
 }  // namespace
@@ -159,6 +173,7 @@ void ServiceWorkerLoaderHelpers::SaveResponseInfo(
   out_head->was_fetched_via_spdy = response.was_fetched_via_spdy;
   out_head->has_range_requested = response.has_range_requested;
   out_head->auth_challenge_info = response.auth_challenge_info;
+  out_head->timing_allow_passed = false;
   SaveResponseHeaders(response, out_head);
 }
 

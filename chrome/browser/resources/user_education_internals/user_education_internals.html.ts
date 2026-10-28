@@ -61,7 +61,7 @@ export function getHtml(this: UserEducationInternalsElement) {
       </cr-icon>
       <span id="errorMessage">${this.featurePromoErrorMessage_}</span>
     </cr-toast>
-    <div id="content">
+    <div id="content" @promo-action="${this.onPromoAction_}">
       <div id="warning">
         <h2>User Education Debug Page</h2>
         <p>
@@ -79,8 +79,8 @@ export function getHtml(this: UserEducationInternalsElement) {
         </p>
       </div>
       <cr-page-selector ?hidden="${!this.initialized_}"
-                        .selected="${this.selectedTabIndex_}" show-all="true"
-                        id="selector">
+          .selected="${this.selectedTabIndex.toString()}" show-all
+          id="selector">
         <div id="iph" class="promo-list">
           <h2>Feature Promos</h2>
           ${this.featurePromos_.map(item => html`
@@ -88,9 +88,7 @@ export function getHtml(this: UserEducationInternalsElement) {
                 id="${item.internalName}"
                 ?hidden="${!this.promoFilter_(item)}"
                 .promo="${item}"
-                show-action
-                @promo-launch="${this.onFeaturePromoPromoLaunch_}"
-                @clear-promo-data="${this.onFeaturePromoClearPromoData_}">
+                .actions="${this.getPromoActions_()}">
             </user-education-internals-card>`)}
           <p class="if-empty">
             No IPH match the search filter.
@@ -103,8 +101,7 @@ export function getHtml(this: UserEducationInternalsElement) {
                 id="${item.internalName}"
                 ?hidden="${!this.promoFilter_(item)}"
                 .promo="${item}"
-                show-action
-                @promo-launch="${this.onTutorialPromoLaunch_}">
+                .actions="${this.getTutorialActions_()}">
             </user-education-internals-card>`)}
           <p class="if-empty">
             No Tutorials match the search filter.
@@ -117,7 +114,7 @@ export function getHtml(this: UserEducationInternalsElement) {
                 id="${item.internalName}"
                 ?hidden="${!this.promoFilter_(item)}"
                 .promo="${item}"
-                @clear-promo-data="${this.onNewBadgeClearPromoData_}">
+                .actions="${this.getNewBadgeActions_()}">
             </user-education-internals-card>`)}
           <p class="if-empty">
             No "New" Badges match the search filter.
@@ -130,7 +127,7 @@ export function getHtml(this: UserEducationInternalsElement) {
                 id="${item.internalName}"
                 ?hidden="${!this.promoFilter_(item)}"
                 .promo="${item}"
-                @clear-promo-data="${this.onNonIphClearPromoData_}">
+                .actions="${this.getNonIphPromoActions_()}">
             </user-education-internals-card>`)}
           <p class="if-empty">
             No non-IPH promos match the search filter.
@@ -165,7 +162,7 @@ export function getHtml(this: UserEducationInternalsElement) {
                 id="${item.internalName}"
                 ?hidden="${!this.promoFilter_(item)}"
                 .promo="${item}"
-                @clear-promo-data="${this.onNtpPromoClearPromoData_}">
+                .actions="${this.getNtpPromoActions_()}">
             </user-education-internals-card>`)}
           <p class="if-empty">
             No NTP Promos match the search filter.
@@ -218,6 +215,15 @@ export function getHtml(this: UserEducationInternalsElement) {
                   staging environment for the duration of the browser session.
                 </p>
               </div>
+              <h3>Reset Data</h3>
+              <p>
+                Clicking the button below will reset all What's New preference
+                data (module order, edition usage, and version history).
+              </p>
+              <cr-button id="clearWhatsNewData"
+                  @click="${this.onClearWhatsNewDataClick_}">
+                Clear All What's New Data
+              </cr-button>
               <h3>Debug Info</h3>
               <p>
                 To view debug information for What's New, open the page and run
@@ -245,7 +251,7 @@ export function getHtml(this: UserEducationInternalsElement) {
                 ?hidden="${!this.whatsNewFilter_(item)}"
                 .item="${item}"
                 type="module"
-                @clear-whats-new-data="${this.onClearWhatsNewData_}">
+                @clear-whats-new-data="${this.onModuleClearWhatsNewData_}">
             </user-education-whats-new-internals-card>`)}
           ${this.whatsNewEditions_.length > 0 ? html`
             <h3 class="whats-new-section">Editions</h3>` :
@@ -256,7 +262,7 @@ export function getHtml(this: UserEducationInternalsElement) {
                 ?hidden="${!this.whatsNewFilter_(item)}"
                 .item="${item}"
                 type="edition"
-                @clear-whats-new-data="${this.onClearWhatsNewData_}">
+                @clear-whats-new-data="${this.onEditionClearWhatsNewData_}">
             </user-education-whats-new-internals-card>`)}
           <p class="if-empty">
             No What's New Editions match the search filter.

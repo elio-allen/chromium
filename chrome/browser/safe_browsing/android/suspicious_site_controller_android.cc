@@ -9,6 +9,8 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
 #include "base/strings/stringprintf.h"
+#include "base/task/single_thread_task_runner.h"
+#include "base/types/pass_key.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/history/history_service_factory.h"
@@ -34,6 +36,7 @@
 #include "content/public/common/referrer.h"
 #include "ui/android/window_android.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -51,21 +54,6 @@ base::OnceClosure* GetDismissedCallback() {
   return callback.get();
 }
 
-const char* UserChoiceToString(
-    SuspiciousSiteControllerAndroid::UserChoice choice) {
-  switch (choice) {
-    case SuspiciousSiteControllerAndroid::UserChoice::kMarkAsSafe:
-      return "mark_as_safe";
-    case SuspiciousSiteControllerAndroid::UserChoice::kBackToSafety:
-      return "back_to_safety";
-    case SuspiciousSiteControllerAndroid::UserChoice::kDismiss:
-      return "dismiss";
-    case SuspiciousSiteControllerAndroid::UserChoice::kManualNavigation:
-      return "manual_navigation";
-  }
-  NOTREACHED();
-}
-
 }  // namespace
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(SuspiciousSiteControllerAndroid);
@@ -79,13 +67,6 @@ SuspiciousSiteControllerAndroid::SuspiciousSiteControllerAndroid(
 }
 
 SuspiciousSiteControllerAndroid::~SuspiciousSiteControllerAndroid() {
-  if (web_contents() && is_observing_async_check_tracker_) {
-    auto* tracker = AsyncCheckTracker::FromWebContents(web_contents());
-    if (tracker) {
-      tracker->RemoveObserver(this);
-    }
-  }
-
   // If the dialog was shown, log the tracked warning outcome directly.
   if (has_shown_) {
     base::UmaHistogramEnumeration(
@@ -100,6 +81,7 @@ SuspiciousSiteControllerAndroid::~SuspiciousSiteControllerAndroid() {
         g_browser_process->safe_browsing_service();
     if (sb_service && sb_service->ui_manager()) {
       sb_service->ui_manager()->RemoveAllowlistUrlSetThreatType(
+          base::PassKey<SuspiciousSiteControllerAndroid>(),
           current_suspicious_url_, navigation_id_, web_contents(),
           /*from_pending_only=*/true,
           SBThreatType::SB_THREAT_TYPE_WARNABLE_SUSPICIOUS_SITE);
@@ -110,19 +92,19 @@ SuspiciousSiteControllerAndroid::~SuspiciousSiteControllerAndroid() {
 // static
 void SuspiciousSiteControllerAndroid::ShowForWebContents(
     content::WebContents* web_contents,
-    int64_t navigation_id) {
+    const security_interstitials::UnsafeResource& resource) {
   if (FromWebContents(web_contents)) {
     web_contents->RemoveUserData(UserDataKey());
   }
   CreateForWebContents(web_contents);
   auto* controller = FromWebContents(web_contents);
-  controller->navigation_id_ = navigation_id;
+  controller->resource_ = resource;
+  controller->navigation_id_ = resource.navigation_id;
   controller->is_suspended_ = true;
 
   auto* tracker = AsyncCheckTracker::FromWebContents(web_contents);
-  if (tracker && !controller->is_observing_async_check_tracker_) {
-    tracker->AddObserver(controller);
-    controller->is_observing_async_check_tracker_ = true;
+  if (tracker && !controller->async_check_observation_.IsObserving()) {
+    controller->async_check_observation_.Observe(tracker);
   }
 
   controller->MaybeShowDialog();
@@ -139,6 +121,15 @@ void SuspiciousSiteControllerAndroid::DidFinishNavigation(
   // If this navigation failed or if a different navigation completed, clean up.
   if (navigation_handle->IsErrorPage() || !navigation_id_.has_value() ||
       navigation_handle->GetNavigationId() != navigation_id_.value()) {
+    // The user navigated away while the warning was showing. The Java modal
+    // dialog manager normally reports this as DismissalCause::NAVIGATE when the
+    // navigation starts, but not when the navigation was already in flight
+    // when the dialog appeared or when the activity has no tab-modal lifetime
+    // handler, so record the outcome here if it is still undecided.
+    if (has_shown_ && !is_suspended_ &&
+        warning_outcome_ == WarningOutcome::kUnknown) {
+      CloseDialog(ui::ModalDialogWrapper::DismissalCause::NAVIGATE);
+    }
     web_contents()->RemoveUserData(UserDataKey());
     return;
   }
@@ -150,7 +141,12 @@ void SuspiciousSiteControllerAndroid::DidFinishNavigation(
 void SuspiciousSiteControllerAndroid::OnVisibilityChanged(
     content::Visibility visibility) {
   if (visibility == content::Visibility::VISIBLE && is_suspended_) {
-    MaybeShowDialog();
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&SuspiciousSiteControllerAndroid::MaybeShowDialog,
+                       weak_ptr_factory_.GetWeakPtr()));
+  } else if (visibility == content::Visibility::HIDDEN) {
+    is_suspended_ = true;
   }
 }
 
@@ -160,7 +156,7 @@ void SuspiciousSiteControllerAndroid::OnAsyncSafeBrowsingCheckCompleted() {
 
 void SuspiciousSiteControllerAndroid::
     OnAsyncSafeBrowsingCheckTrackerDestructed() {
-  // AsyncCheckTracker is being destroyed; no action required.
+  async_check_observation_.Reset();
 }
 
 void SuspiciousSiteControllerAndroid::MaybeShowDialog() {
@@ -241,7 +237,6 @@ void SuspiciousSiteControllerAndroid::ShowDialog() {
     return;
   }
 
-  has_shown_ = true;
   dialog_shown_time_ = base::TimeTicks::Now();
   SafeBrowsingService* sb_service = g_browser_process->safe_browsing_service();
   if (sb_service && sb_service->ui_manager()) {
@@ -249,14 +244,19 @@ void SuspiciousSiteControllerAndroid::ShowDialog() {
     // first before setting the new one.
     if (!current_suspicious_url_.is_empty()) {
       sb_service->ui_manager()->RemoveAllowlistUrlSetThreatType(
+          base::PassKey<SuspiciousSiteControllerAndroid>(),
           current_suspicious_url_, navigation_id_, web_contents(),
           /*from_pending_only=*/true,
           SBThreatType::SB_THREAT_TYPE_WARNABLE_SUSPICIOUS_SITE);
     }
   }
 
-  // Populate current_suspicious_url_ for the active warning session.
+  // Populate current_suspicious_url_ and current_referrer_url_ for the active
+  // warning session.
   current_suspicious_url_ = web_contents()->GetLastCommittedURL();
+  if (auto* entry = web_contents()->GetController().GetLastCommittedEntry()) {
+    current_referrer_url_ = entry->GetReferrer().url;
+  }
 
   // Pre-fetch repeat visit count right after populating
   // current_suspicious_url_.
@@ -265,7 +265,7 @@ void SuspiciousSiteControllerAndroid::ShowDialog() {
   if (sb_service && sb_service->ui_manager()) {
     // Add the suspicious site URL to AllowlistUrlSet with pending=true.
     // AllowlistUrlSet stores the threat type for WebContents, enabling
-    // ChromeSecurityStateTabHelper to return
+    // the chrome_security_state computation to return
     // MALICIOUS_CONTENT_STATUS_WARNABLE_SUSPICIOUS_SITE so the red warning icon
     // remains active in the Omnibox and Page Info even if the dialog is closed.
     sb_service->ui_manager()->AddToAllowlistUrlSet(
@@ -278,6 +278,14 @@ void SuspiciousSiteControllerAndroid::ShowDialog() {
   // TODO(crbug.com/532598569): Investigate if destroying an existing dialog,
   // creating a new one, and displaying it causes UI flicker.
   dialog_view_->Show(*window_android);
+  if (!has_shown_) {
+    sb_service->ui_manager()->CreateAndSendClientSafeBrowsingWarningShownReport(
+        resource_.value());
+    base::UmaHistogramEnumeration(
+        "SafeBrowsing.SuspiciousSiteWarning.UserInteraction",
+        UserInteraction::kShown);
+    has_shown_ = true;
+  }
 }
 
 void SuspiciousSiteControllerAndroid::CloseDialog(
@@ -287,9 +295,14 @@ void SuspiciousSiteControllerAndroid::CloseDialog(
   }
 
   // Prevent false telemetry/HaTS triggers from phantom interactions while
-  // hidden, but allow terminal system events to properly clean up backgrounded
-  // tabs.
+  // hidden, but allow lifecycle and terminal system events to properly update
+  // state and clean up backgrounded tabs.
   if (is_suspended_ &&
+      dismissal_cause != ui::ModalDialogWrapper::DismissalCause::TAB_SWITCHED &&
+      dismissal_cause !=
+          ui::ModalDialogWrapper::DismissalCause::ACTIVITY_DESTROYED &&
+      dismissal_cause !=
+          ui::ModalDialogWrapper::DismissalCause::DIALOG_INTERACTION_DEFERRED &&
       dismissal_cause !=
           ui::ModalDialogWrapper::DismissalCause::TAB_DESTROYED &&
       dismissal_cause !=
@@ -303,50 +316,59 @@ void SuspiciousSiteControllerAndroid::CloseDialog(
 
   switch (dismissal_cause) {
     case ui::ModalDialogWrapper::DismissalCause::NAVIGATE_BACK:
-      OnGoBackButtonClicked();
+    case ui::ModalDialogWrapper::DismissalCause::NAVIGATE_BACK_OR_TOUCH_OUTSIDE:
+      HandleBackNavigation(UserInteraction::kSystemBack);
       return;
     case ui::ModalDialogWrapper::DismissalCause::NAVIGATE:
       is_closing_ = true;
       warning_outcome_ = WarningOutcome::kAdhered;
+      base::UmaHistogramEnumeration(
+          "SafeBrowsing.SuspiciousSiteWarning.UserInteraction",
+          UserInteraction::kManualNavigation);
       MaybeTriggerHatsSurvey(UserChoice::kManualNavigation);
       is_suspended_ = true;
-      dialog_view_.reset();
       break;
     case ui::ModalDialogWrapper::DismissalCause::TAB_SWITCHED:
     case ui::ModalDialogWrapper::DismissalCause::DIALOG_INTERACTION_DEFERRED:
     case ui::ModalDialogWrapper::DismissalCause::ACTIVITY_DESTROYED:
       if (!dialog_shown_time_.is_null()) {
-        dialog_state_.accumulated_visible_time +=
+        survey_state_.accumulated_visible_time +=
             base::TimeTicks::Now() - dialog_shown_time_;
         dialog_shown_time_ = base::TimeTicks();
       }
       is_suspended_ = true;
-      dialog_view_.reset();
       break;
     case ui::ModalDialogWrapper::DismissalCause::TAB_DESTROYED:
     case ui::ModalDialogWrapper::DismissalCause::WEB_CONTENTS_DESTROYED:
       is_closing_ = true;
       warning_outcome_ = WarningOutcome::kAdhered;
+      base::UmaHistogramEnumeration(
+          "SafeBrowsing.SuspiciousSiteWarning.UserInteraction",
+          UserInteraction::kCloseTab);
       is_suspended_ = true;
-      dialog_view_.reset();
       break;
     case ui::ModalDialogWrapper::DismissalCause::TOUCH_OUTSIDE:
     case ui::ModalDialogWrapper::DismissalCause::ACTION_ON_CONTENT:
       is_closing_ = true;
       warning_outcome_ = WarningOutcome::kBypassed;
+      base::UmaHistogramEnumeration(
+          "SafeBrowsing.SuspiciousSiteWarning.UserInteraction",
+          UserInteraction::kDismissed);
       MaybeTriggerHatsSurvey(UserChoice::kDismiss);
       is_suspended_ = false;
-      dialog_view_.reset();
       break;
     default:
       is_closing_ = true;
       is_suspended_ = false;
-      dialog_view_.reset();
       break;
   }
+
+  dialog_view_.reset();
+  is_closing_ = false;
 }
 
-void SuspiciousSiteControllerAndroid::OnGoBackButtonClicked() {
+void SuspiciousSiteControllerAndroid::HandleBackNavigation(
+    UserInteraction interaction_type) {
   if (is_closing_) {
     return;
   }
@@ -354,6 +376,9 @@ void SuspiciousSiteControllerAndroid::OnGoBackButtonClicked() {
   has_shown_ = true;
   warning_outcome_ = WarningOutcome::kAdhered;
   dialog_view_.reset();
+
+  base::UmaHistogramEnumeration(
+      "SafeBrowsing.SuspiciousSiteWarning.UserInteraction", interaction_type);
 
   MaybeTriggerHatsSurvey(UserChoice::kBackToSafety);
 
@@ -381,6 +406,10 @@ void SuspiciousSiteControllerAndroid::OnContinueButtonClicked() {
   warning_outcome_ = WarningOutcome::kBypassed;
   dialog_view_.reset();
 
+  base::UmaHistogramEnumeration(
+      "SafeBrowsing.SuspiciousSiteWarning.UserInteraction",
+      UserInteraction::kMarkAsSafe);
+
   MaybeTriggerHatsSurvey(UserChoice::kMarkAsSafe);
 
   if (web_contents()->GetBrowserContext()) {
@@ -401,21 +430,14 @@ void SuspiciousSiteControllerAndroid::OnContinueButtonClicked() {
 }
 
 void SuspiciousSiteControllerAndroid::FetchRepeatVisitCount() {
-  if (dialog_state_.has_fetched_history || !web_contents() ||
-      !web_contents()->GetBrowserContext()) {
-    return;
-  }
-  GURL site_url = web_contents()->GetLastCommittedURL();
-  if (!site_url.is_valid()) {
+  if (survey_state_.has_fetched_history ||
+      !current_suspicious_url_.is_valid()) {
     return;
   }
 
-  dialog_state_.has_fetched_history = true;
+  survey_state_.has_fetched_history = true;
   Profile* profile =
       Profile::FromBrowserContext(web_contents()->GetBrowserContext());
-  if (!profile) {
-    return;
-  }
   // Use IMPLICIT_ACCESS because this history query is an automated background
   // feature check for survey telemetry rather than a direct user interaction
   // with the History UI.
@@ -424,7 +446,7 @@ void SuspiciousSiteControllerAndroid::FetchRepeatVisitCount() {
                                            ServiceAccessType::IMPLICIT_ACCESS);
   if (history_service) {
     history_service->GetVisibleVisitCountToHost(
-        site_url,
+        current_suspicious_url_,
         base::BindOnce(&SuspiciousSiteControllerAndroid::OnGetVisibleVisitCount,
                        weak_ptr_factory_.GetWeakPtr()),
         &history_task_tracker_);
@@ -434,41 +456,33 @@ void SuspiciousSiteControllerAndroid::FetchRepeatVisitCount() {
 void SuspiciousSiteControllerAndroid::OnGetVisibleVisitCount(
     history::VisibleVisitCountToHostResult result) {
   if (result.success && result.count > 1) {
-    dialog_state_.repeat_visit = true;
+    survey_state_.repeat_visit = true;
   }
 }
 
 void SuspiciousSiteControllerAndroid::MaybeTriggerHatsSurvey(
     UserChoice user_choice) {
+  if (survey_state_.has_triggered_survey) {
+    return;
+  }
   if (!base::FeatureList::IsEnabled(
           safe_browsing::kSuspiciousSiteWarningSurvey)) {
     return;
   }
-  if (!web_contents() || !web_contents()->GetBrowserContext()) {
-    return;
-  }
   Profile* profile =
       Profile::FromBrowserContext(web_contents()->GetBrowserContext());
-  if (!profile) {
-    return;
-  }
   HatsService* hats_service =
       HatsServiceFactory::GetForProfile(profile, /*create_if_necessary=*/true);
   if (!hats_service) {
     return;
   }
 
-  base::TimeDelta total_visible_time = dialog_state_.accumulated_visible_time;
+  base::TimeDelta total_visible_time = survey_state_.accumulated_visible_time;
   if (!dialog_shown_time_.is_null()) {
     total_visible_time += base::TimeTicks::Now() - dialog_shown_time_;
   }
   std::string visible_time_str =
       base::StringPrintf("%.2f", total_visible_time.InSecondsF());
-
-  GURL referrer_gurl;
-  if (auto* entry = web_contents()->GetController().GetLastCommittedEntry()) {
-    referrer_gurl = entry->GetReferrer().url;
-  }
 
   std::string referring_app;
   internal::ReferringAppInfo referring_app_info =
@@ -477,9 +491,11 @@ void SuspiciousSiteControllerAndroid::MaybeTriggerHatsSurvey(
     referring_app = referring_app_info.referring_app_name;
   }
 
+  // TODO(crbug.com/516759212): Coarsen site origin and referrer origin to
+  // eTLD+1.
   std::string referrer_origin;
-  if (referrer_gurl.is_valid()) {
-    url::Origin origin = url::Origin::Create(referrer_gurl);
+  if (current_referrer_url_.is_valid()) {
+    url::Origin origin = url::Origin::Create(current_referrer_url_);
     if (!origin.opaque()) {
       referrer_origin = origin.Serialize();
     }
@@ -491,24 +507,25 @@ void SuspiciousSiteControllerAndroid::MaybeTriggerHatsSurvey(
           : "";
 
   SurveyBitsData bits_data = {
-      {"did_proceed", warning_outcome_ == WarningOutcome::kBypassed},
-      {"learn_more_clicked", dialog_state_.learn_more_clicked},
-      {"repeat_visit", dialog_state_.repeat_visit}};
+      {"Did proceed", warning_outcome_ == WarningOutcome::kBypassed},
+      {"Learn more clicked", survey_state_.learn_more_clicked},
+      {"Repeat visit", survey_state_.repeat_visit}};
   SurveyStringData string_data = {
-      {"site_origin", site_origin},
-      {"user_choice", UserChoiceToString(user_choice)},
-      {"time_prompt_visible", visible_time_str},
-      {"referrer_origin", referrer_origin},
-      {"referring_app", referring_app}};
+      {"Site origin", site_origin},
+      {"User choice", SuspiciousSiteWarningUserChoiceToString(user_choice)},
+      {"Time prompt visible", visible_time_str},
+      {"Referrer origin", referrer_origin},
+      {"Referring app", referring_app}};
 
   std::string trigger_id =
       warning_outcome_ == WarningOutcome::kBypassed
           ? safe_browsing::kSuspiciousSiteWarningSurveyProceedTriggerId.Get()
           : safe_browsing::kSuspiciousSiteWarningSurveyHeedTriggerId.Get();
 
+  survey_state_.has_triggered_survey = true;
   HatsService::SurveyOptions survey_options(
       /*custom_invitation=*/
-      l10n_util::GetStringUTF16(IDS_SUSPICIOUS_SITE_HATS_CUSTOM_INVITATION));
+      l10n_util::GetStringUTF16(IDS_SAFE_BROWSING_HATS_CUSTOM_INVITATION));
   hats_service->LaunchSurveyForWebContents(
       kHatsSurveyTriggerSuspiciousSiteWarning, web_contents(), bits_data,
       string_data, /*success_callback=*/base::DoNothing(),
@@ -518,13 +535,18 @@ void SuspiciousSiteControllerAndroid::MaybeTriggerHatsSurvey(
 }
 
 void SuspiciousSiteControllerAndroid::OnHelpCenterLinkClicked() {
-  dialog_state_.learn_more_clicked = true;
+  if (!survey_state_.learn_more_clicked) {
+    survey_state_.learn_more_clicked = true;
+    base::UmaHistogramEnumeration(
+        "SafeBrowsing.SuspiciousSiteWarning.UserInteraction",
+        UserInteraction::kLearnMore);
+  }
   content::WebContents* contents = web_contents();
   CHECK(contents);
-  content::OpenURLParams params(
-      GURL(chrome::kUnsafeSiteWarningHelpCenterURL), content::Referrer(),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB, ui::PAGE_TRANSITION_LINK,
-      /*is_renderer_initiated=*/false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(chrome::kUnsafeSiteWarningHelpCenterURL),
+          WindowOpenDisposition::kNewForegroundTab, ui::PAGE_TRANSITION_LINK);
 
   contents->OpenURL(params, /*navigation_handle_callback=*/{});
 }

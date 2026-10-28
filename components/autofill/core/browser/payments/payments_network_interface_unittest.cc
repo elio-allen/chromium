@@ -30,10 +30,10 @@
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "components/autofill/core/browser/payments/payments_network_interface_test_base.h"
 #include "components/autofill/core/browser/payments/payments_request_details.h"
-#include "components/autofill/core/browser/payments/test/autofill_payments_test_utils.h"
+#include "components/autofill/core/browser/payments/test/autofill_payments_test_util.h"
 #include "components/autofill/core/browser/payments/virtual_card_enrollment_flow.h"
 #include "components/autofill/core/browser/studies/autofill_experiments.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_clock.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
@@ -256,6 +256,17 @@ class PaymentsNetworkInterfaceTest : public PaymentsNetworkInterfaceTestBase,
     bnpl_url_response_details_ = std::move(response_details);
   }
 
+  void OnDidGetWalletReminderNotice(
+      PaymentsRpcResult result,
+      const GetWalletReminderNoticeResponseDetails& response_details) {
+    result_ = result;
+    wallet_reminder_notice_response_details_ = response_details;
+  }
+
+  void OnDidRecordLegalReminderAcknowledgment(PaymentsRpcResult result) {
+    result_ = result;
+  }
+
  protected:
   std::unique_ptr<PaymentsNetworkInterface> payments_network_interface_;
 
@@ -446,6 +457,11 @@ class PaymentsNetworkInterfaceTest : public PaymentsNetworkInterfaceTestBase,
     return bnpl_url_response_details_;
   }
 
+  const GetWalletReminderNoticeResponseDetails&
+  wallet_reminder_notice_response_details() const {
+    return wallet_reminder_notice_response_details_;
+  }
+
   base::WeakPtr<PaymentsNetworkInterfaceTest> GetWeakPtr() {
     return weak_ptr_factory_.GetWeakPtr();
   }
@@ -471,6 +487,9 @@ class PaymentsNetworkInterfaceTest : public PaymentsNetworkInterfaceTestBase,
   // Server generated instrument ID through the creation of a BNPL payment
   // instrument.
   std::string instrument_id_;
+  // The response details retrieved from a GetWalletReminderNoticeRequest.
+  GetWalletReminderNoticeResponseDetails
+      wallet_reminder_notice_response_details_;
 
  private:
   std::optional<UnmaskDetails> unmask_details_;
@@ -484,13 +503,17 @@ class PaymentsNetworkInterfaceTest : public PaymentsNetworkInterfaceTestBase,
 TEST_F(PaymentsNetworkInterfaceTest, GetUnmaskDetailsSuccess) {
   StartGettingUnmaskDetails();
   IssueOAuthToken();
-  ReturnResponse(payments_network_interface_.get(), net::HTTP_OK,
-                 "{ \"offer_fido_opt_in\": \"false\", "
-                 "\"authentication_method\": \"CVC\" }");
+  ReturnResponse(
+      payments_network_interface_.get(), net::HTTP_OK,
+      "{ \"offer_fido_opt_in\": \"false\", "
+      "\"authentication_method\": \"CVC\", "
+      "\"verified_instrument_ids\": [\"12345\", \"9223372036854775807\"] }");
   EXPECT_EQ(result_, PaymentsRpcResult::kSuccess);
   EXPECT_FALSE(unmask_details()->server_denotes_fido_eligible_but_not_opted_in);
   EXPECT_EQ(unmask_details()->unmask_auth_method,
             PaymentsAutofillClient::UnmaskAuthMethod::kCvc);
+  EXPECT_THAT(unmask_details()->verified_instrument_ids,
+              testing::UnorderedElementsAre(12345, 9223372036854775807));
 }
 
 TEST_F(PaymentsNetworkInterfaceTest,
@@ -1015,6 +1038,30 @@ TEST_F(PaymentsNetworkInterfaceTest, GetUploadDetailsVariationsTest) {
 }
 
 TEST_F(PaymentsNetworkInterfaceTest, GetDetailsFollowedByUploadSuccess) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAutofillEnableOAuth2TokenFix);
+
+  StartGettingUploadDetails();
+  IssueOAuthToken();
+  ReturnResponse(
+      payments_network_interface_.get(), net::HTTP_OK,
+      "{ \"context_token\": \"some_token\", \"legal_message\": {} }");
+  EXPECT_EQ(result_, PaymentsRpcResult::kSuccess);
+
+  result_ = PaymentsRpcResult::kNone;
+
+  StartUploading();
+  IssueOAuthToken();
+  ReturnResponse(payments_network_interface_.get(), net::HTTP_OK, "{}");
+  EXPECT_EQ(result_, PaymentsRpcResult::kSuccess);
+}
+
+TEST_F(PaymentsNetworkInterfaceTest,
+       GetDetailsFollowedByUploadSuccess_FlagDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kAutofillEnableOAuth2TokenFix);
+
   StartGettingUploadDetails();
   IssueOAuthToken();
   ReturnResponse(
@@ -1073,13 +1120,13 @@ TEST_F(PaymentsNetworkInterfaceTest, GetUploadAccountFromSyncTest) {
   const AccountInfo& secondary_account_info =
       identity_test_env_.MakeAccountAvailable("secondary@gmail.com");
   test_personal_data_.test_payments_data_manager().SetAccountInfoForPayments(
-      secondary_account_info);
+      secondary_account_info.GetCoreAccountInfo());
 
   StartUploading();
 
   // Issue a token for the secondary account.
   identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithToken(
-      secondary_account_info.account_id, "secondary_account_token",
+      secondary_account_info.GetAccountId(), "secondary_account_token",
       AutofillClock::Now() + base::Days(10));
 
   ReturnResponse(payments_network_interface_.get(), net::HTTP_OK, "{}");
@@ -1138,6 +1185,47 @@ TEST_F(PaymentsNetworkInterfaceTest, UploadSuccessInstrumentIdPresent) {
 
 TEST_F(PaymentsNetworkInterfaceTest,
        UploadSuccessVirtualCardEnrollmentStatePresent) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAutofillEnableOAuth2TokenFix);
+
+  for (CreditCard::VirtualCardEnrollmentState virtual_card_enrollment_state :
+       {CreditCard::VirtualCardEnrollmentState::kUnenrolledAndNotEligible,
+        CreditCard::VirtualCardEnrollmentState::kUnenrolledAndEligible,
+        CreditCard::VirtualCardEnrollmentState::kEnrolled}) {
+    StartUploading();
+    IssueOAuthToken();
+    switch (virtual_card_enrollment_state) {
+      case CreditCard::VirtualCardEnrollmentState::kUnenrolledAndNotEligible:
+        ReturnResponse(payments_network_interface_.get(), net::HTTP_OK,
+                       "{ \"virtual_card_metadata\": { \"status\": "
+                       "\"ENROLLMENT_STATUS_UNSPECIFIED\" } }");
+        break;
+      case CreditCard::VirtualCardEnrollmentState::kUnenrolledAndEligible:
+        ReturnResponse(payments_network_interface_.get(), net::HTTP_OK,
+                       "{ \"virtual_card_metadata\": { \"status\": "
+                       "\"ENROLLMENT_ELIGIBLE\" } }");
+        break;
+      case CreditCard::VirtualCardEnrollmentState::kEnrolled:
+        ReturnResponse(
+            payments_network_interface_.get(), net::HTTP_OK,
+            "{ \"virtual_card_metadata\": { \"status\": \"ENROLLED\" } }");
+        break;
+      case CreditCard::VirtualCardEnrollmentState::kUnenrolled:
+      case CreditCard::VirtualCardEnrollmentState::kUnspecified:
+        break;
+    }
+    EXPECT_EQ(result_, PaymentsRpcResult::kSuccess);
+    EXPECT_EQ(upload_card_response_details_.virtual_card_enrollment_state,
+              virtual_card_enrollment_state);
+  }
+}
+
+TEST_F(PaymentsNetworkInterfaceTest,
+       UploadSuccessVirtualCardEnrollmentStatePresent_FlagDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kAutofillEnableOAuth2TokenFix);
+
   bool oauth_token_issued = false;
   for (CreditCard::VirtualCardEnrollmentState virtual_card_enrollment_state :
        {CreditCard::VirtualCardEnrollmentState::kUnenrolledAndNotEligible,
@@ -1299,6 +1387,52 @@ TEST_F(PaymentsNetworkInterfaceTest, UnmaskMalformedResponse) {
 }
 
 TEST_F(PaymentsNetworkInterfaceTest, ReauthNeeded) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAutofillEnableOAuth2TokenFix);
+
+  {
+    StartUnmasking(CardUnmaskOptions());
+    IssueOAuthToken();
+    ReturnResponse(payments_network_interface_.get(), net::HTTP_UNAUTHORIZED,
+                   "");
+    // No response yet.
+    EXPECT_EQ(result_, PaymentsRpcResult::kNone);
+    EXPECT_EQ(unmask_response_details(), nullptr);
+
+    // Second HTTP_UNAUTHORIZED causes permanent failure.
+    IssueOAuthToken();
+    ReturnResponse(payments_network_interface_.get(), net::HTTP_UNAUTHORIZED,
+                   "");
+    EXPECT_EQ(result_, PaymentsRpcResult::kPermanentFailure);
+    EXPECT_EQ(unmask_response_details()->real_pan, "");
+  }
+
+  result_ = PaymentsRpcResult::kNone;
+  ResetUnmaskResponseDetails();
+
+  {
+    StartUnmasking(CardUnmaskOptions());
+    IssueOAuthToken();
+    ReturnResponse(payments_network_interface_.get(), net::HTTP_UNAUTHORIZED,
+                   "");
+    // No response yet.
+    EXPECT_EQ(result_, PaymentsRpcResult::kNone);
+    EXPECT_EQ(unmask_response_details(), nullptr);
+
+    // HTTP_OK after first HTTP_UNAUTHORIZED results in success.
+    IssueOAuthToken();
+    ReturnResponse(payments_network_interface_.get(), net::HTTP_OK,
+                   "{ \"pan\": \"1234\" }");
+    EXPECT_EQ(result_, PaymentsRpcResult::kSuccess);
+    EXPECT_EQ(unmask_response_details()->real_pan, "1234");
+  }
+}
+
+TEST_F(PaymentsNetworkInterfaceTest, ReauthNeeded_FlagDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kAutofillEnableOAuth2TokenFix);
+
   {
     StartUnmasking(CardUnmaskOptions());
     IssueOAuthToken();
@@ -2086,6 +2220,122 @@ TEST_P(PaymentsNetworkInterfaceTestWithPaymentsRpcResultParam,
               GURL("http://failure-url.test/"));
     EXPECT_EQ(bnpl_url_response_details()->context_token, "CONTEXT_TOKEN");
   }
+}
+
+// Test GetWalletReminderNotice() with all the different PaymentsRpcResults.
+TEST_P(PaymentsNetworkInterfaceTestWithPaymentsRpcResultParam,
+       GetWalletReminderNotice) {
+  GetWalletReminderNoticeRequestDetails request_details;
+  request_details.app_locale = "en-US";
+  request_details.billing_customer_number = 555666777888;
+  request_details.billable_service_number = 1234;
+
+  payments_network_interface_->GetWalletReminderNotice(
+      request_details,
+      base::BindOnce(
+          &PaymentsNetworkInterfaceTest::OnDidGetWalletReminderNotice,
+          GetWeakPtr()));
+  IssueOAuthToken();
+
+  PaymentsRpcResult result = GetParam();
+  switch (result) {
+    case PaymentsRpcResult::kSuccess:
+      ReturnResponse(payments_network_interface_.get(), net::HTTP_OK,
+                     "{ \"legal_message\": {"
+                     "    \"line\": ["
+                     "      {\"template\": \"some legal message line\"}],"
+                     "    \"token\": \"some_token\""
+                     "}, "
+                     "\"has_user_been_shown_reminder\": true }");
+      break;
+    case PaymentsRpcResult::kTryAgainFailure:
+      ReturnResponse(payments_network_interface_.get(), net::HTTP_OK,
+                     "{ \"error\": { \"code\": \"INTERNAL\", "
+                     "\"api_error_reason\": \"ANYTHING_ELSE\"} }");
+      break;
+    case PaymentsRpcResult::kPermanentFailure:
+      ReturnResponse(payments_network_interface_.get(), net::HTTP_OK,
+                     "{ \"error\": { \"code\": \"ANYTHING_ELSE\" } }");
+      break;
+    case PaymentsRpcResult::kNetworkError:
+      ReturnResponse(payments_network_interface_.get(),
+                     net::HTTP_REQUEST_TIMEOUT, "");
+      break;
+    case PaymentsRpcResult::kClientSideTimeout:
+      ReturnResponse(payments_network_interface_.get(), net::ERR_TIMED_OUT, "");
+      break;
+    case PaymentsRpcResult::kVcnRetrievalTryAgainFailure:
+    case PaymentsRpcResult::kVcnRetrievalPermanentFailure:
+    case PaymentsRpcResult::kNone:
+      NOTREACHED();
+  }
+
+  AssertIncludedInRequest("\"language_code\":\"en-US\"");
+  AssertIncludedInRequest("\"external_customer_id\":\"555666777888\"");
+  AssertIncludedInRequest("\"billable_service\":1234");
+
+  EXPECT_EQ(result, result_);
+  if (result == PaymentsRpcResult::kSuccess) {
+    EXPECT_EQ(
+        wallet_reminder_notice_response_details().legal_message_lines.size(),
+        1u);
+    EXPECT_EQ(wallet_reminder_notice_response_details().acknowledgement_token,
+              "some_token");
+    EXPECT_TRUE(
+        wallet_reminder_notice_response_details().has_user_been_shown_reminder);
+  }
+}
+
+// Test RecordLegalReminderAcknowledgment() with all the different
+// PaymentsRpcResults.
+TEST_P(PaymentsNetworkInterfaceTestWithPaymentsRpcResultParam,
+       RecordLegalReminderAcknowledgment) {
+  RecordLegalReminderAcknowledgmentRequestDetails request_details;
+  request_details.app_locale = "en-US";
+  request_details.billing_customer_number = 555666777888;
+  request_details.billable_service_number = 1234;
+  request_details.legal_message_token = "some_token";
+
+  payments_network_interface_->RecordLegalReminderAcknowledgment(
+      request_details,
+      base::BindOnce(
+          &PaymentsNetworkInterfaceTest::OnDidRecordLegalReminderAcknowledgment,
+          GetWeakPtr()));
+  IssueOAuthToken();
+
+  PaymentsRpcResult result = GetParam();
+  switch (result) {
+    case PaymentsRpcResult::kSuccess:
+      ReturnResponse(payments_network_interface_.get(), net::HTTP_OK, "{}");
+      break;
+    case PaymentsRpcResult::kTryAgainFailure:
+      ReturnResponse(payments_network_interface_.get(), net::HTTP_OK,
+                     "{ \"error\": { \"code\": \"INTERNAL\", "
+                     "\"api_error_reason\": \"ANYTHING_ELSE\"} }");
+      break;
+    case PaymentsRpcResult::kPermanentFailure:
+      ReturnResponse(payments_network_interface_.get(), net::HTTP_OK,
+                     "{ \"error\": { \"code\": \"ANYTHING_ELSE\" } }");
+      break;
+    case PaymentsRpcResult::kNetworkError:
+      ReturnResponse(payments_network_interface_.get(),
+                     net::HTTP_REQUEST_TIMEOUT, "");
+      break;
+    case PaymentsRpcResult::kClientSideTimeout:
+      ReturnResponse(payments_network_interface_.get(), net::ERR_TIMED_OUT, "");
+      break;
+    case PaymentsRpcResult::kVcnRetrievalTryAgainFailure:
+    case PaymentsRpcResult::kVcnRetrievalPermanentFailure:
+    case PaymentsRpcResult::kNone:
+      NOTREACHED();
+  }
+
+  AssertIncludedInRequest("\"language_code\":\"en-US\"");
+  AssertIncludedInRequest("\"external_customer_id\":\"555666777888\"");
+  AssertIncludedInRequest("\"billable_service\":1234");
+  AssertIncludedInRequest("\"legal_message_token\":\"some_token\"");
+
+  EXPECT_EQ(result, result_);
 }
 
 }  // namespace

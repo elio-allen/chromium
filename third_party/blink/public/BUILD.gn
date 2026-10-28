@@ -29,9 +29,6 @@ group("blink") {
     "//third_party/blink/renderer/modules",
     "//third_party/blink/renderer/platform",
   ]
-  if (use_blink_extensions_chromeos) {
-    deps += [ "//third_party/blink/renderer/extensions/chromeos" ]
-  }
   if (use_blink_extensions_webview) {
     deps += [ "//third_party/blink/renderer/extensions/webview" ]
   }
@@ -79,6 +76,7 @@ buildflag_header("buildflags") {
     "USE_MINIKIN_HYPHENATION=$use_minikin_hyphenation",
     "ENABLE_UNHANDLED_TAP=$enable_unhandled_tap",
     "VERBOSE_PERSISTENT=$cppgc_enable_object_names",
+    "ENABLE_SMART_CARD=$enable_smart_card",
   ]
 }
 
@@ -131,7 +129,10 @@ source_set("blink_headers") {
     "platform/cross_variant_mojo_util.h",
     "platform/file_path_conversion.h",
     "platform/interface_registry.h",
+    "platform/media/key_system_config_selector.h",
     "platform/media/video_capture.h",
+    "platform/media/web_encrypted_media_client_impl.h",
+    "platform/media/web_media_player_builder.h",
     "platform/media/web_media_player_delegate.h",
     "platform/modules/mediastream/media_stream_types.h",
     "platform/modules/mediastream/secure_display_link_tracker.h",
@@ -160,6 +161,7 @@ source_set("blink_headers") {
     "platform/scheduler/web_thread_scheduler.h",
     "platform/task_type.h",
     "platform/tracked_child_url_loader_factory_bundle.h",
+    "platform/unicode_utilities.h",
     "platform/url_conversion.h",
     "platform/url_loader_throttle_provider.h",
     "platform/user_metrics_action.h",
@@ -350,12 +352,12 @@ source_set("blink_headers") {
     "web/web_page_popup.h",
     "web/web_performance_metrics_for_nested_contexts.h",
     "web/web_performance_metrics_for_reporting.h",
+    "web/web_performance_timings.h",
     "web/web_picture_in_picture_window_options.h",
     "web/web_plugin.h",
     "web/web_plugin_container.h",
     "web/web_plugin_document.h",
     "web/web_plugin_params.h",
-    "web/web_plugin_script_forbidden_scope.h",
     "web/web_popup_menu_info.h",
     "web/web_print_client.h",
     "web/web_print_page_description.h",
@@ -368,6 +370,7 @@ source_set("blink_headers") {
     "web/web_savable_resources_test_support.h",
     "web/web_scoped_window_focus_allowed_indicator.h",
     "web/web_script_execution_callback.h",
+    "web/web_script_forbidden_scope.h",
     "web/web_script_source.h",
     "web/web_script_tool_types.h",
     "web/web_searchable_form_data.h",
@@ -429,6 +432,8 @@ source_set("blink_headers") {
     ":resources_grit",
     ":runtime_features_for_public",
     "//components/subresource_filter/core/common",
+    "//media",
+    "//media/mojo/mojom:mojom_shared",
     "//net",
     "//services/network/public/mojom:mojom_shared",
     "//services/service_manager/public/cpp",
@@ -533,6 +538,7 @@ grit("resources") {
     "//third_party/blink/renderer/core/css/svg.css",
     "//third_party/blink/renderer/core/css/transition.css",
     "//third_party/blink/renderer/core/css/view-source.css",
+    "//third_party/blink/renderer/core/skeleton/skeleton.css",
     "//third_party/blink/renderer/core/html/forms/resources/input_alert.svg",
     "//third_party/blink/renderer/core/html/forms/resources/validation_bubble.css",
     "//third_party/blink/renderer/core/html/resources/android.css",
@@ -541,8 +547,6 @@ grit("resources") {
     "//third_party/blink/renderer/core/html/resources/html.css",
     "//third_party/blink/renderer/core/html/resources/images/calendar_icon.svg",
     "//third_party/blink/renderer/core/html/resources/images/calendar_icon_white.svg",
-    "//third_party/blink/renderer/core/html/resources/images/email_verification_loading.svg",
-    "//third_party/blink/renderer/core/html/resources/images/email_verification_verified.svg",
     "//third_party/blink/renderer/core/html/resources/images/password_reveal_off.svg",
     "//third_party/blink/renderer/core/html/resources/images/password_reveal_on.svg",
     "//third_party/blink/renderer/core/html/resources/images/permission_icon_camera.svg",

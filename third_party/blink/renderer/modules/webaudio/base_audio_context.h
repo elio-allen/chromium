@@ -195,7 +195,6 @@ class MODULES_EXPORT BaseAudioContext
 
   void Dispose();
 
-
   size_t CurrentSampleFrame() const {
     return destination_handler_->CurrentSampleFrame();
   }
@@ -326,6 +325,10 @@ class MODULES_EXPORT BaseAudioContext
   // if the execution context does not exist.
   bool CheckExecutionContextAndThrowIfNecessary(ExceptionState&);
 
+  wtf_size_t PendingPromiseResolverCountForTesting() const {
+    return pending_promise_resolvers_.size();
+  }
+
  protected:
   enum class ContextType { kRealtimeContext, kOfflineContext };
 
@@ -347,8 +350,23 @@ class MODULES_EXPORT BaseAudioContext
   // When the context goes away, reject any pending script promise resolvers.
   virtual void RejectPendingResolvers();
 
+  // Detaches all pending script promise resolvers when the context is being
+  // disposed by the garbage collector. This is called from Dispose() (a
+  // pre-finalizer), where allocating new objects (like DOMExceptions for
+  // rejecting promises) is prohibited. Detaching the resolvers ensures they
+  // don't attempt to access the context during their own disposal and avoids
+  // crashes from forbidden allocations.
+  virtual void DetachPendingResolvers();
+
   // Returns the window with which the instance is associated.
   LocalDOMWindow* GetWindow() const;
+
+  void AddPendingPromiseResolver(ScriptPromiseResolver<IDLUndefined>*);
+  void ResolvePendingPromiseResolver(ScriptPromiseResolver<IDLUndefined>*);
+  virtual void RejectPendingPromiseResolversWithException(
+      const String& message);
+  void RemovePendingPromiseResolvers(
+      const HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>>&);
 
   Member<AudioDestinationNode> destination_node_;
 
@@ -386,6 +404,11 @@ class MODULES_EXPORT BaseAudioContext
 
   // Graph locking.
   scoped_refptr<DeferredTaskHandler> deferred_task_handler_;
+
+  // Vector for tracking suspend and resume resolvers in BaseAudioContext.
+  // https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-pending-promises-slot
+  HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>>
+      pending_promise_resolvers_;
 
   // Vector of promises created by decodeAudioData.  This keeps the resolvers
   // alive until decodeAudioData finishes decoding and can tell the main thread

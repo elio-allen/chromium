@@ -82,6 +82,8 @@ source_set("internal") {
     "cloud/cloud_external_data_store.h",
     "cloud/cloud_policy_client.cc",
     "cloud/cloud_policy_client.h",
+    "cloud/cloud_policy_client_proto_types.cc",
+    "cloud/cloud_policy_client_proto_types.h",
     "cloud/cloud_policy_client_registration_helper.cc",
     "cloud/cloud_policy_client_registration_helper.h",
     "cloud/cloud_policy_client_types.cc",
@@ -233,13 +235,13 @@ source_set("internal") {
     "//components/invalidation",
     "//components/policy:generated",
     "//components/policy/proto",
+    "//components/policy/resources/webui/mojom:mojo_bindings",
     "//components/reporting/proto:record_constants",
     "//components/reporting/proto:record_proto",
     "//extensions/buildflags",
   ]
 
   deps = [
-    "//base:i18n",
     "//build:android_buildflags",
     "//components/account_id",
     "//components/enterprise/common:strings",
@@ -247,7 +249,6 @@ source_set("internal") {
     "//components/enterprise/connectors/core:constants",
     "//components/keyed_service/core",
     "//components/metrics",
-    "//components/policy/resources/webui/mojom:mojo_bindings",
     "//components/prefs",
     "//components/signin/public/identity_manager",
     "//components/strings",
@@ -256,8 +257,11 @@ source_set("internal") {
     "//google_apis",
     "//net",
     "//services/network/public/cpp",
+    "//third_party/abseil-cpp:absl",
     "//third_party/libxml:xml_writer",
+    "//third_party/metrics_proto",
     "//third_party/re2",
+    "//third_party/zlib/google:compression_utils",
     "//ui/base",
     "//url",
   ]
@@ -500,6 +504,7 @@ static_library("test_support") {
 
 source_set("common_constants") {
   configs += [ "//components/policy:component_implementation" ]
+  public_deps = [ "//build:branding_buildflags" ]
   deps = [ "//base" ]
   sources = [
     "../../policy_export.h",
@@ -537,6 +542,7 @@ source_set("policy_path_constants") {
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "async_policy_loader_unittest.cc",
     "cloud/affiliation_unittest.cc",
     "cloud/cloud_policy_client_unittest.cc",
     "cloud/cloud_policy_core_unittest.cc",
@@ -680,6 +686,7 @@ source_set("unit_tests") {
     "//testing/gmock",
     "//testing/gtest",
     "//third_party/libxml:xml_reader",
+    "//third_party/metrics_proto",
     "//ui/base",
   ]
   if (is_chromeos) {

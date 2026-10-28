@@ -4,9 +4,7 @@
 
 #import "ios/chrome/browser/authentication/age_mismatch_signout/ui/age_mismatch_signout_view_controller.h"
 
-#import "base/strings/sys_string_conversions.h"
 #import "ios/chrome/browser/authentication/age_mismatch_signout/ui/age_mismatch_signout_ui_constants.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/authentication/ui_bundled/views/identity_view.h"
 #import "ios/chrome/browser/shared/ui/elements/home_waiting_view.h"
 #import "ios/chrome/common/string_util.h"
@@ -91,9 +89,8 @@ constexpr CGFloat kDefaultSubtitleBottomMargin = 22.0;
 
   NSMutableArray<NSLayoutConstraint*>* constraints =
       [[NSMutableArray alloc] init];
-  AddSameConstraintsToSides(
-      self.subtitleTextView, self.specificContentView,
-      LayoutSides::kTop | LayoutSides::kLeading | LayoutSides::kTrailing);
+  AddSameConstraintsToSides(self.subtitleTextView, self.specificContentView,
+                            LayoutSides::kTop | LayoutSides::kHorizontal);
 
   // Add the identity view only for the follow up prompt.
   switch (_mode) {

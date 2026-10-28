@@ -44,10 +44,6 @@ BASE_DECLARE_FEATURE(kCastAllowAllIPsFeature);
 // Presentation API. If disabled, only the allowlisted sites can do so.
 BASE_DECLARE_FEATURE(kAllowAllSitesToInitiateMirroring);
 
-// If enabled, The browser allows discovery of the DIAL support cast device.
-// It sends a discovery SSDP message every 120 seconds.
-BASE_DECLARE_FEATURE(kDialMediaRouteProvider);
-
 // If enabled, the browser delays background discovery of Cast and DIAL devices
 // until explicit user interaction with the Cast feature.
 BASE_DECLARE_FEATURE(kDelayMediaSinkDiscovery);
@@ -65,6 +61,16 @@ BASE_DECLARE_FEATURE(kFallbackToAudioTabMirroring);
 // receivers will be logged in chrome://media-router-internals.  These messages
 // can be frequent and contain sensitive information, so disabled by default.
 BASE_DECLARE_FEATURE(kCastMessageLogging);
+
+#if BUILDFLAG(IS_WIN)
+// If enabled, Cast desktop (screen) mirroring on Windows captures system audio
+// without muting the local output device. Muting the default render endpoint
+// silences the loopback capture itself on some audio drivers, which leaves the
+// Cast receiver silent (https://crbug.com/369209699). This matches the macOS
+// behavior. Disabling this restores the legacy behavior of muting local audio
+// for the duration of the session.
+BASE_DECLARE_FEATURE(kCastDesktopMirroringKeepLocalAudio);
+#endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(ENABLE_MEDIA_REMOTING_REDIRECTION)
 // If enabled, the redirection (MMR) Media Route Provider is registered.
@@ -87,10 +93,6 @@ bool GetCastAllowAllIPsPref(PrefService* pref_service);
 // |pref_service|. If the token does not exist, the token will be created from a
 // randomly generated string and stored in |pref_service|.
 std::string GetReceiverIdHashToken(PrefService* pref_service);
-
-// Returns true if support for DIAL devices is enabled.  Disabling DIAL support
-// also disables SSDP-based discovery for Cast devices.
-bool DialMediaRouteProviderEnabled();
 
 // Returns true if the redirection (MMR) Media Route Provider should be
 // initialized.

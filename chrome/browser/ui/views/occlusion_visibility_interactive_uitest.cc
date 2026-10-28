@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
@@ -62,19 +64,14 @@ class OcclusionVisibilityInteractiveUITest : public InteractiveBrowserTest {
 #endif
 IN_PROC_BROWSER_TEST_F(OcclusionVisibilityInteractiveUITest,
                        MAYBE_OcclusionTriggersVisiblityChange) {
-  // TODO(crbug.com/539963779): Re-enable test when glass frame is enabled
-  if (features::IsGlassFrameEnabled()) {
-    GTEST_SKIP() << "Windows are translucent when glass frame is enabled and "
-                    "thus times out when testing for occlusion";
-  }
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
 
   browser()->GetWindow()->SetBounds(gfx::Rect(100, 100, 640, 480));
   browser()->GetWindow()->Show();
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
 
-  Browser* browser2 = CreateBrowser(browser()->GetProfile());
+  BrowserWindowInterface* browser2 = CreateBrowser(browser()->GetProfile());
 
   {
     VisibilityWaiter waiter(web_contents, content::Visibility::OCCLUDED);

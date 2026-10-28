@@ -26,7 +26,7 @@ class ActionItem;
 namespace chrome {
 
 // Manages action mappings and command state tracking for experimental Action
-// API. Only used when features::kUseActionsForBrowserCommands is enabled.
+// API. Only used when features::ShouldUseActionsForBrowserCommands() is true.
 class CommandActionUpdater : public CommandUpdater {
  public:
   explicit CommandActionUpdater(actions::ActionItem* root_action_item);
@@ -35,15 +35,6 @@ class CommandActionUpdater : public CommandUpdater {
   // CommandUpdater implementation:
   bool SupportsCommand(int id) const override;
   bool IsCommandEnabled(int id) const override;
-  bool ExecuteCommandImpl(
-      int id,
-      base::TimeTicks time_stamp,
-      std::optional<actions::ActionInvocationContext> context) override;
-  bool ExecuteCommandWithDispositionImpl(
-      int id,
-      WindowOpenDisposition disposition,
-      base::TimeTicks time_stamp,
-      std::optional<actions::ActionInvocationContext> context) override;
   void AddCommandObserver(int id, CommandObserver* observer) override;
   void RemoveCommandObserver(int id, CommandObserver* observer) override;
   void RemoveCommandObserver(CommandObserver* observer) override;
@@ -51,9 +42,15 @@ class CommandActionUpdater : public CommandUpdater {
   void DisableAllCommands() override;
   std::vector<int> GetAllIds() const override;
 
-  std::optional<actions::ActionId> GetActionId(int id) const;
+  static std::optional<actions::ActionId> GetActionId(int id);
 
  private:
+  bool ExecuteCommandWithDispositionAndContext(
+      int id,
+      WindowOpenDisposition disposition,
+      std::optional<actions::ActionInvocationContext> context,
+      base::TimeTicks time_stamp) override;
+
   actions::ActionItem* FindAction(actions::ActionId action_id) const;
   void ExecuteAction(
       actions::ActionId action_id,

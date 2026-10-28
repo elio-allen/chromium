@@ -10,8 +10,11 @@
 #include "base/containers/map_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/field_trial_params.h"
+#include "base/test/icu_test_util.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/scoped_libc_timezone_override.h"
+#include "build/build_config.h"
 #include "chrome/browser/user_education/browser_user_education_storage_service.h"
 #include "chrome/browser/user_education/user_education_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -79,18 +82,10 @@ class RecentSessionPolicyTest : public testing::Test {
   ~RecentSessionPolicyTest() override = default;
 
   void SetUp() override {
-    // Default setup is to initialize right away, but this can be skipped in
-    // other tests by overriding and replacing this behavior.
-    Init();
+    policy_ = std::make_unique<RecentSessionPolicyImpl>();
   }
 
   void TearDown() override { policy_.reset(); }
-
-  void Init(const base::FieldTrialParams& params = {}) {
-    feature_list_.InitAndEnableFeatureWithParameters(
-        kAllowRecentSessionTracking, params);
-    policy_ = std::make_unique<RecentSessionPolicyImpl>();
-  }
 
   void EnsureBucketCounts(const std::string& name,
                           std::map<int, int> counts) const {
@@ -121,9 +116,6 @@ class RecentSessionPolicyTest : public testing::Test {
  protected:
   base::HistogramTester histograms_;
   std::unique_ptr<RecentSessionPolicyImpl> policy_;
-
- private:
-  base::test::ScopedFeatureList feature_list_;
 };
 
 TEST_F(RecentSessionPolicyTest,
@@ -534,82 +526,52 @@ TEST_F(RecentSessionPolicyTest, RecordRecentUsageMetrics_DailyLimit) {
   EnsureBucketCounts("UserEducation.Session.RecentSuperActiveWeeks", {{1, 2}});
 }
 
-class RecentSessionPolicyFinchTest : public RecentSessionPolicyTest {
- public:
-  RecentSessionPolicyFinchTest() = default;
-  ~RecentSessionPolicyFinchTest() override = default;
+#if !BUILDFLAG(IS_WIN)
+// Excluded on Windows because `Time::Explode` / `Time::FromExploded` use the
+// Win32 timezone APIs (`SystemTimeToTzSpecificLocalTime`), which query the OS
+// timezone directly and ignore both `TZ` and ICU timezone overrides.
+TEST_F(RecentSessionPolicyTest, DstFallBackDay) {
+  // In US Pacific time (America/Los_Angeles), DST ended on Sunday 2025-11-02,
+  // making that local calendar day 25 hours long.
+  // Before 01:00 local time on 2025-11-02 (PDT = UTC-7), adding a fixed 24h
+  // (`base::Days(1)`) lands at 23:xx on the SAME calendar day (PST = UTC-8).
+  base::test::ScopedRestoreDefaultTimezone pacific_tz("America/Los_Angeles");
+  base::test::ScopedLibcTimezoneOverride libc_tz("America/Los_Angeles");
 
-  // Don't initialize during setup.
-  void SetUp() override {}
-};
+  // 2025-11-02 00:30:00 PDT = 2025-11-02 07:30:00 UTC.
+  base::Time fall_back_0030;
+  ASSERT_TRUE(
+      base::Time::FromUTCString("2025-11-02 07:30:00 UTC", &fall_back_0030));
+  // 2025-11-01 12:00:00 PDT = 2025-11-01 19:00:00 UTC (previous calendar day).
+  base::Time prev_day_noon;
+  ASSERT_TRUE(
+      base::Time::FromUTCString("2025-11-01 19:00:00 UTC", &prev_day_noon));
+  // 2025-11-02 10:00:00 PST = 2025-11-02 18:00:00 UTC (same calendar day).
+  base::Time fall_back_1000;
+  ASSERT_TRUE(
+      base::Time::FromUTCString("2025-11-02 18:00:00 UTC", &fall_back_1000));
 
-TEST_F(RecentSessionPolicyFinchTest, ChangeExistingThresholds) {
-  Init({{"max_active_weeks", "1"}, {"max_active_days", "2"}});
+  RecentSessionData data;
+  data.enabled_time = fall_back_0030 - base::Days(30);
+  data.recent_session_start_times = {fall_back_0030};
 
-  // Two days, one week.
-  auto data = CreateSessionData({base::Days(2)});
-  EXPECT_TRUE(policy_->ShouldEnableLowUsagePromoMode(data));
+  RecentSessionPolicyImpl::ActiveDaysConstraint active_days(7);
+  // Without a DST-safe GetEndOfDay(), GetEndOfDay(fall_back_0030) returned
+  // 2025-11-02 00:00 PDT (< fall_back_0030), excluding the session from
+  // CountActiveDays() and returning 0.
+  EXPECT_EQ(1, active_days.GetCount(data));
 
-  // Two days, one week, but more entries.
-  data = CreateSessionData({base::Days(2), base::Days(2) + base::Minutes(5)});
-  EXPECT_TRUE(policy_->ShouldEnableLowUsagePromoMode(data));
+  // Adding a previous session on 2025-11-01 (12:00 PDT): DailyConstraint should
+  // recognize that 2025-11-01 12:00 PDT and 2025-11-02 00:30 PDT are on
+  // different calendar days and not skip recording.
+  data.recent_session_start_times = {fall_back_0030, prev_day_noon};
+  EXPECT_FALSE(active_days.ShouldSkipRecording(data));
 
-  // Three days, one week.
-  data = CreateSessionData({base::Days(2), base::Days(4)});
-  EXPECT_FALSE(policy_->ShouldEnableLowUsagePromoMode(data));
-
-  // Two days, two weeks.
-  data = CreateSessionData({base::Days(2), base::Days(8)});
-  EXPECT_FALSE(policy_->ShouldEnableLowUsagePromoMode(data));
+  // Starting another session later on 2025-11-02 (at 10:00 PST) is on the same
+  // calendar day as the 00:30 PDT session, so DailyConstraint should skip
+  // recording.
+  data.recent_session_start_times.insert(
+      data.recent_session_start_times.begin(), fall_back_1000);
+  EXPECT_TRUE(active_days.ShouldSkipRecording(data));
 }
-
-TEST_F(RecentSessionPolicyFinchTest, SwitchToNewThresholds) {
-  Init({{"max_active_weeks", "0"},
-        {"max_active_days", "0"},
-        {"max_monthly_active_days", "0"},
-        {"max_weekly_sessions", "2"},
-        {"max_monthly_sessions", "5"}});
-
-  // Two sessions.
-  auto data = CreateSessionData({base::Days(2)});
-  EXPECT_TRUE(policy_->ShouldEnableLowUsagePromoMode(data));
-
-  // Three sessions, two days.
-  data = CreateSessionData({base::Days(2), base::Days(2) + base::Minutes(5)});
-  EXPECT_FALSE(policy_->ShouldEnableLowUsagePromoMode(data));
-
-  // Three sessions spread over three active weeks.
-  data = CreateSessionData({base::Days(8), base::Days(16)});
-  EXPECT_TRUE(policy_->ShouldEnableLowUsagePromoMode(data));
-
-  // Six sessions in two active weeks.
-  data = CreateSessionData({base::Days(2), base::Days(8), base::Days(9),
-                            base::Days(10), base::Days(11)});
-  EXPECT_FALSE(policy_->ShouldEnableLowUsagePromoMode(data));
-}
-
-TEST_F(RecentSessionPolicyFinchTest, EnableSuperActiveThreshold) {
-  Init({{"max_active_days", "0"},
-        {"max_active_weeks", "0"},
-        {"max_monthly_active_days", "0"},
-        {"super_active_days", "3"},
-        {"max_super_active_weeks", "1"}});
-
-  // Two sessions.
-  auto data = CreateSessionData({base::Days(2)});
-  EXPECT_TRUE(policy_->ShouldEnableLowUsagePromoMode(data));
-
-  // Three sessions, two weeks.
-  data = CreateSessionData({base::Days(2), base::Days(12)});
-  EXPECT_TRUE(policy_->ShouldEnableLowUsagePromoMode(data));
-
-  // Three weeks, one super active week.
-  data = CreateSessionData({base::Days(8), base::Days(9), base::Days(10),
-                            base::Days(11), base::Days(16)});
-  EXPECT_TRUE(policy_->ShouldEnableLowUsagePromoMode(data));
-
-  // Two super active weeks by minimum definition.
-  data = CreateSessionData({base::Days(8), base::Days(9), base::Days(10),
-                            base::Days(15), base::Days(16), base::Days(17)});
-  EXPECT_FALSE(policy_->ShouldEnableLowUsagePromoMode(data));
-}
+#endif  // !BUILDFLAG(IS_WIN)

@@ -86,10 +86,9 @@ void RunNavigationInDefaultBrowser(NavigationHandle* handle) {
 
   // TODO(crbug.com/40830234): Should we set the referrer?
   // TODO(crbug.com/429618748): Rethink the default browser behavior on WML.
-  OpenURLParams params(handle->GetURL(), Referrer(),
-                       WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                       ui::PageTransition::PAGE_TRANSITION_LINK,
-                       /*is_renderer_initiated=*/false);
+  OpenURLParams params = OpenURLParams::CreateBrowserInitiated(
+      handle->GetURL(), WindowOpenDisposition::kNewForegroundTab,
+      ui::PageTransition::PAGE_TRANSITION_LINK);
 
   params.initiator_origin =
       handle->GetWebContents()->GetPrimaryMainFrame()->GetLastCommittedOrigin();
@@ -97,6 +96,9 @@ void RunNavigationInDefaultBrowser(NavigationHandle* handle) {
   GetContentClient()->browser()->OpenURL(handle->GetStartingSiteInstance(),
                                          params, base::DoNothing());
 }
+
+BASE_FEATURE(kBlockCrossIwaMainFrameNavigations,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 }  // namespace
 
@@ -213,6 +215,15 @@ IsolatedWebAppThrottle::MaybeThrottleNavigationTransition(
 
   // Handle main frame navigations.
   if (navigation_handle()->IsInMainFrame()) {
+    // Block renderer-initiated main frame navigations into the app that were
+    // initiated by a non-app frame. This ensures that all main-frame
+    // navigations into the app come from the app itself or from the browser.
+    if (base::FeatureList::IsEnabled(kBlockCrossIwaMainFrameNavigations) &&
+        navigation_handle()->IsRendererInitiated() &&
+        navigation_handle()->GetInitiatorOrigin() != app_origin) {
+      return block_action;
+    }
+
     // If the main frame tries to leave the app's origin, cancel the
     // navigation and open the URL in the systems' default application.
     // Navigations to URLs with custom schemes (say, meow://) initiated by the

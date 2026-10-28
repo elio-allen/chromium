@@ -13,12 +13,13 @@
 #include "base/scoped_observation.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/autofill/test/test_autofill_bubble_handler.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/translate/partial_translate_bubble_model.h"
+#include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/webui/tab_search/tab_search.mojom.h"
 #include "chrome/common/buildflags.h"
 #include "components/user_education/common/new_badge/new_badge_controller.h"
@@ -26,12 +27,13 @@
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
 
 #if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/apps/link_capturing/intent_picker_info.h"
+#include "components/apps/link_capturing/intent_picker_info.h"
 #endif  //  !BUILDFLAG(IS_ANDROID)
 
 class LocationBarTesting;
 class GlobalBrowserCollection;
 class OmniboxView;
+struct BrowserWindowCreateParams;
 
 // WARNING WARNING WARNING WARNING
 // Do not use this class. See docs/chrome_browser_design_principles.md for
@@ -106,6 +108,8 @@ class TestBrowserWindow : public BrowserWindow,
   ui::mojom::WindowShowState GetWindowShowState() const override;
   bool IsFullscreen() const override;
   LocationBar* GetLocationBar() const override;
+  ui::AcceleratorProvider* GetAcceleratorProvider() override;
+  PinnedToolbarActions* GetPinnedToolbarActions() override;
   autofill::AutofillBubbleHandler* GetAutofillBubbleHandler() override;
   void SetFocusToLocationBar(bool is_user_initiated) override {}
   void UpdateReloadStopState(bool is_loading, bool force) override {}
@@ -170,8 +174,6 @@ class TestBrowserWindow : public BrowserWindow,
   web_modal::WebContentsModalDialogHost* GetWebContentsModalDialogHostFor(
       content::WebContents* web_contents) override;
   void ShowAvatarBubbleFromAvatarButton(bool is_source_keyboard) override {}
-  void MaybeShowProfileSwitchIPH() override {}
-  void MaybeShowSupervisedUserProfileSignInIPH() override {}
 
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || \
     BUILDFLAG(IS_LINUX)
@@ -280,12 +282,12 @@ class TestBrowserWindow : public BrowserWindow,
 
   base::ScopedObservation<GlobalBrowserCollection, BrowserCollectionObserver>
       browser_collection_observation_{this};
-  raw_ptr<Browser> browser_;
+  raw_ptr<BrowserWindowInterface> browser_;
   base::OnceClosure close_callback_;
 };
 
 // Helper that handle the lifetime of TestBrowserWindow instances.
-std::unique_ptr<Browser> CreateBrowserWithTestWindowForParams(
-    Browser::CreateParams params);
+std::unique_ptr<BrowserWindowInterface> CreateBrowserWithTestWindowForParams(
+    BrowserWindowCreateParams params);
 
 #endif  // CHROME_TEST_BASE_TEST_BROWSER_WINDOW_H_

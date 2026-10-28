@@ -27,10 +27,11 @@
 #include "chrome/browser/profiles/profile_test_util.h"
 #include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/browser/shell_integration_win.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/web_applications/extensions/launch.h"
 #include "chrome/browser/web_applications/os_integration/web_app_shortcut.h"
@@ -44,6 +45,7 @@
 #include "content/public/test/test_utils.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/views/win/hwnd_util.h"
 
 typedef extensions::ExtensionBrowserTest BrowserWindowPropertyManagerTest;
@@ -57,7 +59,7 @@ std::wstring AddIdToIconPath(const std::wstring& path) {
 // Checks that the relaunch name, relaunch command and app icon for the given
 // |browser| are correct.
 void ValidateBrowserWindowProperties(
-    const Browser* browser,
+    const BrowserWindowInterface* browser,
     const std::u16string& expected_profile_name) {
   // Let shortcut creation finish before we validate the results.
   content::RunAllTasksUntilIdle();
@@ -193,7 +195,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTestWithProfileShortcutManager,
       base::UTF8ToUTF16(browser()->GetProfile()->GetProfileUserName()));
 
   // The second profile's name should be part of the relaunch name.
-  Browser* profile2_browser =
+  BrowserWindowInterface* profile2_browser =
       CreateBrowser(profile_manager->GetProfileByPath(path_profile2));
   ProfileAttributesEntry* entry =
       profile_manager->GetProfileAttributesStorage()
@@ -213,7 +215,7 @@ IN_PROC_BROWSER_TEST_F(BrowserWindowPropertyManagerTest, DISABLED_HostedApp) {
       browser()->GetProfile(),
       apps::AppLaunchParams(extension->id(),
                             apps::LaunchContainer::kLaunchContainerWindow,
-                            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                            WindowOpenDisposition::kNewForegroundTab,
                             apps::LaunchSource::kFromTest),
       base::IgnoreArgs<content::WebContents*>(done.QuitClosure()));
   done.Run();
@@ -235,12 +237,13 @@ IN_PROC_BROWSER_TEST_F(BrowserWindowPropertyManagerTest, DISABLED_HostedApp) {
 IN_PROC_BROWSER_TEST_F(BrowserWindowPropertyManagerTest,
                        PictureInPictureWithAppName) {
   std::string app_name = "TestAppName";
-  Browser::CreateParams params =
-      Browser::CreateParams::CreateForPictureInPicture(
-          app_name, true, browser()->GetProfile(), true);
-  Browser* pip_browser = Browser::Create(params);
+  BrowserWindowCreateParams params =
+      BrowserWindowCreateParams::CreateForPictureInPicture(
+          app_name, /*trusted_source=*/true, browser()->GetProfile(),
+          /*user_gesture=*/true);
+  BrowserWindowInterface* pip_browser = CreateBrowserWindow(std::move(params));
   ASSERT_EQ(pip_browser->GetType(),
-            BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE);
+            BrowserWindowInterface::Type::TYPE_FLOATING);
   ASSERT_EQ(app_name,
             BrowserInitState::From(pip_browser)->create_params().app_name);
 
@@ -266,12 +269,13 @@ IN_PROC_BROWSER_TEST_F(BrowserWindowPropertyManagerTest,
 
 IN_PROC_BROWSER_TEST_F(BrowserWindowPropertyManagerTest,
                        PictureInPictureWithoutAppName) {
-  Browser::CreateParams params =
-      Browser::CreateParams::CreateForPictureInPicture(
-          "", true, browser()->GetProfile(), true);
-  Browser* pip_browser = Browser::Create(params);
+  BrowserWindowCreateParams params =
+      BrowserWindowCreateParams::CreateForPictureInPicture(
+          "", /*trusted_source=*/true, browser()->GetProfile(),
+          /*user_gesture=*/true);
+  BrowserWindowInterface* pip_browser = CreateBrowserWindow(std::move(params));
   ASSERT_EQ(pip_browser->GetType(),
-            BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE);
+            BrowserWindowInterface::Type::TYPE_FLOATING);
   ASSERT_TRUE(
       BrowserInitState::From(pip_browser)->create_params().app_name.empty());
 

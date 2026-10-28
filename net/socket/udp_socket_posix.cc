@@ -26,9 +26,6 @@
 #include <memory>
 #include <vector>
 
-#include "base/debug/alias.h"
-#include "base/debug/crash_logging.h"
-#include "base/debug/dump_without_crashing.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -306,6 +303,13 @@ void RecordGroPacketsRead(size_t packet_count) {
   }
 }
 
+void RecordRecvMmsgPacketsRead(size_t packet_count) {
+  if (base::ShouldRecordSubsampledMetric(0.01)) {
+    base::UmaHistogramCounts100("Net.UDPSocketPosix.RecvMmsgPacketsRead",
+                                base::checked_cast<int>(packet_count));
+  }
+}
+
 }  // namespace
 #endif
 
@@ -393,39 +397,11 @@ void UDPSocketPosix::Close() {
   // See the comment in ConfigureOpenedSocket(), above, for information about
   // guarded_close_np().
   if (IGNORE_EINTR(guarded_close_np(socket_, &guardid)) != 0) {
-    // There is a bug in the Mac OS kernel that it can return an ENOTCONN or
-    // EPROTOTYPE error. In this case we don't know whether the file descriptor
-    // is still allocated or not. We cannot safely close the file descriptor
-    // because it may have been reused by another thread in the meantime. We may
-    // leak file handles here and cause a crash indirectly later. See
-    // https://crbug.com/40732798.
-
-    // Temporary workaround to investigate EINVAL return values.
-    // TODO(https://crbug.com/437414746): Remove this or update it once we have
-    // information.
-    if (errno == EINVAL) {
-      int fdflags = 0;
-      // This call should be a successful no-op. If it fails, we know the state
-      // of the filehandle is not what we're expecting.
-      const int retval = HANDLE_EINTR(
-          change_fdguard_np(socket_, &guardid, GUARD_CLOSE | GUARD_DUP,
-                            &guardid, GUARD_CLOSE | GUARD_DUP, &fdflags));
-      // We have seen the case
-      //   retval == -1
-      //   errno == EBADF
-      //   fdflags == 0
-      // many times and we don't need any more dumps for it. Only gather dumps
-      // for novel cases.
-      if (retval != -1 || errno != EBADF || fdflags != 0) {
-        SCOPED_CRASH_KEY_NUMBER("UdpSocketPosix", "change_fdguard_retval",
-                                retval);
-        SCOPED_CRASH_KEY_NUMBER("UdpSocketPosix", "change_fdguard_errno",
-                                errno);
-        SCOPED_CRASH_KEY_NUMBER("UdpSocketPosix", "change_fdguard_fdflags",
-                                fdflags);
-        base::debug::DumpWithoutCrashing();
-      }
-    } else if (errno != ENOTCONN && errno != EPROTOTYPE) {
+    // There is a bug in the macOS kernel that it can return an ENOTCONN,
+    // EPROTOTYPE, or EINVAL error from soclose_locked() after
+    // fp_close_and_unlock() has already closed and freed the file descriptor.
+    // See https://crbug.com/40732798 and https://crbug.com/437414746.
+    if (errno != ENOTCONN && errno != EPROTOTYPE && errno != EINVAL) {
       PLOG(FATAL) << "Unexpected errno from guarded_close_np";
     }
   }
@@ -674,11 +650,15 @@ int UDPSocketPosix::InternalConnect(const IPEndPoint& address) {
   DCHECK(!is_connected());
   DCHECK(!remote_address_.get());
 
+  IPEndPoint target_address =
+      handles::MaybeTranslateEmulatedNetworkAddressForTesting(address,
+                                                              bound_network_);
+
   int rv = 0;
   if (bind_type_ == DatagramSocket::RANDOM_BIND) {
     // Construct IPAddress of appropriate size (IPv4 or IPv6) of 0s,
     // representing INADDR_ANY or in6addr_any.
-    size_t addr_size = address.GetSockAddrFamily() == AF_INET
+    size_t addr_size = target_address.GetSockAddrFamily() == AF_INET
                            ? IPAddress::kIPv4AddressSize
                            : IPAddress::kIPv6AddressSize;
     rv = RandomBind(IPAddress::AllZeros(addr_size));
@@ -690,7 +670,7 @@ int UDPSocketPosix::InternalConnect(const IPEndPoint& address) {
   }
 
   SockaddrStorage storage;
-  if (!address.ToSockAddr(storage.addr(), &storage.addr_len)) {
+  if (!target_address.ToSockAddr(storage.addr(), &storage.addr_len)) {
     return ERR_ADDRESS_INVALID;
   }
 
@@ -698,7 +678,7 @@ int UDPSocketPosix::InternalConnect(const IPEndPoint& address) {
   if (rv < 0)
     return MapSystemError(errno);
 
-  remote_address_ = std::make_unique<IPEndPoint>(address);
+  remote_address_ = std::make_unique<IPEndPoint>(target_address);
   return rv;
 }
 
@@ -726,8 +706,9 @@ int UDPSocketPosix::BindToNetwork(handles::NetworkHandle network) {
   DCHECK(!is_connected());
 #if BUILDFLAG(IS_ANDROID)
   int rv = net::android::BindToNetwork(socket_, network);
-  if (rv == OK)
+  if (rv == OK) {
     bound_network_ = network;
+  }
   return rv;
 #else
   NOTIMPLEMENTED();
@@ -1261,6 +1242,7 @@ base::expected<DatagramsMetadata, Error> UDPSocketPosix::ProcessRecvMmsgResults(
     datagrams.push_back(DatagramMetadata{
         .offset = i * maximum_packet_size, .length = msg_len, .tos = msg_tos});
   }
+  RecordRecvMmsgPacketsRead(datagrams.size());
   return datagrams;
 }
 
@@ -1422,7 +1404,10 @@ int UDPSocketPosix::InternalSendTo(IOBuffer* buf,
     addr = nullptr;
     storage.addr_len = 0;
   } else {
-    if (!address->ToSockAddr(storage.addr(), &storage.addr_len)) {
+    IPEndPoint target_address =
+        handles::MaybeTranslateEmulatedNetworkAddressForTesting(*address,
+                                                                bound_network_);
+    if (!target_address.ToSockAddr(storage.addr(), &storage.addr_len)) {
       int result = ERR_ADDRESS_INVALID;
       LogWrite(result, nullptr, nullptr);
       return result;

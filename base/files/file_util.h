@@ -162,6 +162,18 @@ BASE_EXPORT bool PreventExecuteMappingUnchecked(
 BASE_EXPORT void SetExtraNoExecuteAllowedPath(int path_key);
 #endif  // BUILDFLAG(IS_WIN)
 
+#if BUILDFLAG(IS_MAC)
+enum class DarwinUserDirectory {
+  kUser,
+  kUserCache,
+  kUserTemp,
+};
+
+// Returns the canonicalized path of a Darwin user directory, or empty FilePath
+// on failure.
+BASE_EXPORT FilePath GetDarwinUserDirectory(DarwinUserDirectory directory);
+#endif  // BUILDFLAG(IS_MAC)
+
 // Moves the given path, whether it's a file or a directory.
 // If a simple rename is not possible, such as in the case where the paths are
 // on different volumes, this will attempt to copy and delete. Returns
@@ -220,11 +232,15 @@ BASE_EXPORT bool CopyDirectory(const FilePath& from_path,
                                const FilePath& to_path,
                                bool recursive);
 
-// Like CopyDirectory() except trying to overwrite an existing file will not
-// work and will return false.
-BASE_EXPORT bool CopyDirectoryExcl(const FilePath& from_path,
-                                   const FilePath& to_path,
-                                   bool recursive);
+#if BUILDFLAG(IS_POSIX)
+// Same as `CopyDirectory()` above, except returns false when symlinks and
+// non-regular files are encountered. Directory traversal is performed using
+// file descriptors with `O_NOFOLLOW` to prevent TOCTOU symlink traversal
+// attacks.
+BASE_EXPORT bool CopyDirectoryNoFollow(const FilePath& from_path,
+                                       const FilePath& to_path,
+                                       bool recursive);
+#endif  // BUILDFLAG(IS_POSIX)
 
 // Returns true if the given path exists on the local filesystem,
 // false otherwise.
@@ -445,6 +461,15 @@ BASE_EXPORT File CreateAndOpenTemporaryFileInDirWithFlags(
 // nullopt for files with an empty prefix.
 BASE_EXPORT std::optional<FilePath::StringType> GetNamePrefixForTemporaryFile(
     const FilePath& temp_file);
+
+// Enumerates temporary files (as produced by CreateAndOpenTemporaryFileInDir())
+// directly under `dir` (non-recursive) and returns the path of the most
+// recently modified file whose inferred name prefix (see
+// GetNamePrefixForTemporaryFile()) equals `name_prefix`. Returns nullopt if no
+// matching file is found.
+BASE_EXPORT std::optional<FilePath> GetLatestTemporaryFileWithNamePrefix(
+    const FilePath& dir,
+    FilePath::StringViewType name_prefix);
 
 // Creates a temporary file. The full path is placed in `path`, and the
 // function returns true if was successful in creating the file. The file will
@@ -802,7 +827,6 @@ BASE_EXPORT std::optional<std::string> CopyFileToDownloadsCollection(
 
 #endif
 
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 // Returns whether the specified file name is a reserved name on Windows.
 // This includes names like "com2.zip" (which correspond to devices) and
 // desktop.ini and thumbs.db which have special meaning to the Windows shell.
@@ -810,7 +834,6 @@ BASE_EXPORT std::optional<std::string> CopyFileToDownloadsCollection(
 // reserved on Windows.
 BASE_EXPORT bool IsReservedNameOnWindows(
     const base::FilePath::StringType& filename);
-#endif
 
 // Internal --------------------------------------------------------------------
 

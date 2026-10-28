@@ -11,18 +11,45 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_main_delegate.h"
+#include "chrome/app/llvm_profile_util.h"
+#include "chrome/common/chrome_constants.h"
+#include "components/crash/core/common/crash_key.h"
 #include "content/public/app/content_main.h"
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
 
+#include <timeapi.h>
+
+#include <string>
+
+#include "base/base_paths.h"
+#include "base/check.h"
 #include "base/dcheck_is_on.h"
+#include "base/debug/dump_without_crashing.h"
 #include "base/debug/handle_hooks_win.h"
+#include "base/files/file_path.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
+#include "base/not_fatal_until.h"
+#include "base/path_service.h"
 #include "base/win/current_module.h"
+#include "base/win/win_util.h"
 #include "chrome/app/startup_timestamps.h"
+#include "chrome/chrome_elf/chrome_elf_main.h"
+#include "chrome/common/chrome_switches.h"
+#include "chrome/install_static/get_primary_module_path.h"
 #include "chrome/install_static/initialize_from_primary_module.h"
+#include "chrome/install_static/install_details.h"
+#include "content/public/common/content_switches.h"
 #define DLLEXPORT __declspec(dllexport)
 #endif
+
+namespace {
+
+constexpr char kChildModuleVersionCrashKey[] = "child-module-version";
+
+}  // namespace
 
 extern "C" {
 
@@ -33,7 +60,11 @@ DLLEXPORT int __cdecl ChromeRendererMain(
     int64_t exe_entry_point_ticks,
     int64_t preread_begin_ticks,
     int64_t preread_end_ticks) {
+  SetLLVMProfileProcessType(ProfileProcessType::kRenderer);
   install_static::InitializeFromPrimaryModule();
+  static crash_reporter::CrashKeyString<32> child_module_version(
+      kChildModuleVersionCrashKey);
+  child_module_version.Set(chrome::kChromeVersion);
 
 #if !defined(COMPONENT_BUILD) && DCHECK_IS_ON()
   // Patch the main EXE on non-component builds when DCHECKs are enabled.
@@ -51,14 +82,72 @@ DLLEXPORT int __cdecl ChromeRendererMain(
       base::TimeTicks() + base::Microseconds(preread_end_ticks)};
   ChromeMainDelegate chrome_main_delegate(timestamps);
   content::ContentMainParams params(&chrome_main_delegate);
+
+  // The process should crash when going through abnormal termination, but we
+  // must be sure to reset this setting when ChromeRendererMain returns
+  // normally.
+  auto crash_on_detach_resetter = base::ScopedClosureRunner(
+      base::BindOnce(&base::win::SetShouldCrashOnProcessDetach,
+                     base::win::ShouldCrashOnProcessDetach()));
+  base::win::SetShouldCrashOnProcessDetach(true);
+  base::win::SetAbortBehaviorForCrashReporting();
   params.instance = instance;
   params.sandbox_info = sandbox_info;
+
+  // Pass chrome_elf's copy of DumpProcessWithoutCrash resolved via load-time
+  // dynamic linking.
+  base::debug::SetDumpWithoutCrashingFunction(&DumpProcessWithoutCrash);
+
+  base::CommandLine::Init(0, nullptr);
+
+  // Verify that chrome_elf and this module (chrome_renderer.dll) have the same
+  // version, or match the expected patched module version when dynamically
+  // patched.
+  const std::string expected_version =
+      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+          switches::kChildModuleVersion);
+  if (!expected_version.empty()) {
+    CHECK(!install_static::InstallDetails::Get().VersionMismatch(
+        expected_version));
+
+    // When dynamically patched, chrome_renderer.dll is loaded from a child
+    // module subdirectory, so DIR_MODULE (the default for DIR_ASSETS) points
+    // there instead of the base browser directory where shared assets
+    // (icudtl.dat, .pak files, locales) reside. Point DIR_ASSETS to the
+    // directory containing the primary module (chrome_elf.dll), which is the
+    // base version directory (or the build output directory in developer
+    // builds).
+    const base::FilePath primary_module_path =
+        install_static::GetPrimaryModulePath();
+    const bool is_valid_primary_module_path =
+        !primary_module_path.empty() && primary_module_path.IsAbsolute();
+    CHECK(is_valid_primary_module_path, base::NotFatalUntil::M161);
+    if (is_valid_primary_module_path) {
+      base::PathService::OverrideAndCreateIfNeeded(
+          base::DIR_ASSETS, primary_module_path.DirName(),
+          /*is_absolute=*/true, /*create=*/false);
+    }
+  } else if (install_static::InstallDetails::Get().VersionMismatch()) {
+    base::debug::DumpWithoutCrashing();
+  }
+
   base::PoissonAllocationSampler::Init();
+
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          ::switches::kRaiseTimerFrequency)) {
+    // Raise the timer interrupt frequency and leave it raised.
+    timeBeginPeriod(1);
+  }
+
   return content::ContentMain(std::move(params));
 }
 #elif BUILDFLAG(IS_POSIX)
 [[gnu::visibility("default")]] int ChromeRendererMain(int argc,
                                                       const char** argv) {
+  SetLLVMProfileProcessType(ProfileProcessType::kRenderer);
+  static crash_reporter::CrashKeyString<32> child_module_version(
+      kChildModuleVersionCrashKey);
+  child_module_version.Set(chrome::kChromeVersion);
   ChromeMainDelegate chrome_main_delegate(
       {.exe_entry_point_ticks = base::TimeTicks::Now()});
   content::ContentMainParams params(&chrome_main_delegate);

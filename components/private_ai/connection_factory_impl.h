@@ -14,11 +14,10 @@
 #include "components/private_ai/private_ai_network_driver.h"
 #include "components/private_ai/private_ai_oak_session_driver.h"
 #include "components/private_ai/secure_channel.h"
+#include "components/private_ai/tls_certificate_repository.h"
+#include "components/version_info/channel.h"
+#include "services/network/public/cpp/network_context_getter.h"
 #include "url/gurl.h"
-
-namespace network::mojom {
-class NetworkContext;
-}  // namespace network::mojom
 
 namespace private_ai {
 
@@ -34,10 +33,11 @@ class ConnectionFactoryImpl : public ConnectionFactory {
       base::RepeatingCallback<std::unique_ptr<SecureChannel::Factory>()>;
 
   ConnectionFactoryImpl(const GURL& url,
-                        network::mojom::NetworkContext* network_context,
+                        network::NetworkContextGetter network_context_getter,
                         PrivateAiLogger* logger,
                         PrivateAiOakSessionDriver* oak_session_driver,
-                        PrivateAiNetworkDriver* network_driver);
+                        PrivateAiNetworkDriver* network_driver,
+                        version_info::Channel channel);
   ~ConnectionFactoryImpl() override;
 
   ConnectionFactoryImpl(const ConnectionFactoryImpl&) = delete;
@@ -51,22 +51,32 @@ class ConnectionFactoryImpl : public ConnectionFactory {
     secure_channel_override_ = std::move(override);
   }
 
+  void SetTlsCertificateRepositoryForTesting(
+      std::unique_ptr<TlsCertificateRepository> cert_repository) {
+    cert_repository_ = std::move(cert_repository);
+  }
+
   // ConnectionFactory override:
   std::unique_ptr<Connection> Create(
       proto::FeatureName feature_name,
       base::RepeatingCallback<void(StatusCode)> on_disconnect) override;
 
  private:
+  TlsCertificateRepository* GetOrCreateCertRepository();
+
   const GURL url_;
-  const raw_ptr<network::mojom::NetworkContext> network_context_;
+  const network::NetworkContextGetter network_context_getter_;
   const raw_ptr<PrivateAiLogger> logger_;
   const raw_ptr<PrivateAiOakSessionDriver> oak_session_driver_;
   const raw_ptr<PrivateAiNetworkDriver> network_driver_;
+  const version_info::Channel channel_;
 
   SecureChannelFactoryOverride secure_channel_override_;
 
   raw_ptr<phosphor::TokenManager> token_manager_ = nullptr;
   GURL proxy_url_;
+
+  std::unique_ptr<TlsCertificateRepository> cert_repository_;
 };
 
 }  // namespace private_ai

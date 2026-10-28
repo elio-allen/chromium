@@ -21,14 +21,12 @@
 #include "base/values.h"
 #include "base/version.h"
 #include "build/build_config.h"
+#include "components/enterprise/isolated_mode/prefs.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
-#include "components/supervised_user/core/browser/family_link_settings_service.h"
-#include "components/supervised_user/core/browser/family_link_url_filter.h"
 #include "components/supervised_user/core/browser/permission_request_creator_impl.h"
 #include "components/supervised_user/core/browser/supervised_user_preferences.h"
-#include "components/supervised_user/core/browser/supervised_user_service_observer.h"
 #include "components/supervised_user/core/browser/supervised_user_utils.h"
 #include "components/supervised_user/core/common/features.h"
 #include "components/supervised_user/core/common/pref_names.h"
@@ -82,10 +80,6 @@ SupervisedUserService::~SupervisedUserService() {
   DCHECK(did_shutdown_);
 }
 
-FamilyLinkUrlFilter* SupervisedUserService::GetURLFilter() const {
-  return url_filter_.get();
-}
-
 std::optional<Custodian> SupervisedUserService::GetCustodian() const {
   return GetCustodianFromPrefs(user_prefs_.get(),
                                prefs::kSupervisedUserCustodianEmail,
@@ -102,38 +96,20 @@ std::optional<Custodian> SupervisedUserService::GetSecondCustodian() const {
       prefs::kSupervisedUserSecondCustodianProfileImageURL);
 }
 
-void SupervisedUserService::AddObserver(
-    SupervisedUserServiceObserver* observer) {
-  observer_list_.AddObserver(observer);
-}
-
-void SupervisedUserService::RemoveObserver(
-    SupervisedUserServiceObserver* observer) {
-  observer_list_.RemoveObserver(observer);
-}
-
 // Note: unretained is safe, because the utility that binds callbacks is owned
 // by this instance.
 SupervisedUserService::SupervisedUserService(
     signin::IdentityManager* identity_manager,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     PrefService& user_prefs,
-    FamilyLinkSettingsService& settings_service,
-    std::unique_ptr<FamilyLinkUrlFilter> url_filter,
     std::unique_ptr<SupervisedUserService::PlatformDelegate> platform_delegate,
     const DeviceParentalControls& device_parental_controls)
     : user_prefs_(user_prefs),
-      settings_service_(settings_service),
       identity_manager_(identity_manager),
       url_loader_factory_(url_loader_factory),
-      url_filter_(std::move(url_filter)),
       platform_delegate_(std::move(platform_delegate)),
       // From here, the callbacks and observers can be added.
       device_parental_controls_(device_parental_controls) {
-  CHECK(settings_service_->IsReady())
-      << "Settings service is initialized as part of the PrefService, which is "
-         "a dependency of this service.";
-
   main_pref_change_registrar_.Init(&user_prefs_.get());
   main_pref_change_registrar_.Add(
       prefs::kSupervisedUserId,
@@ -144,12 +120,13 @@ SupervisedUserService::SupervisedUserService(
       base::BindRepeating(
           &SupervisedUserService::OnIncognitoModeAvailabilityChanged,
           base::Unretained(this)));
+  main_pref_change_registrar_.Add(
+      enterprise_isolated_mode::kEnterpriseIsolatedModeSettings,
+      base::BindRepeating(
+          &SupervisedUserService::OnIncognitoModeAvailabilityChanged,
+          base::Unretained(this)));
 
   OnSupervisedUserIdChanged();
-}
-
-void SupervisedUserService::SetSettingsServiceActive(bool active) {
-  settings_service_->SetActive(active);
 }
 
 void SupervisedUserService::OnSupervisedUserIdChanged() {
@@ -161,40 +138,13 @@ void SupervisedUserService::OnSupervisedUserIdChanged() {
 }
 
 void SupervisedUserService::OnFamilyLinkParentalControlsEnabled() {
-  // Also disables incognito mode.
-  SetSettingsServiceActive(true);
   remote_web_approvals_manager_.AddApprovalRequestCreator(
       std::make_unique<PermissionRequestCreatorImpl>(identity_manager_,
                                                      url_loader_factory_));
-
-  // Add handlers at the end to avoid multiple notifications (eg. web filtering
-  // consists of multiple prefs changing at once but producing separate
-  // notifications).
-  AddCustodianPrefChangeHandlers();
 }
 
 void SupervisedUserService::OnFamilyLinkParentalControlsDisabled() {
-  // Start with removing handlers, to avoid multiple notifications from pref
-  // status changes from the settings service.
-  RemoveCustodianPrefChangeHandlers();
-
-  // All disabling operations are idempotent.
-  SetSettingsServiceActive(false);
   remote_web_approvals_manager_.ClearApprovalRequestsCreators();
-}
-
-void SupervisedUserService::AddCustodianPrefChangeHandlers() {
-  custodian_pref_change_registrar_.Init(&user_prefs_.get());
-  for (const auto* const pref : kCustodianInfoPrefs) {
-    custodian_pref_change_registrar_.Add(
-        pref,
-        base::BindRepeating(&SupervisedUserService::OnCustodianInfoChanged,
-                            base::Unretained(this)));
-  }
-}
-
-void SupervisedUserService::RemoveCustodianPrefChangeHandlers() {
-  custodian_pref_change_registrar_.RemoveAll();
 }
 
 void SupervisedUserService::OnIncognitoModeAvailabilityChanged() {
@@ -205,10 +155,6 @@ void SupervisedUserService::OnIncognitoModeAvailabilityChanged() {
   }
 }
 
-void SupervisedUserService::OnCustodianInfoChanged() {
-  observer_list_.Notify(&SupervisedUserServiceObserver::OnCustodianInfoChanged);
-}
-
 void SupervisedUserService::Shutdown() {
   DCHECK(!did_shutdown_);
   did_shutdown_ = true;
@@ -216,14 +162,5 @@ void SupervisedUserService::Shutdown() {
   if (IsSubjectToParentalControls(user_prefs_.get())) {
     base::RecordAction(UserMetricsAction("ManagedUsers_QuitBrowser"));
   }
-
-  CHECK(settings_service_->IsReady())
-      << "This service depends on the settings service, which will be shut "
-         "down in its own procedure";
-  // Note: we can't shut down the settings service here, because it could put
-  // the system in incorrect state: supervision is enabled, but artificially
-  // deactivated settings service had also reset the filter to defaults (that
-  // allow all url classifications). On the other hand, if supervision is
-  // disabled, then the settings service is already inactive.
 }
 }  // namespace supervised_user

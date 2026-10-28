@@ -8,11 +8,7 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsProperties.FRAGMENT_TITLE;
 import static org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsProperties.ON_AUTOFILL_AI_REAUTH_SETTING_TOGGLED;
 import static org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsProperties.ON_AUTOFILL_AI_SETTING_TOGGLED;
-import static org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsProperties.ON_MANAGE_CONNECTED_APPS_CLICKED;
-import static org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsProperties.ON_PERSONAL_CONTEXT_TOGGLE_CHANGED;
 import static org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsProperties.ON_THIRD_PARTY_TOGGLE_CHANGED;
-import static org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsProperties.PERSONAL_CONTEXT_ENABLED;
-import static org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsProperties.PERSONAL_CONTEXT_VISIBLE;
 import static org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsProperties.THIRD_PARTY_AUTOFILL_ENABLED;
 import static org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsProperties.THIRD_PARTY_TOGGLE_HINT;
 import static org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsProperties.THIRD_PARTY_TOGGLE_IS_READ_ONLY;
@@ -30,7 +26,6 @@ import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.IntentUtils;
 import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -39,15 +34,15 @@ import org.chromium.chrome.browser.autofill.AutofillClientProviderUtils;
 import org.chromium.chrome.browser.autofill.R;
 import org.chromium.chrome.browser.autofill.autofill_ai.EntityDataManager;
 import org.chromium.chrome.browser.autofill.autofill_ai.EntityDataManagerFactory;
-import org.chromium.chrome.browser.autofill.settings.personal_context.AutofillPersonalContextFragment;
 import org.chromium.chrome.browser.device_reauth.BiometricStatus;
+import org.chromium.chrome.browser.device_reauth.DeviceAuthAvailabilityCheckerBridge;
 import org.chromium.chrome.browser.device_reauth.DeviceAuthSource;
 import org.chromium.chrome.browser.device_reauth.ReauthenticatorBridge;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.profiles.ProfileManagerUtils;
 import org.chromium.components.autofill.autofill_ai.AutofillAiOptInStatus;
-import org.chromium.components.browser_ui.settings.SettingsCustomTabLauncher;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
@@ -83,23 +78,21 @@ public class AutofillOptionsMediator implements ModalDialogProperties.Controller
     private final Runnable mRestartRunnable;
     private final Supplier<@Nullable ModalDialogManager> mModalDialogManagerSupplier;
     private final Supplier<PropertyModel> mRestartConfirmationDialogModelSupplier;
-    private final SettingsCustomTabLauncher mCustomTabLauncher;
     private PropertyModel mModel;
     private Context mContext;
     private Activity mActivity;
     private @Nullable ReauthenticatorBridge mReauthenticatorBridge;
+    private boolean mIsRestartConfirmationShown;
 
     AutofillOptionsMediator(
             Profile profile,
             Supplier<@Nullable ModalDialogManager> modalDialogManagerSupplier,
             Supplier<PropertyModel> restartConfirmationDialogModelSupplier,
-            Runnable restartRunnable,
-            SettingsCustomTabLauncher customTabLauncher) {
+            Runnable restartRunnable) {
         mProfile = profile;
         mModalDialogManagerSupplier = modalDialogManagerSupplier;
         mRestartConfirmationDialogModelSupplier = restartConfirmationDialogModelSupplier;
         mRestartRunnable = restartRunnable;
-        mCustomTabLauncher = customTabLauncher;
     }
 
     // ModalDialogProperties.Controller:
@@ -125,6 +118,7 @@ public class AutofillOptionsMediator implements ModalDialogProperties.Controller
     // ModalDialogProperties.Controller:
     @Override
     public void onDismiss(PropertyModel restartConfirmationModel, int dismissalCause) {
+        mIsRestartConfirmationShown = false;
         updateToggleStateFromPref(); // Radio buttons always change. Reset them to match the prefs.
     }
 
@@ -140,10 +134,6 @@ public class AutofillOptionsMediator implements ModalDialogProperties.Controller
                         .with(
                                 ON_AUTOFILL_AI_REAUTH_SETTING_TOGGLED,
                                 this::onAutofillAiReauthSettingToggled)
-                        .with(
-                                ON_PERSONAL_CONTEXT_TOGGLE_CHANGED,
-                                this::onPersonalContextToggleStatusChanged)
-                        .with(ON_MANAGE_CONNECTED_APPS_CLICKED, this::onManageConnectedAppsClicked)
                         .build();
         updateToggleStateFromPref();
         mModel.set(AutofillOptionsProperties.AUTOFILL_AI_VISIBLE, isAutofillAiVisible(referrer));
@@ -154,8 +144,6 @@ public class AutofillOptionsMediator implements ModalDialogProperties.Controller
                 isAutofillAiReauthToggleVisible(referrer));
         mModel.set(AutofillOptionsProperties.AUTOFILL_AI_SETTING_ON, isAutofillAiOn());
         mModel.set(AutofillOptionsProperties.AUTOFILL_AI_REAUTH_SETTING_ON, isAutofillAiReauthOn());
-        mModel.set(PERSONAL_CONTEXT_ENABLED, isPersonalContextOn());
-        mModel.set(PERSONAL_CONTEXT_VISIBLE, isPersonalContextVisible());
         RecordHistogram.recordEnumeratedHistogram(
                 HISTOGRAM_REFERRER, referrer, AutofillOptionsReferrer.MAX_VALUE + 1);
     }
@@ -211,17 +199,15 @@ public class AutofillOptionsMediator implements ModalDialogProperties.Controller
     }
 
     private boolean isEligibleToAutofillAi() {
-        @Nullable EntityDataManager manager = EntityDataManagerFactory.getForProfile(mProfile);
+        EntityDataManager manager = EntityDataManagerFactory.getForProfile(mProfile);
         return isAutofillAiEnabled()
-                && manager != null
                 && manager.isEligibleToAutofillAi()
                 && !prefs().getBoolean(Pref.AUTOFILL_USING_PLATFORM_AUTOFILL);
     }
 
     private boolean isAutofillAiOn() {
-        @Nullable EntityDataManager manager = EntityDataManagerFactory.getForProfile(mProfile);
+        EntityDataManager manager = EntityDataManagerFactory.getForProfile(mProfile);
         return isAutofillAiEnabled()
-                && manager != null
                 && manager.getAutofillAiOptInStatus()
                 && isEligibleToAutofillAi();
     }
@@ -229,43 +215,22 @@ public class AutofillOptionsMediator implements ModalDialogProperties.Controller
     private void onAutofillAiSettingToggled(boolean isOn) {
         @AutofillAiOptInStatus
         int optInStatus = isOn ? AutofillAiOptInStatus.OPTED_IN : AutofillAiOptInStatus.OPTED_OUT;
-        @Nullable EntityDataManager manager = EntityDataManagerFactory.getForProfile(mProfile);
-        if (manager == null || !manager.setAutofillAiOptInStatus(optInStatus)) {
+        EntityDataManager manager = EntityDataManagerFactory.getForProfile(mProfile);
+        if (!manager.setAutofillAiOptInStatus(optInStatus)) {
             // If failed to set, reset the switch to match current status.
             mModel.set(AutofillOptionsProperties.AUTOFILL_AI_SETTING_ON, isAutofillAiOn());
         }
     }
 
-    private boolean isPersonalContextOn() {
-        EntityDataManager manager = EntityDataManagerFactory.getForProfile(mProfile);
-        return manager != null && manager.isPersonalContextEnabled();
-    }
-
-    private void onPersonalContextToggleStatusChanged(boolean enabled) {
-        EntityDataManager manager = EntityDataManagerFactory.getForProfile(mProfile);
-        if (manager != null) {
-            manager.setPersonalContextEnabled(enabled);
-        }
-        // TODO(crbug.com/533372805): The toggle should not change its state if manager is null.
-        mModel.set(PERSONAL_CONTEXT_ENABLED, enabled);
-        RecordUserAction.record(
-                enabled
-                        ? AutofillPersonalContextFragment.ACTION_TOGGLED_ON
-                        : AutofillPersonalContextFragment.ACTION_TOGGLED_OFF);
-    }
-
-    private void onManageConnectedAppsClicked() {
-        mCustomTabLauncher.openUrlInCct(
-                mContext, EntityDataManager.getPersonalContextManageConnectedAppsUrl());
-        RecordUserAction.record(AutofillPersonalContextFragment.ACTION_MANAGE_CONNECTED_APPS);
-    }
-
-    private boolean isPersonalContextVisible() {
-        return AutofillOptionsFragment.shouldShowPersonalContext(mProfile);
-    }
-
     private boolean isAutofillAiReauthOn() {
         return prefs().getBoolean(Pref.AUTOFILL_AI_REAUTH_BEFORE_VIEWING_SENSITIVE_DATA);
+    }
+
+    private void createReauthenticatorBridge() {
+        if (mReauthenticatorBridge == null) {
+            mReauthenticatorBridge =
+                    ReauthenticatorBridge.create(mActivity, mProfile, DeviceAuthSource.AUTOFILL);
+        }
     }
 
     private void onAutofillAiReauthSettingToggled(boolean isOn) {
@@ -273,13 +238,15 @@ public class AutofillOptionsMediator implements ModalDialogProperties.Controller
             return;
         }
 
-        if (mReauthenticatorBridge == null) {
-            mReauthenticatorBridge =
-                    ReauthenticatorBridge.create(mActivity, mProfile, DeviceAuthSource.AUTOFILL);
+        if (!ChromeFeatureList.isEnabled(ChromeFeatureList.DEVICE_REAUTH_REFACTOR)) {
+            createReauthenticatorBridge();
         }
 
-        if (mReauthenticatorBridge.getBiometricAvailabilityStatus()
-                == BiometricStatus.UNAVAILABLE) {
+        int biometricStatus =
+                ChromeFeatureList.isEnabled(ChromeFeatureList.DEVICE_REAUTH_REFACTOR)
+                        ? DeviceAuthAvailabilityCheckerBridge.getBiometricAvailabilityStatus()
+                        : assumeNonNull(mReauthenticatorBridge).getBiometricAvailabilityStatus();
+        if (biometricStatus == BiometricStatus.UNAVAILABLE) {
             prefs().setBoolean(Pref.AUTOFILL_AI_REAUTH_BEFORE_VIEWING_SENSITIVE_DATA, isOn);
             mModel.set(
                     AutofillOptionsProperties.AUTOFILL_AI_REAUTH_SETTING_ON,
@@ -287,7 +254,10 @@ public class AutofillOptionsMediator implements ModalDialogProperties.Controller
             return;
         }
 
-        mReauthenticatorBridge.reauthenticate(
+        if (ChromeFeatureList.isEnabled(ChromeFeatureList.DEVICE_REAUTH_REFACTOR)) {
+            createReauthenticatorBridge();
+        }
+        assumeNonNull(mReauthenticatorBridge).reauthenticate(
                 (success) -> {
                     if (success) {
                         prefs().setBoolean(
@@ -331,13 +301,14 @@ public class AutofillOptionsMediator implements ModalDialogProperties.Controller
 
     void updateToggleStateFromPref() {
         assert isInitialized();
+        if (mIsRestartConfirmationShown) {
+            return;
+        }
         mModel.set(
                 THIRD_PARTY_AUTOFILL_ENABLED,
                 prefs().getBoolean(Pref.AUTOFILL_USING_PLATFORM_AUTOFILL));
         mModel.set(THIRD_PARTY_TOGGLE_IS_READ_ONLY, should3pToggleBeReadOnly());
         mModel.set(THIRD_PARTY_TOGGLE_HINT, getHintSummary());
-        mModel.set(PERSONAL_CONTEXT_ENABLED, isPersonalContextOn());
-        mModel.set(PERSONAL_CONTEXT_VISIBLE, isPersonalContextVisible());
     }
 
     private void onThirdPartyToggleChanged(boolean optIntoThirdPartyFilling) {
@@ -377,6 +348,7 @@ public class AutofillOptionsMediator implements ModalDialogProperties.Controller
     }
 
     private void onConfirmWithRestart() {
+        mIsRestartConfirmationShown = false;
         prefs().setBoolean(
                         Pref.AUTOFILL_USING_PLATFORM_AUTOFILL,
                         mModel.get(THIRD_PARTY_AUTOFILL_ENABLED));
@@ -384,6 +356,7 @@ public class AutofillOptionsMediator implements ModalDialogProperties.Controller
                 prefs(), mModel.get(THIRD_PARTY_AUTOFILL_ENABLED));
         RecordHistogram.recordBooleanHistogram(
                 HISTOGRAM_USE_THIRD_PARTY_FILLING, mModel.get(THIRD_PARTY_AUTOFILL_ENABLED));
+        ProfileManagerUtils.flushPersistentDataForAllProfiles();
         mRestartRunnable.run();
     }
 
@@ -395,6 +368,7 @@ public class AutofillOptionsMediator implements ModalDialogProperties.Controller
             updateToggleStateFromPref();
             return;
         }
+        mIsRestartConfirmationShown = true;
         dialogManager.showDialog(restartConfirmationModel, ModalDialogType.APP);
     }
 

@@ -10,7 +10,6 @@
 #import "base/feature_list.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/notreached.h"
-#import "base/time/time.h"
 #import "components/feature_engagement/public/event_constants.h"
 #import "components/feature_engagement/public/tracker.h"
 #import "components/metrics/metrics_service.h"
@@ -30,7 +29,6 @@
 #import "ios/chrome/browser/first_run/public/features.h"
 #import "ios/chrome/browser/first_run/public/first_run_screen_delegate.h"
 #import "ios/chrome/browser/first_run/public/first_run_util.h"
-#import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/screen/ui_bundled/screen_provider.h"
 #import "ios/chrome/browser/screen/ui_bundled/screen_type.h"
 #import "ios/chrome/browser/search_engine_choice/coordinator/search_engine_choice_coordinator.h"
@@ -56,12 +54,14 @@ class FirstRunCoordinatorMetricsHelper final {
 
   // Triggers an UMA metrics log upload.
   void StartOutOfBandUploadIfPossible() {
-    metrics_service_->StartOutOfBandUploadIfPossible(
-        metrics::MetricsService::OutOfBandUploadPasskey());
+    if (metrics_service_) {
+      metrics_service_->StartOutOfBandUploadIfPossible(
+          metrics::MetricsService::OutOfBandUploadPasskey());
+    }
   }
 
  private:
-  raw_ptr<metrics::MetricsService> metrics_service_;
+  raw_ptr<metrics::MetricsService> metrics_service_ = nullptr;
 };
 
 }  // namespace first_run
@@ -138,16 +138,14 @@ class FirstRunCoordinatorMetricsHelper final {
   [self stopChildCoordinator];
   [self presentScreen:[self.screenProvider nextScreenType]];
 
-  if (base::FeatureList::IsEnabled(first_run::kManualLogUploadsInTheFRE)) {
-    // Trigger a metrics log upload with the MetricsService.
-    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(^{
-          std::unique_ptr<first_run::FirstRunCoordinatorMetricsHelper>
-              metricsHelper = std::make_unique<
-                  first_run::FirstRunCoordinatorMetricsHelper>();
-          metricsHelper->StartOutOfBandUploadIfPossible();
-        }));
-  }
+  // Trigger a metrics log upload with the MetricsService.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(^{
+        std::unique_ptr<first_run::FirstRunCoordinatorMetricsHelper>
+            metricsHelper =
+                std::make_unique<first_run::FirstRunCoordinatorMetricsHelper>();
+        metricsHelper->StartOutOfBandUploadIfPossible();
+      }));
 }
 
 #pragma mark - Helper
@@ -179,8 +177,7 @@ class FirstRunCoordinatorMetricsHelper final {
         return;
       }
 
-      if (IsAppStoreInAppEventsEnabled() && self.profile &&
-          self.profile->GetPrefs() &&
+      if (self.profile && self.profile->GetPrefs() &&
           self.profile->GetPrefs()->GetBoolean(
               prefs::kAppStoreGeminiPromoTriggered)) {
         // If first run started due to app store external action, do not show

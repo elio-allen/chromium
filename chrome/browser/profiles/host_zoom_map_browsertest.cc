@@ -25,7 +25,7 @@
 #include "build/chromeos_buildflags.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/signin_promo.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/zoom/chrome_zoom_level_prefs.h"
 #include "chrome/common/chrome_constants.h"
@@ -46,6 +46,7 @@
 #include "net/test/embedded_test_server/http_response.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
+#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 using content::HostZoomMap;
@@ -235,11 +236,11 @@ IN_PROC_BROWSER_TEST_F(HostZoomMapBrowserTest, ZoomEventsWorkForOffTheRecord) {
   GURL test_url(url::kAboutBlankURL);
   std::string test_host(test_url.GetHost());
   std::string test_scheme(test_url.GetScheme());
-  Browser* incognito_browser =
+  BrowserWindowInterface* incognito_browser =
       OpenURLOffTheRecord(browser()->GetProfile(), test_url);
 
   content::WebContents* web_contents =
-      incognito_browser->tab_strip_model()->GetActiveWebContents();
+      incognito_browser->GetTabStripModel()->GetActiveWebContents();
 
   content::BrowserContext* context = web_contents->GetBrowserContext();
   EXPECT_TRUE(context->IsOffTheRecord());
@@ -296,7 +297,7 @@ IN_PROC_BROWSER_TEST_F(HostZoomMapBrowserTest, ToggleDefaultZoomLevel) {
 
   GURL test_url2 = SubstituteTestServerPort(GURL("http://host2/"));
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), test_url2, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), test_url2, WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   EXPECT_TRUE(
       blink::ZoomValuesEqual(default_zoom_level, GetZoomLevel(test_url2)));

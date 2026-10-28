@@ -11,14 +11,15 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.res.ColorStateList;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.InsetDrawable;
 import android.view.View;
 
-import androidx.appcompat.content.res.AppCompatResources;
-
 import org.chromium.base.Callback;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.OneshotSupplierImpl;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
@@ -35,6 +36,7 @@ import org.chromium.chrome.browser.sync.SyncServiceFactory;
 import org.chromium.chrome.browser.theme.ThemeColorProvider;
 import org.chromium.chrome.browser.theme.ThemeColorProvider.TintObserver;
 import org.chromium.chrome.browser.toolbar.R;
+import org.chromium.chrome.browser.toolbar.account_menu.AccountMenuCoordinator;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig.NoAccountSigninMode;
@@ -64,6 +66,7 @@ import org.chromium.components.sync.UserActionableError;
 import org.chromium.google_apis.gaia.CoreAccountId;
 import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.listmenu.ListMenuButton;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.PropertyModel;
 
@@ -102,6 +105,7 @@ final class SigninButtonMediator
     private @Nullable Profile mProfile;
     private @Nullable BottomSheetSigninAndHistorySyncCoordinator mSigninCoordinator;
     private @Nullable SigninManager mSigninManager;
+    private @Nullable AccountMenuCoordinator mAccountMenuCoordinator;
 
     // We observe IdentityManager to receive primary account state change notifications.
     private @Nullable IdentityManager mIdentityManager;
@@ -294,9 +298,12 @@ final class SigninButtonMediator
                         && !SHOW_AVATAR_WHEN_SIGNED_OUT;
 
         if (!showSigninText) {
-            mModel.set(
-                    SigninButtonProperties.BUTTON_AVATAR,
-                    profileData != null ? profileData.getImage() : getPlaceholderImage());
+            Drawable avatar = profileData != null ? profileData.getImage() : getPlaceholderImage();
+            if (profileData != null) {
+                avatar = maybeApplyErrorBadgeInset(avatar);
+            }
+
+            mModel.set(SigninButtonProperties.BUTTON_AVATAR, avatar);
             mModel.set(
                     SigninButtonProperties.AVATAR_TINT,
                     profileData != null ? null : mActivityFocusTint);
@@ -317,6 +324,10 @@ final class SigninButtonMediator
     private void setProfile(@Nullable Profile profile) {
         mProfile = profile;
         resetProfileDataCache();
+        if (mAccountMenuCoordinator != null) {
+            mAccountMenuCoordinator.destroy();
+            mAccountMenuCoordinator = null;
+        }
         if (mIdentityManager != null) {
             mIdentityManager.removeObserver(this);
             mIdentityManager = null;
@@ -347,7 +358,7 @@ final class SigninButtonMediator
 
             int aiTierRingThicknessPx =
                     mContext.getResources()
-                            .getDimensionPixelSize(R.dimen.ai_tier_ring_thickness_identity_disc);
+                            .getDimensionPixelSize(R.dimen.ai_tier_ring_thickness_small);
             int aiTierImageSizePx =
                     mContext.getResources()
                             .getDimensionPixelSize(R.dimen.toolbar_identity_disc_size_with_ring);
@@ -382,16 +393,58 @@ final class SigninButtonMediator
         mOnSigninTapped.run();
         recordSigninButtonUsed(mProfile);
 
+        // TODO(crbug.com/551756560): Use a delegate pattern to handle form-factor-based behavior
+        // instead of branching here.
+        if (isAccountMenuEnabled()) {
+            if (mAccountMenuCoordinator == null) {
+                mAccountMenuCoordinator =
+                        new AccountMenuCoordinator(
+                                mContext,
+                                mProfile,
+                                mWindowAndroid,
+                                mSigninCoordinator,
+                                mSigninAndHistorySyncActivityLauncher);
+            }
+            mAccountMenuCoordinator.show((ListMenuButton) view);
+            return;
+        }
+
+        startSigninFlow();
+    }
+
+    /** Whether taps on the button open the account menu instead of starting the sign-in flow. */
+    static boolean isAccountMenuEnabled() {
+        return DeviceInfo.isDesktop()
+                && SigninFeatureMap.isEnabled(SigninFeatures.SIGNIN_BUTTON_PROFILE_MENU);
+    }
+
+    /**
+     * Returns the access point for the shared sign-in coordinator, which is created eagerly before
+     * the surface that starts the flow is known. When the account menu is enabled the menu is that
+     * surface, so the flow is attributed to {@link
+     * SigninAccessPoint#ACCOUNT_MENU_SIGNED_OUT_STATE}; otherwise the button starts the flow
+     * itself.
+     */
+    private @SigninAccessPoint int getSigninAccessPoint() {
+        return isAccountMenuEnabled()
+                ? SigninAccessPoint.ACCOUNT_MENU_SIGNED_OUT_STATE
+                : SigninAccessPoint.NTP_SIGNED_OUT_ICON;
+    }
+
+    private void startSigninFlow() {
+        if (mProfile == null || mProfile.isOffTheRecord()) {
+            return;
+        }
+
         Profile originalProfile = mProfile.getOriginalProfile();
         if (assumeNonNull(mSigninManager).isSigninAllowed()) {
+            String title = mContext.getString(R.string.signin_account_picker_bottom_sheet_title);
+            String subtitle =
+                    mContext.getString(
+                            R.string.signin_account_picker_bottom_sheet_benefits_subtitle);
             AccountPickerBottomSheetStrings bottomSheetStrings =
-                    new AccountPickerBottomSheetStrings.Builder(
-                                    mContext.getString(
-                                            R.string.signin_account_picker_bottom_sheet_title))
-                            .setSubtitleString(
-                                    mContext.getString(
-                                            R.string
-                                                    .signin_account_picker_bottom_sheet_benefits_subtitle))
+                    new AccountPickerBottomSheetStrings.Builder(title)
+                            .setSubtitleString(subtitle)
                             .build();
             BottomSheetSigninAndHistorySyncConfig config =
                     new BottomSheetSigninAndHistorySyncConfig.Builder(
@@ -455,9 +508,9 @@ final class SigninButtonMediator
                                     mDeviceLockActivityLauncher,
                                     profileSupplier,
                                     () -> mBottomSheetController,
-                                    mModalDialogManager,
-                                    mSnackbarManager,
-                                    SigninAccessPoint.NTP_SIGNED_OUT_ICON);
+                                    SupplierUtils.of(mModalDialogManager),
+                                    SupplierUtils.of(mSnackbarManager),
+                                    getSigninAccessPoint());
         }
     }
 
@@ -475,20 +528,31 @@ final class SigninButtonMediator
         mThemeColorProvider.removeTintObserver(this);
     }
 
-    private Drawable getPlaceholderImage() {
-        Drawable accountCircle =
-                AppCompatResources.getDrawable(mContext, R.drawable.account_circle);
-        if (SigninFeatureMap.isEnabled(SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING)) {
-            int aiTierRingThicknessPx =
-                    mContext.getResources()
-                            .getDimensionPixelSize(R.dimen.ai_tier_ring_thickness_identity_disc);
-            int aiTierImageSizePx =
-                    mContext.getResources()
-                            .getDimensionPixelSize(R.dimen.toolbar_identity_disc_size_with_ring);
-
-            return ProfileDataCache.getPlaceholderImageWithAiTierRingPadding(
-                    mContext, accountCircle, aiTierImageSizePx, aiTierRingThicknessPx);
+    // TODO(crbug.com/522145863): Remove when AI tier is launched.
+    private Drawable maybeApplyErrorBadgeInset(Drawable avatar) {
+        if (mIdentityError == UserActionableError.NONE
+                || SigninFeatureMap.isEnabled(SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING)) {
+            return avatar;
         }
-        return accountCircle;
+
+        // The error badge makes the avatar bigger by adding to the bottom and right. Since the
+        // button is centered, this pushes it up and left. Adding an inset makes it symmetric again.
+        int badgePositionX =
+                mContext.getResources()
+                        .getDimensionPixelSize(R.dimen.toolbar_identity_disc_badge_position_x);
+        int badgeSize =
+                mContext.getResources()
+                        .getDimensionPixelSize(R.dimen.toolbar_identity_disc_badge_size);
+        int avatarSize =
+                mContext.getResources().getDimensionPixelSize(R.dimen.toolbar_identity_disc_size);
+        int insetPx = badgePositionX + badgeSize - avatarSize;
+        if (insetPx <= 0) {
+            return avatar;
+        }
+        return new InsetDrawable(avatar, /* insetLeft= */ insetPx, /* insetTop= */ insetPx, 0, 0);
+    }
+
+    private Drawable getPlaceholderImage() {
+        return assumeNonNull(mProfileDataCache).getPlaceholderImage();
     }
 }

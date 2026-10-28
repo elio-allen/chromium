@@ -14,6 +14,8 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.ImageButton;
+import android.widget.ImageView;
+import android.widget.RadioButton;
 import android.widget.TextView;
 
 import androidx.annotation.ColorRes;
@@ -37,7 +39,6 @@ import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.widget.ChromeImageButton;
-import org.chromium.ui.widget.ChromeImageView;
 
 /** The binder to bind the app menu {@link PropertyModel} with the view. */
 @NullMarked
@@ -66,8 +67,25 @@ class AppMenuItemViewBinder {
         } else if (key == AppMenuItemProperties.TITLE) {
             CharSequence title = model.get(AppMenuItemProperties.TITLE);
             ((TextView) view.findViewById(R.id.menu_item_text)).setText(title);
+        } else if (key == AppMenuItemProperties.TITLE_MAX_LINES) {
+            TextView titleView = view.findViewById(R.id.menu_item_text);
+            if (titleView != null) {
+                int maxLines = model.get(AppMenuItemProperties.TITLE_MAX_LINES);
+                if (maxLines > 0) {
+                    titleView.setSingleLine(maxLines == 1);
+                    titleView.setMaxLines(maxLines);
+                }
+            }
         } else if (key == AppMenuItemProperties.TITLE_CONDENSED) {
             setContentDescription(view.findViewById(R.id.menu_item_text), model);
+        } else if (key == AppMenuItemProperties.SHORTCUT_TEXT) {
+            TextView shortcutView = view.findViewById(R.id.menu_item_shortcut);
+            if (shortcutView != null) {
+                CharSequence shortcutText = model.get(AppMenuItemProperties.SHORTCUT_TEXT);
+                shortcutView.setText(shortcutText);
+                shortcutView.setVisibility(
+                        TextUtils.isEmpty(shortcutText) ? View.GONE : View.VISIBLE);
+            }
         } else if (key == AppMenuItemProperties.ENABLED) {
             boolean enabled = model.get(AppMenuItemProperties.ENABLED);
             view.setEnabled(enabled);
@@ -90,6 +108,21 @@ class AppMenuItemViewBinder {
                         });
                 iconSupplier.get();
             }
+        } else if (key == AppMenuItemProperties.END_ICON_MARGIN_START) {
+            ImageView imageView = view.findViewById(R.id.menu_item_end_icon);
+            if (imageView != null) {
+                int marginStart = model.get(AppMenuItemProperties.END_ICON_MARGIN_START);
+                var layoutParams = (ViewGroup.MarginLayoutParams) imageView.getLayoutParams();
+                layoutParams.setMarginStart(marginStart);
+                imageView.setLayoutParams(layoutParams);
+            }
+        } else if (key == AppMenuItemProperties.END_ICON) {
+            ImageView imageView = view.findViewById(R.id.menu_item_end_icon);
+            if (imageView != null) {
+                Drawable icon = model.get(AppMenuItemProperties.END_ICON);
+                imageView.setImageDrawable(icon);
+                imageView.setVisibility(icon != null ? View.VISIBLE : View.GONE);
+            }
         } else if (key == AppMenuItemProperties.CLICK_HANDLER) {
             setupClickHandler(view, model);
         } else if (key == AppMenuItemProperties.HOVER_LISTENER) {
@@ -98,6 +131,31 @@ class AppMenuItemViewBinder {
             view.setHovered(model.get(AppMenuItemProperties.HAS_HOVER_BACKGROUND));
         } else if (key == AppMenuItemProperties.KEY_LISTENER) {
             view.setOnKeyListener(model.get(AppMenuItemProperties.KEY_LISTENER));
+        } else if (key == AppMenuItemProperties.CHECKABLE || key == AppMenuItemProperties.CHECKED) {
+            view.setAccessibilityDelegate(
+                    new View.AccessibilityDelegate() {
+                        @Override
+                        public void onInitializeAccessibilityNodeInfo(
+                                View host, AccessibilityNodeInfo info) {
+                            super.onInitializeAccessibilityNodeInfo(host, info);
+                            info.setClassName(RadioButton.class.getName());
+                            info.setCheckable(true);
+                            info.setChecked(
+                                    model.containsKey(AppMenuItemProperties.CHECKED)
+                                            && model.get(AppMenuItemProperties.CHECKED));
+                            int position =
+                                    model.containsKey(AppMenuItemProperties.POSITION)
+                                            ? model.get(AppMenuItemProperties.POSITION)
+                                            : 0;
+                            info.setCollectionItemInfo(
+                                    AccessibilityNodeInfo.CollectionItemInfo.obtain(
+                                            /* rowIndex= */ position,
+                                            /* rowSpan= */ 1,
+                                            /* columnIndex= */ 0,
+                                            /* columnSpan= */ 1,
+                                            /* heading= */ false));
+                        }
+                    });
         }
     }
 
@@ -248,11 +306,6 @@ class AppMenuItemViewBinder {
                 }
             }
 
-            boolean isMenuIconAtStart = model.get(AppMenuItemProperties.MENU_ICON_AT_START);
-            view.setTag(
-                    R.id.menu_item_enter_anim_id,
-                    AppMenuUtil.buildIconItemEnterAnimator(buttons, isMenuIconAtStart));
-
             view.setEnabled(false);
         }
     }
@@ -322,7 +375,7 @@ class AppMenuItemViewBinder {
     }
 
     private static void setIcon(View view, final PropertyModel model) {
-        ChromeImageView imageView = view.findViewById(R.id.menu_item_icon);
+        ImageView imageView = view.findViewById(R.id.menu_item_icon);
         if (imageView == null) {
             return;
         }

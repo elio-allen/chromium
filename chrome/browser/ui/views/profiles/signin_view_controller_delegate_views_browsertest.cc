@@ -8,8 +8,8 @@
 
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/signin/signin_view_controller.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "chrome/browser/ui/webui/signin/signin_url_utils.h"
@@ -66,8 +66,7 @@ IN_PROC_BROWSER_TEST_F(SigninViewControllerDelegateViewsBrowserTest,
 // Regression test for https://crbug.com/40191339.
 IN_PROC_BROWSER_TEST_F(SigninViewControllerDelegateViewsBrowserTest,
                        CloseImmediately) {
-  SigninViewController* controller =
-      browser()->GetFeatures().signin_view_controller();
+  SigninViewController* controller = SigninViewController::From(browser());
   controller->ShowModalSyncConfirmationDialog(
       /*is_signin_intercept=*/false, /*is_sync_promo=*/false);
   content::WebContentsDestroyedWatcher watcher(

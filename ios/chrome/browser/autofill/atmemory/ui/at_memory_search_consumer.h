@@ -7,14 +7,6 @@
 
 #import <Foundation/Foundation.h>
 
-enum class AtMemoryBackgroundStyle {
-  // The default background style.
-  kDefaultStyle,
-  // Zero-state background style shown on the initial screen when no recent
-  // fills exist and the notice is hidden.
-  kEmptyStyle,
-};
-
 enum class AtMemoryErrorType {
   // The server couldn't be reached.
   kNoConnectionError,
@@ -25,25 +17,28 @@ enum class AtMemoryErrorType {
   kUnsupportedQueryError,
 };
 
+@class AtMemorySearchItem;
 // Consumer for the AtMemory search feature.
 @protocol AtMemorySearchConsumer <NSObject>
 
 // Sets the `AtMemoryErrorType`.
 - (void)setErrorType:(AtMemoryErrorType)errorType;
 
-// TODO(crbug.com/541237598): Will be implemented in a separate CL.
-// Sets the progress indicator while fetching results from Gemini.
-- (void)setFetchingSubtitle;
+// Sets the progress indicator subtitle while fetching results from Gemini.
+- (void)setFetchingSubtitle:(NSString*)subtitle;
 
-// TODO(crbug.com/540877897): Will be implemented once the backend is ready.
-// Sets the previously filled results on the same page.
-- (void)setRecentFills;
+// Sets whether the informational notice is visible.
+- (void)setNoticeVisible:(BOOL)noticeVisible;
 
-// TODO(crbug.com/543036121): Create a `setSearchResults` method once
-// AtMemorySearchItem has been created.
+// Sets the previously filled results on the same page to display in the
+// initial empty search state.
+- (void)setRecentFills:(NSArray<AtMemorySearchItem*>*)recentFills;
 
-// Displays the table view background for the given `style`.
-- (void)updateTableViewBackgroundStyle:(AtMemoryBackgroundStyle)style;
+// Sets search results to display in the UI.
+- (void)setSearchResults:(NSArray<AtMemorySearchItem*>*)searchResults;
+
+// Sets the list of subtitles to rotate through in the zero-state empty view.
+- (void)setZeroStateSubtitles:(NSArray<NSString*>*)subtitles;
 
 @end
 

@@ -27,10 +27,10 @@
 #include "ash/capture_mode/fake_video_source_provider.h"
 #include "ash/capture_mode/test_capture_mode_delegate.h"
 #include "ash/display/window_tree_host_manager.h"
+#include "ash/frame_sink/frame_sink_holder.h"
 #include "ash/public/cpp/capture_mode/capture_mode_test_api.h"
 #include "ash/public/cpp/holding_space/holding_space_controller.h"
 #include "ash/public/cpp/holding_space/holding_space_model.h"
-#include "ash/public/cpp/holding_space/holding_space_prefs.h"
 #include "ash/public/cpp/holding_space/holding_space_test_api.h"
 #include "ash/public/cpp/holding_space/holding_space_util.h"
 #include "ash/public/cpp/holding_space/mock_holding_space_client.h"
@@ -51,6 +51,7 @@
 #include "ash/test/ash_test_base.h"
 #include "ash/test/ash_test_util.h"
 #include "ash/wm/window_state.h"
+#include "base/json/values_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/system/system_monitor.h"
@@ -62,7 +63,7 @@
 #include "components/viz/test/test_in_process_context_provider.h"
 #include "media/base/video_facing.h"
 #include "media/base/video_frame.h"
-#include "media/renderers/paint_canvas_video_renderer.h"
+#include "media/gfx/paint_canvas_video_renderer.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/ui_base_types.h"
@@ -135,6 +136,17 @@ gfx::Rect GetTooSmallToFitCameraRegion() {
 }
 
 }  // namespace
+
+TEST(CameraIdOrderingTest, OrdersByModelThenNumber) {
+  const CameraId camera_a1("camera_a", 1);
+  const CameraId camera_a2("camera_a", 2);
+  const CameraId camera_b1("camera_b", 1);
+
+  EXPECT_FALSE(camera_a1 < camera_a1);
+  EXPECT_TRUE(camera_a1 < camera_a2);
+  EXPECT_TRUE(camera_a2 < camera_b1);
+  EXPECT_FALSE(camera_b1 < camera_a2);
+}
 
 class CaptureModeCameraTest : public AshTestBase {
  public:
@@ -1663,7 +1675,7 @@ TEST_F(CaptureModeCameraTest, FocusableCameraPreviewInFullscreen) {
   // The resize button should fade out and become invisible in
   // `kResizeButtonShowDuration` after removing focus from it.
   base::OneShotTimer* hide_timer =
-      camera_preview_view->resize_button_hide_timer_for_test();
+      camera_preview_view->resize_button_hide_timer_for_testing();
   EXPECT_FALSE(resize_button->has_focus());
   EXPECT_TRUE(hide_timer->IsRunning());
   EXPECT_EQ(hide_timer->GetCurrentDelay(),
@@ -1685,7 +1697,7 @@ TEST_F(CaptureModeCameraTest, FocusableCameraPreviewInFullscreen) {
 
   // The resize button should keep visible when it is focused, even trigger
   // `resize_button_hide_timer_` to refresh its visibility.
-  hide_timer = camera_preview_view->resize_button_hide_timer_for_test();
+  hide_timer = camera_preview_view->resize_button_hide_timer_for_testing();
   EXPECT_TRUE(hide_timer->IsRunning());
   EXPECT_TRUE(resize_button->GetVisible());
   hide_timer->FireNow();
@@ -1699,7 +1711,7 @@ TEST_F(CaptureModeCameraTest, FocusableCameraPreviewInFullscreen) {
 
   // The resize button should fade out and become invisible again in
   // `kResizeButtonShowDuration` after removing focus from it.
-  hide_timer = camera_preview_view->resize_button_hide_timer_for_test();
+  hide_timer = camera_preview_view->resize_button_hide_timer_for_testing();
   EXPECT_FALSE(resize_button->has_focus());
   EXPECT_TRUE(hide_timer->IsRunning());
   EXPECT_EQ(hide_timer->GetCurrentDelay(),
@@ -3663,7 +3675,7 @@ TEST_P(CaptureModeCameraPreviewTest, ResizeButtonVisibilityOnMouseEvents) {
   event_generator->MoveMouseTo(outside_point);
 
   base::OneShotTimer* timer = camera_controller->camera_preview_view()
-                                  ->resize_button_hide_timer_for_test();
+                                  ->resize_button_hide_timer_for_testing();
   EXPECT_TRUE(timer->IsRunning());
   EXPECT_EQ(timer->GetCurrentDelay(), capture_mode::kResizeButtonShowDuration);
 
@@ -3699,7 +3711,7 @@ TEST_P(CaptureModeCameraPreviewTest, ResizeButtonVisibilityOnTapEvents) {
   event_generator->GestureTapAt(default_preview_bounds.CenterPoint());
   EXPECT_TRUE(resize_button->GetVisible());
   base::OneShotTimer* timer = camera_controller->camera_preview_view()
-                                  ->resize_button_hide_timer_for_test();
+                                  ->resize_button_hide_timer_for_testing();
   EXPECT_TRUE(timer->IsRunning());
   EXPECT_EQ(timer->GetCurrentDelay(), capture_mode::kResizeButtonShowDuration);
 
@@ -4067,7 +4079,7 @@ TEST_P(CaptureModeCameraPreviewTest,
     outside_point.Offset(-1, -1);
     event_generator->MoveMouseTo(outside_point);
     base::OneShotTimer* timer = camera_controller->camera_preview_view()
-                                    ->resize_button_hide_timer_for_test();
+                                    ->resize_button_hide_timer_for_testing();
     timer->FireNow();
     EXPECT_EQ(resize_button->GetVisible(),
               switch_access_enabled ? true : false);
@@ -4128,7 +4140,7 @@ TEST_P(CaptureModeCameraPreviewTest,
     EXPECT_TRUE(resize_button->GetVisible());
 
     base::OneShotTimer* timer = camera_controller->camera_preview_view()
-                                    ->resize_button_hide_timer_for_test();
+                                    ->resize_button_hide_timer_for_testing();
     if (timer->IsRunning())
       timer->FireNow();
 
@@ -4231,7 +4243,7 @@ TEST_F(CameraPreviewWithNotificationTest,
 
 class CameraPreviewWithHoldingSpaceTest : public CaptureModeCameraTest {
  public:
-  CameraPreviewWithHoldingSpaceTest() { set_start_session(false); }
+  CameraPreviewWithHoldingSpaceTest() = default;
   CameraPreviewWithHoldingSpaceTest(const CameraPreviewWithHoldingSpaceTest&) =
       delete;
   CameraPreviewWithHoldingSpaceTest& operator=(
@@ -4249,6 +4261,11 @@ class CameraPreviewWithHoldingSpaceTest : public CaptureModeCameraTest {
   }
 
   // CaptureModeCameraTest:
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    CaptureModeCameraTest::SetUpInitParams(init_params);
+    init_params.start_session = false;
+  }
+
   void SetUp() override {
     CaptureModeCameraTest::SetUp();
 
@@ -4257,10 +4274,13 @@ class CameraPreviewWithHoldingSpaceTest : public CaptureModeCameraTest {
     HoldingSpaceController::Get()->RegisterClientAndModelForUser(
         user_account, client(), model());
 
-    auto pref_service = TestPrefServiceProvider::CreateUserPrefServiceSimple();
-    holding_space_prefs::MarkTimeOfFirstAvailability(pref_service.get());
-    holding_space_prefs::MarkTimeOfFirstAdd(pref_service.get());
-    SimulateUserLogin({}, user_account, std::move(pref_service));
+    base::Value now = base::TimeToValue(base::Time::Now());
+    auto init_prefs =
+        base::DictValue()
+            .Set("ash.holding_space.time_of_first_availability", now.Clone())
+            .Set("ash.holding_space.time_of_first_add", std::move(now));
+    SimulateUserLogin({.account_id = user_account,
+                       .init_pref_service_value = std::move(init_prefs)});
   }
 
   void TearDown() override {
@@ -4711,6 +4731,28 @@ TEST_P(CaptureModeCameraFramesTest, CameraFatalErrors) {
   WaitForAndVerifyRenderedVideoFrame();
 }
 
+TEST_P(CaptureModeCameraFramesTest, RecoverFromFrameSinkLoss) {
+  CaptureModeTestApi().StartForFullscreen(/*for_video=*/true);
+  auto* camera_controller = GetCameraController();
+  EXPECT_TRUE(camera_controller->camera_preview_widget());
+  WaitForAndVerifyRenderedVideoFrame();
+
+  auto* renderer = camera_controller->camera_preview_view()
+                       ->camera_video_renderer_for_testing();
+  auto* holder = renderer->frame_sink_holder_for_testing();
+
+  base::WeakPtr<FrameSinkHolder> weak_holder = holder->GetWeakPtr();
+  holder->DidLoseLayerTreeFrameSink();
+
+  // The old FrameSinkHolder should be destroyed, and a new one should be
+  // created.
+  EXPECT_FALSE(weak_holder);
+  EXPECT_TRUE(renderer->frame_sink_holder_for_testing());
+
+  // Video frames should continue to render successfully after recovery.
+  WaitForAndVerifyRenderedVideoFrame();
+}
+
 INSTANTIATE_TEST_SUITE_P(All, CaptureModeCameraFramesTest, testing::Bool());
 
 // The test fixture for starting test without active session.
@@ -4731,7 +4773,7 @@ TEST_F(NoSessionCaptureModeCameraTest, RequestCameraInfoAfterUserLogsIn) {
   {
     base::RunLoop loop;
     camera_controller->SetOnCameraListReceivedForTesting(loop.QuitClosure());
-    SimulateUserLogin({"example@gmail.com"});
+    SimulateUserLogin(AccountId::FromUserEmail("example@gmail.com"));
     loop.Run();
   }
 

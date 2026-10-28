@@ -23,7 +23,7 @@
 #include "components/autofill/core/browser/metrics/payments/omnibox_autofill_metrics.h"
 #include "components/autofill/core/browser/payments/test/mock_multiple_request_payments_network_interface.h"
 #include "components/autofill/core/browser/payments/test_payments_network_interface.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/ui/autofill_suggestion_delegate.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/autofill/core/common/form_data.h"
@@ -148,6 +148,7 @@ class OmniboxAutofillDelegateTest
         mojom::ActionPersistence::kFill, form.global_id(),
         form.fields()[1].global_id(), &credit_card,
         AutofillTriggerSource::kOmniboxAutofill,
+        /*require_user_confirmation=*/false,
         /*blocked_fields=*/{});
   }
 
@@ -459,12 +460,12 @@ TEST_F(OmniboxAutofillDelegateTest,
 }
 
 TEST_F(OmniboxAutofillDelegateTest,
-       OnFieldTypesDetermined_MultipleCreditCardNumberFields_Aborts) {
+       OnFieldTypesDetermined_MultipleVisibleCreditCardNumberFields_Aborts) {
   base::HistogramTester histogram_tester;
 
   EXPECT_CALL(autofill_driver(), ObserveFieldVisibility).Times(0);
 
-  // Create a credit card form, but include multiple card number fields.
+  // Create a credit card form, but include multiple visible card number fields.
   FormData form;
   form.set_name(u"MyForm");
   form.set_url(GURL("https://myform.com/form.html"));
@@ -472,10 +473,14 @@ TEST_F(OmniboxAutofillDelegateTest,
   autofill_client().set_last_committed_primary_main_frame_url(form.url());
   test_api(form).Append(CreateTestFormField("Name on Card", "nameoncard", "",
                                             FormControlType::kInputText));
-  test_api(form).Append(CreateTestFormField("Card Number 1", "cardnumber1", "",
-                                            FormControlType::kInputText));
-  test_api(form).Append(CreateTestFormField("Card Number 2", "cardnumber2", "",
-                                            FormControlType::kInputText));
+  FormFieldData card_number_field_1 = CreateTestFormField(
+      "Card Number 1", "cardnumber1", "", FormControlType::kInputText);
+  FormFieldData card_number_field_2 = CreateTestFormField(
+      "Card Number 2", "cardnumber2", "", FormControlType::kInputText);
+  card_number_field_1.set_is_visible(true);
+  card_number_field_2.set_is_visible(true);
+  test_api(form).Append(card_number_field_1);
+  test_api(form).Append(card_number_field_2);
   test_api(form).Append(CreateTestFormField("Expiration Date", "ccmonth", "",
                                             FormControlType::kInputText));
   test_api(form).Append(
@@ -489,7 +494,41 @@ TEST_F(OmniboxAutofillDelegateTest,
   histogram_tester.ExpectUniqueSample(
       "Autofill.OmniboxAutofill.ShowChipDecisionPart1",
       OmniboxAutofillShowChipDecisionPart1::
-          kFoundMultipleCreditCardNumberFields,
+          kFoundMultipleVisibleCreditCardNumberFields,
+      1);
+}
+
+TEST_F(OmniboxAutofillDelegateTest,
+       OnFieldTypesDetermined_NoVisibleCreditCardNumberFields_Aborts) {
+  base::HistogramTester histogram_tester;
+
+  EXPECT_CALL(autofill_driver(), ObserveFieldVisibility).Times(0);
+
+  // Create a credit card form, but all card number fields are not visible.
+  FormData form;
+  form.set_name(u"MyForm");
+  form.set_url(GURL("https://myform.com/form.html"));
+  form.set_action(GURL("https://myform.com/submit.html"));
+  autofill_client().set_last_committed_primary_main_frame_url(form.url());
+  test_api(form).Append(CreateTestFormField("Name on Card", "nameoncard", "",
+                                            FormControlType::kInputText));
+  FormFieldData card_number_field = CreateTestFormField(
+      "Card Number", "cardnumber", "", FormControlType::kInputText);
+  card_number_field.set_is_visible(false);
+  test_api(form).Append(card_number_field);
+  test_api(form).Append(CreateTestFormField("Expiration Date", "ccmonth", "",
+                                            FormControlType::kInputText));
+  test_api(form).Append(
+      CreateTestFormField("", "ccyear", "", FormControlType::kInputText));
+  test_api(form).Append(
+      CreateTestFormField("CVC", "cvc", "", FormControlType::kInputText));
+  form = CreateFormDataForFrame(form, autofill_driver().GetFrameToken());
+
+  FormsSeen({form});
+
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.OmniboxAutofill.ShowChipDecisionPart1",
+      OmniboxAutofillShowChipDecisionPart1::kNoVisibleCreditCardNumberFields,
       1);
 }
 
@@ -947,7 +986,7 @@ TEST_F(OmniboxAutofillDelegateTest, OnSuggestionsShown_ForwardToObserver) {
 
   EXPECT_CALL(observer, OnSuggestionsShown(::testing::Ref(autofill_manager()),
                                            testing::_));
-  delegate->OnSuggestionsShown(suggestions, std::nullopt);
+  delegate->OnSuggestionsShown(suggestions, /*metadata=*/{});
 
   autofill_manager().RemoveObserver(&observer);
 }
@@ -965,7 +1004,7 @@ TEST_F(OmniboxAutofillDelegateTest, OnSuggestionsShown_LogFormEvents) {
   std::vector<Suggestion> suggestions = {
       Suggestion(SuggestionType::kCreditCardEntry)};
 
-  delegate->OnSuggestionsShown(suggestions, std::nullopt);
+  delegate->OnSuggestionsShown(suggestions, /*metadata=*/{});
 
   // Verify interaction and shown form events.
   histogram_tester.ExpectBucketCount(
@@ -1004,7 +1043,7 @@ TEST_F(OmniboxAutofillDelegateTest, OnSuggestionsShown_LogTimingMetrics) {
   std::vector<Suggestion> suggestions = {
       Suggestion(SuggestionType::kCreditCardEntry)};
 
-  delegate->OnSuggestionsShown(suggestions, std::nullopt);
+  delegate->OnSuggestionsShown(suggestions, /*metadata=*/{});
 
   // Verify timing metrics logging.
   histogram_tester.ExpectTotalCount(
@@ -1024,7 +1063,7 @@ TEST_F(OmniboxAutofillDelegateTest, OnSuggestionsShown_LogFunnelMetrics) {
   std::vector<Suggestion> suggestions = {
       Suggestion(SuggestionType::kCreditCardEntry)};
 
-  delegate->OnSuggestionsShown(suggestions, std::nullopt);
+  delegate->OnSuggestionsShown(suggestions, /*metadata=*/{});
 
   // Reset the manager to trigger logger destruction and metrics logging.
   test_api(autofill_manager()).Reset();
@@ -1054,7 +1093,7 @@ TEST_F(OmniboxAutofillDelegateTest, OnSuggestionsShown_DoesNotLogKeyMetrics) {
   std::vector<Suggestion> suggestions = {
       Suggestion(SuggestionType::kCreditCardEntry)};
 
-  delegate->OnSuggestionsShown(suggestions, std::nullopt);
+  delegate->OnSuggestionsShown(suggestions, /*metadata=*/{});
 
   // Reset the manager to trigger logger destruction and metrics logging.
   test_api(autofill_manager()).Reset();
@@ -1085,7 +1124,7 @@ TEST_F(OmniboxAutofillDelegateTest,
   std::vector<Suggestion> suggestions = {
       Suggestion(SuggestionType::kCreditCardEntry)};
 
-  delegate->OnSuggestionsShown(suggestions, std::nullopt);
+  delegate->OnSuggestionsShown(suggestions, /*metadata=*/{});
 
   histogram_tester.ExpectBucketCount("Autofill.OmniboxAutofill.Events",
                                      OmniboxAutofillEvents::kChipClicked, 1);
@@ -1138,7 +1177,8 @@ TEST_F(OmniboxAutofillDelegateTest,
 
   Suggestion suggestion(SuggestionType::kCreditCardEntry);
 
-  delegate->DidAcceptSuggestion(suggestion, /*metadata=*/{});
+  delegate->DidAcceptSuggestion(suggestion, /*metadata=*/{}, form.global_id(),
+                                form.fields().front().global_id());
 
   histogram_tester.ExpectBucketCount("Autofill.OmniboxAutofill.Events",
                                      OmniboxAutofillEvents::kSuggestionAccepted,
@@ -1192,7 +1232,7 @@ TEST_F(OmniboxAutofillDelegateTest,
   // prerequisite for logging submission metrics.
   std::vector<Suggestion> suggestions = {
       Suggestion(SuggestionType::kCreditCardEntry)};
-  delegate->OnSuggestionsShown(suggestions, std::nullopt);
+  delegate->OnSuggestionsShown(suggestions, /*metadata=*/{});
 
   // Fill the form synchronously using the local card.
   AutofillForm(form, local_card);
@@ -1223,8 +1263,8 @@ class RoutingMockAutofillDriver : public TestAutofillDriver {
       const FillId& fill_id,
       bool supports_refill,
       const url::Origin& triggered_origin,
-      const absl::flat_hash_map<FieldGlobalId, FieldType>& field_type_map,
-      const Section& section_for_clear_form_on_ios) override {
+      const absl::flat_hash_map<FieldGlobalId, FieldType>& field_type_map)
+      override {
     url::Origin main_origin =
         GetAutofillClient().GetLastCommittedPrimaryMainFrameOrigin();
     return router().ApplyFormAction(
@@ -1417,7 +1457,8 @@ TEST_F(OmniboxAutofillDelegateFillingTest, FillOrPreviewCard_SubframeForm) {
   std::string guid = cards[0]->guid();
   suggestion.payload = Suggestion::Guid(guid);
 
-  delegate->DidSelectSuggestion(suggestion);
+  delegate->DidSelectSuggestion(suggestion, child_form.global_id(),
+                                child_form.fields().front().global_id());
 
   // Trigger fill (DidAcceptSuggestion).
   EXPECT_CALL(autofill_driver(1),
@@ -1426,7 +1467,8 @@ TEST_F(OmniboxAutofillDelegateFillingTest, FillOrPreviewCard_SubframeForm) {
       .Times(1);
   EXPECT_CALL(autofill_driver(0), ExecuteApplyFormAction).Times(0);
 
-  delegate->DidAcceptSuggestion(suggestion, {});
+  delegate->DidAcceptSuggestion(suggestion, {}, child_form.global_id(),
+                                child_form.fields().front().global_id());
 }
 
 // Tests that selecting and accepting a credit card suggestion for a main frame
@@ -1476,7 +1518,8 @@ TEST_F(OmniboxAutofillDelegateFillingTest, FillOrPreviewCard_MainFrameForm) {
   std::string guid = cards[0]->guid();
   suggestion.payload = Suggestion::Guid(guid);
 
-  delegate->DidSelectSuggestion(suggestion);
+  delegate->DidSelectSuggestion(suggestion, form.global_id(),
+                                form.fields().front().global_id());
 
   // Trigger fill (DidAcceptSuggestion).
   EXPECT_CALL(autofill_driver(0),
@@ -1484,7 +1527,8 @@ TEST_F(OmniboxAutofillDelegateFillingTest, FillOrPreviewCard_MainFrameForm) {
                                      mojom::ActionPersistence::kFill))
       .Times(1);
 
-  delegate->DidAcceptSuggestion(suggestion, {});
+  delegate->DidAcceptSuggestion(suggestion, {}, form.global_id(),
+                                form.fields().front().global_id());
 }
 
 }  // namespace

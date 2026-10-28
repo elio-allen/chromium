@@ -36,9 +36,13 @@ bool GlicSplitButtonDelegate::GetIsShowingGlicActorTaskIconNudge() {
 void GlicSplitButtonDelegate::SetGlicActorNudgeLabel(
     const std::u16string& nudge_label) {}
 void GlicSplitButtonDelegate::TriggerGlicActorNudge(
-    const std::u16string& nudge_text) {}
+    const std::u16string& nudge_label) {}
 void GlicSplitButtonDelegate::SetGlicActorNudgePressedState(bool pressed) {}
-void GlicSplitButtonDelegate::ShowActorTaskListBubble() {}
+void GlicSplitButtonDelegate::ShowActivityListBubble() {}
+void GlicSplitButtonDelegate::CloseActivityListBubble() {}
+bool GlicSplitButtonDelegate::IsActivityListBubbleShowing() {
+  return false;
+}
 void GlicSplitButtonDelegate::SetGlicShowState(bool show) {}
 void GlicSplitButtonDelegate::SetGlicPanelIsOpen(bool open) {}
 

@@ -6,15 +6,14 @@
  * @fileoverview Converts raw Mojom AST modules into intermediate TypeScript
  * model definitions.
  *
- * This stage parses raw Mojom types, structs, unions, and interfaces into
- * high-level intermediate TypeScript models (`Model`, `Interface`, `Enum`,
- * `BridgedInterface`). It handles:
+ * This stage parses raw Mojom types, structs, unions, and enums into
+ * intermediate TypeScript models (`MojomModel`, `Interface`, `Enum`). It
+ * handles:
  * - Parsing `@glic_*` comment annotations (e.g., `@glic_type`,
- * `@glic_optional`, `@glic_ignore`, `@glic_field`).
+ * `@glic_optional`, `@glic_ignore`).
  * - Mapping Mojom C++ primitive and system types to client-facing TypeScript
  * types.
- * - Resolving custom enum value mappings, public vs. private types, and
- * optional default annotations.
+ * - Resolving custom enum value mappings and optional default annotations.
  */
 
 import type {MojomEnum, MojomField, MojomModule, MojomStruct, MojomType, MojomUnion} from './mojom_types.js';
@@ -48,6 +47,7 @@ export const TYPE_MAPPINGS: Record<string, string> = {
   'mojo_base.mojom.ByteString': 'string',
   'gfx.mojom.Rect': 'Rect',
   'gfx.mojom.Point': 'Point',
+  'mojo_base.mojom.Time': 'Date',
 };
 
 export const STRINGLIKE_ID_RE = /(tab|window)(_i|I)d$/;
@@ -164,6 +164,8 @@ export class MojomModel {
         source = 'actor';
       } else if (module.filename.includes('glic_enums.mojom')) {
         source = 'glic_enums';
+      } else if (module.filename.includes('gemini_enterprise.mojom')) {
+        source = 'gemini_enterprise';
       }
       for (const e of module.enums) {
         const parsed = parseComments(e.comments);
@@ -299,7 +301,7 @@ export class MojomModel {
 
     // Check if it is alphanumeric (equivalent to isalnum in Python)
     if (/^[a-zA-Z0-9]+$/.test(mappedType)) {
-      if (!['string', 'boolean', 'number', 'any', 'void'].includes(
+      if (!['string', 'boolean', 'number', 'any', 'void', 'Date'].includes(
               mappedType)) {
         this.referencedTypes.add(mappedType);
       }

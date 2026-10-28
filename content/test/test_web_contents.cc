@@ -157,10 +157,12 @@ int TestWebContents::GetCurrentlyPlayingVideoCount() const {
 
 void TestWebContents::SetTabSwitchStartTime(base::TimeTicks start_time,
                                             bool destination_is_loaded,
-                                            bool had_saved_frame_at_start) {
+                                            bool had_saved_frame_at_start,
+                                            bool destination_is_frozen) {
   tab_switch_start_time_ = start_time;
   WebContentsImpl::SetTabSwitchStartTime(start_time, destination_is_loaded,
-                                         had_saved_frame_at_start);
+                                         had_saved_frame_at_start,
+                                         destination_is_frozen);
 }
 
 const std::string& TestWebContents::GetSaveFrameHeaders() {
@@ -277,7 +279,12 @@ void TestWebContents::TestDidFailLoadWithError(const GURL& url,
 }
 
 void TestWebContents::TestDidFirstVisuallyNonEmptyPaint() {
-  OnFirstVisuallyNonEmptyPaint(GetPrimaryPage());
+  // Call through PageImpl::OnFirstVisuallyNonEmptyPaint() (matching
+  // RenderFrameHostImpl::DidFirstVisuallyNonEmptyPaint() in production) so
+  // `PageImpl::did_first_visually_non_empty_paint_` is set to true (updating
+  // `WebContents::CompletedFirstVisuallyNonEmptyPaint()`) before delegating
+  // to `WebContentsImpl::OnFirstVisuallyNonEmptyPaint()` to notify observers.
+  GetPrimaryPage().OnFirstVisuallyNonEmptyPaint();
 }
 
 bool TestWebContents::CrossProcessNavigationPending() {
@@ -402,7 +409,7 @@ FrameTree* TestWebContents::CreateNewWindow(
     const mojom::CreateNewWindowParams& params,
     bool is_new_browsing_instance,
     bool has_user_gesture,
-    SessionStorageNamespace* session_storage_namespace) {
+    SessionStorageNamespaceHandle* session_storage_namespace) {
   return nullptr;
 }
 
@@ -669,6 +676,11 @@ void TestWebContents::GetRenderWidgetHostAtPointAsynchronously(
     const gfx::PointF& point,
     base::OnceCallback<void(base::WeakPtr<RenderWidgetHostViewBase>,
                             std::optional<gfx::PointF>)> callback) {
+  if (!root_view) {
+    std::move(callback).Run(nullptr, std::nullopt);
+    return;
+  }
+
   // If defer flag is disabled, call base implementation synchronously.
   if (!defer_get_render_widget_host_at_point_) {
     WebContentsImpl::GetRenderWidgetHostAtPointAsynchronously(

@@ -24,16 +24,13 @@ import org.chromium.base.ApkInfo;
 import org.chromium.base.ChildBindingState;
 import org.chromium.base.JavaExceptionReporter;
 import org.chromium.base.Log;
-import org.chromium.base.MemoryPressureLevel;
 import org.chromium.base.MemoryPressureListener;
 import org.chromium.base.PackageUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.TraceEvent;
 import org.chromium.base.library_loader.IRelroLibInfo;
-import org.chromium.base.memory.MemoryPressureCallback;
 import org.chromium.base.memory.SelfFreezeCallback;
 import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
@@ -184,11 +181,6 @@ public class ChildProcessConnection {
         }
     }
 
-    /** Run time check if variable number of connections is supported. */
-    public static boolean supportVariableConnections() {
-        return BindService.supportVariableConnections();
-    }
-
     /** The string passed to bindToCaller to identify this class loader. */
     @VisibleForTesting
     public static String getBindToCallerClazz() {
@@ -303,7 +295,6 @@ public class ChildProcessConnection {
     @GuardedBy("mProcessStateLock")
     private boolean mKilledByUs;
 
-    private @Nullable MemoryPressureCallback mMemoryPressureCallback;
     private @Nullable SelfFreezeCallback mSelfFreezeCallback;
 
     // If the process threw an exception before entering the main loop, the exception
@@ -365,13 +356,9 @@ public class ChildProcessConnection {
         mIndependentFallback = independentFallback;
         mIsSandboxedForHistograms = isSandboxedForHistograms;
 
-        // Incremental install does not work with isolatedProcess, and externalService requires
-        // isolatedProcess, so both need to be turned off for incremental install.
         int defaultBindFlags =
                 Context.BIND_AUTO_CREATE
-                        | ((bindAsExternalService && !BuildConfig.IS_INCREMENTAL_INSTALL)
-                                ? Context.BIND_EXTERNAL_SERVICE
-                                : 0);
+                        | (bindAsExternalService ? Context.BIND_EXTERNAL_SERVICE : 0);
 
         if (connectionFactory == null) {
             connectionFactory =
@@ -669,7 +656,7 @@ public class ChildProcessConnection {
                 // browser process launched (i.e. if the install somehow did not kill our process)
                 PackageInfo latestPackage = PackageUtils.getApplicationPackageInfo(0);
                 long latestVersionCode = latestPackage.getLongVersionCode();
-                long loadedVersionCode = BuildConfig.VERSION_CODE;
+                long loadedVersionCode = ApkInfo.getPackageVersionCodeAsLong();
                 if (latestVersionCode != loadedVersionCode) {
                     // Crashing the process is likely to improve the situation - when we are next
                     // launched, we should be running the new version and match new children.
@@ -693,12 +680,6 @@ public class ChildProcessConnection {
             }
 
             mServiceConnectComplete = true;
-
-            if (mMemoryPressureCallback == null) {
-                final MemoryPressureCallback callback = this::onMemoryPressure;
-                ThreadUtils.postOnUiThread(() -> MemoryPressureListener.addCallback(callback));
-                mMemoryPressureCallback = callback;
-            }
 
             if (mSelfFreezeCallback == null) {
                 final SelfFreezeCallback callback = this::onSelfFreeze;
@@ -1005,12 +986,6 @@ public class ChildProcessConnection {
         mConnectionParams = null;
         mConnectionController.unbind();
 
-        if (mMemoryPressureCallback != null) {
-            final MemoryPressureCallback callback = mMemoryPressureCallback;
-            ThreadUtils.postOnUiThread(() -> MemoryPressureListener.removeCallback(callback));
-            mMemoryPressureCallback = null;
-        }
-
         if (mSelfFreezeCallback != null) {
             final SelfFreezeCallback callback = mSelfFreezeCallback;
             MemoryPressureListener.removeSelfFreezeCallback(callback);
@@ -1208,19 +1183,6 @@ public class ChildProcessConnection {
 
     private boolean getAlwaysFallback() {
         return sAlwaysFallback && !mIndependentFallback;
-    }
-
-    private void onMemoryPressure(@MemoryPressureLevel int pressure) {
-        mLauncherHandler.post(() -> onMemoryPressureOnLauncherThread(pressure));
-    }
-
-    private void onMemoryPressureOnLauncherThread(@MemoryPressureLevel int pressure) {
-        if (mService == null) return;
-        try {
-            mService.onMemoryPressure(pressure);
-        } catch (RemoteException ex) {
-            // Ignore
-        }
     }
 
     private void onSelfFreeze() {

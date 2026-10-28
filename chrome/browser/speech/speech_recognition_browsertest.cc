@@ -3,17 +3,25 @@
 // found in the LICENSE file.
 
 #include <memory>
+#include <utility>
 
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
+#include "base/location.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/bind_post_task.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "build/build_config.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/speech/chrome_speech_recognition_manager_delegate.h"
 #include "chrome/browser/speech/fake_speech_recognition_service.h"
 #include "chrome/browser/speech/speech_recognition_service_factory.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "extensions/buildflags/buildflags.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "ash/accessibility/accessibility_controller.h"
 #include "ash/constants/ash_features.h"
 #include "chrome/browser/speech/cros_speech_recognition_service_factory.h"
 #endif
@@ -24,6 +32,7 @@
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/global_routing_id.h"
+#include "content/public/browser/speech_recognition_session_config.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/child_process_id.h"
 #include "content/public/test/browser_test.h"
@@ -34,7 +43,6 @@
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/extensions/extension_service.h"
-#include "chrome/browser/profiles/profile.h"
 #include "extensions/browser/process_map.h"
 #endif
 
@@ -63,6 +71,12 @@ class ChromeSpeechRecognitionTest : public InProcessBrowserTest {
       content::GlobalRenderFrameHostId global_id) {
     ChromeSpeechRecognitionManagerDelegate::CheckRenderFrameType(
         std::move(callback), global_id);
+  }
+
+  void CheckRecognitionIsAllowed(
+      int session_id,
+      base::OnceCallback<void(bool ask_user, bool is_allowed)> callback) {
+    delegate_.CheckRecognitionIsAllowed(session_id, std::move(callback));
   }
 
   void SetUp() override {
@@ -203,6 +217,56 @@ IN_PROC_BROWSER_TEST_F(ChromeSpeechRecognitionTest, TOCTOUPermissionBypass) {
   EXPECT_FALSE(future.Get<1>());
 }
 
+// Verifies that browser-initiated speech recognition requests without a
+// `RenderFrameHost` (default `GlobalRenderFrameHostId` with an invalid
+// `child_id`) are denied by default and allowed only when ChromeOS Dictation is
+// active.
+IN_PROC_BROWSER_TEST_F(ChromeSpeechRecognitionTest,
+                       BrowserInitiatedRecognitionWithoutRenderFrameHost) {
+#if BUILDFLAG(IS_CHROMEOS)
+  content::SpeechRecognitionSessionConfig config;
+  config.initial_context.global_id = content::GlobalRenderFrameHostId();
+  int session_id = fake_speech_recognition_manager_.CreateSession(config);
+
+  ASSERT_TRUE(ash::AccessibilityController::Get());
+  EXPECT_FALSE(ash::AccessibilityController::Get()->dictation_active());
+
+  base::test::TestFuture<bool /* ask_user */, bool /* is_allowed */>
+      denied_future;
+  content::GetIOThreadTaskRunner({})->PostTask(
+      FROM_HERE,
+      base::BindOnce(&ChromeSpeechRecognitionTest::CheckRecognitionIsAllowed,
+                     base::Unretained(this), session_id,
+                     base::BindPostTask(content::GetUIThreadTaskRunner({}),
+                                        denied_future.GetCallback())));
+  EXPECT_FALSE(denied_future.Get<0>());
+  EXPECT_FALSE(denied_future.Get<1>());
+
+  ash::AccessibilityController::Get()->SetDictationActive(true);
+  EXPECT_TRUE(ash::AccessibilityController::Get()->dictation_active());
+
+  base::test::TestFuture<bool /* ask_user */, bool /* is_allowed */>
+      allowed_future;
+  content::GetIOThreadTaskRunner({})->PostTask(
+      FROM_HERE,
+      base::BindOnce(&ChromeSpeechRecognitionTest::CheckRecognitionIsAllowed,
+                     base::Unretained(this), session_id,
+                     base::BindPostTask(content::GetUIThreadTaskRunner({}),
+                                        allowed_future.GetCallback())));
+  EXPECT_FALSE(allowed_future.Get<0>());
+  EXPECT_TRUE(allowed_future.Get<1>());
+
+  ash::AccessibilityController::Get()->SetDictationActive(false);
+#else
+  base::test::TestFuture<bool /* ask_user */, bool /* is_allowed */> future;
+  CheckRenderFrameType(base::BindPostTask(content::GetUIThreadTaskRunner({}),
+                                          future.GetCallback()),
+                       content::GlobalRenderFrameHostId());
+  EXPECT_FALSE(future.Get<0>());
+  EXPECT_FALSE(future.Get<1>());
+#endif
+}
+
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 // Verifies that extension background pages/service workers are successfully
 // granted permission despite having a null RenderFrameHost.
@@ -211,7 +275,7 @@ IN_PROC_BROWSER_TEST_F(ChromeSpeechRecognitionTest,
   base::test::TestFuture<bool /* ask_user */, bool /* is_allowed */> future;
 
   content::ChildProcessId process_id = browser()
-                                           ->tab_strip_model()
+                                           ->GetTabStripModel()
                                            ->GetActiveWebContents()
                                            ->GetPrimaryMainFrame()
                                            ->GetProcess()
@@ -238,7 +302,7 @@ IN_PROC_BROWSER_TEST_F(ChromeSpeechRecognitionTest,
 #if !BUILDFLAG(IS_ANDROID)
 IN_PROC_BROWSER_TEST_F(ChromeSpeechRecognitionTest,
                        IncognitoRoutesToIncognitoService) {
-  Browser* incognito_browser = CreateIncognitoBrowser();
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser();
   ASSERT_TRUE(incognito_browser);
 
   struct TestContext {
@@ -270,7 +334,7 @@ IN_PROC_BROWSER_TEST_F(ChromeSpeechRecognitionTest,
 #endif
 
   WebContents* web_contents =
-      incognito_browser->tab_strip_model()->GetActiveWebContents();
+      incognito_browser->GetTabStripModel()->GetActiveWebContents();
   ASSERT_TRUE(web_contents);
   content::RenderFrameHost* rfh = web_contents->GetPrimaryMainFrame();
   content::GlobalRenderFrameHostId rfh_id = rfh->GetGlobalId();

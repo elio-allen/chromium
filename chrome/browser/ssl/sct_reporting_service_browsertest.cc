@@ -19,6 +19,7 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "build/build_config.h"
@@ -27,7 +28,8 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ssl/cert_verifier_browser_test.h"
 #include "chrome/browser/ssl/sct_reporting_service_factory.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
@@ -1172,7 +1174,7 @@ IN_PROC_BROWSER_TEST_F(SCTReportingServiceBrowserTest,
   }
 
   // Trigger removal and wait for completion.
-  auto* contents = browser()->tab_strip_model()->GetActiveWebContents();
+  auto* contents = browser()->GetTabStripModel()->GetActiveWebContents();
   content::BrowsingDataRemover* remover =
       contents->GetBrowserContext()->GetBrowsingDataRemover();
   content::BrowsingDataRemoverCompletionObserver completion_observer(remover);

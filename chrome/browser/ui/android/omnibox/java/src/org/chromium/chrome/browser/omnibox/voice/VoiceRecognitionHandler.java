@@ -4,6 +4,9 @@
 
 package org.chromium.chrome.browser.omnibox.voice;
 
+import android.content.Context;
+import android.content.Intent;
+
 import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 
@@ -19,6 +22,8 @@ import org.chromium.chrome.browser.omnibox.OmniboxStub;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteCoordinator;
 import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionIntentHandler.VoiceInteractionSource;
 import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionIntentHandler.VoiceResult;
+import org.chromium.chrome.browser.preferences.Pref;
+import org.chromium.chrome.browser.preferences.PrefServiceUtil;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.tab.Tab;
@@ -27,6 +32,7 @@ import org.chromium.components.omnibox.AutocompleteMatch;
 import org.chromium.components.omnibox.AutocompleteRequestType;
 import org.chromium.components.omnibox.OmniboxFocusReason;
 import org.chromium.components.omnibox.TextSelection;
+import org.chromium.components.prefs.PrefChangeRegistrar;
 import org.chromium.content_public.browser.NavigationHandle;
 import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.WebContents;
@@ -53,9 +59,12 @@ public class VoiceRecognitionHandler {
     private final AutocompleteCoordinator mAutocompleteCoordinator;
     private final ObserverList<Observer> mObservers = new ObserverList<>();
     private @Nullable WebContentsObserver mVoiceSearchWebContentsObserver;
+    private @Nullable PrefChangeRegistrar mPrefChangeRegistrar;
     private CallbackController mCallbackController = new CallbackController();
     private final MonotonicObservableSupplier<Profile> mProfileSupplier;
+    private final WindowAndroid mWindowAndroid;
     private final VoiceRecognitionIntentHandler mIntentHandler;
+    private final VoicePlateIntentFactory mVoicePlateIntentFactory;
 
     /**
      * AssistantActionPerformed defined in tools/metrics/histograms/enums.xml.
@@ -99,7 +108,8 @@ public class VoiceRecognitionHandler {
                 autocompleteCoordinator,
                 windowAndroid,
                 profileSupplier,
-                new VoiceRecognitionIntentHandler(windowAndroid));
+                new VoiceRecognitionIntentHandler(windowAndroid),
+                new VoicePlateIntentFactory());
     }
 
     VoiceRecognitionHandler(
@@ -108,14 +118,17 @@ public class VoiceRecognitionHandler {
             AutocompleteCoordinator autocompleteCoordinator,
             WindowAndroid windowAndroid,
             MonotonicObservableSupplier<Profile> profileSupplier,
-            VoiceRecognitionIntentHandler intentHandler) {
+            VoiceRecognitionIntentHandler intentHandler,
+            VoicePlateIntentFactory voicePlateIntentFactory) {
         mOmniboxStub = omniboxStub;
         mLocationBarDataProvider = locationBarDataProvider;
         mAutocompleteCoordinator = autocompleteCoordinator;
+        mWindowAndroid = windowAndroid;
         mProfileSupplier = profileSupplier;
         mIntentHandler = intentHandler;
+        mVoicePlateIntentFactory = voicePlateIntentFactory;
         mProfileSupplier.addSyncObserverAndPostIfNonNull(
-                mCallbackController.makeCancelable(profile -> notifyVoiceAvailabilityImpacted()));
+                mCallbackController.makeCancelable(this::onProfileUpdated));
     }
 
     public void addObserver(Observer observer) {
@@ -128,11 +141,25 @@ public class VoiceRecognitionHandler {
 
     @SuppressWarnings("NullAway")
     public void destroy() {
+        if (mPrefChangeRegistrar != null) {
+            mPrefChangeRegistrar.destroy();
+            mPrefChangeRegistrar = null;
+        }
         if (mCallbackController != null) {
             mCallbackController.destroy();
             mCallbackController = null;
         }
         mIntentHandler.destroy();
+    }
+
+    private void onProfileUpdated(Profile profile) {
+        if (mPrefChangeRegistrar != null) {
+            mPrefChangeRegistrar.destroy();
+        }
+        mPrefChangeRegistrar = PrefServiceUtil.createFor(profile);
+        mPrefChangeRegistrar.addObserver(
+                Pref.AUDIO_CAPTURE_ALLOWED, this::notifyVoiceAvailabilityImpacted);
+        notifyVoiceAvailabilityImpacted();
     }
 
     private void notifyVoiceAvailabilityImpacted() {
@@ -260,6 +287,10 @@ public class VoiceRecognitionHandler {
     /**
      * Triggers a voice recognition intent to allow the user to specify a search query.
      *
+     * <p>Eligible requests are delegated to the Google app Voice Plate; see {@link
+     * VoicePlateIntentFactory}. Voice Plate transcriptions are treated as high confidence and
+     * navigate directly.
+     *
      * @param source The source of the voice recognition initiation, such as NTP or omnibox.
      * @param onCanceled The callback function to run when the voice recognition is canceled.
      */
@@ -287,13 +318,25 @@ public class VoiceRecognitionHandler {
                             onCanceled.run();
                         }
                     }
-                });
+                },
+                createVoicePlateIntent(source));
+    }
+
+    /**
+     * Returns the intent delegating voice recognition to the Google app Voice Plate, or null if the
+     * system speech recognizer should be used.
+     *
+     * @param source The source of the voice recognition initiation, such as NTP or omnibox.
+     */
+    private @Nullable Intent createVoicePlateIntent(@VoiceInteractionSource int source) {
+        Context context = mWindowAndroid.getContext().get();
+        if (context == null) return null;
+        return mVoicePlateIntentFactory.createIntent(context, mProfileSupplier.get(), source);
     }
 
     /** Returns whether voice search is enabled on the current tab. */
     public boolean isVoiceSearchEnabled() {
         if (mLocationBarDataProvider == null) return false;
-        if (mLocationBarDataProvider.isIncognito()) return false;
 
         return mIntentHandler.isVoiceSearchEnabled();
     }

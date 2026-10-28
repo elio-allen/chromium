@@ -106,7 +106,7 @@ public class TabContentManager {
     private final ArrayList<ThumbnailChangeListener> mListeners = new ArrayList<>();
 
     private final boolean mSnapshotsEnabled;
-    private final TabFinder mTabFinder;
+    private final @Nullable TabFinder mTabFinder;
     private final Context mContext;
     private final TabWindowManager mTabWindowManager;
 
@@ -149,7 +149,7 @@ public class TabContentManager {
             Context context,
             BrowserControlsStateProvider browserControlsStateProvider,
             boolean snapshotsEnabled,
-            TabFinder tabFinder,
+            @Nullable TabFinder tabFinder,
             TabWindowManager tabWindowManager) {
         mContext = context;
         mBrowserControlsStateProvider = browserControlsStateProvider;
@@ -205,6 +205,7 @@ public class TabContentManager {
             TabContentManagerJni.get().destroy(mNativeTabContentManager);
             mNativeTabContentManager = 0;
         }
+        mListeners.clear();
     }
 
     /**
@@ -775,7 +776,10 @@ public class TabContentManager {
         void invalidateIfChanged(
                 long nativeTabContentManager, int tabId, @JniType("GURL") GURL url);
 
-        void updateVisibleIds(long nativeTabContentManager, int[] priority, int primaryTabId);
+        void updateVisibleIds(
+                long nativeTabContentManager,
+                @JniType("std::vector<int32_t>") int[] priority,
+                int primaryTabId);
 
         void removeTabThumbnail(long nativeTabContentManager, int tabId);
 

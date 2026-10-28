@@ -16,14 +16,12 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.tab_bottom_sheet.WebViewResizingHelper.ResizeLock;
 
 /** Unit tests for {@link DragDirectionResizingStrategy}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class DragDirectionResizingStrategyUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -44,8 +42,10 @@ public class DragDirectionResizingStrategyUnitTest {
 
         // Dragging upward from 0 to 150 (below halfHeight 200) -> lock not acquired.
         mStrategy.onSheetOffsetChanged(50f, 0f, 200f, 1000f);
+        verify(mMockHelper).updatePlaceholderHeight(50);
         mStrategy.onSheetOffsetChanged(150f, 0f, 200f, 1000f);
         verify(mMockHelper, never()).requestResize();
+        verify(mMockHelper).updatePlaceholderHeight(150);
 
         // Dragging upward into range (500) -> lock acquired.
         mStrategy.onSheetOffsetChanged(500f, 0f, 200f, 1000f);
@@ -91,12 +91,14 @@ public class DragDirectionResizingStrategyUnitTest {
         // Drag all the way down to peek state (50 offset) -> lock unlocked and state reset.
         mStrategy.onSheetOffsetChanged(50f, 50f, 200f, 1000f);
         verify(mMockLock).unlock();
+        verify(mMockHelper).updatePlaceholderHeight(50);
 
         // Dragging back up from 50 to 100 (below half height) should NOT re-acquire lock because
         // downward state was reset.
         clearInvocations(mMockHelper);
         mStrategy.onSheetOffsetChanged(100f, 50f, 200f, 1000f);
         verify(mMockHelper, never()).requestResize();
+        verify(mMockHelper).updatePlaceholderHeight(100);
     }
 
     @Test

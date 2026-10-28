@@ -30,11 +30,10 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisableIf;
-import org.chromium.base.test.util.DisabledTest;
-import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
@@ -66,19 +65,16 @@ import java.util.concurrent.TimeoutException;
 @CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
 // TODO(http://crbug.com/495529795): Enable side panel and fix this test.
 @DisableFeatures({ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL})
-@DoNotBatch(reason = "This test relies on native initialization")
-@EnableFeatures({
-    SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-    SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-})
-@DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511288155
+@Batch(Batch.PER_CLASS)
+@EnableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
 public class MismatchNotificationControllerTest {
     private static final String TEST_URL = "https://www.google.com";
 
-    @Rule
-    public final CustomTabActivityTestRule mActivityTestRule = new CustomTabActivityTestRule();
+    @Rule(order = 0)
+    public final SigninTestRule mSigninTestRule = SigninTestRule.createWithCleanups();
 
-    @Rule public final SigninTestRule mSigninTestRule = new SigninTestRule();
+    @Rule(order = 1)
+    public final CustomTabActivityTestRule mActivityTestRule = new CustomTabActivityTestRule();
 
     private MismatchNotificationController mMismatchNotificationController;
     private MismatchNotificationChecker mMismatchNotificationChecker;
@@ -141,11 +137,8 @@ public class MismatchNotificationControllerTest {
 
     @Test
     @MediumTest
-    @DisabledTest(message = "Flaky. crbug.com/502972111")
-    @DisableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
+    @DisableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // TODO(crbug.com/570552795): Re-enable.
     public void testSignedOutMessagePrimaryButton_legacy() {
         ThreadUtils.runOnUiThreadBlocking(
                 () ->

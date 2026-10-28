@@ -13,7 +13,6 @@
 #include "base/memory/ref_counted.h"
 #include "base/synchronization/lock.h"
 #include "base/time/time.h"
-#include "gpu/command_buffer/service/dawn_caching_interface.h"
 #include "gpu/gpu_gles2_export.h"
 
 namespace gl {
@@ -24,28 +23,12 @@ namespace gpu::webgpu {
 
 class GPU_GLES2_EXPORT DawnPlatform : public dawn::platform::Platform {
  public:
-  explicit DawnPlatform(
-      std::unique_ptr<DawnCachingInterface> dawn_caching_interface,
-      gl::ProgressReporter* progress_reporter,
-      const char* uma_prefix,
-      bool record_cache_count_uma);
+  explicit DawnPlatform(gl::ProgressReporter* progress_reporter,
+                        const char* uma_prefix,
+                        bool record_cache_count_uma);
   ~DawnPlatform() override;
 
-  const unsigned char* GetTraceCategoryEnabledFlag(
-      dawn::platform::TraceCategory category) override;
-
   double MonotonicallyIncreasingTime() override;
-
-  uint64_t AddTraceEvent(char phase,
-                         const unsigned char* category_group_enabled,
-                         const char* name,
-                         uint64_t id,
-                         double timestamp,
-                         int num_args,
-                         const char** arg_names,
-                         const unsigned char* arg_types,
-                         const uint64_t* arg_values,
-                         unsigned char flags) override;
 
   void HistogramCustomCounts(const char* name,
                              int sample,
@@ -66,8 +49,6 @@ class GPU_GLES2_EXPORT DawnPlatform : public dawn::platform::Platform {
   void HistogramSparse(const char* name, int sample) override;
 
   void HistogramBoolean(const char* name, bool sample) override;
-
-  dawn::platform::CachingInterface* GetCachingInterface() override;
 
   std::unique_ptr<dawn::platform::WorkerTaskPool> CreateWorkerTaskPool()
       override;
@@ -104,7 +85,6 @@ class GPU_GLES2_EXPORT DawnPlatform : public dawn::platform::Platform {
                                  int max,
                                  int bucketCount);
 
-  std::unique_ptr<DawnCachingInterface> dawn_caching_interface_;
   const raw_ptr<gl::ProgressReporter> progress_reporter_;
   const std::string uma_prefix_;
 

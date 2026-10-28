@@ -11,7 +11,6 @@
 #include "chrome/browser/ui/zoom/chrome_zoom_level_prefs.h"
 #include "chrome/common/actor.mojom.h"
 #include "chrome/common/chrome_features.h"
-#include "chrome/test/base/test_browser_window.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
@@ -51,7 +50,8 @@ class ActorScrollToToolToctouBrowserTest : public ActorScrollToToolBrowserTest {
 };
 
 IN_PROC_BROWSER_TEST_F(ActorScrollToToolBrowserTest, FailsOnInvalidNodeID) {
-  const GURL url = embedded_test_server()->GetURL("/actor/scroll_to.html");
+  const GURL url = embedded_https_test_server().GetURL("example.com",
+                                                       "/actor/scroll_to.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   // Use a random node id that doesn't exist.
@@ -67,7 +67,8 @@ IN_PROC_BROWSER_TEST_F(ActorScrollToToolBrowserTest, FailsOnInvalidNodeID) {
 }
 
 IN_PROC_BROWSER_TEST_F(ActorScrollToToolBrowserTest, ScrollsToValidNodeID) {
-  const GURL url = embedded_test_server()->GetURL("/actor/scroll_to.html");
+  const GURL url = embedded_https_test_server().GetURL("example.com",
+                                                       "/actor/scroll_to.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   const gfx::RectF viewport_rect(0, 0, web_contents()->GetSize().width(),
@@ -91,7 +92,8 @@ IN_PROC_BROWSER_TEST_F(ActorScrollToToolBrowserTest, ScrollsToValidNodeID) {
 
 IN_PROC_BROWSER_TEST_F(ActorScrollToToolBrowserTest,
                        PositionFixed_DoesNotScroll) {
-  const GURL url = embedded_test_server()->GetURL("/actor/scroll_to.html");
+  const GURL url = embedded_https_test_server().GetURL("example.com",
+                                                       "/actor/scroll_to.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   int content_node_id = GetDOMNodeId(*main_frame(), "#fixed").value();
@@ -109,7 +111,8 @@ IN_PROC_BROWSER_TEST_F(ActorScrollToToolBrowserTest,
 IN_PROC_BROWSER_TEST_F(ActorScrollToToolToctouBrowserTest,
                        ScrollToTool_RequiresTargetInLastApc) {
   // Scroll-to rejects a target added after APC was saved.
-  const GURL url = embedded_test_server()->GetURL("/actor/scroll_to.html");
+  const GURL url = embedded_https_test_server().GetURL("example.com",
+                                                       "/actor/scroll_to.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   // Save APC before adding the target.
@@ -138,7 +141,8 @@ IN_PROC_BROWSER_TEST_F(ActorScrollToToolToctouBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(ActorScrollToToolBrowserTest,
                        DisplayNone_DoesNotScroll) {
-  const GURL url = embedded_test_server()->GetURL("/actor/scroll_to.html");
+  const GURL url = embedded_https_test_server().GetURL("example.com",
+                                                       "/actor/scroll_to.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   int content_node_id = GetDOMNodeId(*main_frame(), "#display-none").value();

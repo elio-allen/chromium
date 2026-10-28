@@ -37,6 +37,7 @@ content::WebUIDataSource* HistoryUtil::PopulateCommonSourceForHistory(
   static constexpr webui::LocalizedString kStrings[] = {
       // Localized strings (alphabetical order).
       {"actionMenuDescription", IDS_HISTORY_ACTION_MENU_DESCRIPTION},
+      {"actorTaskTooltip", IDS_HISTORY_ACTOR_TASK_TOOLTIP},
       {"ariaRoleDescription", IDS_HISTORY_ARIA_ROLE_DESCRIPTION},
       {"bookmarked", IDS_HISTORY_ENTRY_BOOKMARKED},
       {"cancel", IDS_CANCEL},
@@ -49,9 +50,14 @@ content::WebUIDataSource* HistoryUtil::PopulateCommonSourceForHistory(
       {"deleteConfirm", IDS_HISTORY_DELETE_PRIOR_VISITS_CONFIRM_BUTTON},
       {"deleteSession", IDS_HISTORY_OTHER_SESSIONS_HIDE_FOR_NOW},
       {"deleteWarning", IDS_HISTORY_DELETE_PRIOR_VISITS_WARNING},
+      {"deviceFilterAllDevices", IDS_HISTORY_DEVICE_FILTER_ALL_DEVICES},
       {"entrySummary", IDS_HISTORY_ENTRY_SUMMARY},
       {"expandSessionButton", IDS_HISTORY_OTHER_SESSIONS_EXPAND_SESSION},
       {"foundSearchResults", IDS_HISTORY_FOUND_SEARCH_RESULTS},
+      {"goToGeminiChat", IDS_HISTORY_GO_TO_GEMINI_CHAT},
+      {"goToGeminiChatError", IDS_HISTORY_GO_TO_GEMINI_CHAT_ERROR},
+      {"historyClustersTabLabel", IDS_HISTORY_CLUSTERS_BY_GROUP_TAB_LABEL},
+      {"historyListTabLabel", IDS_HISTORY_CLUSTERS_BY_DATE_TAB_LABEL},
       {"historyMenuButton", IDS_HISTORY_HISTORY_MENU_DESCRIPTION},
       {"historyMenuItem", IDS_HISTORY_HISTORY_MENU_ITEM},
       {"itemsSelected", IDS_HISTORY_ITEMS_SELECTED},
@@ -62,22 +68,33 @@ content::WebUIDataSource* HistoryUtil::PopulateCommonSourceForHistory(
       {"openAll", IDS_HISTORY_OTHER_SESSIONS_OPEN_ALL},
       {"openSelected", IDS_HISTORY_OPEN},
       {"openTabsMenuItem", IDS_HISTORY_OPEN_TABS_MENU_ITEM},
+      {"openWindowPlural", IDS_HISTORY_OTHER_SESSIONS_OPEN_WINDOW_PLURAL},
+      {"openWindowSingular", IDS_HISTORY_OTHER_SESSIONS_OPEN_WINDOW_SINGULAR},
+      {"noMatchingResults", IDS_HISTORY_NO_MATCHING_RESULTS},
       {"noResults", IDS_HISTORY_NO_RESULTS},
       {"noSearchResults", IDS_HISTORY_NO_SEARCH_RESULTS},
       {"removeBookmark", IDS_HISTORY_REMOVE_BOOKMARK},
       {"removeFromHistory", IDS_HISTORY_REMOVE_PAGE},
       {"removeSelected", IDS_HISTORY_REMOVE_SELECTED_ITEMS},
+      {"resetFilters", IDS_HISTORY_RESET_FILTERS},
       {"reviewGeminiActivity", IDS_HISTORY_REVIEW_GEMINI_ACTIVITY},
       {"geminiKeyBrowsingActionsTitle",
        IDS_HISTORY_GEMINI_KEY_BROWSING_ACTIONS_TITLE},
+      {"criticalActionLinkoutA11yLabel",
+       IDS_HISTORY_CRITICAL_ACTION_LINKOUT_A11Y_LABEL},
       {"searchPrompt", IDS_HISTORY_SEARCH_PROMPT},
       {"searchResult", IDS_HISTORY_SEARCH_RESULT},
       {"searchResults", IDS_HISTORY_SEARCH_RESULTS},
       {"searchResultExactMatch", IDS_HISTORY_SEARCH_EXACT_MATCH_RESULT},
       {"searchResultExactMatches", IDS_HISTORY_SEARCH_EXACT_MATCH_RESULTS},
+      {"sourceFilterAllActors", IDS_HISTORY_ACTOR_FILTER_ALL_ACTORS},
       {"sourceFilterChipsAriaLabel",
        IDS_HISTORY_SOURCE_FILTER_CHIPS_ARIA_LABEL},
       {"sourceFilterChipUser", IDS_HISTORY_SOURCE_FILTER_CHIP_USER},
+      {"syncedTabsWindowHeaderPlural",
+       IDS_HISTORY_OTHER_SESSIONS_WINDOW_HEADER_PLURAL},
+      {"syncedTabsWindowHeaderSingular",
+       IDS_HISTORY_OTHER_SESSIONS_WINDOW_HEADER_SINGULAR},
       {"title", IDS_HISTORY_TITLE},
   };
   source->AddLocalizedStrings(kStrings);
@@ -88,13 +105,6 @@ content::WebUIDataSource* HistoryUtil::PopulateCommonSourceForHistory(
           critical_actions::features::kCriticalActionHistory)
           ? IDS_HISTORY_SOURCE_FILTER_CHIP_ACTOR_GEMINI
           : IDS_HISTORY_SOURCE_FILTER_CHIP_ACTOR);
-
-  source->AddLocalizedString(
-      "actorTaskTooltip",
-      base::FeatureList::IsEnabled(
-          critical_actions::features::kCriticalActionHistory)
-          ? IDS_HISTORY_ACTOR_TASK_TOOLTIP_GEMINI
-          : IDS_HISTORY_ACTOR_TASK_TOOLTIP);
 
   source->AddString("myActivityGeminiAppsUrl",
                     chrome::kMyActivityGeminiAppsUrl);
@@ -115,6 +125,10 @@ content::WebUIDataSource* HistoryUtil::PopulateCommonSourceForHistory(
   history_embeddings::PopulateSourceForWebUI(source, profile);
 
   static constexpr webui::LocalizedString kHistoryEmbeddingsStrings[] = {
+      {"historyEmbeddingsAnswersPromoBody",
+       IDS_HISTORY_EMBEDDINGS_ANSWERS_PROMO_BODY},
+      {"historyEmbeddingsAnswersPromoHeading",
+       IDS_HISTORY_EMBEDDINGS_ANSWERS_PROMO_HEADING},
       {"historyEmbeddingsAnswersSearchAlternativePrompt1",
        IDS_HISTORY_EMBEDDINGS_SEARCH_ANSWERS_ALTERNATIVE_PROMPT_1},
       {"historyEmbeddingsAnswersSearchAlternativePrompt2",
@@ -123,6 +137,12 @@ content::WebUIDataSource* HistoryUtil::PopulateCommonSourceForHistory(
        IDS_HISTORY_EMBEDDINGS_SEARCH_ANSWERS_ALTERNATIVE_PROMPT_3},
       {"historyEmbeddingsAnswersSearchAlternativePrompt4",
        IDS_HISTORY_EMBEDDINGS_SEARCH_ANSWERS_ALTERNATIVE_PROMPT_4},
+      {"historyEmbeddingsPromoBody", IDS_HISTORY_EMBEDDINGS_PROMO_BODY},
+      {"historyEmbeddingsPromoClose", IDS_HISTORY_EMBEDDINGS_PROMO_CLOSE},
+      {"historyEmbeddingsPromoHeading", IDS_HISTORY_EMBEDDINGS_PROMO_HEADING},
+      {"historyEmbeddingsPromoLabel", IDS_HISTORY_EMBEDDINGS_PROMO_LABEL},
+      {"historyEmbeddingsPromoSettingsLinkText",
+       IDS_HISTORY_EMBEDDIGNS_PROMO_SETTINGS_LINK_TEXT},
       {"historyEmbeddingsShowByLabel",
        IDS_HISTORY_EMBEDDINGS_SHOW_BY_ARIA_LABEL},
       {"historyEmbeddingsShowByDate", IDS_HISTORY_EMBEDDINGS_SHOW_BY_DATE},

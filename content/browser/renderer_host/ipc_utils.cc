@@ -9,6 +9,7 @@
 
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
+#include "base/feature_list.h"
 #include "base/strings/string_util.h"
 #include "base/strings/to_string.h"
 #include "content/browser/bad_message.h"
@@ -26,7 +27,9 @@
 #include "content/public/common/url_constants.h"
 #include "mojo/public/cpp/system/message_pipe.h"
 #include "net/http/http_request_headers.h"
+#include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/mojom/navigation/navigation_params.mojom.h"
+#include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
 #include "ui/base/window_open_disposition.h"
 
 namespace content {
@@ -38,14 +41,14 @@ namespace {
 // render_frame_impl.cc.
 bool IsValidRendererDisposition(WindowOpenDisposition disposition) {
   switch (disposition) {
-    case WindowOpenDisposition::CURRENT_TAB:
-    case WindowOpenDisposition::NEW_FOREGROUND_TAB:
-    case WindowOpenDisposition::NEW_BACKGROUND_TAB:
-    case WindowOpenDisposition::NEW_POPUP:
-    case WindowOpenDisposition::NEW_WINDOW:
-    case WindowOpenDisposition::SAVE_TO_DISK:
-    case WindowOpenDisposition::NEW_PICTURE_IN_PICTURE:
-    case WindowOpenDisposition::NEW_SPLIT_VIEW:
+    case WindowOpenDisposition::kCurrentTab:
+    case WindowOpenDisposition::kNewForegroundTab:
+    case WindowOpenDisposition::kNewBackgroundTab:
+    case WindowOpenDisposition::kNewPopup:
+    case WindowOpenDisposition::kNewWindow:
+    case WindowOpenDisposition::kSaveToDisk:
+    case WindowOpenDisposition::kNewPictureInPicture:
+    case WindowOpenDisposition::kNewSplitView:
       return true;
     default:
       // Certain dispositions, such as SWITCH_TO_TAB, are only used internally
@@ -195,15 +198,36 @@ bool VerifyDownloadUrlParams(RenderProcessHost* process,
   if (!VerifyBlobToken(process_id, params.blob_url_token, params.url))
     return false;
 
+  // Unlike OpenURL (where a renderer may legitimately navigate to an external
+  // blob: URL without a token, e.g. via drag-and-drop), renderer-initiated
+  // downloads of blob: URLs always bind a BlobURLToken.
+  if (params.url.SchemeIsBlob() && !params.blob_url_token.is_valid()) {
+    bad_message::ReceivedBadMessage(
+        process_id, bad_message::RFH_DOWNLOAD_URL_BLOB_WITHOUT_TOKEN);
+    return false;
+  }
+
   // Verify |params.initiator_origin|.
   if (params.initiator_origin &&
       !VerifyInitiatorOrigin(process_id, *params.initiator_origin))
     return false;
 
-  // If |params.url| is not set, this must be a large data URL being passed
-  // through |params.data_url_blob|.
-  if (!params.url.is_valid() && !params.data_url_blob.is_valid())
+  // Verify |params.referrer|.
+  if (params.referrer && !params.referrer->url.is_empty()) {
+    auto* policy = ChildProcessSecurityPolicyImpl::GetInstance();
+    if (!policy->HostsOrigin(process_id.GetUnsafeValue(),
+                             url::Origin::Create(params.referrer->url))) {
+      bad_message::ReceivedBadMessage(
+          process_id, bad_message::RFH_DOWNLOAD_URL_INVALID_REFERRER);
+      return false;
+    }
+  }
+
+  // If `params.url` is not set, this must be a large data URL being passed
+  // through `params.data_url_buffer`.
+  if (!params.url.is_valid() && !params.data_url_buffer) {
     return false;
+  }
 
   // Verification succeeded.
   return true;
@@ -371,16 +395,6 @@ bool VerifyClientSideRedirectUrl(const RenderFrameHostImpl& current_rfh,
   CHECK_CURRENTLY_ON(BrowserThread::UI);
   CHECK(client_side_redirect_url);
 
-  RenderProcessHost* process = current_rfh.GetProcess();
-  CHECK(process);
-
-  if (process->FilterURL(true, client_side_redirect_url) ==
-      RenderProcessHost::FilterURLResult::kBlocked) {
-    bad_message::ReceivedBadMessage(
-        process, bad_message::RFHI_INVALID_CLIENT_SIDE_REDIRECT_URL);
-    return false;
-  }
-
   // `client_side_redirect_url` is only populated if the navigation's transition
   // type is a client side redirect. For all other renderer-initiated
   // navigations, it is intentionally empty.
@@ -388,9 +402,16 @@ bool VerifyClientSideRedirectUrl(const RenderFrameHostImpl& current_rfh,
     return true;
   }
 
+  RenderProcessHost* process = current_rfh.GetProcess();
+  CHECK(process);
+
+  process->FilterURL(false, client_side_redirect_url);
+
   // Verify that `process` has hosted `redirect_origin` either as a standard
   // tuple origin or as the precursor of an opaque origin (e.g. when the
-  // redirect is initiated by a sandboxed document).
+  // redirect is initiated by a sandboxed document). URLs blocked by FilterURL()
+  // are rewritten to about:blank#blocked, which is treated as the
+  // `current_rfh`'s origin.
   url::Origin redirect_origin = url::Origin::Resolve(
       *client_side_redirect_url, current_rfh.GetLastCommittedOrigin());
   auto* policy = ChildProcessSecurityPolicyImpl::GetInstance();
@@ -420,9 +441,32 @@ bool VerifyCreateNewWindowParams(const RenderFrameHostImpl& current_rfh,
   }
 
   if (params.pip_options &&
-      params.disposition != WindowOpenDisposition::NEW_PICTURE_IN_PICTURE) {
+      params.disposition != WindowOpenDisposition::kNewPictureInPicture) {
     bad_message::ReceivedBadMessage(
         process, bad_message::RFH_CREATE_NEW_WINDOW_INVALID_PIP_OPTIONS);
+    return false;
+  }
+
+  // Split tab hints may only be sent when the WindowOpenSplitTab feature is
+  // enabled. The Blink runtime feature follows any override of the
+  // base::Feature, so a well-behaved renderer never sends these when the
+  // base::Feature is disabled. The position and size hints are only sent along
+  // with a split request, and the size is always in
+  // [kMinSplitSize, kMaxSplitSize].
+  CHECK(params.features);
+  const blink::mojom::WindowFeatures& features = *params.features;
+  const bool has_split_hints =
+      features.split_position != blink::mojom::SplitTabPosition::kUnspecified ||
+      features.split_size.has_value();
+  if ((features.is_split || has_split_hints) &&
+      (!base::FeatureList::IsEnabled(blink::features::kWindowOpenSplitTab) ||
+       !features.is_split ||
+       (features.split_size.has_value() &&
+        (*features.split_size < blink::mojom::WindowFeatures::kMinSplitSize ||
+         *features.split_size >
+             blink::mojom::WindowFeatures::kMaxSplitSize)))) {
+    bad_message::ReceivedBadMessage(
+        process, bad_message::RFH_CREATE_NEW_WINDOW_INVALID_SPLIT_TAB_FEATURES);
     return false;
   }
 
@@ -432,6 +476,16 @@ bool VerifyCreateNewWindowParams(const RenderFrameHostImpl& current_rfh,
     bad_message::ReceivedBadMessage(process,
                                     bad_message::ILLEGAL_UPLOAD_PARAMS);
     return false;
+  }
+
+  // Verify `referrer`.
+  if (params.referrer && !params.referrer->url.is_empty()) {
+    if (!policy->HostsOrigin(process->GetID().GetUnsafeValue(),
+                             url::Origin::Create(params.referrer->url))) {
+      bad_message::ReceivedBadMessage(
+          process, bad_message::RFH_CREATE_NEW_WINDOW_INVALID_REFERRER);
+      return false;
+    }
   }
 
   return true;

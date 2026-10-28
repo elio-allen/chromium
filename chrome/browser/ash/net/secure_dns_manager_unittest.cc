@@ -29,7 +29,7 @@
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/testing_pref_service.h"
-#include "components/session_manager/test/test_user_session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/test/browser_task_environment.h"
 #include "google_apis/gaia/gaia_id.h"
@@ -198,15 +198,16 @@ class SecureDnsManagerTest : public testing::Test {
                                                  local_state());
     network_handler_test_helper_.AddDefaultProfiles();
 
-    test_user_session_manager_ =
-        std::make_unique<ash::test::TestUserSessionManager>(local_state());
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(local_state());
 
     // Add a user for test.
-    user_ = test_user_session_manager_->AddRegularUser(kTestAccountId);
+    user_ = user_session_test_environment_->AddRegularUser(kTestAccountId);
     ASSERT_TRUE(user_);
 
     // Simulate login.
-    test_user_session_manager_->LogIn(kTestAccountId);
+    user_session_test_environment_->LogIn(kTestAccountId);
+    // TODO(crbug.com/40225390): Use ProfileUserManagerController.
     user_manager::UserManager::Get()->OnUserProfileCreated(kTestAccountId,
                                                            &profile_prefs_);
 
@@ -235,7 +236,7 @@ class SecureDnsManagerTest : public testing::Test {
     user_manager::UserManager::Get()->OnUserProfileWillBeDestroyed(
         kTestAccountId);
     user_ = nullptr;
-    test_user_session_manager_.reset();
+    user_session_test_environment_.reset();
     NetworkHandler::Get()->ShutdownPrefServices();
   }
 
@@ -262,7 +263,8 @@ class SecureDnsManagerTest : public testing::Test {
  private:
   content::BrowserTaskEnvironment task_environment_;
   NetworkHandlerTestHelper network_handler_test_helper_;
-  std::unique_ptr<ash::test::TestUserSessionManager> test_user_session_manager_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
   std::unique_ptr<StubResolverConfigReader> stub_resolver_config_reader_;
   raw_ptr<user_manager::User> user_;
   TestingPrefServiceSimple profile_prefs_;
@@ -599,9 +601,18 @@ TEST_F(SecureDnsManagerTest, NoDuplicateShillPropertyUpdateRequests) {
   // The two calls are generated:
   // 1. at startup, with an empty value
   // 2. after the template URI resolver is configured
+  base::RunLoop provider_property_update_loop;
+  int providers_property_update_count = 0;
   EXPECT_CALL(observer, OnPropertyChanged(shill::kDNSProxyDOHProvidersProperty,
                                           testing::_))
-      .Times(2);
+      .Times(2)
+      .WillRepeatedly(
+          [&providers_property_update_count, &provider_property_update_loop](
+              const std::string&, const base::Value&) {
+            if (++providers_property_update_count == 2) {
+              provider_property_update_loop.Quit();
+            }
+          });
 
   ash::ShillManagerClient* shill_manager_client =
       ash::ShillManagerClient::Get();
@@ -635,7 +646,7 @@ TEST_F(SecureDnsManagerTest, NoDuplicateShillPropertyUpdateRequests) {
   // Verify that every pref update above will trigger an update request for the
   // DoH providers.
   EXPECT_EQ(actual_uri_template_update_count, 3);
-  base::RunLoop().RunUntilIdle();
+  provider_property_update_loop.Run();
 }
 
 TEST_F(SecureDnsManagerTest, SetDOHIncludedDomains) {

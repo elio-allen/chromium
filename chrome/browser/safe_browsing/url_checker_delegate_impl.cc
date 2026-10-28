@@ -21,7 +21,7 @@
 #include "components/safe_browsing/content/browser/triggers/suspicious_site_trigger.h"
 #include "components/safe_browsing/content/browser/ui_manager.h"
 #include "components/safe_browsing/core/browser/db/database_manager.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -34,6 +34,8 @@
 #include "chrome/browser/android/customtabs/client_data_header_web_contents_observer.h"
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/safe_browsing/android/suspicious_site_controller_android.h"
+#else
+#include "chrome/browser/safe_browsing/suspicious_site_warnings/suspicious_site_ui.h"  // nogncheck
 #endif
 
 namespace safe_browsing {
@@ -166,15 +168,14 @@ void UrlCheckerDelegateImpl::NotifySuspiciousSiteDetected(
 }
 
 void UrlCheckerDelegateImpl::ShowSuspiciousSiteWarning(
-    int64_t navigation_id,
+    const security_interstitials::UnsafeResource& resource,
     const base::RepeatingCallback<content::WebContents*()>&
         web_contents_getter) {
-#if BUILDFLAG(IS_ANDROID)
   content::GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
       base::BindOnce(
           [](scoped_refptr<UrlCheckerDelegateImpl> delegate,
-             int64_t navigation_id,
+             const security_interstitials::UnsafeResource& resource,
              const base::RepeatingCallback<content::WebContents*()>&
                  web_contents_getter) {
             if (!delegate->AreSuspiciousSiteWarningsAllowed(
@@ -182,12 +183,15 @@ void UrlCheckerDelegateImpl::ShowSuspiciousSiteWarning(
               return;
             }
             if (content::WebContents* contents = web_contents_getter.Run()) {
+#if BUILDFLAG(IS_ANDROID)
               safe_browsing::SuspiciousSiteControllerAndroid::
-                  ShowForWebContents(contents, navigation_id);
+                  ShowForWebContents(contents, resource);
+#else
+              safe_browsing::ShowSuspiciousSiteWarning(contents, resource);
+#endif
             }
           },
-          base::WrapRefCounted(this), navigation_id, web_contents_getter));
-#endif  // BUILDFLAG(IS_ANDROID)
+          base::WrapRefCounted(this), resource, web_contents_getter));
 }
 
 void UrlCheckerDelegateImpl::SendUrlRealTimeAndHashRealTimeDiscrepancyReport(

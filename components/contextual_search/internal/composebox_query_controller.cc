@@ -11,8 +11,10 @@
 #include <utility>
 #include <vector>
 
+#include "base/base64.h"
 #include "base/base64url.h"
 #include "base/debug/dump_without_crashing.h"
+#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/memory/scoped_refptr.h"
@@ -48,6 +50,8 @@
 #include "third_party/icu/source/common/unicode/locid.h"
 #include "third_party/icu/source/common/unicode/unistr.h"
 #include "third_party/icu/source/i18n/unicode/timezone.h"
+#include "third_party/lens_server_proto/added_inputs.pb.h"
+#include "third_party/lens_server_proto/aim_communication.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_contextual_inputs.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_interaction_request_metadata.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_lens_file.pb.h"
@@ -81,10 +85,14 @@ constexpr char kAimMultiContextQueryParameter[] = "amc";
 constexpr char kLnsModeQueryParameterKey[] = "lns_mode";
 constexpr char kLnsModeQueryParameterValue[] = "cvst";
 constexpr char kVoiceSearchQueryParameterKey[] = "gs_ivs";
-
+constexpr char kEncodeResponseIfExecutableHeader[] =
+    "X-Goog-Encode-Response-If-Executable";
+constexpr char kBase64Value[] = "base64";
 // TODO(crbug.com/432348301): Move away from hardcoded entrypoint and lns
 // surface values.
 constexpr char kLnsSurfaceParameterValue[] = "42";
+
+bool g_ignore_non_official_api_keys_for_testing = false;
 
 constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotationTag =
     net::DefineNetworkTrafficAnnotation("ntp_composebox_query_controller", R"(
@@ -122,10 +130,36 @@ constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotationTag =
       )");
 
 ComposeboxQueryController::UploadRequest::UploadRequest() = default;
-ComposeboxQueryController::UploadRequest::~UploadRequest() = default;
+
+ComposeboxQueryController::UploadRequest::~UploadRequest() {
+  base::UmaHistogramEnumeration("Lens.Composebox.ContextUpload.TerminalStatus",
+                                terminal_status);
+}
 
 ComposeboxQueryController::FileInfo::FileInfo() = default;
-ComposeboxQueryController::FileInfo::~FileInfo() = default;
+
+void ComposeboxQueryController::FileInfo::MarkAsCancelled() {
+  is_cancelled_ = true;
+  for (auto& upload_request : upload_requests_) {
+    if (upload_request &&
+        upload_request->terminal_status !=
+            ContextUploadTerminalStatus::kSuccess &&
+        upload_request->terminal_status !=
+            ContextUploadTerminalStatus::kHttpError) {
+      upload_request->terminal_status = ContextUploadTerminalStatus::kCancelled;
+    }
+  }
+}
+
+ComposeboxQueryController::FileInfo::~FileInfo() {
+  if (upload_requests_.empty() &&
+      (!input_data || !input_data->modality_chip_props.has_value())) {
+    base::UmaHistogramEnumeration(
+        "Lens.Composebox.ContextUpload.TerminalStatus",
+        is_cancelled_ ? ContextUploadTerminalStatus::kCancelled
+                      : ContextUploadTerminalStatus::kNeverIssued);
+  }
+}
 
 ComposeboxQueryController::LensServerInteractionRequest::
     LensServerInteractionRequest(
@@ -240,7 +274,8 @@ lens::Payload CreateContentextualDataUploadPayload(
     std::optional<std::string> drive_id,
     std::optional<std::string> resource_key,
     std::optional<std::string> file_name,
-    std::optional<std::string> parsed_url) {
+    std::optional<std::string> parsed_url,
+    std::optional<std::string> mime_type_string) {
   lens::Payload payload;
   auto* content = payload.mutable_content();
 
@@ -258,11 +293,14 @@ lens::Payload CreateContentextualDataUploadPayload(
 
   for (const lens::ContextualInput& context_input : context_inputs) {
     auto* content_data = content->add_content_data();
-    content_data->set_content_type(
-        MimeTypeToContentType(context_input.content_type_));
+    bool is_pdf =
+        context_input.content_type_ == lens::MimeType::kPdf ||
+        (mime_type_string.has_value() &&
+         base::StartsWith(mime_type_string.value(), "application/pdf"));
+    if (is_pdf) {
+      content_data->set_content_type(lens::ContentData::CONTENT_TYPE_PDF);
 
-    // Compress PDF bytes.
-    if (context_input.content_type_ == lens::MimeType::kPdf) {
+      // Compress PDF bytes.
       // If compression is successful, set the compression type and return.
       // Otherwise, fall back to the original bytes.
       if (lens::ZstdCompressBytes(context_input.bytes_,
@@ -270,6 +308,9 @@ lens::Payload CreateContentextualDataUploadPayload(
         content_data->set_compression_type(lens::CompressionType::ZSTD);
         continue;
       }
+    } else {
+      content_data->set_content_type(
+          MimeTypeToContentType(context_input.content_type_));
     }
 
     // Add non compressed bytes. This happens if compression fails or its not
@@ -401,17 +442,35 @@ bool ComposeboxQueryController::HasC2paMetadata(
     base::span<const uint8_t> bytes) {
   std::string_view bytes_to_search(reinterpret_cast<const char*>(bytes.data()),
                                    std::min(bytes.size(), kMaxC2paSearchBytes));
+  // TODO(crbug.com/555150321): Improve c2pa detection heuristic.
   return bytes_to_search.find(kC2paMarker) != std::string_view::npos;
+}
+
+bool ComposeboxQueryController::IsSupportedC2paMimeType(
+    std::optional<std::string_view> mime_type) {
+  if (!mime_type.has_value()) {
+    return false;
+  }
+  return base::EqualsCaseInsensitiveASCII(*mime_type, "image/jpeg") ||
+         base::EqualsCaseInsensitiveASCII(*mime_type, "image/jpg") ||
+         base::EqualsCaseInsensitiveASCII(*mime_type, "image/png") ||
+         base::EqualsCaseInsensitiveASCII(*mime_type, "image/webp") ||
+         base::EqualsCaseInsensitiveASCII(*mime_type, "image/heic") ||
+         base::EqualsCaseInsensitiveASCII(*mime_type, "image/heif");
 }
 
 std::optional<lens::ImageData>
 ComposeboxQueryController::MaybeCreateC2paBypassImageData(
     base::span<const uint8_t> original_image_bytes,
     int width,
-    int height) {
+    int height,
+    std::optional<std::string_view> mime_type_string) {
+  // TODO(crbug.com/555150730): Pass the c2pa header detection bit from Java to
+  // c++ so that c2pa header detection can be skipped in the c++ layer.
   if (original_image_bytes.empty() ||
       !base::FeatureList::IsEnabled(
           lens::features::kLensBypassCompressionForC2pa) ||
+      !IsSupportedC2paMimeType(mime_type_string) ||
       width * height > kMaxC2paPixels ||
       !HasC2paMetadata(original_image_bytes)) {
     return std::nullopt;
@@ -486,12 +545,14 @@ ComposeboxQueryController::ComposeboxQueryController(
     variations::VariationsClient* variations_client,
     std::unique_ptr<
         contextual_search::ContextualSearchContextController::ConfigParams>
-        feature_params)
+        feature_params,
+    GetAuthHeadersCallback get_auth_headers_callback)
     : identity_manager_(identity_manager),
       url_loader_factory_(url_loader_factory),
       channel_(channel),
       locale_(locale),
       template_url_service_(template_url_service),
+      get_auth_headers_callback_(std::move(get_auth_headers_callback)),
       variations_client_(variations_client),
       cluster_info_backoff_(&kClusterInfoBackoffPolicy) {
   send_lns_surface_ = feature_params->send_lns_surface;
@@ -532,10 +593,9 @@ ComposeboxQueryController::MimeTypeStringFromFileInfo(
     case lens::MimeType::kPlainText:
       return "text/plain";
     case lens::MimeType::kImage:
-      // Images always use jpeg encoding.
-      // TODO(crbug.com/481835802): Update this logic if webp encoding is
-      // turned on.
-      return "image/jpeg";
+      // This function is only used to populate Lens Added Inputs, which
+      // explicitly exclude image uploads.
+      NOTREACHED();
     case lens::MimeType::kAnnotatedPageContent:
       return "application/x-protobuf";
     case lens::MimeType::kUnknown:
@@ -607,14 +667,7 @@ ComposeboxQueryController::GetRequestIdForViewportImage(
   if (!file_info || !file_info->request_id.has_value()) {
     return lens::LensOverlayRequestId();
   }
-  if (use_separate_request_ids_for_viewport_images_) {
-    // Viewport images always come from tab data.
-    request_id_generator_.SetHasChromeTabData(true);
-    request_id_generator_.SetIsImplicitUpload(file_info->is_implicit_upload);
-    // Create a new request id for the viewport image upload request.
-    file_info->viewport_request_id_ = request_id_generator_.GetNextRequestId(
-        lens::RequestIdUpdateMode::kMultiContextUploadRequest,
-        lens::LensOverlayRequestId::MEDIA_TYPE_DEFAULT_IMAGE);
+  if (file_info->viewport_request_id_) {
     return *file_info->viewport_request_id_;
   }
   return file_info->request_id.value();
@@ -683,14 +736,21 @@ void ComposeboxQueryController::CreateSearchUrl(
   latest_interaction_request_data_.reset();
   num_files_in_request_ = 0;
 
+  bool is_aim_search =
+      search_url_request_info->search_url_type == SearchUrlType::kAim;
   bool should_create_multimodal_url =
       !active_files_.empty() && !search_url_request_info->file_tokens.empty();
+  bool should_wait_for_uploads =
+      is_any_context_uploading() &&
+      (!contextual_tasks::
+           GetIsContextualTasksNonBlockingUrlNavigationEnabled() ||
+       !is_aim_search);
   // If a multimodal URL is requested, but the cluster info has not been
   // received yet, store the request info and callback for later use.
   if ((should_create_multimodal_url &&
        query_controller_state_ ==
            QueryControllerState::kAwaitingClusterInfoResponse) ||
-      is_any_context_uploading()) {
+      should_wait_for_uploads) {
     // Since 1) `startFileUploadFlow` should clear past pending/files,
     // and 2) resuming the "pause" by running `pending_search_url_request`
     // clears the stashed request (callback) and calls this function:
@@ -710,8 +770,6 @@ void ComposeboxQueryController::CreateSearchUrl(
         {kVoiceSearchQueryParameterKey, "1"});
   }
 
-  bool is_aim_search =
-      search_url_request_info->search_url_type == SearchUrlType::kAim;
   bool send_upload_type =
       base::FeatureList::IsEnabled(
           contextual_tasks::kContextualTasksSendContextualInputUploadType) &&
@@ -744,6 +802,13 @@ void ComposeboxQueryController::CreateSearchUrl(
         {kAimMultiContextQueryParameter, "1"});
   }
 
+  if (should_create_multimodal_url) {
+    base::UmaHistogramBoolean("Lens.Composebox.SearchUrl.HasClusterInfo",
+                              cluster_info_.has_value());
+  }
+
+  size_t num_attached_files = search_url_request_info->file_tokens.size();
+  size_t num_validated_files = 0;
   if (should_create_multimodal_url && cluster_info_.has_value()) {
     std::unique_ptr<lens::LensOverlayContextualInputs> contextual_inputs =
         CreateContextualInputs(search_url_request_info->file_tokens,
@@ -751,7 +816,6 @@ void ComposeboxQueryController::CreateSearchUrl(
     const FileInfo* last_active_lens_file = nullptr;
     bool has_image_upload = false;
     bool has_drive_id = false;
-    size_t num_valid_lens_files = 0;
     for (const auto& file_token : search_url_request_info->file_tokens) {
       auto* file_info = GetMutableFileInfo(file_token);
       if (!file_info) {
@@ -761,7 +825,7 @@ void ComposeboxQueryController::CreateSearchUrl(
           IsValidContextUploadStatusForMultimodalRequest(
               file_info->upload_status) &&
           file_info->request_id.has_value()) {
-        num_valid_lens_files++;
+        num_validated_files++;
         if (file_info->input_data &&
             file_info->input_data->drive_id.has_value() &&
             !file_info->input_data->drive_id->empty()) {
@@ -782,7 +846,15 @@ void ComposeboxQueryController::CreateSearchUrl(
       }
     }
 
-    if (num_valid_lens_files > 0) {
+    if (num_attached_files > 0) {
+      base::UmaHistogramCounts100(
+          "Lens.Composebox.SearchUrl.ContextFilesAttached", num_attached_files);
+      base::UmaHistogramCounts100(
+          "Lens.Composebox.SearchUrl.ContextFilesValidatedAndIncluded",
+          num_validated_files);
+    }
+
+    if (num_validated_files > 0) {
       DCHECK(last_active_lens_file != nullptr);
       DCHECK(last_active_lens_file->request_id.has_value());
       request_id_generator_.SetHasChromeTabData(
@@ -828,7 +900,7 @@ void ComposeboxQueryController::CreateSearchUrl(
 
       // If there is only one valid lens file, determine if we should send the
       // vit parameter.
-      if (num_valid_lens_files == 1) {
+      if (num_validated_files == 1) {
         bool is_translate =
             search_url_request_info->lens_overlay_selection_type ==
             lens::TRANSLATE_CHIP;
@@ -922,6 +994,11 @@ void ComposeboxQueryController::CreateSearchUrl(
       }
       return;
     }
+  } else if (num_attached_files > 0) {
+    base::UmaHistogramCounts100(
+        "Lens.Composebox.SearchUrl.ContextFilesAttached", num_attached_files);
+    base::UmaHistogramCounts100(
+        "Lens.Composebox.SearchUrl.ContextFilesValidatedAndIncluded", 0);
   }
 
   // For queries in which the cluster info has expired, or without valid
@@ -998,7 +1075,7 @@ lens::ClientToAimMessage ComposeboxQueryController::CreateClientToAimRequest(
 
     for (const auto& file_token :
          create_client_to_aim_request_info->file_tokens) {
-      auto* file_info = GetFileInfo(file_token);
+      const FileInfo* file_info = GetMutableFileInfo(file_token);
       if (!file_info || file_info->is_superceded ||
           !IsValidContextUploadStatusForMultimodalRequest(
               file_info->upload_status) ||
@@ -1008,51 +1085,76 @@ lens::ClientToAimMessage ComposeboxQueryController::CreateClientToAimRequest(
         // AddedInputs field in the payload.
         continue;
       }
-      lens::LensImageQueryData* lens_image_query_data =
-          submit_query->mutable_payload()->add_lens_image_query_data();
-      lens_image_query_data->set_search_session_id(
-          cluster_info_->search_session_id());
-      lens_image_query_data->mutable_request_id()->CopyFrom(
-          file_info->request_id.value());
+      auto add_lens_image_query_data =
+          [&](const lens::LensOverlayRequestId& request_id) {
+            lens::LensImageQueryData* query_data =
+                submit_query->mutable_payload()->add_lens_image_query_data();
+            query_data->set_search_session_id(
+                cluster_info_->search_session_id());
+            query_data->mutable_request_id()->CopyFrom(request_id);
+            auto visual_input_type =
+                RequestIdToVisualInputType(query_data->request_id());
+            if (visual_input_type !=
+                lens::LensOverlayVisualInputType::VISUAL_INPUT_TYPE_UNKNOWN) {
+              query_data->set_visual_input_type(visual_input_type);
+            }
+            if (base::FeatureList::IsEnabled(
+                    contextual_tasks::
+                        kContextualTasksSendContextualInputUploadType) &&
+                contextual_tasks::kSendContextualInputUploadTypeInAimRequest
+                    .Get()) {
+              if (file_info->input_data &&
+                  file_info->input_data->upload_type.has_value()) {
+                query_data->set_contextual_input_upload_type(
+                    *file_info->input_data->upload_type);
+              }
+            }
+            return query_data;
+          };
+
       bool is_overlay_token =
           create_client_to_aim_request_info->overlay_token.has_value() &&
           file_token == *create_client_to_aim_request_info->overlay_token;
-      auto media_type =
-          (is_region_interaction && is_overlay_token)
-              ? lens::LensOverlayRequestId::MEDIA_TYPE_DEFAULT_IMAGE
-              : file_info->request_id->media_type();
-      lens_image_query_data->mutable_request_id()->set_media_type(media_type);
-      auto visual_input_type =
-          RequestIdToVisualInputType(lens_image_query_data->request_id());
-      if (visual_input_type !=
-          lens::LensOverlayVisualInputType::VISUAL_INPUT_TYPE_UNKNOWN) {
-        lens_image_query_data->set_visual_input_type(visual_input_type);
+      lens::LensOverlayRequestId file_request_id = *file_info->request_id;
+      if (is_region_interaction && is_overlay_token &&
+          !file_info->viewport_request_id_) {
+        file_request_id.set_media_type(
+            lens::LensOverlayRequestId::MEDIA_TYPE_DEFAULT_IMAGE);
+      }
+      lens::LensImageQueryData* lens_image_query_data =
+          add_lens_image_query_data(file_request_id);
+
+      if (file_info->input_data &&
+          file_info->input_data->drive_id.has_value() &&
+          !file_info->input_data->drive_id->empty()) {
+        lens_image_query_data->set_drive_id(*file_info->input_data->drive_id);
       }
 
-      if (base::FeatureList::IsEnabled(
-              contextual_tasks::
-                  kContextualTasksSendContextualInputUploadType) &&
-          contextual_tasks::kSendContextualInputUploadTypeInAimRequest.Get()) {
-        if (file_info->input_data &&
-            file_info->input_data->upload_type.has_value()) {
-          lens_image_query_data->set_contextual_input_upload_type(
-              *file_info->input_data->upload_type);
-        }
+      // If the file has a separate viewport request ID (when
+      // `use_separate_request_ids_for_viewport_images_` is enabled), attach a
+      // second LensImageQueryData entry for the viewport image upload request.
+      lens::LensImageQueryData* viewport_query_data = nullptr;
+      if (file_info->viewport_request_id_) {
+        viewport_query_data =
+            add_lens_image_query_data(*file_info->viewport_request_id_);
       }
 
       // Only force interaction data for region searches when the overlay is
-      // open.
+      // open. Attach it to the viewport entry when separate viewport request
+      // IDs are used, since the region crop applies to the viewport image.
       std::optional<lens::LensOverlayVisualSearchInteractionData>
           visual_search_interaction_data = ConstructVisualSearchInteractionData(
-              static_cast<const FileInfo*>(file_info),
-              create_client_to_aim_request_info->query_text, std::nullopt,
+              file_info, create_client_to_aim_request_info->query_text,
+              std::nullopt,
               is_overlay_token
                   ? create_client_to_aim_request_info
                         ->force_include_latest_interaction_request_data
                   : false);
       if (visual_search_interaction_data.has_value()) {
-        lens_image_query_data->mutable_visual_search_interaction_data()
-            ->CopyFrom(visual_search_interaction_data.value());
+        lens::LensImageQueryData* interaction_target =
+            viewport_query_data ? viewport_query_data : lens_image_query_data;
+        interaction_target->mutable_visual_search_interaction_data()->CopyFrom(
+            visual_search_interaction_data.value());
       }
     }
 
@@ -1106,6 +1208,9 @@ void ComposeboxQueryController::StartFileUploadFlow(
       std::make_unique<base::ios::ScopedCriticalAction>("ComposeboxFileUpload");
 #endif
   file_info->file_token = file_token;
+  if (file_info->selection_time.is_null()) {
+    file_info->selection_time = base::Time::Now();
+  }
   if (contextual_input_data->primary_content_type.has_value()) {
     file_info->mime_type = contextual_input_data->primary_content_type.value();
   } else {
@@ -1164,6 +1269,13 @@ void ComposeboxQueryController::StartFileUploadFlow(
       UpdateContextUploadStatus(
           file_token, contextual_search::ContextUploadStatus::kUploadSuccessful,
           std::nullopt);
+    } else if (!IsGoogleChromeApiKeyUsed()) {
+      UpdateContextUploadStatus(
+          file_token, contextual_search::ContextUploadStatus::kProcessing,
+          std::nullopt);
+      UpdateContextUploadStatus(
+          file_token, contextual_search::ContextUploadStatus::kUploadFailed,
+          contextual_search::ContextUploadErrorType::kServerError);
     } else {
       UpdateContextUploadStatus(
           file_token, contextual_search::ContextUploadStatus::kProcessing,
@@ -1189,6 +1301,12 @@ void ComposeboxQueryController::StartFileUploadFlow(
   bool has_context_input = contextual_input_data->context_input.has_value() &&
                            !contextual_input_data->context_input->empty();
 
+  // For the multi-context input flow, whether or not to use the _AND_IMAGE
+  // media type depends on whether or not to use separate request ids for the
+  // viewport image upload request.
+  bool use_has_viewport_media_type =
+      has_viewport_screenshot && !use_separate_request_ids_for_viewport_images_;
+
   // Determine the update mode based on file type and viewport.
   lens::RequestIdUpdateMode base_update_mode =
       lens::RequestIdUpdateMode::kPageContentRequest;
@@ -1201,19 +1319,17 @@ void ComposeboxQueryController::StartFileUploadFlow(
     // page / pdf contents.
     if (has_context_input) {
       base_update_mode =
-          lens::RequestIdUpdateMode::kPageContentWithViewportRequest;
+          use_has_viewport_media_type
+              ? lens::RequestIdUpdateMode::kPageContentWithViewportRequest
+              : lens::RequestIdUpdateMode::kPageContentRequest;
     } else {
       base_update_mode = lens::RequestIdUpdateMode::kFullImageRequest;
     }
   }
 
-  // For the multi-context input flow, whether or not to use the _AND_IMAGE
-  // media type depends on whether or not to use separate request ids for the
-  // viewport image upload request.
-  bool use_has_viewport_media_type =
-      has_viewport_screenshot && !use_separate_request_ids_for_viewport_images_;
-
   std::optional<lens::LensOverlayRequestId> previous_request_id = std::nullopt;
+  std::optional<lens::LensOverlayRequestId> previous_viewport_request_id =
+      std::nullopt;
   if (contextual_input_data->context_id.has_value()) {
     for (const auto& [token, info] : active_files_) {
       if (!info) {
@@ -1231,12 +1347,46 @@ void ComposeboxQueryController::StartFileUploadFlow(
         previous_request_id = info->request_id_for_updates.has_value()
                                   ? info->request_id_for_updates
                                   : info->request_id;
+        // Extract the previous viewport request ID so recontextualization
+        // turns can increment the viewport stream's sequence_id and
+        // image_sequence_id while preserving its uuid and context_id.
+        if (info->viewport_request_id_) {
+          previous_viewport_request_id = *info->viewport_request_id_;
+        } else if (info->viewport_request_id_for_updates.has_value()) {
+          // The previous turn was a page-only update that carried forward an
+          // earlier turn's viewport request ID.
+          previous_viewport_request_id = info->viewport_request_id_for_updates;
+        }
+        if (use_separate_request_ids_for_viewport_images_ &&
+            previous_request_id.has_value() &&
+            previous_request_id->media_type() ==
+                lens::LensOverlayRequestId::MEDIA_TYPE_DEFAULT_IMAGE &&
+            info->mime_type != lens::MimeType::kImage) {
+          // The previous turn was a viewport-only tab upload whose request ID
+          // was stored directly in `info->request_id`.
+          previous_viewport_request_id = previous_request_id;
+          if (has_context_input) {
+            // A new page/PDF request ID must be minted on this turn.
+            previous_request_id = std::nullopt;
+          }
+        }
         break;
       }
     }
   }
 
-  if (previous_request_id.has_value()) {
+  if (use_separate_request_ids_for_viewport_images_ &&
+      current_file_info.mime_type != lens::MimeType::kImage &&
+      !has_context_input && has_viewport_screenshot &&
+      previous_request_id.has_value() &&
+      previous_request_id->media_type() !=
+          lens::LensOverlayRequestId::MEDIA_TYPE_DEFAULT_IMAGE) {
+    // Keep the prior page/PDF request ID unchanged since only the viewport
+    // screenshot is being reuploaded on this turn.
+    current_file_info.request_id = *previous_request_id;
+    current_file_info.request_id->set_is_implicit_upload(
+        current_file_info.is_implicit_upload);
+  } else if (previous_request_id.has_value()) {
     // If the previous request ID is available, increment the request ID
     // based on the content type. The media type is assumed to remain
     // unchanged since the previous request id was retrieved from the same
@@ -1299,9 +1449,58 @@ void ComposeboxQueryController::StartFileUploadFlow(
     }
   }
 
+  // When `use_separate_request_ids_for_viewport_images_` is enabled, page/PDF
+  // content and viewport screenshots use separate request IDs (with distinct
+  // `uuid`s sharing the same `context_id`) that are tracked and incremented
+  // independently across recontextualization turns.
+  if (use_separate_request_ids_for_viewport_images_ &&
+      current_file_info.mime_type != lens::MimeType::kImage &&
+      !current_file_info.input_data->drive_id.has_value() &&
+      !IsUnresolvedUrlUpload(current_file_info)) {
+    if (has_viewport_screenshot &&
+        current_file_info.request_id->media_type() !=
+            lens::LensOverlayRequestId::MEDIA_TYPE_DEFAULT_IMAGE) {
+      if (previous_viewport_request_id.has_value()) {
+        current_file_info.viewport_request_id_ =
+            request_id_generator_.CreateNextRequestIdForUpdate(
+                std::make_unique<lens::LensOverlayRequestId>(
+                    *previous_viewport_request_id),
+                lens::RequestIdUpdateMode::kFullImageRequest);
+        current_file_info.viewport_request_id_->set_has_chrome_tab_data(true);
+        current_file_info.viewport_request_id_->set_is_implicit_upload(
+            current_file_info.is_implicit_upload);
+      } else {
+        // Viewport images always come from tab data.
+        request_id_generator_.SetContextId(
+            current_file_info.request_id->context_id());
+        request_id_generator_.SetHasChromeTabData(true);
+        request_id_generator_.SetIsImplicitUpload(
+            current_file_info.is_implicit_upload);
+        request_id_generator_.SetDriveId(std::nullopt);
+        // Create a new request id for the viewport image upload request.
+        current_file_info.viewport_request_id_ =
+            request_id_generator_.GetNextRequestId(
+                lens::RequestIdUpdateMode::kMultiContextUploadRequest,
+                lens::LensOverlayRequestId::MEDIA_TYPE_DEFAULT_IMAGE);
+      }
+    } else if (!has_viewport_screenshot) {
+      // Carry forward any prior viewport request ID so a subsequent turn with
+      // a viewport screenshot can continue incrementing the same stream.
+      current_file_info.viewport_request_id_for_updates =
+          previous_viewport_request_id;
+    }
+  }
+
   UpdateContextUploadStatus(file_token,
                             contextual_search::ContextUploadStatus::kProcessing,
                             std::nullopt);
+
+  if (!IsGoogleChromeApiKeyUsed()) {
+    UpdateContextUploadStatus(
+        file_token, contextual_search::ContextUploadStatus::kUploadFailed,
+        contextual_search::ContextUploadErrorType::kServerError);
+    return;
+  }
 
   if (query_controller_state_ == QueryControllerState::kClusterInfoInvalid) {
     // If we've exhausted retries or are still in the backoff period, fail the
@@ -1357,9 +1556,11 @@ void ComposeboxQueryController::StartFileUploadFlow(
   // InitializeIfNeeded().
   // Async Flow 2: Retrieve the OAuth headers.
   current_file_info.context_upload_access_token_fetcher_ =
-      CreateOAuthHeadersAndContinue(base::BindOnce(
-          &ComposeboxQueryController::OnUploadRequestHeadersReady,
-          weak_ptr_factory_.GetWeakPtr(), file_token));
+      CreateAuthHeadersAndContinue(
+          auth_user_index_,
+          base::BindOnce(
+              &ComposeboxQueryController::OnUploadRequestHeadersReady,
+              weak_ptr_factory_.GetWeakPtr(), file_token));
 
   // Async Flow 3: Creating the file and viewport upload request.
   CreateUploadRequestBodiesAndContinue(
@@ -1428,6 +1629,15 @@ ComposeboxQueryController::CreateEndpointFetcher(
     const std::vector<std::string>& request_headers,
     const std::vector<std::string>& cors_exempt_headers,
     UploadProgressCallback upload_progress_callback) {
+  // TODO(crbug.com/549767486): Refactor Lens headers into
+  // EndpointFetcher::RequestParams::Header structs
+  std::vector<std::string> headers = request_headers;
+  if (lens::features::UseIdentityDelegationForLensComposeboxRequests()) {
+    // Request base64-encoded response from ESP safely.
+    headers.push_back(kEncodeResponseIfExecutableHeader);
+    headers.push_back(kBase64Value);
+  }
+
   return std::make_unique<EndpointFetcher>(
       url_loader_factory_, /*identity_manager=*/nullptr,
       EndpointFetcher::RequestParams::Builder(http_method,
@@ -1437,7 +1647,7 @@ ComposeboxQueryController::CreateEndpointFetcher(
           .SetContentType(kContentType)
           .SetCorsExemptHeaders(cors_exempt_headers)
           .SetCredentialsMode(CredentialsMode::kInclude)
-          .SetHeaders(request_headers)
+          .SetHeaders(headers)
           .SetPostData(std::move(request_string))
           .SetSetSiteForCookies(true)
           .SetTimeout(timeout)
@@ -1474,11 +1684,24 @@ lens::LensOverlayClientContext ComposeboxQueryController::CreateClientContext()
 bool ComposeboxQueryController::DeleteFile(
     const base::UnguessableToken& file_token) {
   MarkContextUploadAsInTerminalState(file_token);
-  return !!active_files_.erase(file_token);
+  auto it = active_files_.find(file_token);
+  if (it != active_files_.end()) {
+    if (it->second) {
+      it->second->MarkAsCancelled();
+    }
+    active_files_.erase(it);
+    return true;
+  }
+  return false;
 }
 
 void ComposeboxQueryController::ClearFiles() {
   pending_context_uploads_.clear();
+  for (auto& [token, file_info] : active_files_) {
+    if (file_info) {
+      file_info->MarkAsCancelled();
+    }
+  }
   active_files_.clear();
 
   // Uploading files no longer block the search URL creation.
@@ -1520,6 +1743,7 @@ ComposeboxQueryController::CreateContextualInputs(
         viewport_contextual_input->set_upload_type(
             *info->input_data->upload_type);
       }
+      viewport_contextual_input->set_is_viewport_image(true);
     }
   }
   return contextual_inputs;
@@ -1584,9 +1808,17 @@ ComposeboxQueryController::CreateSuggestInputs(
         lens::Base64EncodeRequestId(file_info->request_id.value()));
     // TODO(crbug.com/445777189): Support multi-context input id flow for
     // suggest.
-    suggest_inputs->set_contextual_visual_input_type(
-        lens::VitQueryParamValueForMediaType(
-            file_info->request_id->media_type()));
+    std::string vit_value;
+    if (file_info->request_id->media_type() ==
+            lens::LensOverlayRequestId::MEDIA_TYPE_RAW_FILE &&
+        file_info->mime_type_string.has_value()) {
+      vit_value = lens::VitQueryParamValueForMimeTypeString(
+          file_info->mime_type_string.value());
+    } else {
+      vit_value = lens::VitQueryParamValueForMediaType(
+          file_info->request_id->media_type());
+    }
+    suggest_inputs->set_contextual_visual_input_type(vit_value);
   }
 
   if (file_info && attach_page_title_and_url_to_suggest_requests_) {
@@ -1616,8 +1848,15 @@ ComposeboxQueryController::CreateSuggestInputs(
 // TODO(crbug.com/424869589): Clean up code duplication with
 // LensOverlayQueryController.
 std::unique_ptr<signin::PrimaryAccountAccessTokenFetcher>
-ComposeboxQueryController::CreateOAuthHeadersAndContinue(
+ComposeboxQueryController::CreateAuthHeadersAndContinue(
+    std::optional<size_t> auth_user_index,
     OAuthHeadersCreatedCallback callback) {
+  if (lens::features::UseIdentityDelegationForLensComposeboxRequests() &&
+      get_auth_headers_callback_) {
+    get_auth_headers_callback_.Run(auth_user_index, std::move(callback));
+    return nullptr;
+  }
+
   // Use OAuth if the user is logged in.
   if (identity_manager_ &&
       identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
@@ -1679,6 +1918,18 @@ void ComposeboxQueryController::ResetRequestClusterInfoState() {
   FetchClusterInfo();
 }
 
+// static
+base::AutoReset<bool>
+ComposeboxQueryController::SetIgnoreNonOfficialApiKeysForTesting(bool ignore) {
+  return base::AutoReset<bool>(&g_ignore_non_official_api_keys_for_testing,
+                               ignore);
+}
+
+bool ComposeboxQueryController::IsGoogleChromeApiKeyUsed() const {
+  return google_apis::IsGoogleChromeAPIKeyUsed() ||
+         g_ignore_non_official_api_keys_for_testing;
+}
+
 void ComposeboxQueryController::SendInteractionRequest(
     std::unique_ptr<lens::LensOverlayRequestId> request_id,
     std::string query_text,
@@ -1694,9 +1945,11 @@ void ComposeboxQueryController::SendInteractionRequest(
 
   // Start getting the OAuth headers for the interaction request.
   latest_interaction_request_data_->interaction_access_token_fetcher_ =
-      CreateOAuthHeadersAndContinue(base::BindOnce(
-          &ComposeboxQueryController::OnInteractionRequestHeadersReady,
-          weak_ptr_factory_.GetWeakPtr()));
+      CreateAuthHeadersAndContinue(
+          auth_user_index_,
+          base::BindOnce(
+              &ComposeboxQueryController::OnInteractionRequestHeadersReady,
+              weak_ptr_factory_.GetWeakPtr()));
 
   lens::LensOverlayServerRequest server_request;
   if (client_logs.has_value()) {
@@ -1755,9 +2008,17 @@ void ComposeboxQueryController::SendInteractionRequest(
 }
 
 void ComposeboxQueryController::FetchClusterInfo() {
-  if (is_backgrounded_) {
+  if (!IsGoogleChromeApiKeyUsed()) {
+    // Leave `query_controller_state_` as `kOff` and `cluster_info_` as
+    // `std::nullopt` when official Google Chrome API keys are not used.
     return;
   }
+  if (is_backgrounded_) {
+    base::UmaHistogramEnumeration("Lens.Composebox.ClusterInfo.Status",
+                                  ClusterInfoStatus::kBackgrounded);
+    return;
+  }
+  cluster_info_fetch_start_time_ = base::TimeTicks::Now();
   SetQueryControllerState(QueryControllerState::kAwaitingClusterInfoResponse);
 
   // There should not be any in-flight cluster info access token request.
@@ -1768,7 +2029,8 @@ void ComposeboxQueryController::FetchClusterInfo() {
     NOTREACHED() << "Cluster info access token fetcher already exists.";
 #endif  // DCHECK_IS_ON()
   }
-  cluster_info_access_token_fetcher_ = CreateOAuthHeadersAndContinue(
+  cluster_info_access_token_fetcher_ = CreateAuthHeadersAndContinue(
+      auth_user_index_,
       base::BindOnce(&ComposeboxQueryController::SendClusterInfoNetworkRequest,
                      weak_ptr_factory_.GetWeakPtr()));
 }
@@ -1778,8 +2040,9 @@ void ComposeboxQueryController::SendClusterInfoNetworkRequest(
   cluster_info_access_token_fetcher_.reset();
 
   // Add protobuf content type to the request headers.
-  request_headers.push_back(kContentTypeKey);
-  request_headers.push_back(kContentType);
+  std::vector<std::string> fetch_headers = request_headers;
+  fetch_headers.push_back(kContentTypeKey);
+  fetch_headers.push_back(kContentType);
 
   // Get client experiment variations to include in the request.
   std::vector<std::string> cors_exempt_headers;
@@ -1789,7 +2052,8 @@ void ComposeboxQueryController::SendClusterInfoNetworkRequest(
   }
 
   // Generate the URL to fetch.
-  GURL fetch_url = GURL(lens::features::GetLensOverlayClusterInfoEndpointUrl());
+  GURL fetch_url =
+      GURL(lens::features::GetLensComposeboxClusterInfoEndpointUrl());
 
   std::string request_string;
   // Create the client context to include in the request.
@@ -1805,27 +2069,49 @@ void ComposeboxQueryController::SendClusterInfoNetworkRequest(
   cluster_info_endpoint_fetcher_ = CreateEndpointFetcher(
       std::move(request_string), fetch_url, HttpMethod::kPost,
       base::Milliseconds(lens::features::GetLensOverlayServerRequestTimeout()),
-      request_headers, cors_exempt_headers, base::DoNothing());
+      fetch_headers, cors_exempt_headers, base::DoNothing());
 
   // Finally, perform the request.
   cluster_info_endpoint_fetcher_->PerformRequest(
       base::BindOnce(&ComposeboxQueryController::HandleClusterInfoResponse,
-                     weak_ptr_factory_.GetWeakPtr()),
+                     weak_ptr_factory_.GetWeakPtr(),
+                     std::move(request_headers)),
       google_apis::GetAPIKey().c_str());
 }
 
 void ComposeboxQueryController::HandleClusterInfoResponse(
+    std::vector<std::string> request_headers,
     std::unique_ptr<endpoint_fetcher::EndpointResponse> response) {
   if (is_backgrounded_) {
     return;
   }
   cluster_info_endpoint_fetcher_.reset();
 
+  if (lens::ShouldRetryRequestWithoutAuthOn401(
+          response.get(), request_headers,
+          lens::LensIdentityDelegationRetryRequestType::
+              kComposeboxClusterInfo)) {
+    SendClusterInfoNetworkRequest(std::move(request_headers));
+    return;
+  }
+
+  if (cluster_info_fetch_start_time_.has_value()) {
+    base::UmaHistogramTimes(
+        "Lens.Composebox.ClusterInfo.ResponseTime",
+        base::TimeTicks::Now() - *cluster_info_fetch_start_time_);
+    cluster_info_fetch_start_time_.reset();
+  }
+
   if (response->http_status_code != google_apis::ApiErrorCode::HTTP_SUCCESS) {
     ++cluster_info_retries_;
 
     if (cluster_info_retries_ <= kMaxClusterInfoRetries) {
       cluster_info_backoff_.InformOfRequest(false);
+      base::UmaHistogramEnumeration("Lens.Composebox.ClusterInfo.Status",
+                                    ClusterInfoStatus::kHttpError);
+    } else {
+      base::UmaHistogramEnumeration("Lens.Composebox.ClusterInfo.Status",
+                                    ClusterInfoStatus::kMaxRetriesReached);
     }
 
     SetQueryControllerState(QueryControllerState::kClusterInfoInvalid);
@@ -1853,7 +2139,16 @@ void ComposeboxQueryController::HandleClusterInfoResponse(
   cluster_info_backoff_.Reset();
 
   lens::LensOverlayServerClusterInfoResponse server_response;
-  if (!server_response.ParseFromString(response->response)) {
+  std::string response_string = response->response;
+  if (lens::features::UseIdentityDelegationForLensComposeboxRequests()) {
+    std::string decoded_response;
+    if (base::Base64Decode(response_string, &decoded_response)) {
+      response_string = decoded_response;
+    }
+  }
+  if (!server_response.ParseFromString(response_string)) {
+    base::UmaHistogramEnumeration("Lens.Composebox.ClusterInfo.Status",
+                                  ClusterInfoStatus::kProtoParseError);
     SetQueryControllerState(QueryControllerState::kClusterInfoInvalid);
     if (pending_search_url_request_) {
       std::move(pending_search_url_request_).Run(/*failure=*/false);
@@ -1882,8 +2177,14 @@ void ComposeboxQueryController::HandleClusterInfoResponse(
         file_info->viewport_request_id_->mutable_routing_info()->CopyFrom(
             server_response.routing_info());
       }
+      if (file_info->viewport_request_id_for_updates.has_value()) {
+        file_info->viewport_request_id_for_updates->mutable_routing_info()
+            ->CopyFrom(server_response.routing_info());
+      }
     }
   }
+  base::UmaHistogramEnumeration("Lens.Composebox.ClusterInfo.Status",
+                                ClusterInfoStatus::kSuccess);
   SetQueryControllerState(QueryControllerState::kClusterInfoReceived);
 
   // Collect the tokens and requests that need updating first to avoid iterator
@@ -1909,10 +2210,9 @@ void ComposeboxQueryController::HandleClusterInfoResponse(
       }
       if (file_info->is_chunked_upload) {
         chunk_uploads_to_start.push_back(file_token);
-      } else {
-        for (size_t i = 0; i < file_info->upload_requests_.size(); ++i) {
-          upload_requests_to_send.emplace_back(file_token, i);
-        }
+      }
+      for (size_t i = 0; i < file_info->upload_requests_.size(); ++i) {
+        upload_requests_to_send.emplace_back(file_token, i);
       }
     }
   }
@@ -2019,6 +2319,7 @@ void ComposeboxQueryController::ProcessDecodedImageAndContinue(
     std::optional<std::string> page_title,
     std::optional<std::string> file_name,
     UploadImageType image_type,
+    std::optional<std::string> mime_type_string,
     scoped_refptr<base::RefCountedData<std::vector<uint8_t>>>
         original_image_data,
     const SkBitmap& bitmap) {
@@ -2052,6 +2353,13 @@ void ComposeboxQueryController::ProcessDecodedImageAndContinue(
                     ImageTypeToString(image_type), ".InputMaxDimension"}),
       max_dimension, 1, 10000, 50);
 
+  bool has_c2pa =
+      original_image_data && HasC2paMetadata(original_image_data->data);
+  base::UmaHistogramBoolean(
+      base::StrCat({"Lens.Composebox.ImageUpload.",
+                    ImageTypeToString(image_type), ".C2paDetected"}),
+      has_c2pa);
+
   // If the bitmap is a viewport bitmap, it will be destroyed after the
   // owning ContextualInputData is destroyed (i.e. at the end of
   // CreateUploadRequestBodiesAndContinue). To ensure the bitmap is not
@@ -2064,7 +2372,8 @@ void ComposeboxQueryController::ProcessDecodedImageAndContinue(
   if (original_image_data) {
     if (std::optional<lens::ImageData> image_data_proto =
             MaybeCreateC2paBypassImageData(original_image_data->data,
-                                           bitmap.width(), bitmap.height())) {
+                                           bitmap.width(), bitmap.height(),
+                                           mime_type_string)) {
       CreateFileUploadRequestProtoWithImageDataAndContinue(
           request_id, CreateClientContext(), ref_counted_logs,
           std::move(callback), page_url, page_title, file_name, image_type,
@@ -2095,6 +2404,7 @@ void ComposeboxQueryController::CreateImageUploadRequest(
     std::optional<std::string> page_title,
     std::optional<std::string> file_name,
     UploadImageType image_type,
+    std::optional<std::string> mime_type_string,
     RequestBodyProtoCreatedCallback callback) {
 #if !BUILDFLAG(IS_IOS)
   CHECK(image_options.has_value());
@@ -2110,7 +2420,8 @@ void ComposeboxQueryController::CreateImageUploadRequest(
       base::BindOnce(&ComposeboxQueryController::ProcessDecodedImageAndContinue,
                      weak_ptr_factory_.GetWeakPtr(), request_id,
                      image_options.value(), std::move(callback), page_url,
-                     page_title, file_name, image_type, refcounted_image_data));
+                     page_title, file_name, image_type,
+                     std::move(mime_type_string), refcounted_image_data));
 #endif  // !BUILDFLAG(IS_IOS)
 }
 
@@ -2139,6 +2450,7 @@ void ComposeboxQueryController::CreateUploadRequestBodiesAndContinue(
         std::move(image_options), contextual_input_data->page_url,
         contextual_input_data->page_title, /*file_name=*/std::nullopt,
         UploadImageType::kViewport,
+        /*mime_type_string=*/std::nullopt,
         base::BindOnce(
             &ComposeboxQueryController::AddPageIndexToUploadRequestAndContinue,
             weak_ptr_factory_.GetWeakPtr(),
@@ -2171,6 +2483,7 @@ void ComposeboxQueryController::CreateUploadRequestBodiesAndContinue(
                     request_index))),
         contextual_input_data->page_url, contextual_input_data->page_title,
         /*file_name=*/std::nullopt, UploadImageType::kViewport,
+        /*mime_type_string=*/std::nullopt,
         /*original_image_data=*/nullptr,
         // Pass ownership of the viewport screenshot to the
         // callback.
@@ -2196,7 +2509,7 @@ void ComposeboxQueryController::CreateUploadRequestBodiesAndContinue(
       contextual_input_data->context_input->front().bytes_.size() >
           lens::features::GetLensOverlayChunkSizeBytes()) {
     file_info->is_chunked_upload = true;
-    PrepareChunkedUpload(file_token, std::move(contextual_input_data));
+    PrepareChunkedUpload(file_token);
     return;
   }
 
@@ -2241,7 +2554,8 @@ void ComposeboxQueryController::CreateUploadRequestBodiesAndContinue(
               contextual_input_data->drive_id,
               contextual_input_data->resource_key,
               contextual_input_data->file_name,
-              contextual_input_data->parsed_url),
+              contextual_input_data->parsed_url,
+              contextual_input_data->mime_type_string),
           base::BindOnce(
               &CreateFileUploadRequestProtoWithPayloadAndContinue,
               file_info->request_id.value(), CreateClientContext(),
@@ -2276,7 +2590,7 @@ void ComposeboxQueryController::CreateUploadRequestBodiesAndContinue(
             std::move(contextual_input_data->context_input->front().bytes_),
             std::move(image_options), contextual_input_data->page_url,
             contextual_input_data->page_title, contextual_input_data->file_name,
-            UploadImageType::kFile,
+            UploadImageType::kFile, file_info->mime_type_string,
             base::BindOnce(
                 &ComposeboxQueryController::
                     AddLensUsageIntentToUploadRequestAndContinue,
@@ -2354,6 +2668,7 @@ void ComposeboxQueryController::OnUploadRequestBodyReady(
   upload_request->response_time = base::TimeTicks();
   upload_request->start_time = base::TimeTicks();
   upload_request->endpoint_fetcher_.reset();
+  upload_request->terminal_status = ContextUploadTerminalStatus::kNeverIssued;
 
   MaybeSendUploadNetworkRequest(file_token, request_index);
 }
@@ -2371,6 +2686,9 @@ void ComposeboxQueryController::OnUploadRequestHeadersReady(
       std::make_unique<std::vector<std::string>>(headers);
   for (size_t i = 0; i < file_info->upload_requests_.size(); ++i) {
     MaybeSendUploadNetworkRequest(file_token, i);
+  }
+  if (file_info->is_chunked_upload) {
+    MaybeStartUploadChunker(file_token);
   }
 }
 
@@ -2406,9 +2724,9 @@ void ComposeboxQueryController::SendUploadNetworkRequest(FileInfo* file_info,
       upload_request->request_body.get(), file_info->request_headers_.get(),
       base::Milliseconds(
           lens::features::GetLensOverlayPageContentRequestTimeoutMs()),
-      base::BindOnce(&ComposeboxQueryController::OnUploadEndpointFetcherCreated,
-                     weak_ptr_factory_.GetWeakPtr(), file_info->file_token,
-                     request_index),
+      base::BindRepeating(
+          &ComposeboxQueryController::OnUploadEndpointFetcherCreated,
+          weak_ptr_factory_.GetWeakPtr(), file_info->file_token, request_index),
       base::BindOnce(&ComposeboxQueryController::HandleUploadResponse,
                      weak_ptr_factory_.GetWeakPtr(), file_info->file_token,
                      request_index),
@@ -2439,7 +2757,7 @@ void ComposeboxQueryController::TrySendInteractionRequest() {
         latest_interaction_request_data_->request_headers_.get(),
         base::Milliseconds(
             lens::features::GetLensOverlayPageContentRequestTimeoutMs()),
-        base::BindOnce(
+        base::BindRepeating(
             &ComposeboxQueryController::OnInteractionEndpointFetcherCreated,
             weak_ptr_factory_.GetWeakPtr()),
         base::BindOnce(&ComposeboxQueryController::HandleInteractionResponse,
@@ -2463,7 +2781,14 @@ void ComposeboxQueryController::HandleInteractionResponse(
   }
 
   lens::LensOverlayServerResponse server_response;
-  if (!server_response.ParseFromString(response->response)) {
+  std::string response_string = response->response;
+  if (lens::features::UseIdentityDelegationForLensComposeboxRequests()) {
+    std::string decoded_response;
+    if (base::Base64Decode(response_string, &decoded_response)) {
+      response_string = decoded_response;
+    }
+  }
+  if (!server_response.ParseFromString(response_string)) {
     return;
   }
 
@@ -2493,6 +2818,8 @@ void ComposeboxQueryController::OnUploadEndpointFetcherCreated(
 
   upload_request->start_time = base::TimeTicks::Now();
   upload_request->endpoint_fetcher_ = std::move(endpoint_fetcher);
+  upload_request->terminal_status =
+      ContextUploadTerminalStatus::kInFlightAtTeardown;
   if (file_info->upload_status ==
           contextual_search::ContextUploadStatus::kProcessing ||
       file_info->upload_status == contextual_search::ContextUploadStatus::
@@ -2509,15 +2836,31 @@ void ComposeboxQueryController::HandleUploadResponse(
     std::unique_ptr<EndpointResponse> response) {
   auto* file_info = GetMutableFileInfo(file_token);
   if (!file_info) {
+    base::UmaHistogramEnumeration(
+        "Lens.Composebox.ContextUpload.TerminalStatus",
+        ContextUploadTerminalStatus::kResponseAfterFileInfoDestroyed);
     return;
   }
 
+  std::string response_string = response->response;
+  if (lens::features::UseIdentityDelegationForLensComposeboxRequests()) {
+    std::string decoded_response;
+    if (base::Base64Decode(response_string, &decoded_response)) {
+      response_string = decoded_response;
+    }
+  }
+
   if (file_info->upload_chunker &&
-      file_info->upload_chunker->HandlePageContentResponse(
-          response->response)) {
+      request_index == file_info->chunked_upload_request_index &&
+      file_info->upload_chunker->HandlePageContentResponse(response_string)) {
     // The chunker is handling missing chunk errors. Exit early. This handler
     // will be called again after the retry has finished.
-    file_info->num_outstanding_network_requests_--;
+    if (request_index < file_info->upload_requests_.size() &&
+        file_info->upload_requests_[request_index]) {
+      file_info->upload_requests_[request_index]->terminal_status =
+          ContextUploadTerminalStatus::kPendingChunkerRetry;
+      file_info->upload_requests_[request_index]->endpoint_fetcher_.reset();
+    }
     return;
   }
 
@@ -2532,12 +2875,23 @@ void ComposeboxQueryController::HandleUploadResponse(
   upload_request->response_code = response->http_status_code;
   upload_request->endpoint_fetcher_.reset();
 
+  if (response->http_status_code > 0) {
+    base::UmaHistogramSparse("ContextualTasks.FileUpload.HttpStatus",
+                             response->http_status_code);
+  }
+  if (response->net_error_code.has_value()) {
+    base::UmaHistogramSparse("ContextualTasks.FileUpload.NetError",
+                             std::abs(response->net_error_code.value()));
+  }
+
   base::TimeDelta elapsed =
       upload_request->response_time - upload_request->start_time;
   if (response->http_status_code == google_apis::ApiErrorCode::HTTP_SUCCESS) {
+    upload_request->terminal_status = ContextUploadTerminalStatus::kSuccess;
     base::UmaHistogramMediumTimes(
         "Lens.Composebox.ContextUpload.SuccessResponseTime", elapsed);
   } else {
+    upload_request->terminal_status = ContextUploadTerminalStatus::kHttpError;
     base::UmaHistogramMediumTimes(
         "Lens.Composebox.ContextUpload.FailureResponseTime", elapsed);
   }
@@ -2555,7 +2909,7 @@ void ComposeboxQueryController::HandleUploadResponse(
   }
 
   // Store the response body for later processing.
-  file_info->response_bodies.push_back(response->response);
+  file_info->response_bodies.push_back(response_string);
 
   // If the file was still uploading and there are no more outstanding network
   // requests, update the file upload status to successful. The upload status
@@ -2577,7 +2931,8 @@ void ComposeboxQueryController::PerformFetchRequest(
     lens::LensOverlayServerRequest* request,
     std::vector<std::string>* request_headers,
     base::TimeDelta timeout,
-    base::OnceCallback<void(std::unique_ptr<endpoint_fetcher::EndpointFetcher>)>
+    base::RepeatingCallback<
+        void(std::unique_ptr<endpoint_fetcher::EndpointFetcher>)>
         fetcher_created_callback,
     endpoint_fetcher::EndpointFetcherCallback response_received_callback,
     UploadProgressCallback upload_progress_callback) {
@@ -2606,7 +2961,7 @@ void ComposeboxQueryController::PerformFetchRequest(
   std::string request_string;
   CHECK(request->SerializeToString(&request_string));
 
-  GURL fetch_url = GURL(lens::features::GetLensOverlayEndpointURL());
+  GURL fetch_url = GURL(lens::features::GetLensComposeboxEndpointUrl());
   PerformFetchRequest(std::move(request_string), request_headers, timeout,
                       std::move(fetcher_created_callback),
                       std::move(response_received_callback),
@@ -2617,7 +2972,8 @@ void ComposeboxQueryController::PerformFetchRequest(
     std::string request_string,
     std::vector<std::string>* request_headers,
     base::TimeDelta timeout,
-    base::OnceCallback<void(std::unique_ptr<endpoint_fetcher::EndpointFetcher>)>
+    base::RepeatingCallback<
+        void(std::unique_ptr<endpoint_fetcher::EndpointFetcher>)>
         fetcher_created_callback,
     endpoint_fetcher::EndpointFetcherCallback response_received_callback,
     UploadProgressCallback upload_progress_callback,
@@ -2638,20 +2994,59 @@ void ComposeboxQueryController::PerformFetchRequest(
       net::AppendOrReplaceQueryParameter(fetch_url, kSessionIdQueryParameterKey,
                                          cluster_info_->server_session_id());
 
+  std::vector<std::string> headers =
+      request_headers ? *request_headers : std::vector<std::string>();
+
   // Create the EndpointFetcher, responsible for making the request using our
   // given params.
   std::unique_ptr<EndpointFetcher> endpoint_fetcher = CreateEndpointFetcher(
-      std::move(request_string), fetch_url, HttpMethod::kPost, timeout,
-      *request_headers, cors_exempt_headers,
-      std::move(upload_progress_callback));
+      request_string, fetch_url, HttpMethod::kPost, timeout, headers,
+      cors_exempt_headers, upload_progress_callback);
   EndpointFetcher* fetcher = endpoint_fetcher.get();
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, base::BindOnce(std::move(fetcher_created_callback),
-                                std::move(endpoint_fetcher)));
+      FROM_HERE,
+      base::BindOnce(fetcher_created_callback, std::move(endpoint_fetcher)));
 
   // Finally, perform the request.
-  fetcher->PerformRequest(std::move(response_received_callback),
-                          google_apis::GetAPIKey().c_str());
+  fetcher->PerformRequest(
+      base::BindOnce(&ComposeboxQueryController::OnFetchResponseReceived,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(request_string),
+                     std::move(headers), std::move(cors_exempt_headers),
+                     fetch_url, timeout, std::move(fetcher_created_callback),
+                     std::move(response_received_callback),
+                     std::move(upload_progress_callback)),
+      google_apis::GetAPIKey().c_str());
+}
+
+void ComposeboxQueryController::OnFetchResponseReceived(
+    std::string request_string,
+    std::vector<std::string> request_headers,
+    std::vector<std::string> cors_exempt_headers,
+    GURL fetch_url,
+    base::TimeDelta timeout,
+    base::RepeatingCallback<
+        void(std::unique_ptr<endpoint_fetcher::EndpointFetcher>)>
+        fetcher_created_callback,
+    endpoint_fetcher::EndpointFetcherCallback response_received_callback,
+    UploadProgressCallback upload_progress_callback,
+    std::unique_ptr<endpoint_fetcher::EndpointResponse> response) {
+  if (lens::ShouldRetryRequestWithoutAuthOn401(
+          response.get(), request_headers,
+          lens::LensIdentityDelegationRetryRequestType::
+              kComposeboxFetchRequest)) {
+    std::unique_ptr<EndpointFetcher> endpoint_fetcher = CreateEndpointFetcher(
+        std::move(request_string), fetch_url, HttpMethod::kPost, timeout,
+        request_headers, cors_exempt_headers,
+        std::move(upload_progress_callback));
+    EndpointFetcher* fetcher = endpoint_fetcher.get();
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(fetcher_created_callback),
+                                  std::move(endpoint_fetcher)));
+    fetcher->PerformRequest(std::move(response_received_callback),
+                            google_apis::GetAPIKey().c_str());
+    return;
+  }
+  std::move(response_received_callback).Run(std::move(response));
 }
 
 const contextual_search::FileInfo* ComposeboxQueryController::GetFileInfo(
@@ -2669,9 +3064,30 @@ ComposeboxQueryController::GetFileInfoList() {
   return file_infos;
 }
 
+void ComposeboxQueryController::SetAuthUserIndex(size_t auth_user_index) {
+  auth_user_index_ = auth_user_index;
+}
+
 base::WeakPtr<contextual_search::ContextualSearchContextController>
 ComposeboxQueryController::AsWeakPtr() {
   return weak_ptr_factory_.GetWeakPtr();
+}
+
+std::string ComposeboxQueryController::search_session_id() const {
+  return cluster_info_.has_value() ? cluster_info_->search_session_id() : "";
+}
+
+std::optional<lens::LensOverlayVisualSearchInteractionData>
+ComposeboxQueryController::GetVisualSearchInteractionData(
+    const base::UnguessableToken& file_token,
+    const std::optional<std::string>& query_text) {
+  const FileInfo* file_info = GetMutableFileInfo(file_token);
+  if (!file_info) {
+    return std::nullopt;
+  }
+  return ConstructVisualSearchInteractionData(
+      file_info, query_text, std::nullopt,
+      /*force_include_latest_interaction_request_data=*/true);
 }
 
 void ComposeboxQueryController::BeforeCreateSearchUrl(
@@ -2792,30 +3208,21 @@ ComposeboxQueryController::ConstructVisualSearchInteractionData(
 }
 
 void ComposeboxQueryController::PrepareChunkedUpload(
-    const base::UnguessableToken& file_token,
-    std::unique_ptr<lens::ContextualInputData> contextual_input_data) {
+    const base::UnguessableToken& file_token) {
   auto* file_info = GetMutableFileInfo(file_token);
   if (!file_info) {
     return;
   }
 
-  // Fetch OAuth headers first.
-  file_info->context_upload_access_token_fetcher_ =
-      CreateOAuthHeadersAndContinue(base::BindOnce(
-          &ComposeboxQueryController::OnChunkedUploadHeadersReady,
-          weak_ptr_factory_.GetWeakPtr(), file_token));
-}
-
-void ComposeboxQueryController::OnChunkedUploadHeadersReady(
-    const base::UnguessableToken& file_token,
-    std::vector<std::string> headers) {
-  auto* file_info = GetMutableFileInfo(file_token);
-  if (!file_info) {
-    return;
-  }
-  file_info->context_upload_access_token_fetcher_.reset();
-  file_info->request_headers_ =
-      std::make_unique<std::vector<std::string>>(headers);
+  // Increment `num_outstanding_network_requests_` upfront to account for the
+  // final page content payload (`ObjectsRequest`) that will be sent to the
+  // server in `OnPageContentPayloadForChunkUploadReady()` after the chunk
+  // uploads complete. This reserves the request index in `upload_requests_` and
+  // prevents a concurrent viewport upload from decrementing
+  // `num_outstanding_network_requests_` to 0 and prematurely marking the file
+  // upload as complete while chunks are still uploading.
+  file_info->chunked_upload_request_index =
+      file_info->num_outstanding_network_requests_++;
 
   MaybeStartUploadChunker(file_token);
 }
@@ -2843,8 +3250,18 @@ void ComposeboxQueryController::MaybeStartUploadChunker(
 
   const auto& context_input = file_info->input_data->context_input->front();
 
+  // PDFs may be identified by either `content_type_` or `mime_type_string`
+  // (for raw-file uploads where `content_type_` is set to `kUnknown`).
+  bool is_pdf =
+      context_input.content_type_ == lens::MimeType::kPdf ||
+      (file_info->input_data->mime_type_string.has_value() &&
+       base::StartsWith(file_info->input_data->mime_type_string.value(),
+                        "application/pdf"));
+  lens::MimeType mime_type =
+      is_pdf ? lens::MimeType::kPdf : context_input.content_type_;
+
   file_info->upload_chunker->Start(
-      file_info->request_id.value(), context_input.content_type_,
+      file_info->request_id.value(), mime_type,
       file_info->input_data->page_url.value_or(GURL()),
       file_info->input_data->page_title, context_input.bytes_);
 }
@@ -2870,7 +3287,7 @@ void ComposeboxQueryController::UploadChunk(
       std::move(request_string), file_info->request_headers_.get(),
       base::Milliseconds(
           lens::features::GetLensOverlayUploadChunkRequestTimeoutMs()),
-      base::BindOnce(
+      base::BindRepeating(
           &ComposeboxQueryController::OnChunkUploadEndpointFetcherCreated,
           weak_ptr_factory_.GetWeakPtr(), file_token),
       base::BindOnce(
@@ -2882,7 +3299,7 @@ void ComposeboxQueryController::UploadChunk(
           },
           std::move(completion_callback)),
       progress_callback,
-      GURL(lens::features::GetLensOverlayUploadChunkEndpointURL()));
+      GURL(lens::features::GetLensComposeboxUploadChunkEndpointUrl()));
 }
 
 void ComposeboxQueryController::OnPageContentPayloadForChunkUploadReady(
@@ -2907,7 +3324,8 @@ void ComposeboxQueryController::OnPageContentPayloadForChunkUploadReady(
   objects_request->mutable_payload()->CopyFrom(payload);
 
   bool has_lens_usage_intent = file_info->input_data->has_lens_usage_intent;
-  size_t request_index = file_info->num_outstanding_network_requests_++;
+  CHECK(file_info->chunked_upload_request_index.has_value());
+  size_t request_index = *file_info->chunked_upload_request_index;
 
   AddLensUsageIntentToUploadRequestAndContinue(
       has_lens_usage_intent,

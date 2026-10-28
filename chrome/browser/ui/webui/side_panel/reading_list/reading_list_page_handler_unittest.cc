@@ -23,6 +23,7 @@
 #include "content/public/test/test_web_ui.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/menus/simple_menu_model.h"
 #include "url/gurl.h"
 
@@ -217,7 +218,7 @@ TEST_F(TestReadingListPageHandlerTest, OpenURLOnNTP) {
       OpenURL(testing::AllOf(
                   testing::Field(&content::OpenURLParams::url, GURL(kTabUrl3)),
                   testing::Field(&content::OpenURLParams::disposition,
-                                 WindowOpenDisposition::CURRENT_TAB)),
+                                 WindowOpenDisposition::kCurrentTab)),
               testing::_))
       .Times(1);
 
@@ -245,7 +246,7 @@ TEST_F(TestReadingListPageHandlerTest, OpenURLNotOnNTP) {
       OpenURL(testing::AllOf(
                   testing::Field(&content::OpenURLParams::url, GURL(kTabUrl3)),
                   testing::Field(&content::OpenURLParams::disposition,
-                                 WindowOpenDisposition::CURRENT_TAB)),
+                                 WindowOpenDisposition::kCurrentTab)),
               testing::_))
       .Times(1);
 

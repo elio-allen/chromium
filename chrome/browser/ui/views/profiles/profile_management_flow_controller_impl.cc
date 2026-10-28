@@ -9,7 +9,6 @@
 #include "base/functional/bind.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/signin_util.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/views/profiles/profile_management_flow_controller.h"
@@ -31,7 +30,7 @@ void ShowLoginErrorForBrowser(const SigninUIError& error,
     return;
   }
   LoginUIServiceFactory::GetForProfile(browser->GetProfile())
-      ->DisplayLoginResult(browser->GetFeatures(), error);
+      ->DisplayLoginResult(*browser, error);
 }
 
 }  // namespace
@@ -53,8 +52,10 @@ void ProfileManagementFlowControllerImpl::
         signin_metrics::AccessPoint access_point,
         base::FilePath profile_path,
         const std::string& initial_email) {
+  // TODO(crbug.com/577950735): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK_NE(Step::kAccountSelection, current_step());
-  DCHECK_NE(Step::kPostSignInFlow, current_step());
+  CHECK_NE(Step::kPostSignInFlow, current_step(), base::NotFatalUntil::M162);
 
   bool step_needs_registration = !IsStepInitialized(Step::kAccountSelection);
   if (step_needs_registration) {
@@ -115,20 +116,20 @@ void ProfileManagementFlowControllerImpl::HandleSignInCompleted(
     const CoreAccountInfo& account_info,
     std::unique_ptr<content::WebContents> contents,
     StepSwitchFinishedCallback step_switch_finished_callback) {
-  DCHECK(signed_in_profile);
-  DCHECK_EQ(Step::kAccountSelection, current_step());
+  CHECK(signed_in_profile, base::NotFatalUntil::M162);
+  CHECK_EQ(Step::kAccountSelection, current_step(), base::NotFatalUntil::M162);
 
   Step step;
   // SAML with ForceSignin flow is migrated to the regular Profile Picker flow.
   if (account_info.IsEmpty() && !signin_util::IsForceSigninEnabled()) {
     step = Step::kFinishSamlSignin;
-    DCHECK(!IsStepInitialized(step));
+    CHECK(!IsStepInitialized(step), base::NotFatalUntil::M162);
     // The SAML step controller handles finishing the profile setup by itself
     // when we switch to it.
     RegisterStep(step, CreateSamlStep(signed_in_profile, std::move(contents)));
   } else {
     step = Step::kPostSignInFlow;
-    DCHECK(!IsStepInitialized(step));
+    CHECK(!IsStepInitialized(step), base::NotFatalUntil::M162);
     RegisterStep(step, CreatePostSignInStep(signed_in_profile, account_info,
                                             std::move(contents)));
   }
@@ -184,22 +185,7 @@ void ProfileManagementFlowControllerImpl::AdvanceToNextPostIdentityStep() {
 
 void ProfileManagementFlowControllerImpl::HandleIdentityStepsCompleted(
     Profile* profile,
-    PostHostClearedCallback post_host_cleared_callback,
-    bool is_continue_callback) {
+    PostHostClearedCallback post_host_cleared_callback) {
   CHECK(profile);
-
-  if (is_continue_callback) {
-    RegisterStep(
-        Step::kFinishFlow,
-        ProfileManagementStepController::CreateForFinishFlowAndRunInBrowser(
-            host(),
-            base::BindOnce(
-                &ProfileManagementFlowControllerImpl::FinishFlowAndRunInBrowser,
-                base::Unretained(this), profile,
-                std::move(post_host_cleared_callback))));
-    SwitchToStep(Step::kFinishFlow, /*reset_state=*/true);
-    return;
-  }
-
   SwitchToPostIdentitySteps(std::move(post_host_cleared_callback));
 }

@@ -20,6 +20,7 @@
 #include "base/observer_list.h"
 #include "base/sequence_checker.h"
 #include "base/timer/timer.h"
+#include "base/types/expected.h"
 #include "base/types/optional_ref.h"
 #include "components/download/public/background_service/download_params.h"
 #include "components/optimization_guide/core/delivery/model_enums.h"
@@ -28,7 +29,6 @@
 #include "components/optimization_guide/core/delivery/prediction_model_download_observer.h"
 #include "components/optimization_guide/core/delivery/prediction_model_fetch_timer.h"
 #include "components/optimization_guide/core/delivery/prediction_model_store.h"
-#include "components/optimization_guide/core/optimization_guide_enums.h"
 #include "components/optimization_guide/optimization_guide_internals/webui/optimization_guide_internals.mojom.h"
 #include "components/optimization_guide/proto/models.pb.h"
 #include "url/origin.h"
@@ -55,6 +55,7 @@ namespace optimization_guide {
 class OptimizationTargetModelObserver;
 class PredictionModelDownloadManager;
 class PredictionModelFetcher;
+enum class PredictionModelFetchError;
 class PredictionModelStore;
 class ProfileDownloadServiceTracker;
 
@@ -172,7 +173,8 @@ class PredictionManager : public PredictionModelDownloadObserver,
   // Service is updated, even when the response is empty.
   void OnModelsFetched(
       const std::vector<proto::ModelInfo> models_request_info,
-      std::unique_ptr<proto::GetModelsResponse> get_models_response_data);
+      base::expected<proto::GetModelsResponse, PredictionModelFetchError>
+          get_models_response_data);
 
   // Gets the model task runner to use for the target.
   scoped_refptr<base::SequencedTaskRunner> GetModelTaskRunner(
@@ -190,20 +192,15 @@ class PredictionManager : public PredictionModelDownloadObserver,
   // Callback run after a prediction model is loaded from the store.
   // |prediction_model| is used to construct a PredictionModel capable of making
   // prediction for the appropriate |optimization_target|.
-  void OnLoadPredictionModel(
-      proto::OptimizationTarget optimization_target,
-      bool record_availability_metrics,
-      std::unique_ptr<proto::PredictionModel> prediction_model);
+  void OnLoadPredictionModel(proto::OptimizationTarget optimization_target,
+                             bool record_availability_metrics,
+                             std::optional<ModelInfo> model_info);
 
   // Callback run after a prediction model is loaded from a command-line
   // override.
   void OnPredictionModelOverrideLoaded(
       proto::OptimizationTarget optimization_target,
       std::unique_ptr<proto::PredictionModel> prediction_model);
-
-  // Process loaded |model| into memory. Return true if a prediction
-  // model object was created and successfully stored, otherwise false.
-  bool ProcessAndStoreLoadedModel(const proto::PredictionModel& model);
 
   // Removes the model for `optimization_target` from store, for the
   // `model_removal_reason`.
@@ -221,24 +218,6 @@ class PredictionManager : public PredictionModelDownloadObserver,
   // `model_info`.
   void StoreLoadedModelInfo(proto::OptimizationTarget optimization_target,
                             ModelInfo model_info);
-
-  // Post-processing callback invoked after processing |model|.
-  void OnProcessLoadedModel(const proto::PredictionModel& model, bool success);
-
-  // Return the time when a prediction model fetch was last attempted.
-  base::Time GetLastFetchAttemptTime() const;
-
-  // Set the last time when a prediction model fetch was last attempted to
-  // |last_attempt_time|.
-  void SetLastModelFetchAttemptTime(base::Time last_attempt_time);
-
-  // Return the time when a prediction model fetch was last successfully
-  // completed.
-  base::Time GetLastFetchSuccessTime() const;
-
-  // Set the last time when a fetch for prediction models last succeeded to
-  // |last_success_time|.
-  void SetLastModelFetchSuccessTime(base::Time last_success_time);
 
   // Schedule first fetch for models if enabled for this profile.
   void MaybeScheduleFirstModelFetch();
@@ -264,7 +243,7 @@ class PredictionManager : public PredictionModelDownloadObserver,
   void MaybeDownloadOrUpdatePredictionModel(
       proto::OptimizationTarget optimization_target,
       const proto::PredictionModel& get_models_response_model,
-      std::unique_ptr<proto::PredictionModel> loaded_model);
+      std::optional<ModelInfo> loaded_model);
 
   // Returns a new file path for the directory to download the model files for
   // |optimization_target|. The directory will not be created.
@@ -320,11 +299,6 @@ class PredictionManager : public PredictionModelDownloadObserver,
   base::flat_map<proto::OptimizationTarget,
                  scoped_refptr<base::SequencedTaskRunner>>
       optimization_target_model_task_runner_;
-
-  // Time the prediction manager got initialized.
-  // TODO(crbug.com/40861855): Remove this old model store once the new model
-  // store is launched.
-  base::TimeTicks init_time_;
 
   PredictionModelFetchTimer prediction_model_fetch_timer_
       GUARDED_BY_CONTEXT(sequence_checker_);

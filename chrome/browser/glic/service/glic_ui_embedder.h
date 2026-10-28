@@ -51,7 +51,7 @@ class GlicUiEmbedder {
     // This should only be called from GlicFloatingUi.
     virtual void Attach(tabs::TabHandle tab) = 0;
     // Called after the value of GetPanelState() changes.
-    virtual void NotifyPanelStateChanged() = 0;
+    virtual void UpdatePanelState() = 0;
   };
 
   virtual ~GlicUiEmbedder() = default;
@@ -92,9 +92,6 @@ class GlicUiEmbedder {
 
   // Returns the size of the panel.
   virtual gfx::Size GetPanelSize() = 0;
-
-  // Called when the client is ready to show.
-  virtual void OnClientReady() {}
 
   // Called after this embedder has been successfully registered in the
   // instance.

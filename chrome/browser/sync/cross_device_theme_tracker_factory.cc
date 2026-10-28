@@ -4,17 +4,17 @@
 
 #include "chrome/browser/sync/cross_device_theme_tracker_factory.h"
 
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_selections.h"
 #include "chrome/browser/sync/data_type_store_service_factory.h"
-#include "chrome/browser/sync/device_info_sync_service_factory.h"
 #include "chrome/common/channel_info.h"
 #include "components/sync/base/report_unrecoverable_error.h"
 #include "components/sync/model/client_tag_based_data_type_processor.h"
 #include "components/sync/model/data_type_store_service.h"
-#include "components/sync_device_info/device_info_sync_service.h"
 #include "components/themes/cross_device/cross_device_theme_sync_bridge.h"
+#include "components/themes/cross_device/features.h"
 #include "components/themes/cross_device/theme_translation.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -45,6 +45,9 @@ void RegisterBridgeHelper(
       base::BindRepeating(
           &themes::CrossDeviceThemeTracker<LocalSpecifics>::RemoveThemeInfo,
           base::Unretained(tracker)),
+      base::BindRepeating(&themes::CrossDeviceThemeTracker<
+                              LocalSpecifics>::OnBridgeSyncStarting,
+                          base::Unretained(tracker), type),
       base::BindRepeating(
           &themes::CrossDeviceThemeTracker<LocalSpecifics>::OnBridgeSyncStarted,
           base::Unretained(tracker), type),
@@ -79,7 +82,6 @@ CrossDeviceThemeTrackerFactory::CrossDeviceThemeTrackerFactory()
               .WithRegular(ProfileSelection::kOriginalOnly)
               .WithGuest(ProfileSelection::kOriginalOnly)
               .Build()) {
-  DependsOn(DeviceInfoSyncServiceFactory::GetInstance());
   DependsOn(DataTypeStoreServiceFactory::GetInstance());
 }
 
@@ -88,26 +90,21 @@ CrossDeviceThemeTrackerFactory::~CrossDeviceThemeTrackerFactory() = default;
 std::unique_ptr<KeyedService>
 CrossDeviceThemeTrackerFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
-  Profile* profile = Profile::FromBrowserContext(context);
+  if (!base::FeatureList::IsEnabled(themes::kCrossDeviceThemeTracker)) {
+    return nullptr;
+  }
 
-  syncer::DeviceInfoSyncService* device_info_sync_service =
-      DeviceInfoSyncServiceFactory::GetForProfile(profile);
-  syncer::DeviceInfoTracker* device_info_tracker =
-      device_info_sync_service
-          ? device_info_sync_service->GetDeviceInfoTracker()
-          : nullptr;
+  Profile* profile = Profile::FromBrowserContext(context);
 
   syncer::DataTypeStoreService* store_service =
       DataTypeStoreServiceFactory::GetForProfile(profile);
   version_info::Channel channel = chrome::GetChannel();
 
 #if BUILDFLAG(IS_ANDROID)
-  auto tracker = std::make_unique<themes::CrossDeviceThemeTrackerAndroid>(
-      device_info_tracker);
+  auto tracker = std::make_unique<themes::CrossDeviceThemeTrackerAndroid>();
 #else
   auto tracker =
-      std::make_unique<themes::CrossDeviceThemeTracker<LocalThemeSpecifics>>(
-          device_info_tracker);
+      std::make_unique<themes::CrossDeviceThemeTracker<LocalThemeSpecifics>>();
 #endif
 
 #if BUILDFLAG(IS_ANDROID)

@@ -23,6 +23,9 @@ import org.chromium.base.Token;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.price_tracking.PriceTrackingFeatures;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.MockTab;
@@ -97,6 +100,13 @@ public class NextTabSelectionUtilUnitTest {
         lenient().when(model.iterator()).thenAnswer(inv -> allTabs.iterator());
     }
 
+    private void setUpTabGroup(TabModel model, Token tabGroupId, List<Tab> tabsInGroup) {
+        for (Tab tab : tabsInGroup) {
+            ((MockTab) tab).setTabGroupId(tabGroupId);
+        }
+        lenient().when(model.getTabsInGroup(tabGroupId)).thenReturn(tabsInGroup);
+    }
+
     private void setCurrentTab(Tab tab) {
         mCurrentTabSupplier.set(tab);
     }
@@ -156,6 +166,7 @@ public class NextTabSelectionUtilUnitTest {
     }
 
     @Test
+    @DisableFeatures({ChromeFeatureList.TAB_OPENER_TRACKING})
     public void testGetNextTabIfClosed_ParentTab() {
         when(mTabModel.isActiveModel()).thenReturn(true);
         when(mTabModelDelegate.getCurrentModel()).thenReturn(mTabModel);
@@ -334,6 +345,7 @@ public class NextTabSelectionUtilUnitTest {
     }
 
     @Test
+    @DisableFeatures({ChromeFeatureList.TAB_OPENER_TRACKING})
     public void testGetNextTabIfClosed_CrossModelParentTab() {
         when(mTabModel.isActiveModel()).thenReturn(true);
         when(mTabModelDelegate.getCurrentModel()).thenReturn(mTabModel);
@@ -387,5 +399,180 @@ public class NextTabSelectionUtilUnitTest {
 
         Tab result = NextTabSelectionUtil.findNearbyNotClosingTab(mTabModel, 1, List.of(tab1));
         assertEquals(tab2, result);
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.TAB_OPENER_TRACKING})
+    public void testGetNextTabIfClosed_ChildPreference() {
+        when(mTabModel.isActiveModel()).thenReturn(true);
+        when(mTabModelDelegate.getCurrentModel()).thenReturn(mTabModel);
+
+        Tab parentTab = createTab();
+        Tab currentTab = createTab(0, parentTab.getId());
+        Tab childTab = createTab(0, currentTab.getId());
+
+        when(mTabModel.getHierarchicalNextTab(currentTab, List.of(currentTab)))
+                .thenReturn(childTab);
+        setUpTabsInTabModel(mTabModel, List.of(parentTab, currentTab, childTab));
+
+        setCurrentTab(currentTab);
+        assertEquals(childTab, getNextTabIfClosed(mTabModel, currentTab, false));
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.TAB_OPENER_TRACKING})
+    public void testGetNextTabIfClosed_SiblingPreference() {
+        when(mTabModel.isActiveModel()).thenReturn(true);
+        when(mTabModelDelegate.getCurrentModel()).thenReturn(mTabModel);
+
+        Tab parentTab = createTab();
+        Tab currentTab = createTab(0, parentTab.getId());
+        Tab siblingTab = createTab(0, parentTab.getId());
+
+        when(mTabModel.getHierarchicalNextTab(currentTab, List.of(currentTab)))
+                .thenReturn(siblingTab);
+        setUpTabsInTabModel(mTabModel, List.of(parentTab, currentTab, siblingTab));
+
+        setCurrentTab(currentTab);
+        assertEquals(siblingTab, getNextTabIfClosed(mTabModel, currentTab, false));
+    }
+
+    @Test
+    @DisableFeatures({ChromeFeatureList.TAB_OPENER_TRACKING})
+    public void testGetNextTabIfClosed_HierarchicalFallbackToParent() {
+        when(mTabModel.isActiveModel()).thenReturn(true);
+        when(mTabModelDelegate.getCurrentModel()).thenReturn(mTabModel);
+
+        Tab parentTab = createTab();
+        Tab currentTab = createTab(0, parentTab.getId());
+        Tab siblingTab = createTab(0, parentTab.getId());
+
+        when(mTabModel.getTabById(parentTab.getId())).thenReturn(parentTab);
+        setUpTabsInTabModel(mTabModel, List.of(parentTab, currentTab, siblingTab));
+
+        setCurrentTab(currentTab);
+        // When flag is disabled, it selects parentTab directly.
+        assertEquals(parentTab, getNextTabIfClosed(mTabModel, currentTab, false));
+    }
+
+    @Test
+    public void testGetNextTabIfClosed_PrefersTabInSameGroup() {
+        when(mTabModel.isActiveModel()).thenReturn(true);
+        when(mTabModelDelegate.getCurrentModel()).thenReturn(mTabModel);
+
+        Token groupId = new Token(1L, 2L);
+        Tab tab0 = createTab();
+        Tab tab1 = createTab();
+        Tab tab2 = createTab();
+        Tab tab3 = createTab();
+        setUpTabsInTabModel(mTabModel, List.of(tab0, tab1, tab2, tab3));
+        setUpTabGroup(mTabModel, groupId, List.of(tab1, tab2));
+
+        // Closing the first tab of the group should select the next tab in the group.
+        setCurrentTab(tab1);
+        assertEquals(tab2, getNextTabIfClosed(mTabModel, tab1, false));
+
+        // Closing the last tab of the group should select the previous tab in the group rather
+        // than the adjacent tab outside of the group.
+        setCurrentTab(tab2);
+        assertEquals(tab1, getNextTabIfClosed(mTabModel, tab2, false));
+    }
+
+    @Test
+    public void testGetNextTabIfClosed_SameGroupSkippedWhenGroupCollapsed() {
+        when(mTabModel.isActiveModel()).thenReturn(true);
+        when(mTabModelDelegate.getCurrentModel()).thenReturn(mTabModel);
+
+        Token groupId = new Token(1L, 2L);
+        Tab tab0 = createTab();
+        Tab tab1 = createTab();
+        Tab tab2 = createTab();
+        Tab tab3 = createTab();
+        setUpTabsInTabModel(mTabModel, List.of(tab0, tab1, tab2, tab3));
+        setUpTabGroup(mTabModel, groupId, List.of(tab1, tab2));
+        when(mTabModel.getTabGroupCollapsed(groupId)).thenReturn(true);
+
+        setCurrentTab(tab2);
+        assertEquals(tab3, getNextTabIfClosed(mTabModel, tab2, false));
+    }
+
+    @Test
+    public void testGetNextTabIfClosed_SameGroupSkippedWhenWholeGroupClosing() {
+        when(mTabModel.isActiveModel()).thenReturn(true);
+        when(mTabModelDelegate.getCurrentModel()).thenReturn(mTabModel);
+
+        Token groupId = new Token(1L, 2L);
+        Tab tab0 = createTab();
+        Tab tab1 = createTab();
+        Tab tab2 = createTab();
+        Tab tab3 = createTab();
+        setUpTabsInTabModel(mTabModel, List.of(tab0, tab1, tab2, tab3));
+        setUpTabGroup(mTabModel, groupId, List.of(tab1, tab2));
+
+        setCurrentTab(tab2);
+        List<Tab> closingTabs = List.of(tab1, tab2);
+        assertEquals(
+                tab3, getNextTabIfClosed(mTabModel, closingTabs, false, TabCloseType.MULTIPLE));
+    }
+
+    @Test
+    public void testGetNextTabIfClosed_SameGroupWithNonContiguousMultiClose() {
+        when(mTabModel.isActiveModel()).thenReturn(true);
+        when(mTabModelDelegate.getCurrentModel()).thenReturn(mTabModel);
+
+        Token groupId = new Token(1L, 2L);
+        Tab tab0 = createTab();
+        Tab tab1 = createTab();
+        Tab tab2 = createTab();
+        Tab tab3 = createTab();
+        Tab tab4 = createTab();
+        setUpTabsInTabModel(mTabModel, List.of(tab0, tab1, tab2, tab3, tab4));
+        setUpTabGroup(mTabModel, groupId, List.of(tab1, tab2, tab3));
+
+        // The surviving tab in the group should be selected even though it is not adjacent to the
+        // anchor tab in the closing list.
+        setCurrentTab(tab3);
+        List<Tab> closingTabs = List.of(tab1, tab3);
+        assertEquals(
+                tab2, getNextTabIfClosed(mTabModel, closingTabs, false, TabCloseType.MULTIPLE));
+    }
+
+    @Test
+    public void testGetNextTabIfClosed_SameGroupWhenMultiCloseSpansGroupBoundary() {
+        when(mTabModel.isActiveModel()).thenReturn(true);
+        when(mTabModelDelegate.getCurrentModel()).thenReturn(mTabModel);
+
+        Token groupId = new Token(1L, 2L);
+        Tab tab0 = createTab();
+        Tab tab1 = createTab();
+        Tab tab2 = createTab();
+        Tab tab3 = createTab();
+        setUpTabsInTabModel(mTabModel, List.of(tab0, tab1, tab2, tab3));
+        setUpTabGroup(mTabModel, groupId, List.of(tab1, tab2, tab3));
+
+        // Selection is anchored on the current tab rather than the first closing tab, so closing an
+        // ungrouped tab alongside the current grouped tab keeps selection inside the group.
+        setCurrentTab(tab3);
+        List<Tab> closingTabs = List.of(tab0, tab3);
+        assertEquals(
+                tab2, getNextTabIfClosed(mTabModel, closingTabs, false, TabCloseType.MULTIPLE));
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.TAB_OPENER_TRACKING})
+    public void testGetNextTabIfClosed_HierarchicalPreferenceWinsOverSameGroup() {
+        when(mTabModel.isActiveModel()).thenReturn(true);
+        when(mTabModelDelegate.getCurrentModel()).thenReturn(mTabModel);
+
+        Token groupId = new Token(1L, 2L);
+        Tab tab0 = createTab();
+        Tab tab1 = createTab();
+        Tab tab2 = createTab();
+        setUpTabsInTabModel(mTabModel, List.of(tab0, tab1, tab2));
+        setUpTabGroup(mTabModel, groupId, List.of(tab1, tab2));
+        when(mTabModel.getHierarchicalNextTab(tab1, List.of(tab1))).thenReturn(tab0);
+
+        setCurrentTab(tab1);
+        assertEquals(tab0, getNextTabIfClosed(mTabModel, tab1, false));
     }
 }

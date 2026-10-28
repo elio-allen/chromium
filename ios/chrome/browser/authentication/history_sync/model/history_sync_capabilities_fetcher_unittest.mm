@@ -8,13 +8,10 @@
 #import "base/test/bind.h"
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_mock_clock_override.h"
-#import "base/time/time.h"
 #import "components/signin/public/base/consent_level.h"
-#import "components/signin/public/base/signin_switches.h"
 #import "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
 #import "components/signin/public/identity_manager/account_info.h"
 #import "components/signin/public/identity_manager/identity_test_environment.h"
-#import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "components/signin/public/identity_manager/tribool.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
@@ -147,7 +144,7 @@ TEST_P(HistorySyncCapabilitiesFetcherTest,
 
   // Trigger onExtendedAccountInfoUpdated
   identity_test_env_.SimulateSuccessfulFetchOfAccountInfo(
-      account.account_id, account.email, account.gaia,
+      account.GetAccountId(), account.GetEmail(), account.GetGaiaId(),
       /*hosted_domain=*/"", "full_name", "given_name", "locale",
       /*picture_url=*/"");
 

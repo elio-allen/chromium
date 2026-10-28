@@ -8,6 +8,7 @@
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/dictation/dictation_keyed_service.h"
 #include "chrome/browser/dictation/features.h"
+#include "chrome/browser/user_education/user_education_service.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/renderer_context_menu/render_view_context_menu_proxy.h"
@@ -33,6 +34,11 @@ void DictationMenuObserver::InitMenu(const content::ContextMenuParams& params) {
   target_details_.richly_editable =
       params.edit_flags & blink::ContextMenuDataEditFlags::kCanEditRichly;
 
+  content::RenderFrameHost* rfh = proxy_->GetRenderFrameHost();
+  if (rfh && rfh->IsFocusedElementPasswordLike()) {
+    return;
+  }
+
   DictationKeyedService* service = GetDictationService();
   if (service && service->ShouldShowContextMenuItem()) {
     CHECK(base::FeatureList::IsEnabled(kDictation));
@@ -57,6 +63,9 @@ void DictationMenuObserver::ExecuteCommand(int command_id) {
   if (!rfh) {
     return;
   }
+
+  UserEducationService::MaybeNotifyNewBadgeFeatureUsed(
+      proxy_->GetBrowserContext(), kDictation);
 
   DictationKeyedService* service = GetDictationService();
   if (service) {

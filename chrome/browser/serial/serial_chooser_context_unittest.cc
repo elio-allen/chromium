@@ -162,6 +162,9 @@ class SerialChooserContextTestBase {
     SerialBlocklist::Get().ResetToDefaultValuesForTesting();
   }
 
+  TestingProfileManager* testing_profile_manager() {
+    return testing_profile_manager_.get();
+  }
   device::FakeSerialPortManager& port_manager() { return port_manager_; }
   TestingProfile* profile() { return profile_; }
   TestingPrefServiceSimple* local_state() {
@@ -717,14 +720,15 @@ TEST_F(SerialChooserContextTest, PolicyAskForUrls) {
   port->token = base::UnguessableToken::Create();
   context()->GrantPortPermission(kFooOrigin, *port);
   context()->GrantPortPermission(kBarOrigin, *port);
+  context()->FlushScheduledSaveSettingsCalls();
 
   // Set the default to "block" so that the policy being tested overrides it.
   auto* profile_prefs = profile()->GetTestingPrefService();
+  profile_prefs->SetManagedPref(prefs::kManagedSerialAskForUrls,
+                                ParseJson(R"([ "https://foo.origin" ])"));
   profile_prefs->SetManagedPref(
       prefs::kManagedDefaultSerialGuardSetting,
       std::make_unique<base::Value>(CONTENT_SETTING_BLOCK));
-  profile_prefs->SetManagedPref(prefs::kManagedSerialAskForUrls,
-                                ParseJson(R"([ "https://foo.origin" ])"));
 
   EXPECT_TRUE(context()->CanRequestObjectPermission(kFooOrigin));
   EXPECT_TRUE(context()->HasPortPermission(kFooOrigin, *port));
@@ -750,6 +754,7 @@ TEST_F(SerialChooserContextTest, PolicyBlockedForUrls) {
   port->token = base::UnguessableToken::Create();
   context()->GrantPortPermission(kFooOrigin, *port);
   context()->GrantPortPermission(kBarOrigin, *port);
+  context()->FlushScheduledSaveSettingsCalls();
 
   auto* profile_prefs = profile()->GetTestingPrefService();
   profile_prefs->SetManagedPref(prefs::kManagedSerialBlockedForUrls,
@@ -1103,6 +1108,106 @@ TEST_P(SerialChooserContextAffiliatedTest, BlocklistOverridesPolicy) {
   // policy.
   SetDynamicBlocklist("usb:18D1:58F0");
   EXPECT_FALSE(context()->HasPortPermission(origin, *port));
+}
+
+TEST_F(SerialChooserContextTest, ClearBrowsingDataStaleCache) {
+  const auto kOrigin = url::Origin::Create(GURL("https://google.com"));
+
+  auto port = device::mojom::SerialPortInfo::New();
+  port->token = base::UnguessableToken::Create();
+  port->path = base::FilePath(FILE_PATH_LITERAL("/dev/ttyUSB0"));
+  port->has_vendor_id = true;
+  port->vendor_id = 0x1234;
+  port->has_product_id = true;
+  port->product_id = 0x5678;
+  port->serial_number = "123456";
+  port->display_name = "Test Port";
+
+  port_manager().AddPort(port.Clone());
+
+  EXPECT_FALSE(context()->HasPortPermission(kOrigin, *port));
+
+  // Grant permission.
+  context()->GrantPortPermission(kOrigin, *port);
+  context()->FlushScheduledSaveSettingsCalls();
+  EXPECT_TRUE(context()->HasPortPermission(kOrigin, *port));
+
+  // Simulate Clear Browsing Data.
+  // Clearing SERIAL_CHOOSER_DATA will trigger one OnObjectPermissionChanged
+  // call from NotifyPermissionRevoked().
+  EXPECT_CALL(permission_observer(),
+              OnObjectPermissionChanged(
+                  std::make_optional(ContentSettingsType::SERIAL_GUARD),
+                  ContentSettingsType::SERIAL_CHOOSER_DATA));
+  EXPECT_CALL(permission_observer(), OnPermissionRevoked(kOrigin));
+
+  auto* map = HostContentSettingsMapFactory::GetForProfile(profile());
+  map->ClearSettingsForOneTypeWithPredicate(
+      ContentSettingsType::SERIAL_CHOOSER_DATA, base::Time(), base::Time::Max(),
+      HostContentSettingsMap::PatternSourcePredicate());
+
+  // Check if the permission is still returned.
+  // Should be FALSE because we fixed ObjectPermissionContextBase.
+  EXPECT_FALSE(context()->HasPortPermission(kOrigin, *port));
+}
+
+TEST_F(SerialChooserContextTest, ClearBrowsingDataEphemeralDevice) {
+  const auto kOrigin = url::Origin::Create(GURL("https://google.com"));
+
+  auto port = device::mojom::SerialPortInfo::New();
+  port->token = base::UnguessableToken::Create();
+  port->path = base::FilePath(FILE_PATH_LITERAL("/dev/ttyUSB0"));
+
+  port_manager().AddPort(port.Clone());
+
+  EXPECT_FALSE(context()->HasPortPermission(kOrigin, *port));
+
+  // Grant permission.
+  context()->GrantPortPermission(kOrigin, *port);
+  EXPECT_TRUE(context()->HasPortPermission(kOrigin, *port));
+
+  // Simulate Clear Browsing Data.
+  // Clearing SERIAL_CHOOSER_DATA will trigger one OnObjectPermissionChanged
+  // call from NotifyPermissionRevoked().
+  EXPECT_CALL(permission_observer(),
+              OnObjectPermissionChanged(
+                  std::make_optional(ContentSettingsType::SERIAL_GUARD),
+                  ContentSettingsType::SERIAL_CHOOSER_DATA));
+  EXPECT_CALL(permission_observer(), OnPermissionRevoked(kOrigin));
+
+  auto* map = HostContentSettingsMapFactory::GetForProfile(profile());
+  map->ClearSettingsForOneTypeWithPredicate(
+      ContentSettingsType::SERIAL_CHOOSER_DATA, base::Time(), base::Time::Max(),
+      HostContentSettingsMap::PatternSourcePredicate());
+  map->ClearSettingsForOneTypeWithPredicate(
+      ContentSettingsType::SERIAL_GUARD, base::Time(), base::Time::Max(),
+      HostContentSettingsMap::PatternSourcePredicate());
+
+  // Check if the permission is still returned.
+  EXPECT_FALSE(context()->HasPortPermission(kOrigin, *port));
+}
+
+TEST_F(SerialChooserContextTest, GetPortInfoBeforeInitialization) {
+  const auto kOrigin = url::Origin::Create(GURL("https://google.com"));
+  TestingProfile* uninitialized_profile =
+      testing_profile_manager()->CreateTestingProfile(
+          "uninitialized@example.com");
+  ASSERT_TRUE(uninitialized_profile);
+
+  SerialChooserContext* uninitialized_context =
+      SerialChooserContextFactory::GetForProfile(uninitialized_profile);
+  ASSERT_TRUE(uninitialized_context);
+
+  auto port = device::mojom::SerialPortInfo::New();
+  port->token = base::UnguessableToken::Create();
+
+  EXPECT_EQ(nullptr, uninitialized_context->GetPortInfo(port->token));
+
+  uninitialized_context->GrantPortPermission(kOrigin, *port);
+  const device::mojom::SerialPortInfo* port_info =
+      uninitialized_context->GetPortInfo(port->token);
+  ASSERT_TRUE(port_info);
+  EXPECT_EQ(port->token, port_info->token);
 }
 
 // Boolean parameter means if user is affiliated on the device. Affiliated

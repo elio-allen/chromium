@@ -78,11 +78,12 @@ class CONTENT_EXPORT BrowserAccessibilityAndroid
   bool IsSubscript() const;
   bool IsSuperscript() const;
   bool IsTableHeader() const;
-  bool IsTextSelectable() const;
 
-  // Returns true if this node acts as a selection boundary that blocks
-  // selections from crossing into or out of its sub-hierarchy.
-  bool IsSelectionContextBoundary() const;
+  // This property tells Android if the node can be selected using text offsets.
+  // In Blink, WebAXObject::SetSelection() treats offsets as text offsets only
+  // when the target node is a text object (IsTextObject()) or an atomic text
+  // field (IsAtomicTextField()), otherwise it treats them as child indices.
+  bool IsTextSelectable() const;
   bool IsVisibleToUser() const;
   bool ShouldUsePaneTitle() const;
 
@@ -124,6 +125,11 @@ class CONTENT_EXPORT BrowserAccessibilityAndroid
   bool HasCharacterLocations() const;
   bool HasImage() const;
   bool HasLayoutBasedActions() const;
+
+  // Returns true if all descendant nodes consist solely of `kGenericContainer`
+  // and text (`IsText()`), and contain no interactive controls, links,
+  // headings, tables, or focusable descendants.
+  bool HasOnlyTextAndGenericDescendants() const;
 
   const char* GetClassName() const;
   bool IsChildOfLeaf() const override;
@@ -202,7 +208,7 @@ class CONTENT_EXPORT BrowserAccessibilityAndroid
   std::u16string GetComboboxExpandedTextFallback() const;
 
   std::u16string GetMultiselectableStateDescription() const;
-  std::u16string GetToggleStateDescription() const;
+  std::u16string GetSwitchStateDescription() const;
   std::u16string GetCheckboxStateDescription() const;
   std::u16string GetAriaCurrentStateDescription() const;
   std::u16string GetRadioButtonStateDescription() const;
@@ -324,7 +330,7 @@ class CONTENT_EXPORT BrowserAccessibilityAndroid
 
   // Used for tree dumps, generate a string representation of the
   // AccessibilityNodeInfo object for this node by calling through the
-  // manager to the web_contents_accessibility_android JNI.
+  // manager to the `WebContentsAccessibilityBase` JNI.
   std::u16string GenerateAccessibilityNodeInfoString() const;
 
   // Used to determine paint order to see in what order nodes are drawn.

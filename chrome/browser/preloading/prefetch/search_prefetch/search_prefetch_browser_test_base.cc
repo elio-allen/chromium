@@ -20,7 +20,9 @@
 #include "chrome/browser/preloading/search_preload/search_preload_features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/test/base/search_test_utils.h"
 #include "components/search_engines/template_url_service.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -33,6 +35,7 @@
 #include "net/test/embedded_test_server/http_response.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/navigation/preloading_headers.h"
+#include "ui/views/focus/focus_manager.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -73,6 +76,12 @@ SearchPrefetchBaseBrowserTest::~SearchPrefetchBaseBrowserTest() = default;
 
 void SearchPrefetchBaseBrowserTest::SetUpOnMainThread() {
   InProcessBrowserTest::SetUpOnMainThread();
+
+  // Clear focus in FocusManager so asynchronous window deactivation during
+  // autocomplete does not blur the omnibox and clobber autocomplete results.
+  if (auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser())) {
+    browser_view->GetFocusManager()->SetFocusedView(nullptr);
+  }
   host_resolver()->AddRule(kSearchDomain, "127.0.0.1");
   host_resolver()->AddRule(kSuggestDomain, "127.0.0.1");
 
@@ -184,7 +193,7 @@ GURL SearchPrefetchBaseBrowserTest::GetRealPrefetchUrlForTesting(
 }
 
 content::WebContents* SearchPrefetchBaseBrowserTest::GetWebContents() const {
-  return browser()->tab_strip_model()->GetActiveWebContents();
+  return browser()->GetTabStripModel()->GetActiveWebContents();
 }
 
 std::string SearchPrefetchBaseBrowserTest::GetDocumentInnerHTML() const {

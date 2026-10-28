@@ -5,10 +5,12 @@ module golden;
 
 interface Primary {
   Get(array<Entry> token_arr, int32 index) => (Entry result);
+  GetNestedArray(array<array<Entry>> token_arr, int32 index) => (array<Entry> result);
 
   [Sync]
+  SyncGetNestedArray(array<array<Entry>> token_arr, int32 index) => (array<Entry> result);
+  [Sync]
   SyncGetBools() => (array<bool> bools);
-
   [Sync]
   SyncGetStrings() => (array<string> strings);
 
@@ -16,6 +18,7 @@ interface Primary {
   GetStrings() => (array<string> strings);
   PassFloats(array<float> floats);
   PassInts(array<int32> ints);
+  PassUInts(array<uint32> ints);
 };
 
 struct Entry {};

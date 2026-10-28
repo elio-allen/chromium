@@ -249,9 +249,6 @@ mojom::VideoFrameInfoPtr CreateNewVideoFrameInfo(
     bool is_premapped,
     const gfx::ColorSpace& color_space) {
   VideoFrameMetadata metadata = current_metadata.value_or(VideoFrameMetadata{});
-  // Note: we are not setting `metadata.is_webgpu_compatible` here since we
-  // have not verified whether the buffer pool returns frames that are
-  // WebGPU-compatible across all platforms.
   metadata.frame_rate = format.frame_rate;
   metadata.reference_time = reference_time;
   metadata.capture_begin_time = capture_begin_timestamp;
@@ -365,10 +362,6 @@ void VideoCaptureDeviceClient::OnIncomingCapturedData(
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("video_and_image_capture"),
                "VideoCaptureDeviceClient::OnIncomingCapturedData");
 
-  if (base::FeatureList::IsEnabled(media::kWebRTCLogColorSpace)) {
-    LOG(ERROR) << "OnIncommingCapturedData: color_space = "
-               << data_color_space.ToString();
-  }
 
   // The input `data.size()` can be greater than the required buffer size
   // because of paddings and/or alignments, but it cannot be smaller.
@@ -397,9 +390,9 @@ void VideoCaptureDeviceClient::OnIncomingCapturedData(
   }
 
   if (format.pixel_format == PIXEL_FORMAT_Y16) {
-    return OnIncomingCapturedY16Data(data, format, reference_time, timestamp,
-                                     capture_begin_timestamp, metadata,
-                                     frame_feedback_id);
+    return OnIncomingCapturedY16Data(
+        data, format, data_color_space, reference_time, timestamp,
+        capture_begin_timestamp, metadata, frame_feedback_id);
   }
 
   // |new_unrotated_{width,height}| are the dimensions of the output buffer that
@@ -451,8 +444,7 @@ void VideoCaptureDeviceClient::OnIncomingCapturedData(
                !flip) {
       if (on_started_using_gpu_cb_)
         std::move(on_started_using_gpu_cb_).Run();
-      external_jpeg_decoder_->DecodeCapturedData(data.data(), data.size(),
-                                                 format, reference_time,
+      external_jpeg_decoder_->DecodeCapturedData(data, format, reference_time,
                                                  timestamp, std::move(buffer));
       return;
     }
@@ -496,10 +488,6 @@ void VideoCaptureDeviceClient::OnIncomingCapturedImage(
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("video_and_image_capture"),
                "VideoCaptureDeviceClient::OnIncomingCapturedImage");
 
-  if (base::FeatureList::IsEnabled(media::kWebRTCLogColorSpace)) {
-    LOG(ERROR) << "OnIncomingCapturedImage: color_space = "
-               << shared_image->color_space().ToString();
-  }
 
   if (last_captured_pixel_format_ != frame_format.pixel_format) {
     OnLog("Pixel format: " +
@@ -554,9 +542,6 @@ void VideoCaptureDeviceClient::OnIncomingCapturedImage(
     return;
   }
 
-  if (base::FeatureList::IsEnabled(media::kWebRTCLogColorSpace)) {
-    LOG(ERROR) << "Dropping color space because shared image is copied to YUV";
-  }
 
   auto buffer_access =
       output_buffer.handle_provider->GetHandleForInProcessAccess();
@@ -599,9 +584,10 @@ void VideoCaptureDeviceClient::OnIncomingCapturedImage(
 
   const VideoCaptureFormat output_format = VideoCaptureFormat(
       dimensions, frame_format.frame_rate, PIXEL_FORMAT_I420);
-  OnIncomingCapturedBuffer(std::move(output_buffer), output_format,
-                           reference_time, timestamp, capture_begin_timestamp,
-                           metadata);
+  OnIncomingCapturedBufferExt(std::move(output_buffer), output_format,
+                              shared_image->color_space(), reference_time,
+                              timestamp, capture_begin_timestamp,
+                              gfx::Rect(dimensions), metadata);
 }
 
 void VideoCaptureDeviceClient::OnIncomingCapturedImageZeroCopy(
@@ -619,10 +605,6 @@ void VideoCaptureDeviceClient::OnIncomingCapturedImageZeroCopy(
   CapturedExternalVideoBuffer buffer = CapturedExternalVideoBuffer(
       std::move(shared_image), frame_format, color_space);
 
-  if (base::FeatureList::IsEnabled(media::kWebRTCLogColorSpace)) {
-    LOG(ERROR) << "OnIncomingCapturedImageZeroCopy: color_space = "
-               << color_space.ToString();
-  }
 
   VideoFrameMetadata new_metadata = metadata.value_or(VideoFrameMetadata());
   media::VideoRotation video_rotation = media::VIDEO_ROTATION_0;
@@ -740,10 +722,6 @@ VideoCaptureDeviceClient::CreateReadyFrameFromExternalBuffer(
       metadata, visible_rect, natural_size, /*is_premapped=*/false,
       buffer.color_space);
 
-  if (base::FeatureList::IsEnabled(media::kWebRTCLogColorSpace)) {
-    LOG(ERROR) << "CreateReadyFrameFromExternalBuffer: color_space = "
-               << buffer.color_space.ToString();
-  }
 
   buffer_pool_->HoldForConsumers(buffer_id, 1);
   buffer_pool_->RelinquishProducerReservation(buffer_id);
@@ -757,12 +735,14 @@ VideoCaptureDeviceClient::CreateReadyFrameFromExternalBuffer(
 }
 
 VideoCaptureDevice::Client::ReserveResult
-VideoCaptureDeviceClient::ReserveOutputBuffer(const gfx::Size& frame_size,
-                                              VideoPixelFormat pixel_format,
-                                              int frame_feedback_id,
-                                              Buffer* buffer,
-                                              int* require_new_buffer_id,
-                                              int* retire_old_buffer_id) {
+VideoCaptureDeviceClient::ReserveOutputBuffer(
+    const gfx::Size& frame_size,
+    VideoPixelFormat pixel_format,
+    int frame_feedback_id,
+    Buffer* buffer,
+    int* require_new_buffer_id,
+    int* retire_old_buffer_id,
+    const gfx::ColorSpace& color_space) {
   DFAKE_SCOPED_RECURSIVE_LOCK(call_from_producer_);
 
   CHECK_GT(frame_size.width(), 0);
@@ -779,7 +759,7 @@ VideoCaptureDeviceClient::ReserveOutputBuffer(const gfx::Size& frame_size,
   int buffer_id = VideoCaptureBufferPool::kInvalidId;
   auto reservation_result_code = buffer_pool_->ReserveForProducer(
       frame_size, pixel_format, nullptr, frame_feedback_id, &buffer_id,
-      &buffer_id_to_drop);
+      &buffer_id_to_drop, color_space);
   if (buffer_id_to_drop != VideoCaptureBufferPool::kInvalidId) {
     // |buffer_pool_| has decided to release a buffer. Notify receiver in case
     // the buffer has already been shared with it.
@@ -814,20 +794,6 @@ VideoCaptureDeviceClient::ReserveOutputBuffer(const gfx::Size& frame_size,
   return ReserveResult::kSucceeded;
 }
 
-void VideoCaptureDeviceClient::OnIncomingCapturedBuffer(
-    Buffer buffer,
-    const VideoCaptureFormat& format,
-    base::TimeTicks reference_time,
-    base::TimeDelta timestamp,
-    std::optional<base::TimeTicks> capture_begin_timestamp,
-    const std::optional<VideoFrameMetadata>& metadata) {
-  DFAKE_SCOPED_RECURSIVE_LOCK(call_from_producer_);
-
-  OnIncomingCapturedBufferExt(
-      std::move(buffer), format, gfx::ColorSpace(), reference_time, timestamp,
-      capture_begin_timestamp, gfx::Rect(format.frame_size), metadata);
-}
-
 void VideoCaptureDeviceClient::OnIncomingCapturedBufferExt(
     Buffer buffer,
     const VideoCaptureFormat& format,
@@ -841,10 +807,6 @@ void VideoCaptureDeviceClient::OnIncomingCapturedBufferExt(
   TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("video_and_image_capture"),
                "VideoCaptureDeviceClient::OnIncomingCapturedBufferExt");
 
-  if (base::FeatureList::IsEnabled(media::kWebRTCLogColorSpace)) {
-    LOG(ERROR) << "OnIncomingCapturedBufferExt: color_space = "
-               << color_space.ToString();
-  }
 
   auto metadata = additional_metadata.value_or(VideoFrameMetadata{});
   if (auto fake_toggle_period = GetFakeBackgroundBlurTogglePeriodMillis()) {
@@ -902,6 +864,7 @@ void VideoCaptureDeviceClient::OnStarted() {
 void VideoCaptureDeviceClient::OnIncomingCapturedY16Data(
     base::span<const uint8_t> data,
     const VideoCaptureFormat& format,
+    const gfx::ColorSpace& color_space,
     base::TimeTicks reference_time,
     base::TimeDelta timestamp,
     std::optional<base::TimeTicks> capture_begin_timestamp,
@@ -929,7 +892,13 @@ void VideoCaptureDeviceClient::OnIncomingCapturedY16Data(
       .copy_from_nonoverlapping(data.first(copy_length));
   const VideoCaptureFormat output_format = VideoCaptureFormat(
       format.frame_size, format.frame_rate, PIXEL_FORMAT_Y16);
-  OnIncomingCapturedBuffer(std::move(buffer), output_format, reference_time,
-                           timestamp, capture_begin_timestamp, metadata);
+  OnIncomingCapturedBufferExt(
+      std::move(buffer), output_format, color_space, reference_time, timestamp,
+      capture_begin_timestamp, gfx::Rect(format.frame_size), metadata);
+}
+
+void VideoCaptureDeviceClient::InvalidateBuffers() {
+  CHECK(buffer_pool_);
+  buffer_pool_->InvalidateBuffers();
 }
 }  // namespace media

@@ -11,11 +11,11 @@
 #include <vector>
 
 #include "base/check.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/task/sequenced_task_runner.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
-#include "components/contextual_tasks/public/ai_thread_data_type_controller.h"
 #include "components/supervised_user/core/common/buildflags.h"
 #include "components/sync/base/data_type.h"
 
@@ -32,6 +32,7 @@ class AccountSettingService;
 namespace autofill {
 class AddressDataManager;
 class AutofillWebDataService;
+class EntitySuppressionManager;
 }  // namespace autofill
 
 namespace bookmarks {
@@ -75,11 +76,6 @@ class PasswordReceiverService;
 class PasswordSenderService;
 class PasswordStoreInterface;
 }  // namespace password_manager
-
-namespace plus_addresses {
-class PlusAddressSettingService;
-class PlusAddressWebDataService;
-}  // namespace plus_addresses
 
 namespace reading_list {
 class DualReadingListModel;
@@ -161,6 +157,8 @@ class CommonControllerBuilder {
           web_data_service_on_disk,
       const scoped_refptr<autofill::AutofillWebDataService>&
           web_data_service_in_memory);
+  void SetEntitySuppressionManager(
+      autofill::EntitySuppressionManager* entity_suppression_manager);
   void SetAimEligibilityService(AimEligibilityService* aim_eligibility_service);
   void SetBookmarkModel(bookmarks::BookmarkModel* bookmark_model);
   void SetBookmarkSyncService(
@@ -170,8 +168,9 @@ class CommonControllerBuilder {
   void SetConsentAuditor(consent_auditor::ConsentAuditor* consent_auditor);
   void SetCollaborationService(
       collaboration::CollaborationService* collaboration_service);
-  void SetContextualTasksService(
-      contextual_tasks::ContextualTasksService* contextual_tasks_service);
+  void SetContextualTasksServiceGetter(
+      base::RepeatingCallback<contextual_tasks::ContextualTasksService*()>
+          contextual_tasks_service_getter);
   void SetPersonalCollaborationDataService(
       data_sharing::personal_collaboration_data::
           PersonalCollaborationDataService*
@@ -202,12 +201,6 @@ class CommonControllerBuilder {
           profile_password_store,
       const scoped_refptr<password_manager::PasswordStoreInterface>&
           account_password_store);
-#if !BUILDFLAG(IS_IOS)
-  void SetPlusAddressServices(
-      plus_addresses::PlusAddressSettingService* plus_address_setting_service,
-      const scoped_refptr<plus_addresses::PlusAddressWebDataService>&
-          plus_address_webdata_service);
-#endif  // !BUILDFLAG(IS_IOS)
   void SetPrefService(PrefService* pref_service);
   void SetPrefServiceSyncable(
       sync_preferences::PrefServiceSyncable* pref_service_syncable);
@@ -252,9 +245,6 @@ class CommonControllerBuilder {
   std::unique_ptr<syncer::DataTypeController>
   CreateAutofillWalletMetadataDataTypeController(
       syncer::SyncService* sync_service);
-  std::unique_ptr<syncer::DataTypeController>
-  CreateAutofillWalletOfferDataTypeController(
-      syncer::SyncService* sync_service);
 #if !BUILDFLAG(IS_IOS)
   std::unique_ptr<syncer::DataTypeController>
   CreateAutofillWalletUsageDataTypeController(
@@ -281,12 +271,6 @@ class CommonControllerBuilder {
   std::unique_ptr<syncer::DataTypeController>
   CreateOutgoingPasswordSharingInvitationDataTypeController(
       syncer::SyncService* sync_service);
-#if !BUILDFLAG(IS_IOS)
-  std::unique_ptr<syncer::DataTypeController>
-  CreatePlusAddressDataTypeController();
-  std::unique_ptr<syncer::DataTypeController>
-  CreatePlusAddressSettingDataTypeController();
-#endif  // !BUILDFLAG(IS_IOS)
   std::unique_ptr<syncer::DataTypeController>
   CreatePreferencesDataTypeController(version_info::Channel channel);
   std::unique_ptr<syncer::DataTypeController>
@@ -296,11 +280,9 @@ class CommonControllerBuilder {
   std::unique_ptr<syncer::DataTypeController>
   CreateSharedTabGroupDataTypeController(syncer::SyncService* sync_service);
   std::unique_ptr<syncer::DataTypeController>
-  CreateEncryptedTabContextContainerDataTypeController(
-      syncer::SyncService* sync_service);
+  CreateEncryptedTabContextContainerDataTypeController();
   std::unique_ptr<syncer::DataTypeController>
-  CreateEncryptedTabContextItemDataTypeController(
-      syncer::SyncService* sync_service);
+  CreateEncryptedTabContextItemDataTypeController();
   std::unique_ptr<syncer::DataTypeController>
   CreateSharingMessageDataTypeController();
   std::unique_ptr<syncer::DataTypeController>
@@ -332,7 +314,10 @@ class CommonControllerBuilder {
   CreateContextualTaskDataTypeController();
   std::unique_ptr<syncer::DataTypeController>
   CreateNotebookDataTypeController();
-  std::unique_ptr<syncer::DataTypeController> CreateJourneyDataTypeController();
+  std::unique_ptr<syncer::DataTypeController> CreateJourneyDataTypeController(
+      syncer::SyncService* sync_service);
+  std::unique_ptr<syncer::DataTypeController>
+  CreateAutofillEntitySuppressionDataTypeController();
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   std::unique_ptr<syncer::DataTypeController> CreateSkillDataTypeController(
       syncer::SyncService* sync_service);
@@ -433,16 +418,10 @@ class CommonControllerBuilder {
   SafeOptional<raw_ptr<bookmarks::BookmarkModel>> bookmark_model_;
   SafeOptional<raw_ptr<supervised_user::FamilyLinkSettingsService>>
       family_link_settings_service_;
-#if !BUILDFLAG(IS_IOS)
-  SafeOptional<raw_ptr<plus_addresses::PlusAddressSettingService>>
-      plus_address_setting_service_;
-  SafeOptional<scoped_refptr<plus_addresses::PlusAddressWebDataService>>
-      plus_address_webdata_service_;
-#endif  // !BUILDFLAG(IS_IOS)
   SafeOptional<raw_ptr<collaboration::CollaborationService>>
       collaboration_service_;
-  SafeOptional<raw_ptr<contextual_tasks::ContextualTasksService>>
-      contextual_tasks_service_;
+  base::RepeatingCallback<contextual_tasks::ContextualTasksService*()>
+      contextual_tasks_service_getter_;
   SafeOptional<raw_ptr<data_sharing::personal_collaboration_data::
                            PersonalCollaborationDataService>>
       personal_collaboration_data_service_;
@@ -455,6 +434,8 @@ class CommonControllerBuilder {
   SafeOptional<raw_ptr<TemplateURLService>> template_url_service_;
   SafeOptional<raw_ptr<skills::SkillsService>> skills_service_;
   SafeOptional<raw_ptr<notebooks::NotebooksService>> notebooks_service_;
+  SafeOptional<raw_ptr<autofill::EntitySuppressionManager>>
+      entity_suppression_manager_;
 };
 
 }  // namespace browser_sync

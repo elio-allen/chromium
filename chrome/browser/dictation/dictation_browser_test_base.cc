@@ -5,6 +5,7 @@
 #include "chrome/browser/dictation/dictation_browser_test_base.h"
 
 #include "base/command_line.h"
+#include "base/test/run_until.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/dictation/dictation_keyed_service.h"
 #include "chrome/browser/dictation/features.h"
@@ -28,6 +29,11 @@ namespace dictation {
 DictationBrowserTestBase::DictationBrowserTestBase()
     : scoped_feature_list_(CreateEnablingFeatureList()) {}
 
+DictationBrowserTestBase::DictationBrowserTestBase(
+    bool session_ends_on_stream_end)
+    : scoped_feature_list_(
+          CreateEnablingFeatureList(session_ends_on_stream_end)) {}
+
 DictationBrowserTestBase::~DictationBrowserTestBase() = default;
 
 void DictationBrowserTestBase::SetUpCommandLine(
@@ -44,7 +50,31 @@ void DictationBrowserTestBase::SetUpOnMainThread() {
   ASSERT_TRUE(embedded_test_server()->Start());
   profile()->GetPrefs()->SetBoolean(prefs::kPrefDictationOnboardingCompleted,
                                     true);
+  // Suppress the "Reviewing page" status that is otherwise shown at the start
+  // of a session. While visible, it hides the bubble's toggle button and
+  // compacts the waveform until a timer expires, which would make tests that
+  // interact with the bubble timing-dependent. Tests covering this status
+  // re-enable it explicitly.
+  if (auto* service = DictationKeyedService::Get(profile())) {
+    service->SetReviewingPageStatusEnabledForTesting(false);
+    fake_global_listener_ =
+        std::make_unique<ScopedFakeGlobalAcceleratorListener>(*service);
+    // Onboarding is marked complete after the service is created, so hotkeys
+    // must be re-evaluated for the hotkey manager to exist.
+    service->DidInstallConnector();
+  }
   LoadTestExtensionInManualMode(profile());
+}
+
+void DictationBrowserTestBase::TearDownOnMainThread() {
+  fake_global_listener_.reset();
+  PlatformBrowserTest::TearDownOnMainThread();
+}
+
+FakeGlobalAcceleratorListener&
+DictationBrowserTestBase::fake_global_listener() {
+  CHECK(fake_global_listener_);
+  return fake_global_listener_->listener();
 }
 
 Profile* DictationBrowserTestBase::profile() {
@@ -72,8 +102,8 @@ void DictationBrowserTestBase::StartSession(
     const TargetDetails& target_details) {
   tabs::TabInterface* tab = chrome_test_utils::GetActiveTab(this);
   CHECK(tab);
-  dictation_service().StartSession(*tab, target_details,
-                                   DictationSessionEntryPoint::kContextMenu);
+  dictation_service().StartSessionForTesting(
+      *tab, target_details, DictationSessionEntryPoint::kContextMenu);
 }
 
 void DictationBrowserTestBase::StartSession() {
@@ -93,6 +123,15 @@ void DictationBrowserTestBase::SimulateInvokeViaContextMenu(
   // Ensure we only invoke the item when the context menu should be available.
   ASSERT_TRUE(menu.IsItemEnabled(IDC_CONTENT_CONTEXT_DICTATION));
   menu.ExecuteCommand(IDC_CONTENT_CONTEXT_DICTATION, 0);
+}
+
+void DictationBrowserTestBase::WaitForSessionState(SessionState target_state) {
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    if (!session_controller()) {
+      return target_state == SessionState::kInactive;
+    }
+    return session_controller()->GetState() == target_state;
+  }));
 }
 
 }  // namespace dictation

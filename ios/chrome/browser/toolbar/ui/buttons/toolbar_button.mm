@@ -10,6 +10,7 @@
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/elements/blue_dot_util.h"
+#import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/toolbar/ui/buttons/toolbar_button_constants.h"
 #import "ios/chrome/browser/toolbar/ui/buttons/toolbar_buttons_utils.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
@@ -66,7 +67,7 @@ UIColor* NormalTintColor() {
           ToolbarElementBackgroundColor(incognito);
       _backgroundView.userInteractionEnabled = NO;
       _backgroundView.clipsToBounds = YES;
-      [self insertSubview:_backgroundView belowSubview:self.imageView];
+      [self insertSubview:_backgroundView atIndex:0];
       AddSameConstraints(self, _backgroundView);
 
       ConfigureCornerRadiusForToolbarButtonContainer(_backgroundView,
@@ -86,6 +87,17 @@ UIColor* NormalTintColor() {
                        withAction:@selector(userInterfaceStyleDidChange)];
   }
   return self;
+}
+
+#pragma mark - ToolbarElementWithBackground
+
+- (void)setBackgroundAlpha:(CGFloat)backgroundAlpha {
+  if (!IsGlassToolbarEnabled() || _shadowAndBackgroundRemoved) {
+    return;
+  }
+
+  _backgroundView.backgroundColor =
+      ToolbarElementBackgroundColor(_incognito, backgroundAlpha);
 }
 
 #pragma mark - HighlightButton
@@ -137,11 +149,14 @@ UIColor* NormalTintColor() {
 #pragma mark - UIControl
 
 - (void)setEnabled:(BOOL)enabled {
+  if (self.enabled == enabled) {
+    return;
+  }
   [super setEnabled:enabled];
   if (enabled) {
-    self.imageView.tintColor = NormalTintColor();
+    self.tintColor = NormalTintColor();
   } else {
-    self.imageView.tintColor =
+    self.tintColor =
         [NormalTintColor() colorWithAlphaComponent:kDisabledOpacity];
   }
   [self updateAppearance];
@@ -231,7 +246,7 @@ UIColor* NormalTintColor() {
   } else {
     _gradientView.hidden = YES;
     RemoveIPHImageStyleFromImageView(self.imageView);
-    self.imageView.tintColor = NormalTintColor();
+    self.tintColor = NormalTintColor();
   }
 }
 
@@ -246,6 +261,7 @@ UIColor* NormalTintColor() {
 - (void)checkImageVisibility {
   if (!self.hidden && !self.currentImage) {
     [self setImage:self.image forState:UIControlStateNormal];
+    [self bringSubviewToFront:self.imageView];
     [self updateHighlight];
   }
 }
@@ -274,6 +290,11 @@ UIColor* NormalTintColor() {
     case ToolbarButtonVisibility::kRegularRegular:
       self.hidden = !isCurrentRegularRegular;
       break;
+    case ToolbarButtonVisibility::kCompactWidth: {
+      CHECK(IsFiveButtonAppBarLayoutEnabled(), base::NotFatalUntil::M163);
+      self.hidden = isCurrentWideLayout;
+      break;
+    }
     case ToolbarButtonVisibility::kWideLayout:
       self.hidden = !isCurrentWideLayout;
       break;

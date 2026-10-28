@@ -42,8 +42,7 @@ namespace {
 
 bool NodeIsUserSelectAll(const Node* node) {
   return node && node->GetLayoutObject() &&
-         node->GetLayoutObject()->StyleRef().UsedUserSelect() ==
-             EUserSelect::kAll;
+         node->GetLayoutObject()->Style().UsedUserSelect() == EUserSelect::kAll;
 }
 
 template <typename Strategy>
@@ -115,7 +114,7 @@ PositionTemplate<Strategy> StartOfParagraphAlgorithm(
       previous_node_iterator = previousNode();
       continue;
     }
-    const ComputedStyle& style = layout_object->StyleRef();
+    const ComputedStyle& style = layout_object->Style();
     if (style.Visibility() != EVisibility::kVisible) {
       previous_node_iterator = previousNode();
       continue;
@@ -126,15 +125,24 @@ PositionTemplate<Strategy> StartOfParagraphAlgorithm(
 
     if (layout_object->IsText() &&
         To<LayoutText>(layout_object)->ResolvedTextLength()) {
+      auto* const layout_text = To<LayoutText>(layout_object);
       if (style.ShouldPreserveBreaks()) {
-        const String& text = To<LayoutText>(layout_object)->TransformedText();
+        const String& text = layout_text->TransformedText();
+        // `text` may start partway into the node (e.g. with ::first-letter),
+        // so convert between DOM offsets and indices into `text`.
+        const int text_start_offset =
+            RuntimeEnabledFeatures::FirstLetterParagraphOffsetsEnabled()
+                ? static_cast<int>(layout_text->TextStartOffset())
+                : 0;
         int index = text.length();
-        if (previous_node_iterator == start_node && candidate_offset < index)
-          index = max(0, candidate_offset);
+        if (previous_node_iterator == start_node &&
+            candidate_offset - text_start_offset < index) {
+          index = max(0, candidate_offset - text_start_offset);
+        }
         while (--index >= 0) {
           if (text[index] == '\n') {
             return PositionTemplate<Strategy>(To<Text>(previous_node_iterator),
-                                              index + 1);
+                                              index + 1 + text_start_offset);
           }
         }
       }
@@ -231,19 +239,14 @@ PositionTemplate<Strategy> EndOfParagraphAlgorithm(
       next_node_iterator = nextNode();
       continue;
     }
-    const ComputedStyle& style = layout_object->StyleRef();
+    const ComputedStyle& style = layout_object->Style();
     if (style.Visibility() != EVisibility::kVisible) {
-      if (RuntimeEnabledFeatures::
-              HandleDeletionAtStartAndEndBoundaryContainingHiddenElementEnabled()) {
-        // We should skip the children of hidden elements and
-        // place the position immediately after the anchor.
-        candidate_node = next_node_iterator;
-        candidate_type = PositionAnchorType::kAfterAnchor;
-        next_node_iterator =
-            Strategy::NextSkippingChildren(*next_node_iterator, start_block);
-      } else {
-        next_node_iterator = nextNode();
-      }
+      // We should skip the children of hidden elements and
+      // place the position immediately after the anchor.
+      candidate_node = next_node_iterator;
+      candidate_type = PositionAnchorType::kAfterAnchor;
+      next_node_iterator =
+          Strategy::NextSkippingChildren(*next_node_iterator, start_block);
       continue;
     }
 
@@ -258,8 +261,17 @@ PositionTemplate<Strategy> EndOfParagraphAlgorithm(
       if (style.ShouldPreserveBreaks()) {
         const String& text = layout_text->TransformedText();
         const int length = text.length();
-        for (int i = (next_node_iterator == start_node ? candidate_offset : 0);
-             i < length; ++i) {
+        // `text` may start partway into the node (e.g. with ::first-letter),
+        // so convert the DOM offset to an index into `text`.
+        const int text_start_offset =
+            RuntimeEnabledFeatures::FirstLetterParagraphOffsetsEnabled()
+                ? static_cast<int>(layout_text->TextStartOffset())
+                : 0;
+        const int start_index =
+            next_node_iterator == start_node
+                ? max(0, candidate_offset - text_start_offset)
+                : 0;
+        for (int i = start_index; i < length; ++i) {
           if (text[i] == '\n') {
             return PositionTemplate<Strategy>(
                 To<Text>(next_node_iterator),

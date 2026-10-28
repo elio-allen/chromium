@@ -47,8 +47,7 @@ void SetOverrides(sync_preferences::TestingPrefServiceSyncable* prefs,
 
   // Lambda facilitating insertion of TemplateURL definitions, ensuring that all
   // mandatory fields are present.
-  auto add_definition = [&overrides](TemplateURLID id,
-                                     std::string name_and_keyword,
+  auto add_definition = [&overrides](int id, std::string name_and_keyword,
                                      std::string base_url) {
     auto alternate_urls = base::ListValue();
     alternate_urls.Append(base_url + "/alternate?q={searchTerms}");
@@ -56,7 +55,7 @@ void SetOverrides(sync_preferences::TestingPrefServiceSyncable* prefs,
     overrides.Append(
         base::DictValue()
             .Set("name", name_and_keyword)
-            .Set("id", (int)id)
+            .Set("id", id)
             .Set("keyword", name_and_keyword)
             .Set("search_url", base_url + "/search?q={searchTerms}")
             .Set("suggest_url", base_url + "/suggest?q={searchTerms}")
@@ -522,6 +521,29 @@ TEST_F(DefaultSearchManagerTest,
       manager->GetDefaultSearchEngineIgnoringExtensions();
   ASSERT_TRUE(ignored_extension_engine);
   ExpectSimilar(builtin_engine, ignored_extension_engine.get());
+}
+
+TEST_F(DefaultSearchManagerTest, GetRecommendedDefaultSearchEngine) {
+  auto manager = create_manager();
+
+  // 1. Initially, no recommended policy engine is set.
+  EXPECT_FALSE(manager->GetRecommendedDefaultSearchEngine());
+
+  // 2. Set a recommended policy engine.
+  std::unique_ptr<TemplateURLData> rec_data =
+      GenerateDummyTemplateURLData("rec");
+  rec_data->safe_for_autoreplace = false;
+  SetPolicy(pref_service(), true, rec_data.get(), /*is_mandatory=*/false);
+
+  auto rec_engine = manager->GetRecommendedDefaultSearchEngine();
+  ASSERT_TRUE(rec_engine);
+  ExpectSimilar(rec_data.get(), rec_engine.get());
+  EXPECT_EQ(TemplateURLData::PolicyOrigin::kDefaultSearchProvider,
+            rec_engine->policy_origin);
+
+  // 3. Recommended policy disabled by policy.
+  SetPolicy(pref_service(), false, rec_data.get(), /*is_mandatory=*/false);
+  EXPECT_FALSE(manager->GetRecommendedDefaultSearchEngine());
 }
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)

@@ -5,12 +5,14 @@
 #import "ios/chrome/browser/intelligence/actor/tools/model/click_tool_java_script_feature.h"
 
 #import "base/strings/stringprintf.h"
+#import "base/test/metrics/histogram_tester.h"
 #import "base/test/test_future.h"
 #import "components/optimization_guide/proto/features/actions_data.pb.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/action_target.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool_java_script_feature_test_base.h"
 #import "ios/chrome/browser/intelligence/actor/tools/public/actor_tool_types.h"
+#import "ios/chrome/browser/intelligence/actor/tools/public/metrics.h"
 #import "testing/gtest/include/gtest/gtest.h"
 
 using optimization_guide::proto::ClickAction;
@@ -28,11 +30,9 @@ class ClickToolJavaScriptFeatureTest
     return ClickToolJavaScriptFeature::GetInstance();
   }
 
-  // Mocks both JavaScript functions for clicking to return the given result.
+  // Mocks JavaScript function for clicking to return the given result.
   void MockClickJsFunctions(const std::string& mock_return_value) {
-    MockJsFunction(feature(), "click_tool", "clickByCoordinate",
-                   mock_return_value);
-    MockJsFunction(feature(), "click_tool", "clickByNodeId", mock_return_value);
+    MockJsFunction(feature(), "click_tool", "click", mock_return_value);
   }
 
   ActionTarget CreateTargetWithCoordinates() {
@@ -55,6 +55,7 @@ class ClickToolJavaScriptFeatureTest
 };
 
 TEST_F(ClickToolJavaScriptFeatureTest, JsReturnsNonDict) {
+  base::HistogramTester histogram_tester;
   MockClickJsFunctions(/*mock_return_value=*/"'unexpected type'");
   ActionTarget click_by_coordinate = CreateTargetWithCoordinates();
   ActionTarget click_by_node_id = CreateTargetWithNodeId();
@@ -79,13 +80,20 @@ TEST_F(ClickToolJavaScriptFeatureTest, JsReturnsNonDict) {
   EXPECT_FALSE(node_id_result.IsOk());
   EXPECT_EQ(node_id_result.internal_code().value(),
             InternalToolErrorCode::kJavascriptFeatureGotInvalidResult);
+
+  histogram_tester.ExpectTotalCount(
+      GetJavaScriptResultCodeHistogramName(ActorJavaScriptCall::kClick), 0);
+  histogram_tester.ExpectTotalCount(
+      GetJavaScriptExecutionDurationHistogramName(ActorJavaScriptCall::kClick),
+      0);
 }
 
 TEST_F(ClickToolJavaScriptFeatureTest, JsReturnsError) {
+  base::HistogramTester histogram_tester;
   MockClickJsFunctions(
       /*mock_return_value=*/base::StringPrintf(
           "{resultCode: %d, message: 'Custom JS Error'}",
-          static_cast<int>(ClickToolResultCode::kClickSuppressed)));
+          static_cast<int>(ClickToolResultCode::kElementDisabled)));
   ActionTarget click_by_coordinate = CreateTargetWithCoordinates();
   ActionTarget click_by_node_id = CreateTargetWithNodeId();
   base::test::TestFuture<ToolExecutionResult> coordinate_future;
@@ -100,30 +108,37 @@ TEST_F(ClickToolJavaScriptFeatureTest, JsReturnsError) {
                    ClickAction::UNKNOWN_CLICK_COUNT,
                    node_id_future.GetCallback());
 
-  auto coordinate_result = coordinate_future.Get();
+  const auto& coordinate_result = coordinate_future.Get();
   EXPECT_FALSE(coordinate_result.IsOk());
   EXPECT_EQ(coordinate_result.code(),
-            mojom::ActionResultCode::kClickSuppressed);
+            mojom::ActionResultCode::kElementDisabled);
   EXPECT_EQ(GetToolExecutionResultMessage(coordinate_result),
             "Custom JS Error");
 
-  auto node_id_result = node_id_future.Get();
+  const auto& node_id_result = node_id_future.Get();
   EXPECT_FALSE(node_id_result.IsOk());
-  EXPECT_EQ(node_id_result.code(), mojom::ActionResultCode::kClickSuppressed);
+  EXPECT_EQ(node_id_result.code(), mojom::ActionResultCode::kElementDisabled);
   EXPECT_EQ(GetToolExecutionResultMessage(node_id_result), "Custom JS Error");
+
+  histogram_tester.ExpectUniqueSample(
+      GetJavaScriptResultCodeHistogramName(ActorJavaScriptCall::kClick),
+      mojom::ActionResultCode::kElementDisabled, 2);
+  histogram_tester.ExpectTotalCount(
+      GetJavaScriptExecutionDurationHistogramName(ActorJavaScriptCall::kClick),
+      2);
 }
 
 TEST_F(ClickToolJavaScriptFeatureTest, InvalidatedWebFrame) {
-  ActionTarget type_by_coordinate = CreateTargetWithCoordinates();
-  ActionTarget type_by_node_id = CreateTargetWithNodeId();
+  ActionTarget click_by_coordinate = CreateTargetWithCoordinates();
+  ActionTarget click_by_node_id = CreateTargetWithNodeId();
   base::test::TestFuture<ToolExecutionResult> coordinate_future;
   base::test::TestFuture<ToolExecutionResult> node_id_future;
 
-  feature()->Click(/*target_frame=*/nullptr, type_by_coordinate,
+  feature()->Click(/*target_frame=*/nullptr, click_by_coordinate,
                    ClickAction::UNKNOWN_CLICK_TYPE,
                    ClickAction::UNKNOWN_CLICK_COUNT,
                    coordinate_future.GetCallback());
-  feature()->Click(/*target_frame=*/nullptr, type_by_node_id,
+  feature()->Click(/*target_frame=*/nullptr, click_by_node_id,
                    ClickAction::UNKNOWN_CLICK_TYPE,
                    ClickAction::UNKNOWN_CLICK_COUNT,
                    node_id_future.GetCallback());
@@ -140,7 +155,7 @@ TEST_F(ClickToolJavaScriptFeatureTest, JsReturnsErrorWithoutMessage) {
   MockClickJsFunctions(
       /*mock_return_value=*/base::StringPrintf(
           "{resultCode: %d}",
-          static_cast<int>(ClickToolResultCode::kClickSuppressed)));
+          static_cast<int>(ClickToolResultCode::kElementDisabled)));
   ActionTarget click_by_coordinate = CreateTargetWithCoordinates();
   ActionTarget click_by_node_id = CreateTargetWithNodeId();
   base::test::TestFuture<ToolExecutionResult> coordinate_future;
@@ -155,19 +170,20 @@ TEST_F(ClickToolJavaScriptFeatureTest, JsReturnsErrorWithoutMessage) {
                    ClickAction::UNKNOWN_CLICK_COUNT,
                    node_id_future.GetCallback());
 
-  auto coordinate_result = coordinate_future.Get();
+  const auto& coordinate_result = coordinate_future.Get();
   EXPECT_FALSE(coordinate_result.IsOk());
   EXPECT_EQ(coordinate_result.code(),
-            mojom::ActionResultCode::kClickSuppressed);
+            mojom::ActionResultCode::kElementDisabled);
   EXPECT_FALSE(coordinate_result.message().has_value());
 
-  auto node_id_result = node_id_future.Get();
+  const auto& node_id_result = node_id_future.Get();
   EXPECT_FALSE(node_id_result.IsOk());
-  EXPECT_EQ(node_id_result.code(), mojom::ActionResultCode::kClickSuppressed);
+  EXPECT_EQ(node_id_result.code(), mojom::ActionResultCode::kElementDisabled);
   EXPECT_FALSE(node_id_result.message().has_value());
 }
 
 TEST_F(ClickToolJavaScriptFeatureTest, ClickByCoordinate_Success) {
+  base::HistogramTester histogram_tester;
   MockClickJsFunctions(
       /*mock_return_value=*/"{resultCode: 0, message: 'fake success!'}");
   ActionTarget action = CreateTargetWithCoordinates();
@@ -179,6 +195,12 @@ TEST_F(ClickToolJavaScriptFeatureTest, ClickByCoordinate_Success) {
 
   auto result = future.Get();
   EXPECT_TRUE(result.IsOk());
+  histogram_tester.ExpectUniqueSample(
+      GetJavaScriptResultCodeHistogramName(ActorJavaScriptCall::kClick),
+      mojom::ActionResultCode::kOk, 1);
+  histogram_tester.ExpectTotalCount(
+      GetJavaScriptExecutionDurationHistogramName(ActorJavaScriptCall::kClick),
+      1);
 }
 
 TEST_F(ClickToolJavaScriptFeatureTest, ClickByNodeId_Success) {

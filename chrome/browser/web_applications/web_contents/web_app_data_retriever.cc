@@ -14,7 +14,6 @@
 #include "base/auto_reset.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/not_fatal_until.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
@@ -97,11 +96,11 @@ WebAppDataRetriever::~WebAppDataRetriever() = default;
 void WebAppDataRetriever::GetWebAppInstallInfo(
     content::WebContents* web_contents,
     GetWebAppInstallInfoCallback callback) {
-  DCHECK(!web_contents->IsBeingDestroyed());
+  CHECK(!web_contents->IsBeingDestroyed(), base::NotFatalUntil::M162);
   Observe(web_contents);
 
   // Concurrent calls are not allowed.
-  CHECK(!HasPendingCall(), base::NotFatalUntil::M145);
+  CHECK(!HasPendingCall());
   get_web_app_info_callback_ = std::move(callback);
 
   if (ShouldStopRetrieval()) {
@@ -160,11 +159,11 @@ void WebAppDataRetriever::CheckInstallabilityAndRetrieveManifest(
     content::WebContents* web_contents,
     CheckInstallabilityCallback callback,
     std::optional<webapps::InstallableParams> params) {
-  DCHECK(!web_contents->IsBeingDestroyed());
+  CHECK(!web_contents->IsBeingDestroyed(), base::NotFatalUntil::M162);
   Observe(web_contents);
 
   // Concurrent calls are not allowed.
-  CHECK(!HasPendingCall(), base::NotFatalUntil::M145);
+  CHECK(!HasPendingCall());
   check_installability_callback_ = std::move(callback);
   if (ShouldStopRetrieval()) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
@@ -187,7 +186,7 @@ void WebAppDataRetriever::CheckInstallabilityAndRetrieveManifest(
 
   webapps::InstallableManager* installable_manager =
       webapps::InstallableManager::FromWebContents(web_contents);
-  DCHECK(installable_manager);
+  CHECK(installable_manager, base::NotFatalUntil::M162);
 
   // Do not wait_for_worker. OnDidPerformInstallableCheck is always invoked.
   installable_manager->GetData(
@@ -201,7 +200,7 @@ void WebAppDataRetriever::GetPrimaryPageFirstSpecifiedManifest(
     ManifestCallbackList::CallbackType callback) {
   Observe(&web_contents);
   // Concurrent calls are not allowed.
-  CHECK(!HasPendingCall(), base::NotFatalUntil::M145);
+  CHECK(!HasPendingCall());
   get_specified_manifest_callback_ = std::move(callback);
   content::PageManifestManager* manifest_manager =
       content::PageManifestManager::GetOrCreate(web_contents.GetPrimaryPage());
@@ -219,11 +218,11 @@ void WebAppDataRetriever::GetIcons(content::WebContents* web_contents,
                                    bool download_page_favicons,
                                    bool fail_all_if_any_fail,
                                    GetIconsCallback callback) {
-  DCHECK(!web_contents->IsBeingDestroyed());
+  CHECK(!web_contents->IsBeingDestroyed(), base::NotFatalUntil::M162);
   Observe(web_contents);
 
   // Concurrent calls are not allowed.
-  CHECK(!HasPendingCall(), base::NotFatalUntil::M145);
+  CHECK(!HasPendingCall());
   get_icons_callback_ = std::move(callback);
 
   if (ShouldStopRetrieval()) {
@@ -291,7 +290,7 @@ void WebAppDataRetriever::OnGetWebPageMetadata(
     return;
   }
 
-  DCHECK(fallback_install_info_);
+  CHECK(fallback_install_info_, base::NotFatalUntil::M162);
 
   content::WebContents* contents = web_contents();
   Observe(nullptr);
@@ -413,7 +412,7 @@ void WebAppDataRetriever::OnIconsDownloaded(
   Observe(nullptr);
   icon_downloader_.reset();
 
-  DCHECK(!get_icons_callback_.is_null());
+  CHECK(!get_icons_callback_.is_null(), base::NotFatalUntil::M162);
   std::move(get_icons_callback_)
       .Run(result, std::move(icons_map), std::move(icons_http_results));
 }

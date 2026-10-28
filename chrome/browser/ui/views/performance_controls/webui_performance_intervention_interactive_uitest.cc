@@ -8,10 +8,12 @@
 #include "chrome/browser/performance_manager/public/user_tuning/performance_detection_manager.h"
 #include "chrome/browser/performance_manager/test_support/page_discarding_utils.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/performance_controls/performance_intervention_button_controller.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/performance_controls/performance_intervention_bubble.h"
@@ -66,11 +68,6 @@ class WebUIPerformanceInterventionInteractiveTest
     unconditionally_discard_pages_ =
         std::make_unique<ScopedSetAllPagesDiscardableForTesting>();
     WaitForInitialWebUIToolbar(browser());
-    // Set a larger suppression threshold to account for IPC latency on bots.
-    auto* webview = GetWebUIToolbarWebView(browser());
-    CHECK(webview);
-    webview->GetPerformanceInterventionControlForTesting()
-        ->SetSuppressionThresholdForTesting(base::Seconds(1));
   }
 
   void TearDownOnMainThread() override {
@@ -84,9 +81,9 @@ class WebUIPerformanceInterventionInteractiveTest
 
   std::vector<resource_attribution::PageContext> GetPageContextForTabs(
       const std::vector<int>& tab_indices,
-      Browser* browser) {
+      BrowserWindowInterface* browser) {
     std::vector<resource_attribution::PageContext> page_contexts;
-    TabStripModel* const tab_strip_model = browser->tab_strip_model();
+    TabStripModel* const tab_strip_model = browser->GetTabStripModel();
     for (int index : tab_indices) {
       std::optional<resource_attribution::PageContext> context =
           resource_attribution::PageContext::FromWebContents(
@@ -98,7 +95,7 @@ class WebUIPerformanceInterventionInteractiveTest
   }
 
   void NotifyActionableTabListChange(const std::vector<int>& tab_indices,
-                                     Browser* browser) {
+                                     BrowserWindowInterface* browser) {
     performance_manager::user_tuning::PerformanceDetectionManager::GetInstance()
         ->NotifyActionableTabObserversForTesting(
             PerformanceDetectionManager::ResourceType::kCpu,
@@ -139,14 +136,15 @@ class WebUIPerformanceInterventionInteractiveTest
   }
 
   auto CheckButtonActive(bool active) {
-    return CheckJsResultAt(kWebUIToolbarWebContentsId, ActualButtonDeepQuery(),
-                           "el => el.hasAttribute('is-activated')", active);
+    return CheckJsResultAt(kWebUIToolbarWebContentsId, ButtonDeepQuery(),
+                           "el => el.classList.contains('anchor-highlight')",
+                           active);
   }
 
   auto WaitForButtonActive(bool active) {
-    return WaitForJsResultAt(kWebUIToolbarWebContentsId,
-                             ActualButtonDeepQuery(),
-                             "el => el.hasAttribute('is-activated')", active);
+    return WaitForJsResultAt(kWebUIToolbarWebContentsId, ButtonDeepQuery(),
+                             "el => el.classList.contains('anchor-highlight')",
+                             active);
   }
 
   auto ClickButton() {
@@ -169,11 +167,16 @@ class WebUIPerformanceInterventionInteractiveTest
                 views::Widget::ClosedReason::kLostFocus);
           }
         }),
+        ExecuteJsAt(kWebUIToolbarWebContentsId, ButtonDeepQuery(),
+                    "(el) => {"
+                    "  el.highlightTracker.lastUnhighlightedTime = "
+                    "      performance.now() + 10000;"
+                    "}"),
         ExecuteJsAt(kWebUIToolbarWebContentsId, ActualButtonDeepQuery(),
                     "(el) => {"
                     "  el.dispatchEvent(new PointerEvent('pointerdown', "
                     "{bubbles: true, cancelable: true, view: window, "
-                    "button: 0}));"
+                    "button: 0, pointerType: 'mouse'}));"
                     "  el.dispatchEvent(new PointerEvent('click', "
                     "{bubbles: true, cancelable: true, view: window, "
                     "button: 0, pointerType: 'mouse'}));"
@@ -229,7 +232,7 @@ IN_PROC_BROWSER_TEST_F(WebUIPerformanceInterventionInteractiveTest,
       WaitForShow(
           PerformanceInterventionBubble::kPerformanceInterventionDialogBody),
       Do([this]() {
-        browser()->tab_strip_model()->CloseWebContentsAt(0, CLOSE_NONE);
+        browser()->GetTabStripModel()->CloseWebContentsAt(0, CLOSE_NONE);
       }),
       WaitForHide(
           PerformanceInterventionBubble::kPerformanceInterventionDialogBody));
@@ -251,7 +254,7 @@ IN_PROC_BROWSER_TEST_F(WebUIPerformanceInterventionInteractiveTest,
       WaitForShow(
           PerformanceInterventionBubble::kPerformanceInterventionDialogBody),
       Do([this]() {
-        browser()->tab_strip_model()->CloseWebContentsAt(0, CLOSE_NONE);
+        browser()->GetTabStripModel()->CloseWebContentsAt(0, CLOSE_NONE);
         NotifyActionableTabListChange({0}, browser());
       }),
       WaitForButtonShown(true));
@@ -320,6 +323,6 @@ IN_PROC_BROWSER_TEST_F(WebUIPerformanceInterventionDisabledInteractiveTest,
   RunTestSequence(Do([this]() {
     WebUIPerformanceInterventionControl* control = GetControl();
     // This should not crash.
-    control->OnClicked(true);
+    control->OnClicked();
   }));
 }

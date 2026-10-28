@@ -25,16 +25,20 @@ namespace blink {
 
 namespace {
 
-HeapVector<CSSSelector> ParseSelector(String s) {
+HeapVector<CSSSelector> ParseSelector(String s, CSSParserMode mode) {
   HeapVector<CSSSelector> arena;
   CSSParserTokenStream stream(s);
   base::span<CSSSelector> vector = CSSSelectorParser::ParseSelector(
       stream,
       MakeGarbageCollected<CSSParserContext>(
-          kUASheetMode, SecureContextMode::kInsecureContext),
+          mode, SecureContextMode::kInsecureContext),
       CSSNestingType::kNone, /*parent_rule_for_nesting=*/nullptr,
       /*semicolon_aborts_nested_selector=*/false, nullptr, arena);
   return HeapVector<CSSSelector>(vector);
+}
+
+HeapVector<CSSSelector> ParseSelector(String s) {
+  return ParseSelector(s, kUASheetMode);
 }
 
 }  // namespace
@@ -194,7 +198,12 @@ TEST(CSSSelectorParserTest, ValidSimpleAfterPseudoElementInCompound) {
                               "::-webkit-scrollbar:not(:horizontal)",
                               "::slotted(span)::before",
                               "::slotted(div)::after",
-                              "::slotted(div)::view-transition"};
+                              "::slotted(div)::view-transition",
+                              "::slotted(div)::scroll-marker-group",
+                              "::slotted(div)::scroll-marker",
+                              "::slotted(div)::scroll-button(up)",
+                              "::slotted(div):is()",
+                              "::slotted(div):not(:where(#id))"};
 
   HeapVector<CSSSelector> arena;
   for (StringView test_case : test_cases) {
@@ -230,6 +239,8 @@ TEST(CSSSelectorParserTest, InvalidSimpleAfterPseudoElementInCompound) {
       "video::-webkit-media-text-track-region-container.scrolling",
       "div ::before.a",
       "::slotted(div):hover",
+      "::slotted(div):not(:first-child)",
+      "::slotted(div):not(#id)",
       "::slotted(div)::slotted(span)",
       "::slotted(div)::before:hover",
       "::slotted(div)::before::slotted(span)",
@@ -1123,8 +1134,6 @@ TEST(CSSSelectorParserTest, UseCountShadowPseudo) {
               WebFeature::kCSSSelectorInternalMediaControlsOverlayCastButton);
   ExpectCount("::-webkit-calendar-picker-indicator",
               WebFeature::kCSSSelectorWebkitCalendarPickerIndicator);
-  ExpectCount("::-webkit-clear-button",
-              WebFeature::kCSSSelectorWebkitClearButton);
   ExpectCount("::-webkit-color-swatch",
               WebFeature::kCSSSelectorWebkitColorSwatch);
   ExpectCount("::-webkit-color-swatch-wrapper",
@@ -1956,7 +1965,7 @@ TEST_P(LangParsingFlagDependentTest, ExtendedLangRangesParsing) {
 
 TEST(CSSSelectorParserTest, ToolFormSubmitActive_Disabled) {
   ScopedWebMCPForTest scoped_webmcp_feature(false);
-  ScopedWebMCPTestingForTest scoped_webmcp_testing_feature(false);
+  ScopedDeclarativeWebMCPForTest scoped_declarative_webmcp_feature(false);
   ScopedWebMCPDeclarativeFileInputForTest scoped_webmcp_file_input_feature(
       false);
   ScopedWebMCPFormAssociatedCustomElementsForTest scoped_webmcp_face_feature(
@@ -1967,7 +1976,8 @@ TEST(CSSSelectorParserTest, ToolFormSubmitActive_Disabled) {
   Document& document = dummy_holder->GetDocument();
   auto* context = MakeGarbageCollected<CSSParserContext>(document);
 
-  // Test that these pseudo classes are not valid with the WebMCP flag disabled
+  // Test that these pseudo classes are not valid with the DeclarativeWebMCP
+  // flag disabled.
   HeapVector<CSSSelector> arena;
   CSSParserTokenStream stream1(":tool-form-active");
   base::span<CSSSelector> tool_form_active = CSSSelectorParser::ParseSelector(
@@ -3345,6 +3355,32 @@ TEST(CSSSelectorParserTest, UnparsedInvalid) {
         EXPECT_FALSE(arg);
       }
     }
+  }
+}
+
+TEST(CSSSelectorParserTest, SkeletonPseudo) {
+  ScopedDeclarativeSkeletonsForTest scoped_feature(true);
+
+  test::TaskEnvironment task_environment;
+
+  struct TestCase {
+    const char* selector;
+    CSSParserMode mode;
+    bool valid;
+  };
+
+  TestCase test_cases[] = {
+      {"::skeleton", kUASheetMode, true},
+      {":root::skeleton", kUASheetMode, true},
+      {"html::skeleton", kUASheetMode, true},
+      {"::skeleton", kHTMLStandardMode, true},
+  };
+
+  for (const auto& test_case : test_cases) {
+    SCOPED_TRACE(test_case.selector);
+    HeapVector<CSSSelector> vector =
+        ParseSelector(test_case.selector, test_case.mode);
+    EXPECT_EQ(!vector.empty(), test_case.valid);
   }
 }
 

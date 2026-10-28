@@ -9,7 +9,12 @@
 
 #import "ios/chrome/browser/shared/coordinator/chrome_coordinator/chrome_coordinator.h"
 
+namespace autofill {
+struct Suggestion;
+}
+
 @protocol AtMemoryFillCommands;
+@protocol AutofillSettingsNavigator;
 
 // Child coordinator for the AtMemory granular fill UI. Managed by
 // AtMemoryCoordinator, it displays detailed fields for a selected
@@ -19,9 +24,14 @@
 // Handler for fill commands.
 @property(nonatomic, weak) id<AtMemoryFillCommands> fillHandler;
 
+// Navigator used to open Autofill settings pages.
+@property(nonatomic, weak) id<AutofillSettingsNavigator> settingsNavigator;
+
 - (instancetype)initWithBaseNavigationController:
                     (UINavigationController*)navigationController
                                          browser:(Browser*)browser
+                                      suggestion:(const autofill::Suggestion&)
+                                                     suggestion
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)initWithBaseViewController:(UIViewController*)viewController

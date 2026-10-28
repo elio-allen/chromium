@@ -8,9 +8,8 @@
 #include "base/no_destructor.h"
 #include "base/strings/strcat.h"
 #include "base/test/scoped_feature_list.h"
-#include "build/build_config.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/profiles/profile_ui_test_utils.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
 #include "chrome/browser/ui/views/profiles/profile_management_step_controller.h"
@@ -36,7 +35,6 @@ enum class ScreenVersion {
 struct ManagedUserProfileNoticePixelTestParam {
   PixelTestParam pixel_test_param;
   ScreenVersion screen_version = ScreenVersion::kOld;
-  bool use_primary_and_tonal_buttons = false;
 };
 
 std::string ParamToTestSuffix(
@@ -55,8 +53,7 @@ std::string ParamToTestSuffix(
       break;
   }
   return base::StrCat(
-      {info.param.pixel_test_param.test_suffix, screen_version_suffix,
-       info.param.use_primary_and_tonal_buttons ? "Tonal" : ""});
+      {info.param.pixel_test_param.test_suffix, screen_version_suffix});
 }
 
 std::unique_ptr<signin::EnterpriseProfileCreationDialogParams>
@@ -89,12 +86,8 @@ const std::vector<ManagedUserProfileNoticePixelTestParam>& GetTestParams() {
           for (ScreenVersion screen_version :
                {ScreenVersion::kOld, ScreenVersion::kRefreshed,
                 ScreenVersion::kRevamped}) {
-            for (bool use_primary_and_tonal_buttons : {false, true}) {
-              params.push_back({.pixel_test_param = window_param,
-                                .screen_version = screen_version,
-                                .use_primary_and_tonal_buttons =
-                                    use_primary_and_tonal_buttons});
-            }
+            params.push_back({.pixel_test_param = window_param,
+                              .screen_version = screen_version});
           }
         }
         return params;
@@ -122,13 +115,13 @@ class ManagedUserProfileNoticeStepControllerForTest
   void Show(StepSwitchFinishedCallback step_shown_callback,
             bool reset_state) override {
     ManagedUserProfileNoticeParams::CreateForWebContents(
-        host()->GetPickerContents(),
+        host().GetPickerContents(),
         /*browser=*/nullptr,
         ManagedUserProfileNoticeUI::ScreenType::kProfilePicker,
         CreateEnterpriseProfileCreationDialogParams(account_info_));
 
     // Reload the WebUI in the picker contents.
-    host()->ShowScreenInPickerContents(
+    host().ShowScreenInPickerContents(
         managed_user_notice_url_,
         base::BindOnce(&ManagedUserProfileNoticeStepControllerForTest::
                            OnManagedUserProfileNoticeLoaded,
@@ -165,9 +158,7 @@ class ManagedUserProfileNoticeUIWindowPixelTest
           GetParam().screen_version == ScreenVersion::kRefreshed ||
               GetParam().screen_version == ScreenVersion::kRevamped},
          {switches::kFirstRunDesktopRevamp,
-          GetParam().screen_version == ScreenVersion::kRevamped},
-         {switches::kUsePrimaryAndTonalButtonsForPromos,
-          GetParam().use_primary_and_tonal_buttons}});
+          GetParam().screen_version == ScreenVersion::kRevamped}});
   }
 
   ~ManagedUserProfileNoticeUIWindowPixelTest() override {
@@ -213,10 +204,11 @@ class ManagedUserProfileNoticeUIWindowPixelTest
   bool VerifyUi() override {
     views::Widget* widget = GetWidgetForScreenshot();
 
+    const std::string baseline = "8481376";
     const testing::TestInfo* test_info =
         testing::UnitTest::GetInstance()->current_test_info();
-    const std::string screenshot_name =
-        base::StrCat({test_info->test_suite_name(), "_", test_info->name()});
+    const std::string screenshot_name = base::StrCat(
+        {test_info->test_suite_name(), "_", test_info->name(), "_", baseline});
 
     return VerifyPixelUi(widget, "ManagedUserProfileNoticeUIWindowPixelTest",
                          screenshot_name) != ui::test::ActionResult::kFailed;
@@ -250,13 +242,6 @@ class ManagedUserProfileNoticeUIWindowPixelTest
 
 IN_PROC_BROWSER_TEST_P(ManagedUserProfileNoticeUIWindowPixelTest,
                        InvokeUi_default) {
-#if BUILDFLAG(IS_WIN)
-  if (base::FeatureList::IsEnabled(features::kInitialWebUI)) {
-    GTEST_SKIP() << "Skipping test because it fails with InitialWebUI enabled. "
-                    "See b/477426026.";
-  }
-#endif
-
   ShowAndVerifyUi();
 }
 

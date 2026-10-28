@@ -63,6 +63,12 @@ void CobrowseTabHelper::WasHidden(web::WebState* web_state) {
     return;
   }
 
+  if (delegate_ && !delegate_->IsWebStateActive(web_state)) {
+    // If the web state is no longer active, do not hide the global
+    // assistant.
+    return;
+  }
+
   [scene_handler_ hideAssistant];
 }
 
@@ -87,6 +93,12 @@ void CobrowseTabHelper::DidStartNavigation(
   }
 
   const GURL& url = navigation_context->GetUrl();
+
+  // Do not hide or trigger the assistant for temporary about:blank or invalid
+  // URL navigations while loading.
+  if (!url.is_valid() || url.IsAboutBlank()) {
+    return;
+  }
 
   // If the session is active and we navigate to an AIM URL, update the context
   // before `ShouldHideAssistant` hides the UI and returns early. This ensures
@@ -144,7 +156,7 @@ bool CobrowseTabHelper::ShouldHideAssistant(web::WebState* web_state,
     return true;
   }
 
-  if (!url.is_valid() || url.IsAboutBlank() || IsUrlNtp(url)) {
+  if (IsUrlNtp(url)) {
     return true;
   }
 

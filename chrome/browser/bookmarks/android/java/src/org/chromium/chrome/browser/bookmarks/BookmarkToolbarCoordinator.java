@@ -33,6 +33,7 @@ import java.util.function.BooleanSupplier;
 public class BookmarkToolbarCoordinator {
     private final BookmarkToolbar mToolbar;
     private final PropertyModel mModel;
+    private final BookmarkToolbarMediator mMediator;
 
     BookmarkToolbarCoordinator(
             Context context,
@@ -64,6 +65,13 @@ public class BookmarkToolbarCoordinator {
                                 null,
                                 isDialogUi);
         mToolbar.setNormalBackgroundColor(Color.TRANSPARENT);
+        if (BookmarkUtils.isDesktopBookmarksLayoutEnabled()) {
+            mToolbar.setTitleMarginStart(
+                    context.getResources()
+                            .getDimensionPixelSize(
+                                    R.dimen.bookmark_desktop_toolbar_title_margin_start));
+        }
+
         updateToolbarPadding(context);
 
         mToolbar.initializeSearchView(
@@ -75,29 +83,32 @@ public class BookmarkToolbarCoordinator {
         mModel.set(BookmarkToolbarProperties.IS_DIALOG_UI, isDialogUi);
         mModel.set(BookmarkToolbarProperties.DRAG_ENABLED, false);
         mModel.set(BookmarkToolbarProperties.NEXT_FOCUSABLE_VIEW, nextFocusableView);
-        new BookmarkToolbarMediator(
-                context,
-                profile,
-                mModel,
-                dragTouchHandler,
-                bookmarkDelegateSupplier,
-                selectionDelegate,
-                bookmarkModel,
-                bookmarkOpener,
-                bookmarkUiPrefs,
-                new BookmarkAddNewFolderCoordinator(context, modalDialogManager, bookmarkModel),
-                endSearchRunnable,
-                incognitoEnabledSupplier,
-                bookmarkManagerOpener,
-                snackbarManager,
-                Clipboard.getInstance(),
-                bookmarkDeleteObserver);
+        mMediator =
+                new BookmarkToolbarMediator(
+                        context,
+                        profile,
+                        mModel,
+                        dragTouchHandler,
+                        bookmarkDelegateSupplier,
+                        selectionDelegate,
+                        bookmarkModel,
+                        bookmarkOpener,
+                        bookmarkUiPrefs,
+                        new BookmarkAddNewFolderCoordinator(
+                                context, modalDialogManager, bookmarkModel),
+                        endSearchRunnable,
+                        incognitoEnabledSupplier,
+                        bookmarkManagerOpener,
+                        snackbarManager,
+                        Clipboard.getInstance(),
+                        bookmarkDeleteObserver);
 
         PropertyModelChangeProcessor.create(mModel, mToolbar, BookmarkToolbarViewBinder::bind);
     }
 
     public void onConfigurationChanged(Configuration newConfig) {
         updateToolbarPadding(mToolbar.getContext());
+        mMediator.setSmallScreen(newConfig.screenWidthDp < BookmarkUtils.WIDE_DISPLAY_THRESHOLD_DP);
     }
 
     private void updateToolbarPadding(Context context) {
@@ -121,5 +132,9 @@ public class BookmarkToolbarCoordinator {
 
     public BookmarkToolbar getToolbarForTesting() {
         return mToolbar;
+    }
+
+    BookmarkToolbarMediator getMediatorForTesting() {
+        return mMediator;
     }
 }

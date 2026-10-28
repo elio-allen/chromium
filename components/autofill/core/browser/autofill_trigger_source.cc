@@ -25,11 +25,10 @@ AutofillTriggerSource TriggerSourceFromSuggestionTriggerSource(
     case AutofillSuggestionTriggerSource::kComposeDialogLostFocus:
     case AutofillSuggestionTriggerSource::kComposeDelayedProactiveNudge:
     case AutofillSuggestionTriggerSource::kPasswordManagerProcessedFocusedField:
-    case AutofillSuggestionTriggerSource::kPlusAddressUpdatedInBrowserProcess:
     case AutofillSuggestionTriggerSource::kAtMemoryContextMenu:
+    case AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl:
     case AutofillSuggestionTriggerSource::kAtMemoryInactivityNudge:
     case AutofillSuggestionTriggerSource::kAtMemoryKeyboardShortcut:
-    case AutofillSuggestionTriggerSource::kAtMemoryTriggerString:
       // On Android, no popup exists. Instead, the keyboard accessory is used.
 #if BUILDFLAG(IS_ANDROID)
       return AutofillTriggerSource::kKeyboardAccessoryOrBottomSheet;
@@ -43,6 +42,8 @@ AutofillTriggerSource TriggerSourceFromSuggestionTriggerSource(
       return AutofillTriggerSource::kManualFallback;
     case AutofillSuggestionTriggerSource::kProactivePasswordRecovery:
       return AutofillTriggerSource::kProactivePasswordRecovery;
+    case AutofillSuggestionTriggerSource::kGmailOneTimePasswordAvailable:
+      return AutofillTriggerSource::kGmailOneTimePasswordAvailable;
     case AutofillSuggestionTriggerSource::kGlic:
       return AutofillTriggerSource::kGlic;
   }

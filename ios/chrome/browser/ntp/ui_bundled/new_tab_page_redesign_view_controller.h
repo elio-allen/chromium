@@ -7,26 +7,27 @@
 
 #import <UIKit/UIKit.h>
 
+#import "ios/chrome/browser/content_suggestions/ui/content_suggestions_consumer.h"
 #import "ios/chrome/browser/content_suggestions/ui/user_account_image_update_delegate.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/fakebox_buttons_snapshot_provider.h"
 #import "ios/chrome/browser/ntp/search_engine_logo/ui/search_engine_logo_consumer.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_consumer.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_header_consumer.h"
-#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_header_view_delegate.h"
 
+@class ExtendedTouchTargetButton;
 @class LayoutGuideCenter;
-@class NewTabPageHeaderView;
 @protocol NewTabPageMutator;
 @protocol NewTabPageContentDelegate;
 @protocol NewTabPageHeaderCommands;
 @protocol NewTabPageShortcutsHandler;
+@class MagicStackCollectionViewController;
 
 // View controller shell for the New Tab Page Redesign.
 @interface NewTabPageRedesignViewController
-    : UIViewController <FakeboxButtonsSnapshotProvider,
+    : UIViewController <ContentSuggestionsConsumer,
+                        FakeboxButtonsSnapshotProvider,
                         NewTabPageConsumer,
                         NewTabPageHeaderConsumer,
-                        NewTabPageHeaderViewDelegate,
                         SearchEngineLogoConsumer,
                         UserAccountImageUpdateDelegate>
 
@@ -48,17 +49,19 @@
 // Indicates whether the lens button should use the "New" badge.
 @property(nonatomic, assign) BOOL useNewBadgeForLensButton;
 
+// The customization menu button in the top leading corner.
+@property(nonatomic, strong, readonly)
+    ExtendedTouchTargetButton* customizationMenuButton;
+
+// Indicates whether the customization menu button should use the "New" badge.
+@property(nonatomic, assign) BOOL useNewBadgeForCustomizationMenu;
+
 // The search engine/Doodle logo view.
 @property(nonatomic, strong) UIView* searchEngineLogoView;
 
-// The Most Visited Tiles (MVTs) view controller.
-@property(nonatomic, strong) UIViewController* mostVisitedViewController;
-
 // The Magic Stack view controller.
-@property(nonatomic, strong) UIViewController* magicStackViewController;
-
-// Sets the feed view controller to embed in the redesign bottom sheet.
-- (void)setFeedViewController:(UIViewController*)feedViewController;
+@property(nonatomic, strong)
+    MagicStackCollectionViewController* magicStackViewController;
 
 // `YES` if the omnibox should be focused on when the view appears for voice
 // over.
@@ -70,9 +73,26 @@
 // Properties conformed to by NewTabPageConsumer.
 @property(nonatomic, assign) BOOL mostVisitedVisible;
 @property(nonatomic, assign) BOOL magicStackVisible;
+@property(nonatomic, assign) BOOL feedTopSectionVisible;
 
-// Indicates to the receiver to update its state to focus the omnibox.
-- (void)focusOmnibox;
+// Sets the feed view controller to embed in the redesign bottom sheet.
+- (void)setFeedViewController:(UIViewController*)feedViewController;
+
+// The feed top section view controller containing promos.
+@property(nonatomic, strong) UIViewController* feedTopSectionViewController;
+
+// Handles the feed top section (promos) being closed.
+- (void)handleFeedTopSectionClosed;
+
+// Updates the feed layout (e.g. following changes in top section promo
+// visibility).
+- (void)updateFeedLayout;
+
+// Scrolls the bottom sheet (or feed) back to the top resting position.
+- (void)scrollToTopAnimated:(BOOL)animated;
+
+// Returns YES if the bottom sheet is scrolled to the top.
+- (BOOL)isScrolledToTop;
 
 // Clears state and delegates.
 - (void)invalidate;

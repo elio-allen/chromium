@@ -17,7 +17,6 @@
 #include "third_party/blink/renderer/core/css/css_primitive_value.h"
 #include "third_party/blink/renderer/core/css/media_values.h"
 #include "third_party/blink/renderer/platform/graphics/color_space_gamut.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier.h"
 #include "ui/base/mojom/window_show_state.mojom-blink.h"
 #include "ui/base/pointer/pointer_device.h"
 
@@ -69,7 +68,7 @@ class CORE_EXPORT MediaValuesCached final : public MediaValues {
     ui::mojom::blink::WindowShowState window_show_state =
         ui::mojom::blink::WindowShowState::kDefault;
     bool resizable = true;
-    ColorSpaceGamut color_gamut = ColorSpaceGamut::kUnknown;
+    ColorSpaceGamut color_gamut = ColorSpaceGamut::SRGB;
     mojom::blink::PreferredColorScheme preferred_color_scheme =
         mojom::blink::PreferredColorScheme::kLight;
     mojom::blink::PreferredContrast preferred_contrast =

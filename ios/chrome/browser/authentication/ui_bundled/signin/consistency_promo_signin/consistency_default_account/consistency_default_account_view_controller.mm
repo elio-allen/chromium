@@ -7,10 +7,7 @@
 #import "base/check.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
-#import "base/notreached.h"
 #import "base/strings/sys_string_conversions.h"
-#import "components/signin/public/base/signin_metrics.h"
-#import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/authentication/consistency_promo_signin/ui/consistency_layout_delegate.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/authentication/ui_bundled/views/identity_button_control.h"
@@ -19,10 +16,8 @@
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
-#import "ios/chrome/common/ui/util/button_util.h"
 #import "ios/chrome/common/ui/util/chrome_button.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
-#import "ios/chrome/common/ui/util/pointer_interaction_util.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ui/base/l10n/l10n_util.h"
@@ -189,12 +184,10 @@ UIFont* GetNavigationBarTitleFont() {
   UILayoutGuide* contentLayoutGuide = scrollView.contentLayoutGuide;
   UILayoutGuide* frameLayoutGuide = scrollView.safeAreaLayoutGuide;
   AddSameConstraintsToSidesWithInsets(
-      self.contentView, contentLayoutGuide,
-      LayoutSides::kTop | LayoutSides::kBottom,
+      self.contentView, contentLayoutGuide, LayoutSides::kVertical,
       NSDirectionalEdgeInsets{kContentMargin, 0, kContentMargin, 0});
   AddSameConstraintsToSidesWithInsets(
-      self.contentView, frameLayoutGuide,
-      LayoutSides::kLeading | LayoutSides::kTrailing,
+      self.contentView, frameLayoutGuide, LayoutSides::kHorizontal,
       NSDirectionalEdgeInsets{0, kContentMargin, 0, kContentMargin});
 
   // Add the label.

@@ -11,6 +11,7 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "build/build_config.h"
@@ -28,8 +29,8 @@
 #include "chrome/browser/indigo/proto/indigo_prompts.pb.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_features.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/feature_registry/feature_registration.h"
-#include "components/optimization_guide/core/optimization_guide_prefs.h"
 #include "components/policy/core/common/management/management_service.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
@@ -295,6 +296,15 @@ IndigoService::RegisterLocalEligibilityChangedCallback(
   return local_eligibility_callback_list_.Add(std::move(callback));
 }
 
+base::CallbackListSubscription IndigoService::RegisterPhotoChangedCallback(
+    base::RepeatingClosure callback) {
+  return photo_changed_callback_list_.Add(std::move(callback));
+}
+
+void IndigoService::NotifyPhotoChanged() {
+  photo_changed_callback_list_.Notify();
+}
+
 bool IndigoService::IsModelImprovementAllowed() const {
   if (!pref_service_) {
     return true;
@@ -353,7 +363,7 @@ LocalEligibility IndigoService::ComputeLocalEligibility() const {
   AccountInfo info =
       identity_manager_->FindExtendedAccountInfoByAccountId(account_id);
   bool is_google_internal_account =
-      gaia::IsGoogleInternalAccountEmail(info.email);
+      gaia::IsGoogleInternalAccountEmail(info.GetEmail());
   if (info.IsManaged() == signin::Tribool::kTrue &&
       !is_google_internal_account) {
     return LocalEligibility::kManagedDomain;
@@ -454,9 +464,10 @@ void IndigoService::GetCombinedEligibility(
 
 void IndigoService::TriggerRemoteEligibilityFetch() {
   remote_eligibility_fetch_in_progress_ = true;
+  base::TimeTicks start_time = base::TimeTicks::Now();
   RemoteEligibilityCallback on_rpc_status_received =
       base::BindOnce(&IndigoService::OnRemoteEligibilityReceived,
-                     remote_eligibility_weak_factory_.GetWeakPtr());
+                     remote_eligibility_weak_factory_.GetWeakPtr(), start_time);
 
   if (remote_eligibility_fetcher_) {
     remote_eligibility_fetcher_.Run(std::move(on_rpc_status_received));
@@ -478,9 +489,11 @@ void IndigoService::TriggerRemoteEligibilityFetch() {
       std::move(on_rpc_status_received)));
 }
 
-
 void IndigoService::OnRemoteEligibilityReceived(
+    base::TimeTicks start_time,
     base::expected<RemoteEligibility, std::string> eligibility_or_error) {
+  base::UmaHistogramTimes("Indigo.Discovery.EligibilityCheck.RequestLatency",
+                          base::TimeTicks::Now() - start_time);
   remote_eligibility_fetch_in_progress_ = false;
 
   std::vector<CombinedEligibilityCallback> callbacks;
@@ -559,6 +572,11 @@ bool IndigoService::IsOriginAllowed(const url::Origin& origin) const {
 void IndigoService::SetConfigForTesting(ConfigData config) {
   config_ = std::move(config);
   config_loaded_ = true;
+}
+
+void IndigoService::ResetConfigForTesting() {
+  config_ = ConfigData();
+  config_loaded_ = false;
 }
 
 }  // namespace indigo

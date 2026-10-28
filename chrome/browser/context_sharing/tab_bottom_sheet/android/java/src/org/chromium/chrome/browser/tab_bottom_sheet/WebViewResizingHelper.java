@@ -9,10 +9,7 @@ import static org.chromium.ui.animation.AnimationListeners.onAnimationEnd;
 
 import android.animation.ValueAnimator;
 import android.content.Context;
-import android.content.res.Resources;
-import android.graphics.drawable.ColorDrawable;
 import android.view.Gravity;
-import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -26,7 +23,7 @@ import androidx.core.view.WindowInsetsCompat;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.context_sharing.R;
-import org.chromium.chrome.browser.ui.side_panel_container.SidePanelContainerCoordinator;
+import org.chromium.chrome.browser.ui.side_panel.SidePanelContainerCoordinator;
 import org.chromium.components.thinwebview.ThinWebView;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.animation.AnimationHandler;
@@ -91,67 +88,67 @@ public class WebViewResizingHelper {
 
     private final Context mContext;
     private final FrameLayout mResizingContainer;
-    private final View mResizingPlaceholder;
+    private final @Nullable View mResizingPlaceholder;
     private final View mExpandedContentGroup;
     private final WindowAndroid mWindowAndroid;
     private final @Nullable InsetObserver mInsetObserver;
     private final boolean mIsSidePanel;
-    private final View mResizingContent;
-    private final @Px int mResizingFadeOffset;
-    private final @Px int mMinHeight;
+    private final @Nullable ResizingPlaceholderCoordinator mPlaceholderCoordinator;
+    private final View.OnLayoutChangeListener mOnLayoutChangeListener;
+    private final @Nullable CoBrowseComponentProvider mComponentProvider;
 
     private @Nullable ThinWebView mThinWebView;
     private @Nullable WebContents mWebContents;
     private boolean mIsViewportSizeFixed;
     private boolean mPauseInsetUpdates;
+    private @Nullable TimeoutRunnable mPendingTimeoutRunnable;
 
     /**
-     * @param containerView The root view for the co-browse content.
-     * @param windowAndroid The WindowAndroid of the activity.
-     * @param backgroundColor The background color used for the placeholder.
+     * Constructs a {@link WebViewResizingHelper} with a nullable {@link CoBrowseComponentProvider}.
+     *
+     * @param containerView The parent view containing the bottom sheet WebUI.
+     * @param windowAndroid The window hosting the sheet.
+     * @param backgroundColor The background color of the placeholder.
+     * @param placeholderElemColor The element color of the placeholder skeleton items.
+     * @param isSidePanel Whether the container is hosted in a side panel.
+     * @param componentProvider Provider for custom co-browse components, or null.
      */
-    public WebViewResizingHelper(
-            View containerView, WindowAndroid windowAndroid, @ColorInt int backgroundColor) {
-        this(containerView, windowAndroid, backgroundColor, /* isSidePanel= */ false);
-    }
-
     public WebViewResizingHelper(
             View containerView,
             WindowAndroid windowAndroid,
             @ColorInt int backgroundColor,
-            boolean isSidePanel) {
+            @ColorInt int placeholderElemColor,
+            boolean isSidePanel,
+            @Nullable CoBrowseComponentProvider componentProvider) {
         mContext = containerView.getContext();
         mWindowAndroid = windowAndroid;
         mIsSidePanel = isSidePanel;
+        mComponentProvider = componentProvider;
 
         mInsetObserver = windowAndroid.getInsetObserver();
         mExpandedContentGroup = containerView.findViewById(R.id.expanded_content_group);
 
         mResizingContainer = new FrameLayout(mContext);
         mResizingContainer.setClipChildren(true);
-        mResizingContainer.addOnLayoutChangeListener(
+        mOnLayoutChangeListener =
                 CommonOnLayoutChangeListeners.createSizeChangedListener(
                         () -> {
                             if (!mIsViewportSizeFixed) {
                                 updateBounds();
                             }
-                        }));
+                        });
+        mResizingContainer.addOnLayoutChangeListener(mOnLayoutChangeListener);
 
+        mPlaceholderCoordinator =
+                mComponentProvider != null
+                        ? mComponentProvider.createResizingPlaceholderCoordinator(
+                                mContext, backgroundColor, placeholderElemColor)
+                        : null;
         mResizingPlaceholder =
-                LayoutInflater.from(mContext)
-                        .inflate(R.layout.tab_bottom_sheet_resizing_view, null);
-        mResizingContent =
-                mResizingPlaceholder.findViewById(R.id.tab_bottom_sheet_resizing_content);
-        Resources res = mContext.getResources();
-        mResizingFadeOffset =
-                res.getDimensionPixelSize(R.dimen.tab_bottom_sheet_resizing_fade_offset);
-        mMinHeight = res.getDimensionPixelSize(R.dimen.tab_bottom_sheet_peek_height_total);
-        mResizingContainer.addView(mResizingPlaceholder);
-        mResizingPlaceholder.setVisibility(View.INVISIBLE);
-
-        ColorDrawable background = new ColorDrawable();
-        background.setColor(backgroundColor);
-        mResizingPlaceholder.setBackground(background);
+                mPlaceholderCoordinator != null ? mPlaceholderCoordinator.getView() : null;
+        if (mResizingPlaceholder != null) {
+            mResizingContainer.addView(mResizingPlaceholder);
+        }
 
         if (mInsetObserver != null) {
             mInsetObserver.addWindowInsetsAnimationListener(mInsetAnimationListener);
@@ -165,44 +162,47 @@ public class WebViewResizingHelper {
      * @param visibleHeight The visible height of the sheet in pixels.
      */
     public void updatePlaceholderHeight(@Px int visibleHeight) {
-        ViewGroup.LayoutParams params = mResizingPlaceholder.getLayoutParams();
-        if (params != null && params.height != visibleHeight) {
-            params.height = visibleHeight;
-            mResizingPlaceholder.setLayoutParams(params);
-        }
-
-        float minHeight = mMinHeight;
-        int contentHeight = mResizingContent.getMeasuredHeight();
-        float maxHeight = contentHeight + mResizingFadeOffset;
-
-        float alpha;
-        if (visibleHeight <= minHeight) {
-            alpha = 0.0f;
-        } else if (maxHeight <= minHeight || visibleHeight >= maxHeight) {
-            alpha = 1.0f;
-        } else {
-            alpha = (visibleHeight - minHeight) / (maxHeight - minHeight);
-        }
-        if (mResizingContent.getAlpha() != alpha) {
-            mResizingContent.setAlpha(alpha);
+        if (mPlaceholderCoordinator != null) {
+            mPlaceholderCoordinator.updateVisibleHeight(visibleHeight);
         }
     }
 
     /** Destroys the helper and releases the WebContents. */
     public void destroy() {
-        reset();
+        if (mPlaceholderCoordinator != null) {
+            mPlaceholderCoordinator.destroy();
+        }
+        resetInternal(/* reattachPlaceholder= */ false);
         mWebContents = null;
         if (mInsetObserver != null) {
             mInsetObserver.removeWindowInsetsAnimationListener(mInsetAnimationListener);
         }
         mWindowAndroid.removeActivityStateObserver(mActivityStateObserver);
+        mResizingContainer.removeOnLayoutChangeListener(mOnLayoutChangeListener);
     }
 
     /** Resets the helper to its initial state without resetting the WebContents. */
     public void reset() {
+        resetInternal(/* reattachPlaceholder= */ true);
+    }
+
+    private void resetInternal(boolean reattachPlaceholder) {
+        if (mPlaceholderCoordinator != null) {
+            mPlaceholderCoordinator.setIsResizing(false);
+        }
+        if (mPendingTimeoutRunnable != null) {
+            mPendingTimeoutRunnable.cancel();
+            mPendingTimeoutRunnable = null;
+        }
+        mAnimationHandler.forceFinishAnimation();
         mResizingContainer.removeAllViews();
-        mResizingContainer.addView(mResizingPlaceholder);
-        mResizingPlaceholder.setVisibility(View.INVISIBLE);
+        if (mResizingPlaceholder != null) {
+            mResizingPlaceholder.setVisibility(View.INVISIBLE);
+            mResizingPlaceholder.setAlpha(1f);
+            if (reattachPlaceholder) {
+                mResizingContainer.addView(mResizingPlaceholder);
+            }
+        }
         mThinWebView = null;
         mIsViewportSizeFixed = false;
         mPauseInsetUpdates = false;
@@ -291,7 +291,9 @@ public class WebViewResizingHelper {
         valueAnimator.addUpdateListener(
                 animator -> {
                     float value = (float) animator.getAnimatedValue();
-                    mResizingPlaceholder.setAlpha(1f - value);
+                    if (mResizingPlaceholder != null) {
+                        mResizingPlaceholder.setAlpha(1f - value);
+                    }
                     webView.setAlpha(value);
                 });
         valueAnimator.addListener(
@@ -305,15 +307,23 @@ public class WebViewResizingHelper {
         mAnimationHandler.startAnimation(valueAnimator);
 
         mIsViewportSizeFixed = true;
+        if (mPlaceholderCoordinator != null) {
+            mPlaceholderCoordinator.setIsResizing(true);
+        }
 
-        mResizingPlaceholder.setVisibility(View.VISIBLE);
-        mResizingPlaceholder.setAlpha(0f);
+        if (mResizingPlaceholder != null) {
+            mResizingPlaceholder.setVisibility(View.VISIBLE);
+            mResizingPlaceholder.setAlpha(0f);
+        }
     }
 
     private void disableResizingMode() {
         if (mThinWebView == null) return;
 
         mIsViewportSizeFixed = false;
+        if (mPlaceholderCoordinator != null) {
+            mPlaceholderCoordinator.setIsResizing(false);
+        }
         mAnimationHandler.forceFinishAnimation();
         boolean sizeChanged = updateBounds(/* ignoreCache= */ true);
 
@@ -322,13 +332,13 @@ public class WebViewResizingHelper {
         webView.setVisibility(View.VISIBLE);
 
         if (sizeChanged) {
-            TimeoutRunnable timeoutRunnable =
+            mPendingTimeoutRunnable =
                     new TimeoutRunnable(
                             this::onNextFrameAfterResize,
                             this::onNextFrameAfterResize,
                             TIMEOUT_RUNNABLE_TIMEOUT_MS);
-            timeoutRunnable.startTimeout();
-            mThinWebView.runOnNextFrame(timeoutRunnable);
+            mPendingTimeoutRunnable.startTimeout();
+            mThinWebView.runOnNextFrame(mPendingTimeoutRunnable);
         } else {
             onNextFrameAfterResize();
         }
@@ -348,13 +358,17 @@ public class WebViewResizingHelper {
         valueAnimator.addUpdateListener(
                 animator -> {
                     float value = (float) animator.getAnimatedValue();
-                    mResizingPlaceholder.setAlpha(1f - value);
+                    if (mResizingPlaceholder != null) {
+                        mResizingPlaceholder.setAlpha(1f - value);
+                    }
                     webView.setAlpha(value);
                 });
         valueAnimator.addListener(
                 onAnimationEnd(
                         () -> {
-                            mResizingPlaceholder.setVisibility(View.INVISIBLE);
+                            if (mResizingPlaceholder != null) {
+                                mResizingPlaceholder.setVisibility(View.INVISIBLE);
+                            }
                             webView.setVisibility(View.VISIBLE);
                             webView.setAlpha(1f);
                         }));
@@ -426,5 +440,19 @@ public class WebViewResizingHelper {
 
     private static boolean isApproxEqual(int a, int b, int epsilon) {
         return Math.abs(a - b) <= epsilon;
+    }
+
+    /** Returns the {@link CoBrowseComponentProvider}. */
+    @Nullable CoBrowseComponentProvider getComponentProviderForTesting() {
+        return mComponentProvider;
+    }
+
+    /** Returns the {@link ResizingPlaceholderCoordinator} managing the placeholder view. */
+    @Nullable ResizingPlaceholderCoordinator getPlaceholderCoordinator() {
+        return mPlaceholderCoordinator;
+    }
+
+    @Nullable TimeoutRunnable getPendingTimeoutRunnableForTesting() {
+        return mPendingTimeoutRunnable;
     }
 }

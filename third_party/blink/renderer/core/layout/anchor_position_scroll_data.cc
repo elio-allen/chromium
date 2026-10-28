@@ -21,19 +21,7 @@ namespace {
 
 // Finds the LayoutObject of the anchor element given by position-anchor.
 const LayoutObject* PositionAnchorObject(const LayoutBox& box) {
-  const DefaultAnchorData default_anchor_data =
-      box.StyleRef().GetDefaultAnchorData();
-  using Type = StylePositionAnchor::Type;
-  switch (default_anchor_data.GetType()) {
-    case Type::kNone:
-      return nullptr;
-    case Type::kAuto:
-      return box.AcceptableImplicitAnchor();
-    case Type::kName:
-      return box.FindTargetAnchor(default_anchor_data.GetName());
-    case Type::kNormal:
-      NOTREACHED();
-  }
+  return box.FindDefaultAnchor();
 }
 
 const GCedHeapVector<NonOverflowingScrollRange>* GetNonOverflowingScrollRanges(
@@ -155,9 +143,10 @@ AnchorPositionScrollData::ComputeAdjustmentContainersData(
       return PhysicalOffset();
     }
     PhysicalOffset transformed_origin = container->LocalToAncestorPoint(
-        PhysicalOffset(), bounding_container, kIgnoreScrollOffset);
+        PhysicalOffset(), bounding_container,
+        {MapCoordinatesMode::kIgnoreScrollOffset});
     PhysicalOffset transformed_offset = container->LocalToAncestorPoint(
-        offset, bounding_container, kIgnoreScrollOffset);
+        offset, bounding_container, {MapCoordinatesMode::kIgnoreScrollOffset});
     return transformed_offset - transformed_origin;
   };
 

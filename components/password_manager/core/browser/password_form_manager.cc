@@ -56,6 +56,7 @@
 #include "components/password_manager/core/browser/password_store/password_store_backend_error.h"
 #include "components/password_manager/core/browser/password_store/password_store_util.h"
 #include "components/password_manager/core/browser/password_store/psl_matching_helper.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/browser/possible_username_data.h"
 #include "components/password_manager/core/browser/votes_uploader.h"
 #include "components/password_manager/core/common/password_manager_features.h"
@@ -355,11 +356,6 @@ PasswordFormManager::~PasswordFormManager() {
 }
 
 void PasswordFormManager::OnPasswordFilledManually() {
-  if (client_->IsActorTaskActive()) {
-    client_->OnPasswordFilled(
-        driver_.get(), GetURL(),
-        PasswordManagerClient::PasswordFillTrigger::kAgentTask);
-  }
   allow_filling_upon_fetching_ = false;
   if (!base::FeatureList::IsEnabled(features::kPasswordDateLastFilled) ||
       !parsed_submitted_form_ ||
@@ -488,7 +484,7 @@ bool PasswordFormManager::IsMovableToAccountStore() const {
   DCHECK(!gaia_id.empty()) << "Cannot move without signed in user";
 
   const std::u16string& username = GetPendingCredentials().username_value;
-  const std::u16string& password = GetPendingCredentials().password_value;
+  const PasswordString& password = GetPendingCredentials().password_value;
   // If no match in the profile store with the same username and password
   // exists, then there is nothing to move.
   auto is_movable = [&username, &password](const StoredCredential& match) {
@@ -577,7 +573,7 @@ void PasswordFormManager::OnUpdateUsernameFromPrompt(
 }
 
 void PasswordFormManager::OnUpdatePasswordFromPrompt(
-    const std::u16string& new_password) {
+    const PasswordString& new_password) {
   DCHECK(parsed_submitted_form_);
   parsed_submitted_form_->password_value = new_password;
   parsed_submitted_form_->password_element.clear();
@@ -592,7 +588,7 @@ void PasswordFormManager::OnUpdatePasswordFromPrompt(
   const AlternativeElementVector& alternative_passwords =
       parsed_submitted_form_->all_alternative_passwords;
   auto alternative_password_it = std::ranges::find(
-      alternative_passwords, new_password, &AlternativeElement::value);
+      alternative_passwords, new_password.value(), &AlternativeElement::value);
   if (alternative_password_it != alternative_passwords.end()) {
     parsed_submitted_form_->password_element = alternative_password_it->name;
     parsed_submitted_form_->password_element_renderer_id =
@@ -705,7 +701,7 @@ FormFetcher* PasswordFormManager::GetFormFetcher() {
 
 void PasswordFormManager::PresaveGeneratedPassword(
     const FormData& form_data,
-    const std::u16string& generated_password) {
+    const PasswordString& generated_password) {
   *mutable_observed_form() = form_data;
   PresaveGeneratedPasswordInternal(form_data, generated_password);
 }
@@ -873,6 +869,9 @@ std::unique_ptr<PasswordFormManager> PasswordFormManager::Clone() const {
   // owning one needs to happen explicitly.
   result->owned_form_fetcher_ = std::move(fetcher);
 
+  result->has_recorded_time_between_store_and_server_uma_ =
+      has_recorded_time_between_store_and_server_uma_;
+
   // These data members all satisfy:
   //   (1) They could have been changed by |*this| between its construction and
   //       calling Clone().
@@ -981,6 +980,11 @@ void PasswordFormManager::OnFetchCompleted() {
     CreatePendingCredentials();
   }
 
+  if (should_schedule_save_for_later_) {
+    should_schedule_save_for_later_ = false;
+    Save();
+  }
+
   if (allow_filling_upon_fetching_) {
     if (IsHttpAuth()) {
       // No server prediction for http auth, so no need to wait.
@@ -993,11 +997,8 @@ void PasswordFormManager::OnFetchCompleted() {
       DelayFillForServerSidePredictions();
     }
   }
-
-  if (should_schedule_save_for_later_) {
-    should_schedule_save_for_later_ = false;
-    Save();
-  }
+  // DO NOT ADD CODE HERE: `FillNow()` above can synchronously destroy `this`
+  // `PasswordFormManager`, which would lead to a use-after-free.
 }
 
 void PasswordFormManager::OnWaitCompleted() {
@@ -1306,7 +1307,10 @@ void PasswordFormManager::OnGeneratedPasswordAccepted(
     parsed_form->url = form_data.url();
     parsed_form->signon_realm = GetSignonRealm(form_data.url());
   }
-  parsed_form->password_value = password;
+  // TODO(crbug.com/513276101): Explicit construction of std::u16string
+  // R-Value to be removed once incoming parameter is converted to
+  // PasswordString
+  parsed_form->password_value = PasswordString(std::u16string(password));
   password_save_manager_->GeneratedPasswordAccepted(*parsed_form, driver_);
 }
 
@@ -1376,11 +1380,14 @@ void PasswordFormManager::RecordMetricOnReadonly(
 }
 
 void PasswordFormManager::ReportTimeBetweenStoreAndServerUMA() {
-  // TODO(crbug.com/525318107): Prevent multiple records of this metric.
-  if (!received_stored_credentials_time_.is_null()) {
-    UMA_HISTOGRAM_TIMES("PasswordManager.TimeBetweenStoreAndServer",
-                        TimeTicks::Now() - received_stored_credentials_time_);
+  if (received_stored_credentials_time_.is_null() ||
+      has_recorded_time_between_store_and_server_uma_) {
+    return;
   }
+
+  has_recorded_time_between_store_and_server_uma_ = true;
+  UMA_HISTOGRAM_TIMES("PasswordManager.TimeBetweenStoreAndServer2",
+                      TimeTicks::Now() - received_stored_credentials_time_);
 }
 
 void PasswordFormManager::FillHttpAuth() {
@@ -1418,10 +1425,10 @@ void PasswordFormManager::UpdateBackupPassword(
 void PasswordFormManager::PresaveGeneratedPasswordAsBackup(
     const PasswordFormManager& form_manager,
     PasswordForm form,
-    const std::u16string& generated_password) {
+    const PasswordString& generated_password) {
   CHECK(!form.password_value.empty());
   CHECK(!form.username_value.empty());
-  form.SetPasswordBackupNote(generated_password);
+  form.SetPasswordBackupNote(generated_password.value());
   // Create a temporary manager to avoid changing the state of |this|.
   // TODO(crbug.com/422125487): Fix metrics duplication.
   std::unique_ptr<PasswordFormManager> temporary_password_form_manager =
@@ -1435,7 +1442,7 @@ void PasswordFormManager::PresaveGeneratedPasswordAsBackup(
 
 void PasswordFormManager::PresaveGeneratedPasswordInternal(
     const FormData& form,
-    const std::u16string& generated_password) {
+    const PasswordString& generated_password) {
   std::unique_ptr<PasswordForm> parsed_form =
       ParseFormAndMakeLogging(form, FormDataParser::Mode::kSaving)
           .password_form;
@@ -1863,10 +1870,7 @@ std::unique_ptr<FormFetcher> PasswordFormManager::CreateFormFetcher() {
                         : PasswordFormDigest(*observed_form()),
       client_, true /* should_migrate_http_passwords */);
 #if !BUILDFLAG(IS_IOS)
-  if (base::FeatureList::IsEnabled(
-          password_manager::features::kPasswordFormGroupedAffiliations)) {
-    form_fetcher->set_filter_grouped_credentials(false);
-  }
+  form_fetcher->set_filter_grouped_credentials(false);
 #endif  // !BUILDFLAG(IS_IOS)
   return form_fetcher;
 }

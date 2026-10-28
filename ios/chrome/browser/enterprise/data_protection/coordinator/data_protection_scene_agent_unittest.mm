@@ -36,7 +36,7 @@
 namespace {
 
 const char kProtectedURL[] = "https://protected.com";
-const char kChromeVersionURL[] = "chrome://version";
+const char kChromeNewTabURL[] = "chrome://newtab";
 
 // Returns the id<BrowserProvider> from `scene_state` corresponding to
 // `is_off_the_record`.
@@ -100,8 +100,8 @@ class DataProtectionSceneAgentTestBase : public PlatformTest {
 
   // Sets a DataControlsRules policy that protects screenshots.
   void SetDataControlsRulesPolicyManaged() {
-    data_controls::SetDataControls(profile_->GetTestingPrefService(), {
-                                                                          R"({
+    data_controls::SetDataControls(profile_->GetPrefs(), {
+                                                             R"({
           "name": "Test screenshot rule",
           "rule_id": "1234",
           "sources": { "urls": ["*"] },
@@ -113,8 +113,8 @@ class DataProtectionSceneAgentTestBase : public PlatformTest {
 
   // Sets a DataControlsRules policy with a restriction OTHER than screenshots.
   void SetDataControlsRulesOtherPolicy() {
-    data_controls::SetDataControls(profile_->GetTestingPrefService(), {
-                                                                          R"({
+    data_controls::SetDataControls(profile_->GetPrefs(), {
+                                                             R"({
           "name": "Test clipboard rule",
           "rule_id": "5678",
           "sources": { "urls": ["*"] },
@@ -459,8 +459,7 @@ TEST_F(DataProtectionSceneAgentTransitionTest, TabGrid_DynamicPolicyDisable) {
 
   // Data control rules are gone, protection should be removed.
   ExpectApplyScreenshotProtection(NO);
-  profile_->GetTestingPrefService()->ClearPref(
-      data_controls::kDataControlsRulesPref);
+  profile_->GetPrefs()->ClearPref(data_controls::kDataControlsRulesPref);
 }
 
 // Tests that repeated calls to update with the same state do not trigger the
@@ -685,10 +684,10 @@ TEST_F(DataProtectionSceneAgentTransitionTest, SingleTab_SwitchBrowser) {
   ASSERT_TRUE(DataProtectionTabHelper::FromWebState(web_state1)
                   ->IsScreenshotProtectionEnabled());
 
-  // Add an unprotected tab to the incognito profile. Chrome internal urls are
+  // Add an unprotected tab to the incognito profile. Chrome new tab URLs are
   // not protected.
   web::FakeWebState* web_state2 =
-      AddActiveWebState(GURL(kChromeVersionURL), /*incognito=*/true);
+      AddActiveWebState(GURL(kChromeNewTabURL), /*incognito=*/true);
   ASSERT_FALSE(DataProtectionTabHelper::FromWebState(web_state2)
                    ->IsScreenshotProtectionEnabled());
 

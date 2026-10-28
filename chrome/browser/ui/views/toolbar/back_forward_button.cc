@@ -9,8 +9,9 @@
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/chained_back_navigation_tracker.h"
 #include "chrome/browser/preloading/chrome_preloading.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/back_forward_menu_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/view_ids.h"
@@ -23,6 +24,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/gfx/animation/tween.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -30,14 +32,14 @@
 
 BackForwardButton::BackForwardButton(Direction direction,
                                      PressedCallback callback,
-                                     Browser* browser)
+                                     BrowserWindowInterface* browser)
     : ToolbarButton(std::move(callback),
                     std::make_unique<BackForwardMenuModel>(
                         browser,
                         direction == Direction::kBack
                             ? BackForwardMenuModel::ModelType::kBackward
                             : BackForwardMenuModel::ModelType::kForward),
-                    browser->tab_strip_model()),
+                    browser->GetTabStripModel()),
       browser_(browser),
       direction_(direction) {
   SetHideInkDropWhenShowingContextMenu(false);
@@ -94,18 +96,16 @@ void BackForwardButton::NotifyClick(const ui::Event& event) {
   // If the focus is on web content the screen reader will announce the page
   // load; if not we want to make sure that something is still announced.
   if (GetFocusManager()->GetFocusedView() !=
-      BrowserView::GetBrowserViewForBrowser(browser_)->contents_web_view()) {
+      BrowserView::GetBrowserViewForBrowser(browser_)->GetContentsView()) {
     const std::u16string message = GetAccessiblePageLoadingMessage();
     if (!message.empty()) {
       GetViewAccessibility().AnnounceText(message);
     }
   }
 
-  content::WebContents* web_contents =
-      browser_->tab_strip_model()->GetActiveWebContents();
-  if (web_contents) {
+  if (tabs::TabInterface* tab = browser_->GetTabStripModel()->GetActiveTab()) {
     ChainedBackNavigationTracker* tracker =
-        ChainedBackNavigationTracker::FromWebContents(web_contents);
+        ChainedBackNavigationTracker::From(tab);
     CHECK(tracker);
     tracker->RecordBackButtonClickForChainedBackNavigation();
   }
@@ -150,7 +150,7 @@ void BackForwardButton::StateChanged(ButtonState old_state) {
   if (old_state == ButtonState::STATE_NORMAL &&
       GetState() == ButtonState::STATE_HOVERED) {
     content::WebContents* active_contents =
-        browser_->tab_strip_model()->GetActiveWebContents();
+        browser_->GetTabStripModel()->GetActiveWebContents();
     if (active_contents) {
       active_contents->BackNavigationLikely(
           chrome_preloading_predictor::kBackButtonHover,
@@ -164,7 +164,7 @@ void BackForwardButton::OnMouseEntered(const ui::MouseEvent& event) {
     // Record this before the event triggers `StateChanged` via
     // `ToolbarButton::OnMouseEntered`.
     last_back_assumed_disposition_ = ui::DispositionFromEventFlags(
-        event.flags(), WindowOpenDisposition::CURRENT_TAB);
+        event.flags(), WindowOpenDisposition::kCurrentTab);
   }
 
   ToolbarButton::OnMouseEntered(event);
@@ -172,10 +172,6 @@ void BackForwardButton::OnMouseEntered(const ui::MouseEvent& event) {
 
 bool BackForwardButton::OnMousePressed(const ui::MouseEvent& event) {
   return ToolbarButton::OnMousePressed(event);
-}
-
-bool BackForwardButton::ShouldShowInkdropAfterIphInteraction() {
-  return false;
 }
 
 BEGIN_METADATA(BackForwardButton)

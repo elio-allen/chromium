@@ -16,6 +16,7 @@
 #include "base/functional/callback.h"
 #include "base/memory/aligned_memory.h"
 #include "base/memory/raw_ptr_exclusion.h"
+#include "base/memory/raw_span.h"
 #include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
 #include "media/base/media_export.h"
@@ -45,6 +46,14 @@ class MEDIA_EXPORT AudioBus {
   // channels() and frames_per_buffer() from AudioParameters if given.
   static std::unique_ptr<AudioBus> Create(int channels, int frames);
   static std::unique_ptr<AudioBus> Create(const AudioParameters& params);
+
+  // Like Create(), but returns nullptr on allocation failure, invalid channel
+  // counts, or integer overflow instead of crashing. Intended for large,
+  // variable-size, or untrusted inputs where memory exhaustion should be
+  // handled gracefully.
+  // Note: Does not support bitstream formats.
+  static std::unique_ptr<AudioBus> TryCreate(int channels, int frames);
+  static std::unique_ptr<AudioBus> TryCreate(const AudioParameters& params);
 
   // Creates a new AudioBus with the given number of channels, but zero length.
   // Clients are expected to subsequently call SetChannelData() and set_frames()
@@ -199,10 +208,6 @@ class MEDIA_EXPORT AudioBus {
   // Convenience function to allow range-based for-loops.
   const ChannelVector& AllChannels() const;
 
-  // Returns a copy of `channels_`, with `subspan()` applied to each channel.
-  // Note: The returned channels might not be aligned, depending on `offset`.
-  ChannelVector AllChannelsSubspan(size_t offset, size_t count) const;
-
   // Returns the number of channels.
   int channels() const { return static_cast<int>(channel_data_.size()); }
   // Returns the number of frames.
@@ -261,13 +266,12 @@ class MEDIA_EXPORT AudioBus {
 
   // Chunk of binary data for bitstream formats.
   // This might point towards external memory, or `data_`.
-  // TODO(crbug.com/385028986): Convert to `base::raw_span`
-  RAW_PTR_EXCLUSION base::span<uint8_t> reserved_memory_;
+  base::raw_span<uint8_t> reserved_memory_;
 
   // View over `reserved_memory_`, which represents the chunk of memory which
   // is actively reserved to hold bitstream data. The size of this memory can
   // be adjusted using SetBitstreamDataSize().
-  RAW_PTR_EXCLUSION BitstreamData bitstream_data_;
+  base::raw_span<uint8_t> bitstream_data_;
 
   // Whether the data is compressed bitstream or not.
   bool is_bitstream_format_ = false;
@@ -276,9 +280,11 @@ class MEDIA_EXPORT AudioBus {
 
   // One float pointer per channel pointing to a contiguous block of memory for
   // that channel. If the memory is owned by this instance, this will
-  // point to the memory in |data_|. Otherwise, it may point to memory provided
+  // point to the memory in `data_`. Otherwise, it may point to memory provided
   // by the client.
-  // TODO(crbug.com/385028986): Convert to `base::raw_span`
+  //
+  // RAW_PTR_EXCLUSION: `raw_ptr` atomic operations can cause latency issues on
+  // real-time audio threads.
   RAW_PTR_EXCLUSION ChannelVector channel_data_;
 
   size_t frames_ = 0u;

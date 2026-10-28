@@ -10,10 +10,10 @@
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/dom/pseudo_element.h"
-#include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/layout_text.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 
 namespace blink {
 
@@ -309,34 +309,171 @@ TEST_F(LayoutTreeBuilderTraversalTest, InFlowScrollButtons) {
             scroll_button_layout);
 }
 
-// crbug.com/533050757
+TEST_F(LayoutTreeBuilderTraversalTest, InterestButtonAsSibling) {
+  ScopedHTMLInterestForInterestButtonPseudoForTest scoped_feature(true);
+  SetupSampleHTML(R"(
+      <style>
+        [interestfor]::interest-button {
+          content: "icon";
+        }
+      </style>
+      <div id="container">
+        <button id="button" interestfor="target">Button</button>
+        <div id="target">Target</div>
+      </div>
+  )");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* button = GetDocument().QuerySelector(AtomicString("#button"));
+  ASSERT_TRUE(button);
+  PseudoElement* interest_button =
+      button->GetPseudoElement(kPseudoIdInterestButton);
+  ASSERT_TRUE(interest_button);
+
+  LayoutObject* button_layout = button->GetLayoutObject();
+  ASSERT_TRUE(button_layout);
+  LayoutObject* interest_button_layout = interest_button->GetLayoutObject();
+  ASSERT_TRUE(interest_button_layout);
+
+  EXPECT_EQ(LayoutTreeBuilderTraversal::NextSiblingLayoutObject(*button),
+            interest_button_layout);
+}
+
+TEST_F(LayoutTreeBuilderTraversalTest, InterestButtonParentLayoutObject) {
+  ScopedHTMLInterestForInterestButtonPseudoForTest scoped_feature(true);
+  SetupSampleHTML(R"(
+      <style>
+        [interestfor]::interest-button {
+          content: "icon";
+        }
+      </style>
+      <div id="container">
+        <button id="button" interestfor="target">Button</button>
+        <div id="target">Target</div>
+      </div>
+  )");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* button = GetDocument().QuerySelector(AtomicString("#button"));
+  ASSERT_TRUE(button);
+  PseudoElement* interest_button =
+      button->GetPseudoElement(kPseudoIdInterestButton);
+  ASSERT_TRUE(interest_button);
+
+  LayoutObject* button_layout = button->GetLayoutObject();
+  ASSERT_TRUE(button_layout);
+  LayoutObject* interest_button_layout = interest_button->GetLayoutObject();
+  ASSERT_TRUE(interest_button_layout);
+
+  EXPECT_EQ(interest_button_layout->Parent(), button_layout->Parent());
+}
+
+TEST_F(LayoutTreeBuilderTraversalTest, InterestButtonReplacedElement) {
+  ScopedHTMLInterestForInterestButtonPseudoForTest scoped_feature(true);
+  SetupSampleHTML(R"(
+      <style>
+        [interestfor]::interest-button {
+          content: "icon";
+        }
+      </style>
+      <div id="container">
+        <button id="button" interestfor="target">Button</button>
+        <div id="target">Target</div>
+      </div>
+  )");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* button = GetDocument().QuerySelector(AtomicString("#button"));
+  ASSERT_TRUE(button);
+  PseudoElement* interest_button =
+      button->GetPseudoElement(kPseudoIdInterestButton);
+  ASSERT_TRUE(interest_button);
+
+  EXPECT_TRUE(interest_button->IsLayoutSiblingOfOriginatingElement());
+  LayoutObject* button_layout = button->GetLayoutObject();
+  ASSERT_TRUE(button_layout);
+  LayoutObject* interest_button_layout = interest_button->GetLayoutObject();
+  ASSERT_TRUE(interest_button_layout);
+
+  EXPECT_EQ(interest_button_layout->Parent(), button_layout->Parent());
+  EXPECT_EQ(LayoutTreeBuilderTraversal::NextSiblingLayoutObject(*button),
+            interest_button_layout);
+}
+
+TEST_F(LayoutTreeBuilderTraversalTest, InterestButtonDisplayContents) {
+  ScopedHTMLInterestForInterestButtonPseudoForTest scoped_feature(true);
+  SetupSampleHTML(R"(
+      <style>
+        [interestfor]::interest-button {
+          content: "icon";
+          display: contents;
+        }
+      </style>
+      <div id="container">
+        <button id="button" interestfor="target">Button</button>
+        <div id="target">Target</div>
+      </div>
+  )");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* button = GetDocument().QuerySelector(AtomicString("#button"));
+  ASSERT_TRUE(button);
+  PseudoElement* interest_button =
+      button->GetPseudoElement(kPseudoIdInterestButton);
+  ASSERT_TRUE(interest_button);
+
+  EXPECT_TRUE(interest_button->IsLayoutSiblingOfOriginatingElement());
+  LayoutObject* button_layout = button->GetLayoutObject();
+  ASSERT_TRUE(button_layout);
+  LayoutObject* interest_button_layout = interest_button->GetLayoutObject();
+  ASSERT_TRUE(interest_button_layout);
+
+  EXPECT_TRUE(interest_button_layout->IsInline());
+  EXPECT_EQ(interest_button_layout->Parent(), button_layout->Parent());
+  EXPECT_TRUE(interest_button_layout->SlowFirstChild());
+  EXPECT_TRUE(interest_button_layout->SlowFirstChild()->IsText());
+}
+
 TEST_F(LayoutTreeBuilderTraversalTest,
-       ComparePreorderTreePositionDetachedOrDifferentDocument) {
-  const char* const kHtml = "<div id='attached'></div>";
-  SetupSampleHTML(kHtml);
-  Element* attached = GetDocument().QuerySelector(AtomicString("#attached"));
-  ASSERT_TRUE(attached);
+       InterestButtonOriginatingDisplayContents) {
+  ScopedHTMLInterestForInterestButtonPseudoForTest scoped_feature(true);
+  SetupSampleHTML(R"(
+      <style>
+        #button {
+          display: contents;
+        }
+        [interestfor]::interest-button {
+          content: "icon";
+        }
+      </style>
+      <div id="container">
+        <button id="button" interestfor="target">Button</button>
+        <div id="target">Target</div>
+      </div>
+  )");
+  UpdateAllLifecyclePhasesForTest();
 
-  // A detached node with no parent.
-  Element* detached = GetDocument().CreateRawElement(html_names::kDivTag);
+  Element* container = GetDocument().QuerySelector(AtomicString("#container"));
+  Element* button = GetDocument().QuerySelector(AtomicString("#button"));
+  ASSERT_TRUE(button);
+  EXPECT_EQ(button->GetLayoutObject(), nullptr);
 
-  EXPECT_EQ(0, LayoutTreeBuilderTraversal::ComparePreorderTreePosition(
-                   *attached, *detached));
-  EXPECT_EQ(0, LayoutTreeBuilderTraversal::ComparePreorderTreePosition(
-                   *detached, *attached));
-  EXPECT_EQ(0, LayoutTreeBuilderTraversal::ComparePreorderTreePosition(
-                   GetDocument(), *detached));
+  PseudoElement* interest_button =
+      button->GetPseudoElement(kPseudoIdInterestButton);
+  ASSERT_TRUE(interest_button);
 
-  // A node belonging to a different document.
-  auto* other_doc =
-      Document::CreateForTest(*GetDocument().GetExecutionContext());
-  Element* other_element = other_doc->CreateRawElement(html_names::kDivTag);
-  other_doc->AppendChild(other_element);
+  EXPECT_TRUE(interest_button->IsLayoutSiblingOfOriginatingElement());
+  LayoutObject* interest_button_layout = interest_button->GetLayoutObject();
+  ASSERT_TRUE(interest_button_layout);
 
-  EXPECT_EQ(0, LayoutTreeBuilderTraversal::ComparePreorderTreePosition(
-                   *attached, *other_element));
-  EXPECT_EQ(0, LayoutTreeBuilderTraversal::ComparePreorderTreePosition(
-                   *other_element, *attached));
+  EXPECT_TRUE(interest_button_layout->Parent()->IsAnonymous());
+  EXPECT_EQ(interest_button_layout->Parent()->Parent(),
+            container->GetLayoutObject());
+  EXPECT_EQ(LayoutTreeBuilderTraversal::NextSiblingLayoutObject(*button),
+            interest_button_layout);
+  EXPECT_NE(interest_button_layout->PreviousSibling(), nullptr);
+  EXPECT_TRUE(interest_button_layout->NextSibling() &&
+              interest_button_layout->NextSibling()->IsText());
 }
 
 }  // namespace blink

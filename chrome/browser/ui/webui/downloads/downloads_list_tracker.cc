@@ -287,6 +287,8 @@ DownloadManager* DownloadsListTracker::GetOriginalNotifierManager() const {
 
 void DownloadsListTracker::OnDownloadCreated(DownloadManager* manager,
                                              DownloadItem* download_item) {
+  // TODO(crbug.com/576994215): CHECK-exclusion: Convert to a CHECK once we
+  // are confident it won't be triggered.
   DCHECK_EQ(0u, sorted_items_.count(download_item));
   if (should_show_.Run(*download_item)) {
     InsertItem(sorted_items_.insert(download_item).first);
@@ -323,7 +325,7 @@ DownloadsListTracker::DownloadsListTracker(
     : main_notifier_(download_manager, this),
       page_(std::move(page)),
       should_show_(std::move(should_show)) {
-  DCHECK(page_);
+  CHECK(page_, base::NotFatalUntil::M162);
   Init();
 }
 
@@ -381,9 +383,10 @@ downloads::mojom::DataPtr DownloadsListTracker::CreateDownloadData(
   file_name = base::i18n::GetDisplayStringInLTRDirectionality(file_name);
 
   file_value->file_name = base::UTF16ToUTF8(file_name);
-  // Include URL unless it is too long.
+  // Include URL unless it is too long or has been truncated.
   if (download_item->GetURL().is_valid() &&
-      download_item->GetURL().spec().length() <= url::kMaxURLChars) {
+      download_item->GetURL().spec().length() <= url::kMaxURLChars &&
+      !download_item->IsUrlTruncated()) {
     file_value->url = std::make_optional<GURL>(download_item->GetURL());
   }
   file_value->display_initiator_origin =
@@ -443,17 +446,19 @@ downloads::mojom::DataPtr DownloadsListTracker::CreateDownloadData(
       last_reason_text = download_model.GetHistoryPageStatusText();
       if (download::DOWNLOAD_INTERRUPT_REASON_CRASH ==
               download_item->GetLastReason() &&
-          !download_item->CanResume()) {
+          !download_item->CanResume() && !download_item->IsUrlTruncated()) {
         retry = true;
       }
       break;
 
     case download::DownloadItem::CANCELLED:
       state = downloads::mojom::State::kCancelled;
-      retry = true;
+      retry = !download_item->IsUrlTruncated();
       break;
 
     case download::DownloadItem::COMPLETE:
+      // TODO(crbug.com/577213141): CHECK-exclusion: Convert to a CHECK once we
+      // are confident it won't be triggered.
       DCHECK(!download_item->IsDangerous());
       state = downloads::mojom::State::kComplete;
       break;

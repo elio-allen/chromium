@@ -46,6 +46,7 @@ constexpr char kValidTestingConfigJSON[] = R"({
       "leak-on-destruction": false,
       "enable-task-controlled-purge": true,
       "pause-in-between-tasks": true,
+      "exclude-non-ipc-tasks": true,
       "branch-capacity-in-bytes": 400
     },
   },
@@ -90,19 +91,12 @@ constexpr char kValidTestingConfigJSON[] = R"({
   },
 })";
 
-class SchedulerLoopQuarantineConfigTest : public testing::Test {
- protected:
-  void SetUp() override { ResetSchedulerLoopQuarantineConfigForTesting(); }
-  void TearDown() override { ResetSchedulerLoopQuarantineConfigForTesting(); }
-};
-
-TEST_F(SchedulerLoopQuarantineConfigTest, ValidConfig) {
+TEST(SchedulerLoopQuarantineConfigTest, ValidConfig) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
       base::features::kPartitionAllocSchedulerLoopQuarantine,
       {{base::features::kPartitionAllocSchedulerLoopQuarantineConfig.name,
         kValidTestingConfigJSON}});
-  ResetSchedulerLoopQuarantineConfigForTesting();
 
   partition_alloc::internal::SchedulerLoopQuarantineConfig config;
 
@@ -113,6 +107,7 @@ TEST_F(SchedulerLoopQuarantineConfigTest, ValidConfig) {
   EXPECT_TRUE(config.leak_on_destruction);
   EXPECT_FALSE(config.enable_task_controlled_purge);
   EXPECT_FALSE(config.pause_in_between_tasks);
+  EXPECT_FALSE(config.exclude_non_ipc_tasks);
   EXPECT_EQ(100, config.branch_capacity_in_bytes);
   EXPECT_STREQ(config.branch_name, "browser/global");
 
@@ -123,6 +118,7 @@ TEST_F(SchedulerLoopQuarantineConfigTest, ValidConfig) {
   EXPECT_FALSE(config.leak_on_destruction);
   EXPECT_FALSE(config.enable_task_controlled_purge);
   EXPECT_FALSE(config.pause_in_between_tasks);
+  EXPECT_FALSE(config.exclude_non_ipc_tasks);
   EXPECT_EQ(300, config.branch_capacity_in_bytes);
   EXPECT_STREQ(config.branch_name, "browser/*");
 
@@ -133,6 +129,7 @@ TEST_F(SchedulerLoopQuarantineConfigTest, ValidConfig) {
   EXPECT_FALSE(config.leak_on_destruction);
   EXPECT_TRUE(config.enable_task_controlled_purge);
   EXPECT_TRUE(config.pause_in_between_tasks);
+  EXPECT_TRUE(config.exclude_non_ipc_tasks);
   EXPECT_EQ(400, config.branch_capacity_in_bytes);
   EXPECT_STREQ(config.branch_name, "browser/main");
 
@@ -249,13 +246,12 @@ constexpr char kWildcardMatchingConfigJSON[] = R"({
   },
 })";
 
-TEST_F(SchedulerLoopQuarantineConfigTest, WildcardMatching) {
+TEST(SchedulerLoopQuarantineConfigTest, WildcardMatching) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
       base::features::kPartitionAllocSchedulerLoopQuarantine,
       {{base::features::kPartitionAllocSchedulerLoopQuarantineConfig.name,
         kWildcardMatchingConfigJSON}});
-  ResetSchedulerLoopQuarantineConfigForTesting();
 
   partition_alloc::internal::SchedulerLoopQuarantineConfig config;
 
@@ -298,15 +294,61 @@ TEST_F(SchedulerLoopQuarantineConfigTest, WildcardMatching) {
   EXPECT_EQ(100, config.branch_capacity_in_bytes);
 }
 
+constexpr char kPurgeHeadroomConfigJSON[] = R"({
+  "browser": {
+    "main": {
+      "enable-quarantine": true,
+      "purge-headroom-percent": 10
+    },
+    "io": {
+      "enable-quarantine": true,
+      "purge-headroom-percent": 1000
+    },
+    "*": {
+      "enable-quarantine": true,
+      "purge-headroom-percent": -1
+    },
+  },
+})";
+
+TEST(SchedulerLoopQuarantineConfigTest, PurgeHeadroomPercent) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      base::features::kPartitionAllocSchedulerLoopQuarantine,
+      {{base::features::kPartitionAllocSchedulerLoopQuarantineConfig.name,
+        kPurgeHeadroomConfigJSON}});
+
+  partition_alloc::internal::SchedulerLoopQuarantineConfig config;
+
+  config = GetSchedulerLoopQuarantineConfiguration(
+      "browser", SchedulerLoopQuarantineBranchType::kMain);
+  EXPECT_EQ(10u, config.purge_headroom_percent);
+
+  // Too large values are clamped.
+  config = GetSchedulerLoopQuarantineConfiguration(
+      "browser", SchedulerLoopQuarantineBranchType::kIO);
+  EXPECT_EQ(partition_alloc::internal::kMaxPurgeHeadroomPercent,
+            config.purge_headroom_percent);
+
+  // Negative values are ignored.
+  config = GetSchedulerLoopQuarantineConfiguration(
+      "browser", SchedulerLoopQuarantineBranchType::kThreadLocalDefault);
+  EXPECT_EQ(0u, config.purge_headroom_percent);
+
+  // Defaults to 0.
+  config = GetSchedulerLoopQuarantineConfiguration(
+      "browser", SchedulerLoopQuarantineBranchType::kGlobal);
+  EXPECT_EQ(0u, config.purge_headroom_percent);
+}
+
 constexpr char kInvalidTestingConfigJSON[] = "nyan";
 
-TEST_F(SchedulerLoopQuarantineConfigTest, InvalidConfig) {
+TEST(SchedulerLoopQuarantineConfigTest, InvalidConfig) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
       base::features::kPartitionAllocSchedulerLoopQuarantine,
       {{base::features::kPartitionAllocSchedulerLoopQuarantineConfig.name,
         kInvalidTestingConfigJSON}});
-  ResetSchedulerLoopQuarantineConfigForTesting();
 
   partition_alloc::internal::SchedulerLoopQuarantineConfig config;
 
@@ -359,7 +401,7 @@ TEST_F(SchedulerLoopQuarantineConfigTest, InvalidConfig) {
   EXPECT_STREQ(config.branch_name, "renderer/main");
 }
 
-TEST_F(SchedulerLoopQuarantineConfigTest, CommandLineOverride) {
+TEST(SchedulerLoopQuarantineConfigTest, CommandLineOverride) {
   base::test::ScopedCommandLine scoped_command_line;
   base::test::ScopedFeatureList feature_list;
   // Enable the feature, but with a config that we expect to be overridden.
@@ -380,7 +422,6 @@ TEST_F(SchedulerLoopQuarantineConfigTest, CommandLineOverride) {
 
   scoped_command_line.GetProcessCommandLine()->AppendSwitchASCII(
       switches::kPartitionAllocSchedulerLoopQuarantine, kCommandLineConfigJSON);
-  ResetSchedulerLoopQuarantineConfigForTesting();
 
   partition_alloc::internal::SchedulerLoopQuarantineConfig config;
 
@@ -391,7 +432,7 @@ TEST_F(SchedulerLoopQuarantineConfigTest, CommandLineOverride) {
   EXPECT_EQ(999, config.branch_capacity_in_bytes);
 }
 
-TEST_F(SchedulerLoopQuarantineConfigTest, CommandLineOverrideFeatureDisabled) {
+TEST(SchedulerLoopQuarantineConfigTest, CommandLineOverrideFeatureDisabled) {
   base::test::ScopedCommandLine scoped_command_line;
   base::test::ScopedFeatureList feature_list;
   // Disable the feature.
@@ -410,7 +451,6 @@ TEST_F(SchedulerLoopQuarantineConfigTest, CommandLineOverrideFeatureDisabled) {
 
   scoped_command_line.GetProcessCommandLine()->AppendSwitchASCII(
       switches::kPartitionAllocSchedulerLoopQuarantine, kCommandLineConfigJSON);
-  ResetSchedulerLoopQuarantineConfigForTesting();
 
   partition_alloc::internal::SchedulerLoopQuarantineConfig config;
 
@@ -422,12 +462,11 @@ TEST_F(SchedulerLoopQuarantineConfigTest, CommandLineOverrideFeatureDisabled) {
   EXPECT_EQ(999, config.branch_capacity_in_bytes);
 }
 
-TEST_F(SchedulerLoopQuarantineConfigTest, FeatureDisabledNoSwitch) {
+TEST(SchedulerLoopQuarantineConfigTest, FeatureDisabledNoSwitch) {
   base::test::ScopedFeatureList feature_list;
   // Disable the feature.
   feature_list.InitAndDisableFeature(
       base::features::kPartitionAllocSchedulerLoopQuarantine);
-  ResetSchedulerLoopQuarantineConfigForTesting();
 
   partition_alloc::internal::SchedulerLoopQuarantineConfig config;
 
@@ -437,8 +476,7 @@ TEST_F(SchedulerLoopQuarantineConfigTest, FeatureDisabledNoSwitch) {
   EXPECT_FALSE(config.enable_quarantine);
 }
 
-TEST_F(SchedulerLoopQuarantineConfigTest,
-       HasSchedulerLoopQuarantineTaskControl) {
+TEST(SchedulerLoopQuarantineConfigTest, HasSchedulerLoopQuarantineTaskControl) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
       base::features::kPartitionAllocSchedulerLoopQuarantine,
@@ -461,6 +499,11 @@ TEST_F(SchedulerLoopQuarantineConfigTest,
               "pause-in-between-tasks": true
             }
           },
+          "network": {
+            "main": {
+              "exclude-non-ipc-tasks": true
+            }
+          },
           "renderer": {
             "main": {
               "enable-task-controlled-purge": false,
@@ -468,7 +511,6 @@ TEST_F(SchedulerLoopQuarantineConfigTest,
             }
           }
         })"}});
-  ResetSchedulerLoopQuarantineConfigForTesting();
 
   // Enables both.
   EXPECT_TRUE(HasSchedulerLoopQuarantineTaskControl("browser"));
@@ -476,61 +518,10 @@ TEST_F(SchedulerLoopQuarantineConfigTest,
   EXPECT_TRUE(HasSchedulerLoopQuarantineTaskControl("gpu"));
   // Enables pause-in-between-tasks only.
   EXPECT_TRUE(HasSchedulerLoopQuarantineTaskControl("utility"));
+  // Enables exclude-non-ipc-tasks only.
+  EXPECT_TRUE(HasSchedulerLoopQuarantineTaskControl("network"));
   // Enables neither.
   EXPECT_FALSE(HasSchedulerLoopQuarantineTaskControl("renderer"));
-}
-
-TEST_F(SchedulerLoopQuarantineConfigTest, HasMiracleObject) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeatureWithParameters(
-      base::features::kPartitionAllocSchedulerLoopQuarantine,
-      {{"PartitionAllocSchedulerLoopQuarantineConfig", R"({
-          "browser": {
-            "main": {
-              "enable-quarantine": true
-            }
-          },
-          "renderer": {
-            "main": {
-              "enable-quarantine": false
-            }
-          },
-          "utility": {
-            "amsc": {
-              "enable-quarantine": true
-            }
-          },
-          "gpu": {
-            "amsc": {
-              "enable-quarantine": true
-            },
-            "main": {
-              "enable-quarantine": true
-            }
-          },
-          "ppapi*": {
-            "main": {
-              "enable-quarantine": true
-            }
-          },
-          "network": {
-            "*": {
-              "enable-quarantine": true
-            }
-          }
-        })"}});
-  ResetSchedulerLoopQuarantineConfigForTesting();
-
-  EXPECT_TRUE(HasMiracleObject("browser"));
-  EXPECT_FALSE(HasMiracleObject("renderer"));
-  // AMSC branch is excluded from HasMiracleObject.
-  EXPECT_FALSE(HasMiracleObject("utility"));
-  // AMSC branch listed first is skipped, continuing to main branch.
-  EXPECT_TRUE(HasMiracleObject("gpu"));
-  // Process name wildcard matches "ppapi_process".
-  EXPECT_TRUE(HasMiracleObject("ppapi_process"));
-  // Branch name wildcard "*" matches.
-  EXPECT_TRUE(HasMiracleObject("network"));
 }
 
 }  // namespace

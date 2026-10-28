@@ -8,15 +8,15 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabObserver;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /** Observer of tab changes for all tabs owned by a {@link TabModelSelector}. */
 @NullMarked
-public class TabModelSelectorTabObserver extends EmptyTabObserver {
+public class TabModelSelectorTabObserver implements TabObserver {
     private final TabModelSelectorTabRegistrationObserver mTabRegistrationObserver;
     private boolean mShouldDeferTabRegisterNotifications;
     private final List<Tab> mDeferredTabs = new ArrayList<>();
@@ -43,16 +43,19 @@ public class TabModelSelectorTabObserver extends EmptyTabObserver {
         // constructor of the inherited classes are completed and the relevant local
         // variables are ready.
         // TODO(jinsukkim): Consider making this class final, and introducing an inner
-        //     class that extends EmptyTabObserver + provides onTab[Un]Registered instead.
+        //     class that implements TabObserver + provides onTab[Un]Registered instead.
         ThreadUtils.getUiThreadHandler()
                 .postAtFrontOfQueue(
                         () -> {
                             assert !mShouldDeferTabRegisterNotifications;
-                            for (Tab tab : mDeferredTabs) {
+                            // onTabRegistered may unregister tabs, so iterate over a copy and
+                            // skip tabs no longer in mDeferredTabs.
+                            for (Tab tab : new ArrayList<>(mDeferredTabs)) {
+                                // Keep destroyed tabs deferred so onTabUnregistered is skipped
+                                // for them too.
                                 if (tab.isDestroyed()) continue;
-                                onTabRegistered(tab);
+                                if (mDeferredTabs.remove(tab)) onTabRegistered(tab);
                             }
-                            mDeferredTabs.clear();
                             mIsDeferredInitializationFinished = true;
                         });
     }
@@ -72,13 +75,16 @@ public class TabModelSelectorTabObserver extends EmptyTabObserver {
 
             @Override
             public void onTabUnregistered(Tab tab) {
-                if (mShouldDeferTabRegisterNotifications) {
-                    boolean didExist = mDeferredTabs.remove(tab);
-                    assert didExist
-                            : "Attempting to remove a tab during deferred registration that "
-                                    + "never was added";
+                // Tabs still in mDeferredTabs never got onTabRegistered: the posted task has not
+                // run yet, or it skipped them as destroyed. Detach the TabObserver and skip
+                // onTabUnregistered for them.
+                if (mDeferredTabs.remove(tab)) {
+                    performUnregister(tab);
                     return;
                 }
+                assert !mShouldDeferTabRegisterNotifications
+                        : "Attempting to remove a tab during deferred registration that "
+                                + "never was added";
 
                 if (mIsDestroyed) {
                     performUnregister(tab);
@@ -104,7 +110,9 @@ public class TabModelSelectorTabObserver extends EmptyTabObserver {
     protected void onTabRegistered(Tab tab) {}
 
     /**
-     * Called when a tab is unregistered from a tab model this selector is managing.
+     * Called when a tab is unregistered from a tab model this selector is managing. Not called for
+     * tabs that are unregistered before their deferred {@link #onTabRegistered} runs.
+     *
      * @param tab The unregistered Tab.
      */
     protected void onTabUnregistered(Tab tab) {}
@@ -113,6 +121,7 @@ public class TabModelSelectorTabObserver extends EmptyTabObserver {
     public void destroy() {
         mIsDestroyed = true;
         mTabRegistrationObserver.destroy();
+        assert mDeferredTabs.isEmpty();
     }
 
     boolean isDeferredInitializationFinishedForTesting() {

@@ -22,19 +22,37 @@ function isValidElement(element: Element): boolean {
   return !isRootElement && !hasTooManyChildren;
 }
 
+// LINT.IfChange(SendTabToSelfFragmentStatus)
+/**
+ * Status codes for text fragment generation in Send Tab To Self.
+ * Values 0-99 are reserved for `GenerateFragmentStatus` from
+ * text-fragments-polyfill. Values 100+ are Send Tab To Self specific statuses.
+ */
+const SendTabToSelfFragmentStatus = {
+  ...GenerateFragmentStatus,
+  PAGE_NOT_SCROLLED: 100,
+} as const;
+// LINT.ThenChange(//ios/chrome/browser/send_tab_to_self/model/send_tab_to_self_text_fragment_selector_generator.h:TextFragmentGenerationStatus)
+
 /**
  * Attempts to generate a text fragment for the target reading position in the
  * viewport.
  */
 function getLinkToTextForReadingPosition() {
+  // If the page is not scrolled, do not generate a scroll position selector.
+  // Use a small threshold (<= 1) to account for subpixel scroll offsets on
+  // high-DPI displays.
+  if (window.scrollY <= 1) {
+    return {status: SendTabToSelfFragmentStatus.PAGE_NOT_SCROLLED};
+  }
+
   // Use visualViewport if available to target the visible area (e.g. when
   // pinch-zoomed). Add offset because caretRangeFromPoint expects layout
   // viewport coordinates.
   const kViewportYRatio = 0.35;
   const viewport = window.visualViewport;
-  const centerX = viewport
-      ? (viewport.width / 2 + viewport.offsetLeft)
-      : window.innerWidth / 2;
+  const centerX = viewport ? (viewport.width / 2 + viewport.offsetLeft) :
+                             window.innerWidth / 2;
   const centerY = viewport ?
       (viewport.height * kViewportYRatio + viewport.offsetTop) :
       window.innerHeight * kViewportYRatio;
@@ -105,19 +123,24 @@ function scrollRangeIntoView(range: Range) {
     span.id = 'stts-scroll-target';
     range.insertNode(span);
 
-    // Synchronize scrolling with the next layout frame so WKWebView has
-    // completed visual geometry restoration after foregrounding.
+    // Synchronize scrolling with a double requestAnimationFrame loop. The tab
+    // transition animation on foregrounding the background tab can execute the
+    // first requestAnimationFrame before WKWebView's active visual geometry
+    // has updated, which causes WebKit to silently ignore scrollIntoView.
+    // Bypassing the first frame ensures the web view completes layout first.
     window.requestAnimationFrame(() => {
-      span.scrollIntoView({
-        behavior: 'auto',
-        block: 'center',
-        inline: 'nearest',
-      });
+      window.requestAnimationFrame(() => {
+        span.scrollIntoView({
+          behavior: 'auto',
+          block: 'center',
+          inline: 'nearest',
+        });
 
-      // Delay removal to allow native scroll to complete in WKWebView.
-      window.setTimeout(() => {
-        span.remove();
-      }, 1000);
+        // Delay removal to allow native scroll to complete in WKWebView.
+        window.setTimeout(() => {
+          span.remove();
+        }, 1000);
+      });
     });
   } catch (e: any) {
     // Ignore errors during scroll to avoid crashing page scripts.
@@ -162,4 +185,3 @@ sttsApi.addFunction('scrollToTextFragment', (fragment: string) => {
   return true;
 });
 gCrWeb.registerApi(sttsApi);
-

@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/base64.h"
+#include "base/check_op.h"
 #include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
@@ -25,6 +26,7 @@
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/password_store_consumer.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/browser/sync/password_proto_utils.h"
 #include "components/sync/engine/loopback_server/persistent_unique_client_entity.h"
 #include "components/sync/model/crypto/key_derivation_params.h"
@@ -37,6 +39,7 @@
 
 using password_manager::PasswordForm;
 using password_manager::PasswordStoreInterface;
+using password_manager::PasswordString;
 using sync_datatype_helper::test;
 
 namespace {
@@ -55,15 +58,11 @@ class PasswordStoreConsumerHelper
 
   void OnGetPasswordStoreResultsOrErrorFrom(
       password_manager::PasswordStoreInterface* store,
-      password_manager::LoginsResultOrError results_or_error) override {
-    if (std::holds_alternative<password_manager::PasswordStoreBackendError>(
-            results_or_error)) {
-      result_ = std::vector<PasswordForm>();
-    } else {
-      result_ = password_manager::ToPasswordForms(
-          std::get<password_manager::LoginsResult>(
-              std::move(results_or_error)));
-    }
+      base::expected<std::vector<password_manager::StoredCredential>,
+                     password_manager::PasswordStoreBackendError>
+          results_or_error) override {
+    result_ = password_manager::ToPasswordForms(
+        std::move(results_or_error).value_or({}));
     run_loop_.Quit();
   }
 
@@ -207,13 +206,14 @@ int GetPasswordCount(int index, PasswordForm::Store store) {
 }
 
 PasswordForm CreateTestPasswordForm(int index, PasswordForm::Store store) {
+  CHECK_NE(store, PasswordForm::Store::kNotSet);
   PasswordForm form;
   form.signon_realm = kFakeSignonRealm;
   form.url = GURL(base::StringPrintf(kIndexedFakeOrigin, index));
   form.username_value =
       base::ASCIIToUTF16(base::StringPrintf("username%d", index));
-  form.password_value =
-      base::ASCIIToUTF16(base::StringPrintf("password%d", index));
+  form.password_value = PasswordString(
+      base::ASCIIToUTF16(base::StringPrintf("password%d", index)));
   form.date_created = base::Time::Now();
   form.in_store = store;
   return form;
@@ -274,6 +274,7 @@ PasswordSyncActiveChecker::PasswordSyncActiveChecker(
 PasswordSyncActiveChecker::~PasswordSyncActiveChecker() = default;
 
 bool PasswordSyncActiveChecker::IsExitConditionSatisfied(std::ostream* os) {
+  *os << "Waiting for passwords sync to become active.";
   return service()->GetActiveDataTypes().Has(syncer::PASSWORDS);
 }
 
@@ -284,6 +285,7 @@ PasswordSyncInactiveChecker::PasswordSyncInactiveChecker(
 PasswordSyncInactiveChecker::~PasswordSyncInactiveChecker() = default;
 
 bool PasswordSyncInactiveChecker::IsExitConditionSatisfied(std::ostream* os) {
+  *os << "Waiting for passwords sync to become inactive.";
   return !service()->GetActiveDataTypes().Has(syncer::PASSWORDS);
 }
 

@@ -22,7 +22,6 @@
 #include "chrome/browser/ash/settings/stub_cros_settings_provider.h"
 #include "chrome/browser/chromeos/reporting/metric_default_utils.h"
 #include "chrome/browser/chromeos/reporting/metric_reporting_prefs.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
@@ -142,53 +141,53 @@ void DeprovisionDelegate(MetricReportingManager& manager) {
 }
 
 struct MetricReportingSettingData {
-  std::string enable_setting_path;
+  const char* enable_setting_path;
   bool setting_enabled_default_value;
-  std::string rate_setting_path;
+  const char* rate_setting_path;
   int rate_unit_to_ms;
 };
 
-const MetricReportingSettingData network_info_settings = {
+constexpr MetricReportingSettingData network_info_settings = {
     ::ash::kReportDeviceNetworkConfiguration, true, "", 0};
-const MetricReportingSettingData cpu_info_settings = {
+constexpr MetricReportingSettingData cpu_info_settings = {
     ::ash::kReportDeviceCpuInfo, false, "", 0};
-const MetricReportingSettingData memory_info_settings = {
+constexpr MetricReportingSettingData memory_info_settings = {
     ::ash::kReportDeviceMemoryInfo, false, "", 0};
-const MetricReportingSettingData bus_info_settings = {
+constexpr MetricReportingSettingData bus_info_settings = {
     ::ash::kReportDeviceSecurityStatus, false, "", 0};
 // This is used for testing both the InputInfo and DisplayInfo, grouping them
 // together since the collection is done using the same policy.
-const MetricReportingSettingData graphics_info_settings = {
+constexpr MetricReportingSettingData graphics_info_settings = {
     ::ash::kReportDeviceGraphicsStatus, false, "", 0};
-const MetricReportingSettingData network_telemetry_settings = {
+constexpr MetricReportingSettingData network_telemetry_settings = {
     ::ash::kReportDeviceNetworkStatus, true,
     ::ash::kReportDeviceNetworkTelemetryCollectionRateMs, 1};
-const MetricReportingSettingData network_event_settings = {
+constexpr MetricReportingSettingData network_event_settings = {
     ::ash::kDeviceReportNetworkEvents, false, "", 0};
-const MetricReportingSettingData https_latency_event_settings = {
+constexpr MetricReportingSettingData https_latency_event_settings = {
     ::ash::kReportDeviceNetworkStatus, true,
     ::ash::kReportDeviceNetworkTelemetryEventCheckingRateMs, 1};
-const MetricReportingSettingData audio_metric_settings = {
+constexpr MetricReportingSettingData audio_metric_settings = {
     ::ash::kReportDeviceAudioStatus, true,
     ::ash::kReportDeviceAudioStatusCheckingRateMs, 1};
-const MetricReportingSettingData peripheral_metric_settings = {
+constexpr MetricReportingSettingData peripheral_metric_settings = {
     ::ash::kReportDevicePeripherals, false, "", 0};
-const MetricReportingSettingData displays_telemetry_settings = {
+constexpr MetricReportingSettingData displays_telemetry_settings = {
     ::ash::kReportDeviceGraphicsStatus, false, ::ash::kReportUploadFrequency,
     1};
-const MetricReportingSettingData app_event_settings = {
+constexpr MetricReportingSettingData app_event_settings = {
     ::ash::reporting::kReportAppInventory, false, "", 1};
-const MetricReportingSettingData device_activity_telemetry_settings = {
+constexpr MetricReportingSettingData device_activity_telemetry_settings = {
     ::ash::kDeviceActivityHeartbeatEnabled, false,
     ::ash::kDeviceActivityHeartbeatCollectionRateMs, 1};
-const MetricReportingSettingData runtime_counters_telemetry_settings = {
+constexpr MetricReportingSettingData runtime_counters_telemetry_settings = {
     ::ash::kDeviceReportRuntimeCounters, false,
     ::ash::kDeviceReportRuntimeCountersCheckingRateMs, 1};
-const MetricReportingSettingData website_event_settings = {
+constexpr MetricReportingSettingData website_event_settings = {
     kReportWebsiteActivityAllowlist, false, "", 1};
-const MetricReportingSettingData fatal_crash_event_settings = {
+constexpr MetricReportingSettingData fatal_crash_event_settings = {
     ::ash::kReportDeviceCrashReportInfo, false, "", 1};
-const MetricReportingSettingData chrome_fatal_crash_event_settings = {
+constexpr MetricReportingSettingData chrome_fatal_crash_event_settings = {
     ::ash::kReportDeviceCrashReportInfo, false, "", 1};
 
 struct MetricReportingManagerTestCase {
@@ -276,6 +275,7 @@ TEST_F(MetricReportingManagerTest, InitiallyDeprovisioned) {
   // Create a metric reporting manager.
   const auto metric_reporting_manager =
       test::MetricReportingManagerForTest::Create(
+          TestingBrowserProcess::GetGlobal()->local_state(),
           TestingBrowserProcess::GetGlobal()->network_quality_tracker(),
           std::move(mock_delegate_), nullptr);
 
@@ -323,6 +323,7 @@ TEST_P(MetricReportingManagerInfoTest, Default) {
   // Create a metric reporting manager.
   const auto metric_reporting_manager =
       test::MetricReportingManagerForTest::Create(
+          TestingBrowserProcess::GetGlobal()->local_state(),
           TestingBrowserProcess::GetGlobal()->network_quality_tracker(),
           std::move(mock_delegate_), nullptr);
 
@@ -469,6 +470,7 @@ TEST_P(MetricReportingManagerEventTest, Default) {
   // Create a metric reporting manager.
   const auto metric_reporting_manager =
       test::MetricReportingManagerForTest::Create(
+          TestingBrowserProcess::GetGlobal()->local_state(),
           TestingBrowserProcess::GetGlobal()->network_quality_tracker(),
           std::move(mock_delegate_), nullptr);
   EXPECT_EQ(observer_manager_count, test_case.expected_count_before_login);
@@ -532,6 +534,7 @@ TEST_F(MetricReportingManagerEventTest,
   // Create a metric reporting manager.
   const auto metric_reporting_manager =
       test::MetricReportingManagerForTest::Create(
+          TestingBrowserProcess::GetGlobal()->local_state(),
           TestingBrowserProcess::GetGlobal()->network_quality_tracker(),
           std::move(mock_delegate_), nullptr);
 
@@ -577,6 +580,7 @@ TEST_F(MetricReportingManagerEventTest,
   // Create a metric reporting manager.
   const auto metric_reporting_manager =
       test::MetricReportingManagerForTest::Create(
+          TestingBrowserProcess::GetGlobal()->local_state(),
           TestingBrowserProcess::GetGlobal()->network_quality_tracker(),
           std::move(mock_delegate_), nullptr);
 
@@ -724,6 +728,7 @@ TEST_P(MetricReportingManagerPeripheralTest, Default) {
   // Create a metric reporting manager.
   const auto metric_reporting_manager =
       test::MetricReportingManagerForTest::Create(
+          TestingBrowserProcess::GetGlobal()->local_state(),
           TestingBrowserProcess::GetGlobal()->network_quality_tracker(),
           std::move(mock_delegate_), nullptr);
 
@@ -776,6 +781,7 @@ TEST_F(MetricReportingManagerTelemetryTest, OneShotCollectorBootPerformance) {
   // Create a metric reporting manager.
   const auto metric_reporting_manager =
       test::MetricReportingManagerForTest::Create(
+          TestingBrowserProcess::GetGlobal()->local_state(),
           TestingBrowserProcess::GetGlobal()->network_quality_tracker(),
           std::move(mock_delegate_), nullptr);
 
@@ -831,6 +837,7 @@ TEST_P(MetricReportingManagerTelemetryTest, Default) {
   // Create a metric reporting manager.
   const auto metric_reporting_manager =
       test::MetricReportingManagerForTest::Create(
+          TestingBrowserProcess::GetGlobal()->local_state(),
           TestingBrowserProcess::GetGlobal()->network_quality_tracker(),
           std::move(mock_delegate_), nullptr);
 
@@ -971,6 +978,7 @@ TEST_F(KioskHeartbeatTelemetryTest, Init) {
   // Create a metric reporting manager.
   const auto metric_reporting_manager =
       test::MetricReportingManagerForTest::Create(
+          TestingBrowserProcess::GetGlobal()->local_state(),
           TestingBrowserProcess::GetGlobal()->network_quality_tracker(),
           std::move(mock_delegate_), nullptr);
 
@@ -1090,6 +1098,7 @@ TEST_P(EventDrivenTelemetryCollectorPoolTest,
   // Create a metric reporting manager.
   const auto metric_reporting_manager =
       test::MetricReportingManagerForTest::Create(
+          TestingBrowserProcess::GetGlobal()->local_state(),
           TestingBrowserProcess::GetGlobal()->network_quality_tracker(),
           std::move(mock_delegate_), nullptr);
 

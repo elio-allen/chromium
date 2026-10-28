@@ -88,11 +88,6 @@
 // Matcher for element with an image defined by its name in the main bundle.
 + (id<GREYMatcher>)imageViewWithImageNamed:(NSString*)imageName;
 
-// Matcher for element with a custom symbol defined by its name and point size
-// in the main bundle.
-+ (id<GREYMatcher>)imageViewWithCustomSymbolNamed:(NSString*)symbolName
-                                        pointSize:(CGFloat)pointSize;
-
 // Matcher for element with a symbol defined by `symbol` and `pointSize`.
 + (id<GREYMatcher>)imageViewWithSymbol:(Symbol)symbol
                              pointSize:(CGFloat)pointSize;
@@ -273,6 +268,9 @@
 // Matcher for the done button on the navigation bar.
 + (id<GREYMatcher>)navigationBarDoneButton;
 
+// Matcher for the edit button on the navigation bar.
++ (id<GREYMatcher>)navigationBarEditButton;
+
 // Matcher for the done button on the Bookmarks navigation bar.
 + (id<GREYMatcher>)bookmarksNavigationBarDoneButton;
 
@@ -433,9 +431,6 @@
 
 // Returns matcher for the voice search button on the main Settings screen.
 + (id<GREYMatcher>)voiceSearchButton;
-
-// Returns matcher for the voice search button on the omnibox input accessory.
-+ (id<GREYMatcher>)voiceSearchInputAccessoryButton;
 
 // Returns matcher for the settings main menu view.
 + (id<GREYMatcher>)settingsCollectionView;

@@ -488,6 +488,9 @@ source_set("unit_tests") {
       "android/audio_device_type_unittest.cc",
       "android/audio_device_unittest.cc",
     ]
+    if (media_use_opensles) {
+      sources += [ "android/opensles_output_unittest.cc" ]
+    }
     deps += [
       "//media/gpu",
       "//ui/gl",
@@ -572,14 +575,6 @@ source_set("unit_tests") {
 
 fuzzer_test("wav_audio_handler_fuzzer") {
   sources = [ "wav_audio_handler_fuzzer.cc" ]
-  deps = [
-    "//base",
-    "//media:test_support",
-  ]
-}
-
-fuzzer_test("flac_audio_handler_fuzzer") {
-  sources = [ "flac_audio_handler_fuzzer.cc" ]
   deps = [
     "//base",
     "//media:test_support",

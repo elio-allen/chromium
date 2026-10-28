@@ -120,6 +120,14 @@ class ChromeTranslateClient
                        translate::TranslateErrors error_type,
                        bool triggered_from_menu) override;
   bool IsTranslatableURL(const GURL& url) override;
+  void TriggerPdfTranslation() override;
+  void RevertPdfTranslation() override;
+  void OnSidePanelClosed();
+  bool IsReadingModeOpen() const override;
+
+#if !BUILDFLAG(IS_ANDROID)
+  class ReadAnythingObserver;
+#endif
 
   // Performs a one-time undo of the translation and shows the translation
   // bubble.
@@ -169,8 +177,18 @@ class ChromeTranslateClient
 
   // content::WebContentsObserver implementation on Android only. Used for the
   // auto-translate Snackbar.
-  void PrimaryPageChanged(content::Page& page) override;
   void OnVisibilityChanged(content::Visibility visibility) override;
+#endif
+
+  // content::WebContentsObserver implementation. On Android, dismisses the
+  // auto-translate Snackbar. On desktop, closes Reading Mode if it was opened
+  // for PDF translation.
+  void PrimaryPageChanged(content::Page& page) override;
+
+  bool opened_side_panel_for_pdf_translation_ = false;
+
+#if !BUILDFLAG(IS_ANDROID)
+  std::unique_ptr<ReadAnythingObserver> read_anything_observer_;
 #endif
 
   base::WeakPtrFactory<ChromeTranslateClient> weak_factory_{this};

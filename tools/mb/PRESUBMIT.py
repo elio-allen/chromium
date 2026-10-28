@@ -11,37 +11,29 @@ def CheckFreeze(input_api, output_api):
 
 
 def CheckTests(input_api, output_api):
+  if not input_api.HasAffectedFiles(extensions='.py'):
+    return []
   return input_api.RunTests(
-      input_api.canned_checks.GetUnitTestsInDirectory(input_api, output_api,
-                                                      '.',
-                                                      [r'.+_(unit)?test\.py$']))
-
-
-def CheckPylint(input_api, output_api):
-  disabled_warnings = [
-      'bad-indentation',
-      'consider-using-with',
-      'line-too-long',
-      'missing-module-docstring',
-      'singleton-comparison',
-      'unspecified-encoding',
-      'unused-import',
-  ]
-  return input_api.canned_checks.RunPylint(
-      input_api,
-      output_api,
-      version='3.2',
-      files_to_skip=['PRESUBMIT_test.py'],
-      disabled_warnings=disabled_warnings,
+    input_api.canned_checks.GetUnitTestsInDirectory(
+      input_api, output_api, '.', [r'.+_(unit)?test\.py$']
+    )
   )
 
 
 def CheckMbValidate(input_api, output_api):
+  if not input_api.HasAffectedFiles(
+    path=['mb_config.pyl', 'mb.py', 'mb_config_expectations']
+  ):
+    return []
   cmd = [input_api.python3_executable, 'mb.py', 'validate']
   kwargs = {'cwd': input_api.PresubmitLocalPath()}
-  return input_api.RunTests([
-      input_api.Command(name='mb_validate',
-                        cmd=cmd,
-                        kwargs=kwargs,
-                        message=output_api.PresubmitError),
-  ])
+  return input_api.RunTests(
+    [
+      input_api.Command(
+        name='mb_validate',
+        cmd=cmd,
+        kwargs=kwargs,
+        message=output_api.PresubmitError,
+      ),
+    ]
+  )

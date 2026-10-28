@@ -68,6 +68,10 @@ namespace component_updater {
 class ComponentUpdateService;
 }
 
+namespace sessions {
+class TabRestoreService;
+}  // namespace sessions
+
 namespace signin {
 class IdentityManager;
 }
@@ -126,6 +130,7 @@ class AutocompleteProviderClient : public OmniboxAction::Client {
       LensOverlaySuggestInputsCallback callback) const = 0;
   virtual tab_groups::TabGroupSyncService* GetTabGroupSyncService() const = 0;
   virtual sync_sessions::SessionSyncService* GetSessionSyncService() const = 0;
+  virtual sessions::TabRestoreService* GetTabRestoreService() const;
   virtual AimEligibilityService* GetAimEligibilityService() const = 0;
   virtual AiModeButtonService* GetAiModeButtonService() const;
 
@@ -162,6 +167,7 @@ class AutocompleteProviderClient : public OmniboxAction::Client {
   // In mobile platforms, we don't have a guest mode and therefore, it returns
   // true only for Incognito mode.
   virtual bool IsOffTheRecord() const = 0;
+  virtual bool IsPrimaryOTRProfileWithRegularParent() const = 0;
   virtual bool IsIncognitoProfile() const = 0;
   virtual bool IsGuestSession() const = 0;
 
@@ -269,8 +275,9 @@ class AutocompleteProviderClient : public OmniboxAction::Client {
 
   virtual void set_in_background_state(bool in_background_state) {}
 
-  // Whether the "Omnibox Next" Lens search chip feature is enabled.
-  virtual bool IsOmniboxNextLensSearchChipEnabled() const;
+
+  // Whether the Ask G search chip is enabled.
+  virtual bool IsAskGShowChipEnabled() const;
 
   // Whether the "Omnibox Next" AIM popup is enabled.
   virtual bool IsOmniboxNextAimPopupEnabled() const;

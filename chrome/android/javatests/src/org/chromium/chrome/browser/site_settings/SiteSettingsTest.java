@@ -9,14 +9,15 @@ import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.hasDescendant;
 import static androidx.test.espresso.matcher.ViewMatchers.isChecked;
+import static androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
+import static org.hamcrest.Matchers.allOf;
 import static org.hamcrest.Matchers.not;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 
-import static org.chromium.components.browser_ui.site_settings.AutoDarkMetrics.AutoDarkSettingsChangeSource.SITE_SETTINGS_GLOBAL;
 import static org.chromium.components.content_settings.PrefNames.DESKTOP_SITE_WINDOW_SETTING_ENABLED;
 
 import android.content.Context;
@@ -43,7 +44,6 @@ import org.mockito.junit.MockitoRule;
 import org.chromium.base.BaseSwitches;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
@@ -60,6 +60,7 @@ import org.chromium.base.test.util.RequiresRestart;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.FederatedIdentityTestUtils;
+import org.chromium.chrome.browser.app.tab_activity_glue.PopupCreatorImpl;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.notifications.channels.ChromeChannelDefinitions;
@@ -111,7 +112,6 @@ import java.util.concurrent.TimeoutException;
 })
 @DisableFeatures({
     ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE,
-    ChromeFeatureList.SETTINGS_MULTI_COLUMN,
     ChromeFeatureList.ANDROID_ANIMATED_PROGRESS_BAR_IN_BROWSER
 })
 public class SiteSettingsTest {
@@ -329,6 +329,7 @@ public class SiteSettingsTest {
     @SmallTest
     @Feature({"Preferences"})
     public void testPopupsNotBlocked() throws TimeoutException {
+        PopupCreatorImpl.setMoveTabToNewPopupResultForTesting(false);
         new SiteSettingsTestHelper.TwoStatePermissionTestCaseWithRadioButton(
                         "Popups",
                         SiteSettingsCategory.Type.POPUPS,
@@ -539,6 +540,32 @@ public class SiteSettingsTest {
                         "SerialPort",
                         SiteSettingsCategory.Type.SERIAL_PORT,
                         ContentSettingsType.SERIAL_GUARD,
+                        false)
+                .withExpectedPrefKeysAtStart(SingleCategorySettings.INFO_TEXT_KEY)
+                .run();
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Preferences"})
+    public void testAllowHidDevices() {
+        new SiteSettingsTestHelper.TwoStatePermissionTestCaseWithRadioButton(
+                        "HidDevices",
+                        SiteSettingsCategory.Type.HID_DEVICES,
+                        ContentSettingsType.HID_GUARD,
+                        true)
+                .withExpectedPrefKeysAtStart(SingleCategorySettings.INFO_TEXT_KEY)
+                .run();
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Preferences"})
+    public void testBlockHidDevices() {
+        new SiteSettingsTestHelper.TwoStatePermissionTestCaseWithRadioButton(
+                        "HidDevices",
+                        SiteSettingsCategory.Type.HID_DEVICES,
+                        ContentSettingsType.HID_GUARD,
                         false)
                 .withExpectedPrefKeysAtStart(SingleCategorySettings.INFO_TEXT_KEY)
                 .run();
@@ -879,10 +906,6 @@ public class SiteSettingsTest {
     @SmallTest
     @Feature({"Preferences"})
     public void testAllowAutoDark() {
-        final String histogramName = "Android.DarkTheme.AutoDarkMode.SettingsChangeSource.Enabled";
-        final int preTestCount =
-                RecordHistogram.getHistogramValueCountForTesting(
-                        histogramName, SITE_SETTINGS_GLOBAL);
         new SiteSettingsTestHelper.TwoStatePermissionTestCaseWithRadioButton(
                         "AutoDarkWebContent",
                         SiteSettingsCategory.Type.AUTO_DARK_WEB_CONTENT,
@@ -890,32 +913,18 @@ public class SiteSettingsTest {
                         true)
                 .withExpectedPrefKeys(SingleCategorySettings.ADD_EXCEPTION_KEY)
                 .run();
-        Assert.assertEquals(
-                "<" + histogramName + "> should be recorded for SITE_SETTINGS_GLOBAL.",
-                preTestCount + 1,
-                RecordHistogram.getHistogramValueCountForTesting(
-                        histogramName, SITE_SETTINGS_GLOBAL));
     }
 
     @Test
     @SmallTest
     @Feature({"Preferences"})
     public void testBlockAutoDark() {
-        final String histogramName = "Android.DarkTheme.AutoDarkMode.SettingsChangeSource.Disabled";
-        final int preTestCount =
-                RecordHistogram.getHistogramValueCountForTesting(
-                        histogramName, SITE_SETTINGS_GLOBAL);
         new SiteSettingsTestHelper.TwoStatePermissionTestCaseWithRadioButton(
                         "AutoDarkWebContent",
                         SiteSettingsCategory.Type.AUTO_DARK_WEB_CONTENT,
                         ContentSettingsType.AUTO_DARK_WEB_CONTENT,
                         false)
                 .run();
-        Assert.assertEquals(
-                "<" + histogramName + "> should be recorded for SITE_SETTINGS_GLOBAL.",
-                preTestCount + 1,
-                RecordHistogram.getHistogramValueCountForTesting(
-                        histogramName, SITE_SETTINGS_GLOBAL));
     }
 
     @Test
@@ -1201,6 +1210,8 @@ public class SiteSettingsTest {
 
         SettingsNavigation settingsNavigation =
                 SettingsNavigationFactory.createSettingsNavigation();
+        // This test inspects the fragment through SettingsActivity, like SiteSettingsTestUtils.
+        settingsNavigation.setUseSettingsActivityForTesting(true); // crbug.com/521895796
         Context context = ApplicationProvider.getApplicationContext();
         Intent intent =
                 settingsNavigation.createSettingsIntent(
@@ -1227,6 +1238,7 @@ public class SiteSettingsTest {
     @Feature({"Preferences"})
     // Auto does not have actions to handle ACTION_CHANNEL_NOTIFICATION_SETTINGS
     @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO)
+    @DisabledTest(message = "https://crbug.com/566215097")
     public void testEmbargoedNotificationSiteSettings() throws Exception {
         final String url =
                 mPermissionTestRule.getURLWithHostName(
@@ -1236,6 +1248,8 @@ public class SiteSettingsTest {
 
         SettingsNavigation settingsNavigation =
                 SettingsNavigationFactory.createSettingsNavigation();
+        // This test inspects the fragment through SettingsActivity, like SiteSettingsTestUtils.
+        settingsNavigation.setUseSettingsActivityForTesting(true); // crbug.com/521895796
         Context context = ApplicationProvider.getApplicationContext();
         Intent intent =
                 settingsNavigation.createSettingsIntent(
@@ -1365,6 +1379,8 @@ public class SiteSettingsTest {
 
         SettingsNavigation settingsNavigation =
                 SettingsNavigationFactory.createSettingsNavigation();
+        // This test inspects the fragment through SettingsActivity, like SiteSettingsTestUtils.
+        settingsNavigation.setUseSettingsActivityForTesting(true); // crbug.com/521895796
         Context context = ApplicationProvider.getApplicationContext();
         Intent intent =
                 settingsNavigation.createSettingsIntent(
@@ -1405,6 +1421,7 @@ public class SiteSettingsTest {
     @Test
     @MediumTest
     @Feature({"Preferences"})
+    @DisabledTest(message = "https://crbug.com/564443226")
     public void testProtectedContentAskAllow() throws Exception {
         SiteSettingsTestHelper.setGlobalTriStateToggleForCategory(
                 SiteSettingsCategory.Type.PROTECTED_MEDIA, ContentSetting.ASK);
@@ -1421,6 +1438,7 @@ public class SiteSettingsTest {
     @Test
     @MediumTest
     @Feature({"Preferences"})
+    @DisabledTest(message = "https://crbug.com/564443226")
     public void testProtectedContentAskBlocked() throws Exception {
         SiteSettingsTestHelper.setGlobalTriStateToggleForCategory(
                 SiteSettingsCategory.Type.PROTECTED_MEDIA, ContentSetting.ASK);
@@ -1534,7 +1552,7 @@ public class SiteSettingsTest {
         final SettingsActivity settingsActivity = SiteSettingsTestUtils.startSiteSettingsMenu("");
 
         // Scroll to permission autorevocation preference and click it.
-        onView(withId(R.id.recycler_view))
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
                 .perform(
                         RecyclerViewActions.scrollTo(
                                 hasDescendant(

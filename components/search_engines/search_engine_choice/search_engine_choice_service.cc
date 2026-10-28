@@ -29,7 +29,6 @@
 #include "base/version.h"
 #include "base/version_info/version_info.h"
 #include "components/country_codes/country_codes.h"
-#include "components/metrics/private_metrics/puma_histogram_functions.h"
 #include "components/metrics/profile_metrics_service.h"
 #include "components/policy/core/common/management/management_service.h"
 #include "components/policy/core/common/policy_service.h"
@@ -245,11 +244,6 @@ void RecordChoiceScreenCompletionDate(
       kSearchEngineChoiceCompletedOnMonthHistogram, year * 100 + month);
 }
 
-void RecordWipeOnMissingDse(bool will_wipe) {
-  base::UmaHistogramBoolean("Search.ChoicePrefsCheck.WipeOnMissingDse",
-                            will_wipe);
-}
-
 regional_capabilities::FunnelStage ToFunnelStage(
     SearchEngineChoiceScreenConditions condition) {
   switch (condition) {
@@ -261,6 +255,7 @@ regional_capabilities::FunnelStage ToFunnelStage(
       return regional_capabilities::FunnelStage::kNotInRegionalScope;
 
     case SearchEngineChoiceScreenConditions::kAlreadyCompleted:
+    case SearchEngineChoiceScreenConditions::kAlreadyCompletedImported:
       return regional_capabilities::FunnelStage::kAlreadyCompleted;
 
     // TODO(crbug.com/438717568): Do these 2 need to have a dedicated bucket?
@@ -296,8 +291,8 @@ void RecordLegacyStaticEligibilityInternal(
     search_engines::SearchEngineChoiceService::Client& client,
     metrics::ProfileMetricsService& profile_metrics_service,
     SearchEngineChoiceScreenConditions condition) {
-  if (base::FeatureList::IsEnabled(
-          switches::kInvalidateSearchEngineChoiceOnDeviceRestoreDetection) &&
+  if (switches::
+          IsInvalidateSearchEngineChoiceOnDeviceRestoreDetectionEnabled() &&
       client.IsDeviceRestoreDetectedInCurrentSession()) {
     base::UmaHistogramEnumeration(
         kChoiceScreenProfileInitConditionsPostRestoreHistogram, condition);
@@ -305,17 +300,14 @@ void RecordLegacyStaticEligibilityInternal(
 
   profile_metrics_service.UmaHistogramEnumeration(
       kSearchEngineChoiceScreenProfileInitConditionsHistogram, condition);
-  metrics::private_metrics::PumaHistogramEnumeration(
-      metrics::private_metrics::PumaType::kRc,
-      kPumaSearchChoiceScreenProfileInitConditionsHistogram, condition);
 }
 
 bool IsChoiceImported(const ChoiceCompletionMetadata& completion_metadata,
                       SearchEngineChoiceService::Client& client,
                       const PrefService& profile_prefs,
                       bool include_previous_just_in_time_detection) {
-  if (!base::FeatureList::IsEnabled(
-          switches::kInvalidateSearchEngineChoiceOnDeviceRestoreDetection)) {
+  if (!switches::
+          IsInvalidateSearchEngineChoiceOnDeviceRestoreDetectionEnabled()) {
     // Feature disabled, don't detect imported choices.
     return false;
   }
@@ -324,7 +316,7 @@ bool IsChoiceImported(const ChoiceCompletionMetadata& completion_metadata,
     return false;
   }
 
-  if (switches::kInvalidateChoiceOnRestoreIsRetroactive.Get()) {
+  if (switches::IsInvalidateChoiceOnRestoreRetroactive()) {
     // Retroactive detection is activated, report the choice as imported.
     return true;
   }
@@ -598,6 +590,9 @@ SearchEngineChoiceService::GetStaticChoiceScreenConditions(
   if (status == ChoiceStatus::kValid) {
     return SearchEngineChoiceScreenConditions::kAlreadyCompleted;
   }
+  if (status == ChoiceStatus::kValidAndImported) {
+    return SearchEngineChoiceScreenConditions::kAlreadyCompletedImported;
+  }
 
   if (status == ChoiceStatus::kManaged) {
     return SearchEngineChoiceScreenConditions::kManaged;
@@ -670,6 +665,8 @@ SearchEngineChoiceService::GetDynamicChoiceScreenConditions(
   switch (EvaluateSearchProviderChoice(template_url_service)) {
     case ChoiceStatus::kValid:
       return SearchEngineChoiceScreenConditions::kAlreadyCompleted;
+    case ChoiceStatus::kValidAndImported:
+      return SearchEngineChoiceScreenConditions::kAlreadyCompletedImported;
     case ChoiceStatus::kDefaultSearchDisabled:
     case ChoiceStatus::kCurrentIsSetByPolicy:
       // It is possible that between the static checks at service creation
@@ -730,8 +727,7 @@ void SearchEngineChoiceService::RecordProfileLoadEligibility(
                                              *profile_metrics_service_);
   }
 
-  CHECK(!recorded_profile_load_choice_screen_eligibility_.has_value(),
-        base::NotFatalUntil::M149);
+  CHECK(!recorded_profile_load_choice_screen_eligibility_.has_value());
   recorded_profile_load_choice_screen_eligibility_ = condition;
 }
 
@@ -759,8 +755,8 @@ bool SearchEngineChoiceService::IsSurfaceEligible(
 
 void SearchEngineChoiceService::RecordTriggeringEligibility(
     SearchEngineChoiceScreenConditions condition) {
-  if (base::FeatureList::IsEnabled(
-          switches::kInvalidateSearchEngineChoiceOnDeviceRestoreDetection) &&
+  if (switches::
+          IsInvalidateSearchEngineChoiceOnDeviceRestoreDetectionEnabled() &&
       client_->IsDeviceRestoreDetectedInCurrentSession()) {
     base::UmaHistogramEnumeration(
         kChoiceScreenNavigationConditionsPostRestoreHistogram, condition);
@@ -768,9 +764,6 @@ void SearchEngineChoiceService::RecordTriggeringEligibility(
 
   profile_metrics_service_->UmaHistogramEnumeration(
       kSearchEngineChoiceScreenNavigationConditionsHistogram, condition);
-  metrics::private_metrics::PumaHistogramEnumeration(
-      metrics::private_metrics::PumaType::kRc,
-      kPumaSearchChoiceScreenNavigationConditionsHistogram, condition);
 
   regional_capabilities::RecordTriggeringFunnelStageDetails(
       condition, *profile_metrics_service_);
@@ -780,8 +773,8 @@ void SearchEngineChoiceService::RecordTriggeringEligibility(
 
 void SearchEngineChoiceService::RecordChoiceScreenEvent(
     SearchEngineChoiceScreenEvents event) {
-  if (base::FeatureList::IsEnabled(
-          switches::kInvalidateSearchEngineChoiceOnDeviceRestoreDetection) &&
+  if (switches::
+          IsInvalidateSearchEngineChoiceOnDeviceRestoreDetectionEnabled() &&
       client_->IsDeviceRestoreDetectedInCurrentSession()) {
     base::UmaHistogramEnumeration(kChoiceScreenEventsPostRestoreHistogram,
                                   event);
@@ -789,9 +782,6 @@ void SearchEngineChoiceService::RecordChoiceScreenEvent(
 
   profile_metrics_service_->UmaHistogramEnumeration(
       kSearchEngineChoiceScreenEventsHistogram, event);
-  metrics::private_metrics::PumaHistogramEnumeration(
-      metrics::private_metrics::PumaType::kRc,
-      kPumaSearchChoiceScreenEventsHistogram, event);
 
   if (event == SearchEngineChoiceScreenEvents::kChoiceScreenWasDisplayed ||
       event == SearchEngineChoiceScreenEvents::kFreChoiceScreenWasDisplayed ||
@@ -806,8 +796,7 @@ std::unique_ptr<search_engines::ChoiceScreenData>
 SearchEngineChoiceService::GetChoiceScreenData(
     const SearchTermsData& search_terms_data,
     const TemplateURL* default_search_provider) {
-  CHECK(regional_capabilities_service_->IsInSearchEngineChoiceScreenRegion(),
-        base::NotFatalUntil::M149);
+  CHECK(regional_capabilities_service_->IsInSearchEngineChoiceScreenRegion());
   // We call `GetPrepopulatedEngines` instead of
   // `GetSearchProvidersUsingLoadedEngines` because the latter will return the
   // list of search engines that might have been modified by the user (by
@@ -887,7 +876,7 @@ void SearchEngineChoiceService::RecordChoiceMade(
     // There is an existing record AND we should keep it. In this case, being
     // called from a choice screen is not expected.
     CHECK_NE(choice_location, ChoiceMadeLocation::kChoiceScreen,
-             base::NotFatalUntil::M153);
+             base::NotFatalUntil::M161);
     return;
   }
 
@@ -950,7 +939,7 @@ void SearchEngineChoiceService::MaybeRecordChoiceScreenDisplayState(
         // cache. If programs are compatible, we should NOT have reached this
         // state. Re-entry for the same program is a bug. See
         // crbug.com/390272573.
-        NOTREACHED(base::NotFatalUntil::M153);
+        NOTREACHED(base::NotFatalUntil::M161);
       }
 
       // If we are recording a new display state because we changed programs,
@@ -1008,13 +997,11 @@ SearchEngineChoiceService::CheckPrefsForWipeReason() {
 
   if (!profile_prefs_->HasPrefPath(
           DefaultSearchManager::kDefaultSearchProviderDataPrefName)) {
-    if (base::FeatureList::IsEnabled(
-            switches::kWipeChoicePrefsOnMissingDefaultSearchEngine)) {
-      RecordWipeOnMissingDse(true);
-      return SearchEngineChoiceWipeReason::kMissingDefaultSearchEngine;
-    } else {
-      RecordWipeOnMissingDse(false);
-    }
+    // The presence of choice metadata implies that a DSE choice was made, so we
+    // also expect a DSE to be set in prefs. Some flows, like pref tampering
+    // detection, can cause the DSE pref to be cleared. When this happens, wipe
+    // the choice metadata as well to trigger a new choice prompt.
+    return SearchEngineChoiceWipeReason::kMissingDefaultSearchEngine;
   }
 
   // Allow re-triggering the choice screen for testing the screen itself.
@@ -1128,6 +1115,12 @@ SearchEngineChoiceService::EvaluateSearchProviderChoice(
     if (renewal_reasons.empty()) {
       // The choice is not outdated and is also not made on an incompatible
       // program, so it's still valid.
+      if (IsChoiceImported(
+              *completion_metadata, CHECK_DEREF(client_.get()),
+              profile_prefs_.get(),
+              /* include_previous_just_in_time_detection= */ true)) {
+        return ChoiceStatus::kValidAndImported;
+      }
       return ChoiceStatus::kValid;
     }
   }
@@ -1247,6 +1240,7 @@ void SearchEngineChoiceService::RegisterLocalStatePrefs(
 // static
 void SearchEngineChoiceService::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
+  // TODO(crbug.com/556263496): Restrict direct access to this pref.
   registry->RegisterInt64Pref(
       prefs::kDefaultSearchProviderChoiceScreenCompletionTimestamp, 0);
   registry->RegisterStringPref(

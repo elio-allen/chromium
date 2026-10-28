@@ -27,7 +27,6 @@ enum EmbedderDataTag : uint16_t {
   // because they have their own type tagging system, like PDFium.
   kDefaultEmbedderDataTag,
   kBlinkScriptState,
-  kGinPerContextData,
 };
 
 enum ExternalPointerTypeTag : uint16_t {
@@ -58,8 +57,6 @@ enum ExternalPointerTypeTag : uint16_t {
   kAPIBindingJSUtilUnittestErrorInfoTag,
   kEventEmitterUnittestListenerClosureDataTag,
   kModuleSystemTag,
-  kObjectBackedNativeHandlerHandlerFunctionTag,
-  kGinInternalCallbackHolderBaseTag,
   kProxyResolverV8ContextTag,
   kThreadDebuggerCommonImplTag,
   kViewTransitionTestDataTag,

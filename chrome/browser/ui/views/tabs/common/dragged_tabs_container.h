@@ -142,7 +142,8 @@ class DraggedTabsContainer : public TabDragTarget,
 
   // Handles a dragged tab that is parented within this target.
   // `point_in_container` is a point relative to this target's view.
-  void HandleTabDragInContainer(const gfx::Rect& dragged_tab_bounds);
+  void HandleTabDragInContainer(const gfx::Rect& dragged_tab_bounds,
+                                const gfx::Point& point_in_container);
 
   // Handles dragged tabs entering this container, applying the necessary
   // updates to reparent them into this.
@@ -177,7 +178,18 @@ class DraggedTabsContainer : public TabDragTarget,
   // the last drag point.
   void UpdateDraggingViewTransforms(const gfx::Point& point_in_container);
 
+  // Updates the transformation applied to a single dragging view, according to
+  // the bounding box of all dragged views.
+  void UpdateDraggingViewTransform(views::View* dragged_view,
+                                   const DraggedViewVisualData& visual_data,
+                                   const gfx::Rect& bounding_box_for_point);
+
   bool IsHorizontalDragSupported() const;
+  bool IsVerticalDragSupported() const;
+
+  // Returns the bounds in `host_view_` coordinates to which dragged views
+  // should be clamped.
+  gfx::Rect GetDraggingViewsClampingBounds() const;
 
   // Returns the bounds of the box containing all dragged views, adjusted to
   // the point `point_in_container` and clamped to the bounds of the
@@ -254,10 +266,17 @@ class DraggedTabsContainer : public TabDragTarget,
 
   TabDragScrollHandler scroll_handler_;
 
+  // The horizontal coordinate of the last tab reorder in container coordinates.
+  // Used to prevent jitter when dragging tabs horizontally.
+  std::optional<int> last_move_drag_x_ = std::nullopt;
+
   std::optional<base::CallbackListSubscription> on_scrolled_subscription_ =
       std::nullopt;
 
   base::OnceClosureList on_will_destroy_callback_list_;
+
+  // True while resetting drag state in ResetDragState().
+  bool is_resetting_drag_state_ = false;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TABS_COMMON_DRAGGED_TABS_CONTAINER_H_

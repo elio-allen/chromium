@@ -54,11 +54,11 @@ bool IsWellKnownEndpointValidationEnabled();
 // Whether preserving ports for testing is enabled.
 bool IsPreservePortsForTestingEnabled();
 
-// Whether accessing error attribute is enabled.
-bool IsErrorAttributeEnabled();
-
 // Whether navigation interception is enabled.
 bool IsNavigationInterceptionEnabled();
+
+// Whether the FedCM Identity Handler (service worker interception) is enabled.
+bool IsFedCmIdentityHandlerEnabled();
 
 // Whether embedder initiated login is enabled.
 bool IsEmbedderInitiatedLoginEnabled();
@@ -68,6 +68,9 @@ bool IsFedCmAmbientUIEnabled();
 
 // Whether native IdPs are enabled.
 bool IsFedCmNativeIdPsEnabled();
+
+// Whether Active Mode with multiple IdPs is enabled.
+bool IsActiveModeMultipleIdentityProvidersEnabled();
 
 }  // namespace content::webid
 

@@ -21,13 +21,13 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
-import org.chromium.chrome.browser.omnibox.suggestions.SuggestionCommonProperties.PositionalMode;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.omnibox.suggestions.OmniboxSuggestionUiType;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
@@ -43,8 +43,11 @@ public class OmniboxSuggestionsDropdownAdapterUnitTest {
                     OmniboxSuggestionUiType.OBSOLETE_QUERY_TILES,
                     OmniboxSuggestionUiType.OBSOLETE_HEADER,
                     OmniboxSuggestionUiType.OBSOLETE_GROUP_SEPARATOR);
-    public @Rule MockitoRule mockitoRule = MockitoJUnit.rule();
-    private @Mock DropdownItemProcessor mProcessor;
+
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
+
+    @Mock private DropdownItemProcessor mProcessor;
     private Context mContext;
     private FrameLayout mContainer;
     private ModelList mModel;
@@ -80,7 +83,6 @@ public class OmniboxSuggestionsDropdownAdapterUnitTest {
                 new PropertyModel.Builder(SuggestionCommonProperties.ALL_KEYS)
                         .with(SuggestionCommonProperties.RESOURCE_PROVIDER, mResourceProvider)
                         .with(SuggestionCommonProperties.SHOW_DIVIDER, true)
-                        .with(SuggestionCommonProperties.BG_POSITIONAL_MODE, PositionalMode.MIDDLE)
                         .build();
 
         for (@OmniboxSuggestionUiType int type = OmniboxSuggestionUiType.DEFAULT;
@@ -88,7 +90,6 @@ public class OmniboxSuggestionsDropdownAdapterUnitTest {
                 type++) {
             if (OBSOLETE_UI_TYPES.contains(type)) continue;
             doReturn(type).when(mProcessor).getViewTypeId();
-            doReturn(commonModel).when(mProcessor).createModel();
 
             mModel.add(new DropdownItemViewInfo(mProcessor, commonModel, null));
 

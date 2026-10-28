@@ -14,13 +14,10 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
-#include "base/observer_list.h"
-#include "base/scoped_observation.h"
 #include "build/build_config.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/supervised_user/core/browser/device_parental_controls.h"
-#include "components/supervised_user/core/browser/family_link_url_filter.h"
 #include "components/supervised_user/core/browser/remote_web_approvals_manager.h"
 #include "components/supervised_user/core/browser/supervised_user_preferences.h"
 #include "components/supervised_user/core/common/supervised_user_constants.h"
@@ -29,7 +26,6 @@
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
 class PrefService;
-class SupervisedUserServiceObserver;
 
 namespace signin {
 class IdentityManager;
@@ -40,7 +36,6 @@ enum class Channel;
 }  // namespace version_info
 
 namespace supervised_user {
-class FamilyLinkSettingsService;
 
 // Represents custodian data - who is responsible for managing the supervised
 // user's settings.
@@ -70,12 +65,12 @@ class Custodian {
 };
 
 // Orchestrates cooperation between components of user supervision. Manages the
-// lifecycle of url filtering, remote approval workflows, custodian data and
-// incognito mode availability.
+// lifecycle of remote approval workflows, custodian data and incognito mode
+// availability.
 // The state of features is driven by changes to the following preferences:
-// * `profile.managed_user_id` for url filtering, remove approvals and custodian
-//    data,
-// * `incognito.mode_availability` for incognito mode.
+// * `profile.managed_user_id` for remote approvals and custodian data,
+// * `incognito.mode_availability` and `enterprise.isolated_mode` for
+//   off-the-record modes (incognito and enterprise isolated mode).
 class SupervisedUserService : public KeyedService {
  public:
   // Delegate encapsulating platform-specific logic that is invoked from this
@@ -110,16 +105,8 @@ class SupervisedUserService : public KeyedService {
     return remote_web_approvals_manager_;
   }
 
-  // Returns the URL filter for filtering navigations and classifying sites in
-  // the history view. Both this method and the returned filter may only be used
-  // on the UI thread.
-  FamilyLinkUrlFilter* GetURLFilter() const;
-
   std::optional<Custodian> GetCustodian() const;
   std::optional<Custodian> GetSecondCustodian() const;
-
-  void AddObserver(SupervisedUserServiceObserver* observer);
-  void RemoveObserver(SupervisedUserServiceObserver* observer);
 
   // ProfileKeyedService override:
   void Shutdown() override;
@@ -140,17 +127,11 @@ class SupervisedUserService : public KeyedService {
       signin::IdentityManager* identity_manager,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       PrefService& user_prefs,
-      FamilyLinkSettingsService& settings_service,
-      std::unique_ptr<FamilyLinkUrlFilter> url_filter,
       std::unique_ptr<SupervisedUserService::PlatformDelegate>
           platform_delegate,
       const DeviceParentalControls& device_parental_controls);
 
  private:
-  // Activates the service which controls managed settings of url filtering and
-  // incognito mode.
-  void SetSettingsServiceActive(bool active);
-
   void OnCustodianInfoChanged();
   void OnSupervisedUserIdChanged();
 
@@ -160,24 +141,16 @@ class SupervisedUserService : public KeyedService {
   // Handler when supervision is disabled. Intentionally idempotent.
   void OnFamilyLinkParentalControlsDisabled();
 
-  // Add or remove all pref handlers related to custodians. The removal method
-  // is intentionally idempotent.
-  void AddCustodianPrefChangeHandlers();
-  void RemoveCustodianPrefChangeHandlers();
-
-  // Closes incognito tabs on each availability change, under condition that
-  // any parental controls are enabled and incognito mode is not available.
+  // Closes incognito and isolated mode tabs on each availability change, under
+  // condition that any parental controls are enabled and off-the-record mode
+  // is not available.
   void OnIncognitoModeAvailabilityChanged();
 
   const raw_ref<PrefService> user_prefs_;
 
-  const raw_ref<FamilyLinkSettingsService> settings_service_;
-
   raw_ptr<signin::IdentityManager> identity_manager_;
 
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
-
-  std::unique_ptr<FamilyLinkUrlFilter> url_filter_;
 
   std::unique_ptr<PlatformDelegate> platform_delegate_;
 
@@ -185,17 +158,12 @@ class SupervisedUserService : public KeyedService {
 
   // Registrar for core prefs that drive this service.
   PrefChangeRegistrar main_pref_change_registrar_;
-  // Registrar for preferences that control custodian data. They're observed
-  // only when the profile is subject to parental controls.
-  PrefChangeRegistrar custodian_pref_change_registrar_;
 
   // True only when |Shutdown()| method has been called.
   bool did_shutdown_ = false;
 
   // Manages remote web approvals.
   RemoteWebApprovalsManager remote_web_approvals_manager_;
-
-  base::ObserverList<SupervisedUserServiceObserver>::Unchecked observer_list_;
 
 #if BUILDFLAG(IS_CHROMEOS)
   bool signout_required_after_supervision_enabled_ = false;

@@ -4,10 +4,17 @@
 
 #include "chrome/browser/dictation/target.h"
 
+#include "base/check.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
+#include "base/location.h"
+#include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/dictation/features.h"
+#include "chrome/browser/dictation/format_transcription.h"
 #include "content/public/browser/focused_node_details.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host.h"
+#include "services/service_manager/public/cpp/interface_provider.h"
 #include "ui/base/ime/ime_text_span.h"
 
 namespace dictation {
@@ -22,6 +29,13 @@ std::u16string RemovePrefix(const std::u16string& text,
     prefix_len++;
   }
   return text.substr(prefix_len);
+}
+
+void CompleteAsync(base::OnceClosure on_complete) {
+  if (on_complete) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, std::move(on_complete));
+  }
 }
 
 }  // namespace
@@ -65,7 +79,57 @@ content::RenderWidgetHost* Target::GetRenderWidgetHost() const {
   return rfh ? rfh->GetRenderWidgetHost() : nullptr;
 }
 
+blink::mojom::DictationAgent* Target::GetDictationAgent() {
+  content::RenderFrameHost* rfh = GetRenderFrameHost();
+  if (!rfh) {
+    return nullptr;
+  }
+  if (!dictation_agent_.is_bound()) {
+    rfh->GetRemoteInterfaces()->GetInterface(
+        dictation_agent_.BindNewPipeAndPassReceiver());
+  }
+  return dictation_agent_.get();
+}
+
 void Target::SetComposition(const std::u16string& text, bool is_final) {
+  QueuedOperation op{
+      .type = is_final ? QueuedOperation::Type::kSetFinalComposition
+                       : QueuedOperation::Type::kSetPartialComposition,
+      .text = FormatTextForInsertion(text),
+  };
+  if (is_waiting_on_operation_completion_) {
+    // Intentionally overwrites any other pending operation.
+    CHECK(!queued_operation_ || !queued_operation_->on_commit_complete);
+    queued_operation_ = std::move(op);
+    return;
+  }
+
+  ExecuteOperation(std::move(op));
+}
+
+void Target::CommitComposition(const std::u16string& text,
+                               base::OnceClosure on_commit_complete) {
+  QueuedOperation op{
+      .type = QueuedOperation::Type::kCommitComposition,
+      .text = FormatTextForInsertion(text),
+      .on_commit_complete = std::move(on_commit_complete),
+  };
+  if (is_waiting_on_operation_completion_) {
+    // Intentionally overwrites any other pending operation.
+    CHECK(!queued_operation_ || !queued_operation_->on_commit_complete);
+    queued_operation_ = std::move(op);
+    return;
+  }
+
+  ExecuteOperation(std::move(op));
+}
+
+void Target::ExecuteSetComposition(const std::u16string& text,
+                                   bool is_final,
+                                   base::OnceClosure operation_complete) {
+  base::ScopedClosureRunner scoped_operation_complete(
+      std::move(operation_complete));
+
   if (!is_final && !kShowPartials.Get()) {
     return;
   }
@@ -86,8 +150,17 @@ void Target::SetComposition(const std::u16string& text, bool is_final) {
     // composition, if any, but we'll need to handle this more robustly if we
     // want to show partial transcripts.
     paste_fallback_required_ = true;
+    if (last_sent_composition_.empty()) {
+      // Nothing has been composed yet, so there is no composition to cancel.
+      // Committing empty text here would delete any selected content as a
+      // separate edit, splitting the eventual paste across two undo steps.
+      // Instead, leave the selection intact so the paste replaces it in a
+      // single edit.
+      return;
+    }
     last_sent_composition_ = u"";
-    CommitExternallySourcedComposition(u"");
+    CommitExternallySourcedComposition(u"",
+                                       scoped_operation_complete.Release());
     return;
   }
 
@@ -102,12 +175,15 @@ void Target::SetComposition(const std::u16string& text, bool is_final) {
 
   last_sent_composition_ = text;
 
-  SetExternallySourcedComposition(text, {text_span});
+  SetExternallySourcedComposition(text, {text_span},
+                                  scoped_operation_complete.Release());
 }
 
-void Target::CommitComposition(const std::u16string& text) {
+void Target::ExecuteCommitComposition(const std::u16string& text,
+                                      base::OnceClosure operation_complete) {
   if (paste_fallback_required_) {
     PasteIntoNode(text);
+    CompleteAsync(std::move(operation_complete));
     return;
   }
 
@@ -123,23 +199,67 @@ void Target::CommitComposition(const std::u16string& text) {
 
   if (richly_editable() && text_to_commit.find(u'\n') != std::u16string::npos) {
     PasteIntoNode(text_to_commit);
+    CompleteAsync(std::move(operation_complete));
     return;
   }
 
-  CommitExternallySourcedComposition(text_to_commit);
+  CommitExternallySourcedComposition(text_to_commit,
+                                     std::move(operation_complete));
+}
+
+void Target::ExecuteOperation(QueuedOperation op) {
+  is_waiting_on_operation_completion_ = true;
+
+  base::OnceClosure operation_complete =
+      base::BindOnce(&Target::OnOperationComplete, weak_factory_.GetWeakPtr(),
+                     std::move(op.on_commit_complete));
+
+  switch (op.type) {
+    case QueuedOperation::Type::kSetPartialComposition:
+      ExecuteSetComposition(op.text, /*is_final=*/false,
+                            std::move(operation_complete));
+      break;
+    case QueuedOperation::Type::kSetFinalComposition:
+      ExecuteSetComposition(op.text, /*is_final=*/true,
+                            std::move(operation_complete));
+      break;
+    case QueuedOperation::Type::kCommitComposition:
+      ExecuteCommitComposition(op.text, std::move(operation_complete));
+      break;
+  }
+}
+
+void Target::OnOperationComplete(base::OnceClosure on_commit_complete) {
+  is_waiting_on_operation_completion_ = false;
+
+  CompleteAsync(std::move(on_commit_complete));
+
+  if (queued_operation_.has_value()) {
+    QueuedOperation op = std::move(*queued_operation_);
+    queued_operation_.reset();
+    ExecuteOperation(std::move(op));
+  }
 }
 
 void Target::SetExternallySourcedComposition(
     const std::u16string& text,
-    const std::vector<ui::ImeTextSpan>& spans) {
+    const std::vector<ui::ImeTextSpan>& spans,
+    base::OnceClosure on_complete) {
   if (content::RenderWidgetHost* rwh = GetRenderWidgetHost()) {
-    rwh->SetExternallySourcedComposition(text, spans, global_dom_node_id());
+    rwh->SetExternallySourcedComposition(text, spans, global_dom_node_id(),
+                                         std::move(on_complete));
+  } else {
+    CompleteAsync(std::move(on_complete));
   }
 }
 
-void Target::CommitExternallySourcedComposition(const std::u16string& text) {
+void Target::CommitExternallySourcedComposition(const std::u16string& text,
+                                                base::OnceClosure on_complete) {
   if (content::RenderWidgetHost* rwh = GetRenderWidgetHost()) {
-    rwh->CommitExternallySourcedComposition(text, global_dom_node_id());
+    rwh->CommitExternallySourcedComposition(text, global_dom_node_id(),
+                                            std::move(on_complete));
+  } else {
+    CompleteAsync(std::move(on_complete));
   }
 }
 
@@ -147,6 +267,29 @@ void Target::PasteIntoNode(const std::u16string& text) {
   if (content::RenderWidgetHost* rwh = GetRenderWidgetHost()) {
     rwh->PasteIntoNode(text, global_dom_node_id());
   }
+}
+
+std::optional<std::u16string_view> Target::GetTextPrecedingSelection() {
+  if (content::RenderWidgetHost* rwh = GetRenderWidgetHost()) {
+    return rwh->GetTextPrecedingSelection(global_dom_node_id());
+  }
+  return std::nullopt;
+}
+
+std::u16string Target::FormatTextForInsertion(const std::u16string& text) {
+  if (text.empty()) {
+    return text;
+  }
+
+  if (!preceding_text_.has_value()) {
+    std::optional<std::u16string_view> text_preceding_selection =
+        GetTextPrecedingSelection();
+    preceding_text_ = text_preceding_selection
+                          ? std::u16string(*text_preceding_selection)
+                          : std::u16string();
+  }
+
+  return FormatTranscription(text, *preceding_text_);
 }
 
 }  // namespace dictation

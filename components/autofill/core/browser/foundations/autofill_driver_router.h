@@ -234,15 +234,17 @@ class AutofillDriverRouter {
       RoutedCallback<const FormData&, const FieldGlobalId&> callback,
       AutofillDriver& source,
       FormData form,
-      const FieldGlobalId& field_id);
+      const FieldGlobalId& email_field_id);
   void DidDetectJavaScriptAutofill(
       RoutedCallback<const FormData&,
                      const FieldGlobalId&,
-                     const std::vector<JavaScriptFieldModification>&> callback,
+                     const std::vector<JavaScriptFieldModification>&,
+                     base::TimeTicks> callback,
       AutofillDriver& source,
       FormData form,
       FieldGlobalId trigger_field_id,
-      std::vector<JavaScriptFieldModification> field_modifications);
+      std::vector<JavaScriptFieldModification> field_modifications,
+      base::TimeTicks detection_start_timestamp);
   void FocusOnFormField(
       RoutedCallback<const FormData&, const FieldGlobalId&> callback,
       AutofillDriver& source,
@@ -326,18 +328,20 @@ class AutofillDriverRouter {
       const url::Origin& main_origin,
       const url::Origin& triggered_origin,
       const absl::flat_hash_map<FieldGlobalId, FieldType>& field_type_map);
-  void SendEmailVerificationToken(RoutedCallback<FieldRendererId,
-                                                 const std::string&,
-                                                 FieldRendererId,
-                                                 const std::string&> callback,
-                                  const FieldGlobalId& email_field_id,
-                                  const std::string& email,
-                                  const FieldGlobalId& token_field_id,
-                                  const std::string& token);
-  void UpdateEmailVerificationState(
-      RoutedCallback<FieldRendererId, mojom::EmailVerificationState> callback,
+  void GetNonceForEmailVerification(
+      RoutedCallback<
+          FieldRendererId,
+          base::OnceCallback<void(const std::optional<std::string>&)>> callback,
+      const FieldGlobalId& field_id,
+      base::OnceCallback<void(const std::optional<std::string>&)>
+          browser_callback);
+  void SendEmailVerificationToken(
+      RoutedCallback<FieldRendererId, const std::string&, const std::string&>
+          callback,
       const FieldGlobalId& email_field_id,
-      mojom::EmailVerificationState state);
+      const std::string& email,
+      const std::string& token);
+
   void ExposeDomNodeIdsInAllFrames(RoutedCallback<> callback);
   using BrowserFormHandler = AutofillDriver::BrowserFormHandler;
   using RendererFormHandler =

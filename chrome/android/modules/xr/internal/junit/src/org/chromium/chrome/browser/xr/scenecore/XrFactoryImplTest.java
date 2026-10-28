@@ -18,8 +18,6 @@ import androidx.xr.runtime.SessionCreateSuccess;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
 import org.robolectric.Robolectric;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -36,17 +34,16 @@ import org.chromium.ui.xr.scenecore.XrVector3;
 public class XrFactoryImplTest {
     private static final float DELTA = 1e-5f;
 
-    @Mock private View mView;
-
+    private View mView;
     private Session mSession;
     private XrFactoryImpl mFactory;
 
     @Before
     public void setUp() {
         XrModuleProviderImpl.initialize();
-        MockitoAnnotations.openMocks(this);
         ComponentActivity activity =
                 Robolectric.buildActivity(ComponentActivity.class).create().start().get();
+        mView = new View(activity);
         SessionCreateResult result = Session.create(activity);
         assertTrue(result instanceof SessionCreateSuccess);
         mSession = ((SessionCreateSuccess) result).getSession();
@@ -110,8 +107,29 @@ public class XrFactoryImplTest {
 
     @Test
     public void testCreateSurfaceEntity() {
-        XrSurfaceEntityHolder holder =
+        XrSurfaceEntityHolder quadHolder =
                 mFactory.createSurfaceEntity(mSession, XrSurfaceEntityShape.QUAD);
-        assertNotNull(holder);
+        assertNotNull(quadHolder);
+        assertEquals(XrSurfaceEntityShape.QUAD, quadHolder.getSurfaceShape());
+
+        XrSurfaceEntityHolder sphereHolder =
+                mFactory.createSurfaceEntity(mSession, XrSurfaceEntityShape.SPHERE);
+        assertNotNull(sphereHolder);
+        assertEquals(XrSurfaceEntityShape.SPHERE, sphereHolder.getSurfaceShape());
+
+        XrSurfaceEntityHolder hemiHolder =
+                mFactory.createSurfaceEntity(mSession, XrSurfaceEntityShape.HEMISPHERE);
+        assertNotNull(hemiHolder);
+        assertEquals(XrSurfaceEntityShape.HEMISPHERE, hemiHolder.getSurfaceShape());
+
+        XrSurfaceEntityHolder seamlessSphereHolder =
+                mFactory.createSurfaceEntity(mSession, XrSurfaceEntityShape.SEAMLESS_SPHERE);
+        assertNotNull(seamlessSphereHolder);
+        assertEquals(XrSurfaceEntityShape.SEAMLESS_SPHERE, seamlessSphereHolder.getSurfaceShape());
+
+        XrSurfaceEntityHolder roundedQuadHolder =
+                mFactory.createSurfaceEntity(mSession, XrSurfaceEntityShape.ROUNDED_QUAD);
+        assertNotNull(roundedQuadHolder);
+        assertEquals(XrSurfaceEntityShape.ROUNDED_QUAD, roundedQuadHolder.getSurfaceShape());
     }
 }

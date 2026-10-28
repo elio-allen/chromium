@@ -25,8 +25,8 @@ class CompositorAnimationCurveTest : public PageTestBase {
   // Each test is expected to create a single animation, though the animation
   // may affect multiple properties.
   Animation* GetAnimation() {
-    Element* target = GetDocument().getElementById(AtomicString("target"));
     UpdateAllLifecyclePhasesForTest();
+    Element* target = GetElementById("target");
     ElementAnimations* element_animations = target->GetElementAnimations();
     EXPECT_TRUE(element_animations);
     EXPECT_EQ(element_animations->Animations().size(), 1u);
@@ -134,28 +134,6 @@ TEST_F(CompositorAnimationCurveTest, VariableSubstitedColors) {
   EXPECT_EQ(color_curve->GetTypedKeyframe(1).value, Color::kWhite);
 }
 
-TEST_F(CompositorAnimationCurveTest, UnsupportedColorValue) {
-  SetBodyInnerHTML(R"HTML(
-    <style>
-      @keyframes text-reveal {
-        from { background-color: currentcolor; }
-        to { background-color: transparent; }
-      }
-      #target {
-        height: 100px;
-        width: 100x;
-        animation: text-reveal 1s linear;
-      }
-    }
-    </style>
-    <div id='target'></div>
-  )HTML");
-
-  scoped_refptr<CompositorAnimationColorCurve> curve =
-      ExtractColorCurve(CSSPropertyID::kBackgroundColor);
-  EXPECT_TRUE(!curve);
-}
-
 TEST_F(CompositorAnimationCurveTest, ColorCurveWithNeutralKeyframe) {
   SetBodyInnerHTML(R"HTML(
     <style>
@@ -176,6 +154,42 @@ TEST_F(CompositorAnimationCurveTest, ColorCurveWithNeutralKeyframe) {
   scoped_refptr<CompositorAnimationColorCurve> curve =
       ExtractColorCurve(CSSPropertyID::kBackgroundColor);
   EXPECT_TRUE(!curve);
+}
+
+TEST_F(CompositorAnimationCurveTest, StyleDependentColorMix) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      :root {
+        --theme: red;
+      }
+      :root.updated {
+        --theme: blue;
+      }
+      @keyframes colorize {
+        from { background-color: color-mix(in srgb, var(--theme) 70%, white); }
+        to   { background-color: color-mix(in srgb, var(--theme) 80%, black); }
+      }
+      #target {
+        height: 100px;
+        width: 100x;
+        animation: colorize 1s linear;
+      }
+    }
+    </style>
+    <div id='target'></div>
+  )HTML");
+
+  scoped_refptr<CompositorAnimationColorCurve> curve =
+      ExtractColorCurve(CSSPropertyID::kBackgroundColor);
+  EXPECT_TRUE(curve->HasStyleDependency());
+  EXPECT_EQ(curve->GetTypedKeyframe(0).value.Rgb(), 0xFFFF4D4D);
+
+  GetDocument().documentElement()->classList().add({"updated"},
+                                                   ASSERT_NO_EXCEPTION);
+  UpdateAllLifecyclePhasesForTest();
+  curve = ExtractColorCurve(CSSPropertyID::kBackgroundColor);
+  EXPECT_TRUE(curve->HasStyleDependency());
+  EXPECT_EQ(curve->GetTypedKeyframe(0).value.Rgb(), 0xFF4D4DFF);
 }
 
 }  // end namespace blink

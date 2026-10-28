@@ -107,12 +107,12 @@ void OverviewItemBase::RefreshShadowVisuals(bool shadow_visible) {
   gfx::Rect shadow_content_bounds(
       gfx::ToRoundedRect(shadow_bounds_in_screen).size());
   shadow_->SetContentBounds(shadow_content_bounds);
-  shadow_->SetRoundedCornerRadius(kWindowMiniViewCornerRadius);
+  shadow_->SetRoundedCorners(gfx::RoundedCornersF(kWindowMiniViewCornerRadius));
 }
 
 void OverviewItemBase::UpdateShadowTypeForDrag(bool is_dragging) {
   if (shadow_) {
-    shadow_->SetType(is_dragging ? kDraggedShadowType : kDefaultShadowType);
+    shadow_->SetShadow(is_dragging ? kDraggedShadowType : kDefaultShadowType);
   }
 }
 
@@ -342,8 +342,7 @@ views::Widget::InitParams OverviewItemBase::CreateOverviewItemWidgetParams(
 }
 
 void OverviewItemBase::CreateShadow() {
-  shadow_ = SystemShadow::CreateShadowOnNinePatchLayer(
-      kDefaultShadowType, SystemShadow::LayerRecreatedCallback());
+  shadow_ = SystemDecoration::Create(kDefaultShadowType);
   auto* shadow_layer = shadow_->GetLayer();
   auto* widget_layer = item_widget_->GetLayer();
   widget_layer->Add(shadow_layer);

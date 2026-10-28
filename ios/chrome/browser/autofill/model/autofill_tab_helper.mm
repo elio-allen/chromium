@@ -17,16 +17,8 @@
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/autofill_commands.h"
+#import "ios/chrome/browser/shared/public/commands/form_input_accessory_commands.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
-
-namespace {
-
-bool IsAutofillAcrossIframesEnabled() {
-  return base::FeatureList::IsEnabled(
-      autofill::features::kAutofillAcrossIframesIos);
-}
-
-}  // namespace
 
 AutofillTabHelper::~AutofillTabHelper() = default;
 
@@ -45,7 +37,14 @@ void AutofillTabHelper::SetCommandHandlers(
     id<AtMemoryCommands> at_memory_handler) {
   snackbar_handler_ = snackbar_handler;
   at_memory_handler_ = at_memory_handler;
+  autofill_client_->set_at_memory_handler(at_memory_handler);
   UpdateAutofillAgentDelegate();
+}
+
+void AutofillTabHelper::SetFormInputAccessoryHandler(
+    id<FormInputAccessoryCommands> form_input_accessory_handler) {
+  autofill_client_->set_form_input_accessory_commands_handler(
+      form_input_accessory_handler);
 }
 
 void AutofillTabHelper::UpdateAutofillAgentDelegate() {
@@ -85,10 +84,8 @@ AutofillTabHelper::AutofillTabHelper(web::WebState* web_state)
   autofill_client_ = std::make_unique<autofill::ChromeAutofillClientIOS>(
       profile, web_state_, infobar_manager, autofill_agent_);
 
-  if (IsAutofillAcrossIframesEnabled()) {
-    autofill::ChildFrameRegistrar::GetOrCreateForWebState(web_state_)
-        ->AddObserver(this);
-  }
+  autofill::ChildFrameRegistrar::GetOrCreateForWebState(web_state_)
+      ->AddObserver(this);
 }
 
 void AutofillTabHelper::WebStateDestroyed(web::WebState* web_state) {
@@ -96,11 +93,9 @@ void AutofillTabHelper::WebStateDestroyed(web::WebState* web_state) {
 
   web_state_observation_.Reset();
   autofill_agent_ = nil;
-  if (IsAutofillAcrossIframesEnabled()) {
-    auto* registrar = autofill::ChildFrameRegistrar::FromWebState(web_state_);
-    CHECK(registrar);
-    registrar->RemoveObserver(this);
-  }
+  auto* registrar = autofill::ChildFrameRegistrar::FromWebState(web_state_);
+  CHECK(registrar);
+  registrar->RemoveObserver(this);
 }
 
 void AutofillTabHelper::OnDidDoubleRegistration(

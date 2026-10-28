@@ -101,11 +101,16 @@ suite('ComposeboxInputPlaceholder', () => {
         menuLabel: '',
         aimUrlParams: [],
         menuTooltip: '',
+        icon: 0,
       }],
     });
 
     await setupComposeboxWithInputState(testInputState);
-    assertEquals(modelHint, composebox.getInputElement().$.input.placeholder);
+    assertEquals(
+        modelHint,
+        composebox.getInputElement()
+            .shadowRoot.querySelector<HTMLElement>('#input')!.getAttribute(
+                'placeholder'));
   });
 
   const defaultApiHint = loadTimeData.getString('searchboxComposePlaceholder');
@@ -143,12 +148,16 @@ suite('ComposeboxInputPlaceholder', () => {
                                       disableActiveModelSelection: false,
                                       aimUrlParams: [],
                                       menuTooltip: '',
+                                      icon: 0,
                                     })),
       }));
 
       // Initial placeholder check.
       assertEquals(
-          defaultApiHint, composebox.getInputElement().$.input.placeholder);
+          defaultApiHint,
+          composebox.getInputElement()
+              .shadowRoot.querySelector<HTMLElement>('#input')!.getAttribute(
+                  'placeholder'));
 
       // Enable tool mode.
       composebox.onToolClick(new CustomEvent('tool-click', {
@@ -164,7 +173,11 @@ suite('ComposeboxInputPlaceholder', () => {
       await searchboxPageRemote.$.flushForTesting();
       await microtasksFinished();
 
-      assertEquals(hint, composebox.getInputElement().$.input.placeholder);
+      assertEquals(
+          hint,
+          composebox.getInputElement()
+              .shadowRoot.querySelector<HTMLElement>('#input')!.getAttribute(
+                  'placeholder'));
 
       // Disable tool mode.
       composebox.onToolClick(new CustomEvent('tool-click', {
@@ -181,7 +194,10 @@ suite('ComposeboxInputPlaceholder', () => {
       microtasksFinished();
 
       assertEquals(
-          defaultApiHint, composebox.getInputElement().$.input.placeholder);
+          defaultApiHint,
+          composebox.getInputElement()
+              .shadowRoot.querySelector<HTMLElement>('#input')!.getAttribute(
+                  'placeholder'));
     });
   });
 
@@ -250,5 +266,112 @@ suite('ComposeboxInputPlaceholder', () => {
         // 5. Assertions.
         assertEquals(ToolMode.kImageGen, composebox.inputState!.activeTool);
         assertTrue(queryAutocompleteCalledWithTrue);
+      });
+
+  test('tool mode update queries autocomplete only once', async () => {
+    const initialInputState: InputState = new MockInputState({
+      activeTool: ToolMode.kUnspecified,
+    });
+    await setupComposeboxWithInputState(initialInputState);
+
+    let queryAutocompleteCount = 0;
+    composebox.queryAutocomplete = (_clearMatches: boolean) => {
+      queryAutocompleteCount++;
+    };
+
+    composebox.handleToolClick(ToolMode.kDeepSearch);
+    await microtasksFinished();
+
+    // handleToolClick should not call queryAutocomplete synchronously.
+    assertEquals(0, queryAutocompleteCount);
+
+    const newInputState: InputState = new MockInputState({
+      activeTool: ToolMode.kDeepSearch,
+    });
+    searchboxPageRemote.onInputStateChanged(newInputState);
+    await searchboxPageRemote.$.flushForTesting();
+    await microtasksFinished();
+    await composebox.updateComplete;
+
+    assertEquals(1, queryAutocompleteCount);
+  });
+
+  test(
+      'canceling with active tool queries autocomplete only once', async () => {
+        const initialInputState: InputState = new MockInputState({
+          activeTool: ToolMode.kDeepSearch,
+        });
+        await setupComposeboxWithInputState(initialInputState);
+
+        let queryAutocompleteCount = 0;
+        composebox.queryAutocomplete = (_clearMatches: boolean) => {
+          queryAutocompleteCount++;
+        };
+
+        composebox.onCancelClick();
+        await microtasksFinished();
+
+        // onCancelClick should not call queryAutocomplete synchronously when an
+        // active tool is present.
+        assertEquals(0, queryAutocompleteCount);
+
+        const newInputState: InputState = new MockInputState({
+          activeTool: ToolMode.kUnspecified,
+        });
+        searchboxPageRemote.onInputStateChanged(newInputState);
+        await searchboxPageRemote.$.flushForTesting();
+        await microtasksFinished();
+        await composebox.updateComplete;
+
+        assertEquals(1, queryAutocompleteCount);
+      });
+
+  test(
+      'updateState with tool mode does not eagerly query ZPS without tool',
+      async () => {
+        const initialInputState: InputState = new MockInputState({
+          activeTool: ToolMode.kUnspecified,
+        });
+        await setupComposeboxWithInputState(initialInputState);
+
+        composebox.showZps = true;
+        let queryAutocompleteCount = 0;
+        composebox.queryAutocomplete = (_clearMatches: boolean) => {
+          queryAutocompleteCount++;
+        };
+
+        await composebox.updateState({
+          text: '',
+          files: [],
+          mode: ToolMode.kDeepSearch,
+          model: ModelMode.kUnspecified,
+        });
+        await microtasksFinished();
+
+        assertEquals(0, queryAutocompleteCount);
+      });
+
+  test(
+      'updateState queries ZPS when tool mode matches activeTool', async () => {
+        const initialInputState: InputState = new MockInputState({
+          activeTool: ToolMode.kDeepSearch,
+        });
+        await setupComposeboxWithInputState(initialInputState);
+
+        composebox.showZps = true;
+        let queryAutocompleteCount = 0;
+        composebox.queryAutocomplete = (_clearMatches: boolean) => {
+          queryAutocompleteCount++;
+        };
+
+        await composebox.updateState({
+          text: '',
+          files: [],
+          mode: ToolMode.kDeepSearch,
+          model: ModelMode.kUnspecified,
+        });
+        await microtasksFinished();
+
+        assertEquals(1, queryAutocompleteCount);
       });
 });

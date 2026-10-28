@@ -7,8 +7,8 @@ import 'chrome://resources/cr_components/composebox/contextual_entrypoint_button
 
 import type {ContextualEntrypointButtonElement} from 'chrome://resources/cr_components/composebox/contextual_entrypoint_button.js';
 import {WindowProxy} from 'chrome://resources/cr_components/composebox/window_proxy.js';
+import {MojoPluralStringProxy} from 'chrome://resources/cr_components/search/mojo_plural_string_proxy.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import {PluralStringProxyImpl} from 'chrome://resources/js/plural_string_proxy.js';
 import type {TabInfo} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestMock} from 'chrome://webui-test/test_mock.js';
@@ -291,7 +291,7 @@ suite('ContextualEntrypointButton', () => {
       // STS icon is shown in coins slot
       const coinIcon = $$(entrypointButton, '.sts-active-coin');
       assertTrue(!!coinIcon);
-      assertEquals('composebox:tab', coinIcon.getAttribute('icon'));
+      assertEquals('composebox:screensaverAuto', coinIcon.getAttribute('icon'));
       assertEquals(
           entrypointButton.i18n('stsMegaplusShareRelevantOpenTabs'),
           coinIcon.getAttribute('title'));
@@ -325,7 +325,7 @@ suite('ContextualEntrypointButton', () => {
       // STS icon is shown in coins slot
       const coinIcon = $$(entrypointButton, '.sts-active-coin');
       assertTrue(!!coinIcon);
-      assertEquals('composebox:tab', coinIcon.getAttribute('icon'));
+      assertEquals('composebox:screensaverAuto', coinIcon.getAttribute('icon'));
       assertEquals(
           entrypointButton.i18n('stsMegaplusShareRelevantOpenTabs'),
           coinIcon.getAttribute('title'));
@@ -344,6 +344,7 @@ suite('ContextualEntrypointButton', () => {
               title: 'Tab 1',
               showInCurrentTabChip: false,
               showInPreviousTabChip: false,
+              isLoading: false,
               lastActive: {internalValue: 0n},
             },
           ];
@@ -377,6 +378,7 @@ suite('ContextualEntrypointButton', () => {
       url: 'https://example1.com',
       showInCurrentTabChip: false,
       showInPreviousTabChip: false,
+      isLoading: false,
       lastActive: {internalValue: 0n},
     };
     const tab2: TabInfo = {
@@ -385,6 +387,7 @@ suite('ContextualEntrypointButton', () => {
       url: 'https://example2.com',
       showInCurrentTabChip: false,
       showInPreviousTabChip: false,
+      isLoading: false,
       lastActive: {internalValue: 0n},
     };
     const tab3: TabInfo = {
@@ -393,6 +396,7 @@ suite('ContextualEntrypointButton', () => {
       url: 'https://example3.com',
       showInCurrentTabChip: false,
       showInPreviousTabChip: false,
+      isLoading: false,
       lastActive: {internalValue: 0n},
     };
     const tab4: TabInfo = {
@@ -401,6 +405,7 @@ suite('ContextualEntrypointButton', () => {
       url: 'https://example4.com',
       showInCurrentTabChip: false,
       showInPreviousTabChip: false,
+      isLoading: false,
       lastActive: {internalValue: 0n},
     };
 
@@ -461,6 +466,7 @@ suite('ContextualEntrypointButton', () => {
           url: 'https://example1.com',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         },
       ];
@@ -478,7 +484,7 @@ suite('ContextualEntrypointButton', () => {
     setup(() => {
       pluralStringProxy = new TestPluralStringProxy();
       pluralStringProxy.text = 'Sharing 1 tab';
-      PluralStringProxyImpl.setInstance(pluralStringProxy);
+      MojoPluralStringProxy.setInstance(pluralStringProxy);
     });
 
     test('default aria-label with no tabs attached', async () => {
@@ -501,6 +507,7 @@ suite('ContextualEntrypointButton', () => {
           url: 'https://example1.com',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         },
       ];

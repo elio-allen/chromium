@@ -43,8 +43,26 @@ PasswordString::PasswordString(std::u16string&& plaintext) {
   crypto::SecureZeroBuffer(base::as_writable_byte_span(plaintext));
 }
 
-PasswordString::PasswordString(PasswordString&&) noexcept = default;
-PasswordString& PasswordString::operator=(PasswordString&&) noexcept = default;
+// std::u16string (used when UseProcessBoundBacking() is false) doesn't handle
+// self-assignment moves, leaving both the source and target in an unspecified
+// state. Add a self-assignment guard to operator= and, for consistency, clear
+// the moved-from source object. This is redundant but harmless if
+// UseProcessBoundBacking() is true.
+PasswordString::PasswordString(PasswordString&& other) noexcept
+    : value_(std::move(other.value_)) {
+  other.clear();
+}
+
+PasswordString& PasswordString::operator=(PasswordString&& other) noexcept {
+  if (this != &other) {
+    value_ = std::move(other.value_);
+    other.clear();
+  }
+  return *this;
+}
+
+PasswordString::PasswordString(const PasswordString&) = default;
+PasswordString& PasswordString::operator=(const PasswordString&) = default;
 
 PasswordString::~PasswordString() = default;
 
@@ -85,6 +103,16 @@ size_t PasswordString::size() const {
   return std::get<std::u16string>(value_).size();
 }
 
+void PasswordString::clear() {
+  if (std::holds_alternative<crypto::ProcessBoundU16String>(value_)) {
+    value_ = crypto::ProcessBoundU16String();
+    return;
+  }
+
+  CHECK(std::holds_alternative<std::u16string>(value_));
+  std::get<std::u16string>(value_).clear();
+}
+
 bool operator==(const PasswordString& lhs, const PasswordString& rhs) {
   // Short circuit return false if the sizes are different. This avoids
   // unnecessary decryptions.
@@ -114,6 +142,10 @@ bool operator==(const PasswordString& lhs, const std::u16string& rhs) {
   bool result = value == rhs;
   crypto::SecureZeroBuffer(base::as_writable_byte_span(value));
   return result;
+}
+
+bool operator==(const PasswordString& lhs, const char16_t* rhs) {
+  return lhs == std::u16string(rhs);
 }
 
 }  // namespace password_manager

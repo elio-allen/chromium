@@ -20,12 +20,13 @@
 #include "chrome/browser/permissions/system/system_permission_settings.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
@@ -42,6 +43,7 @@
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_result.h"
 #include "components/omnibox/browser/geolocation_header_service.h"
+#include "components/omnibox/browser/geolocation_header_service_test_api.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/prefs/pref_service.h"
 #include "components/search_engines/template_url.h"
@@ -127,8 +129,7 @@ class InlineLocationSignalingE2EInteractiveUiTest
           {{"display_order", GetParam().display_order},
            {"wording", GetParam().wording}}},
          {omnibox::kPlatformAgnosticXGeo, {}}},
-        {::features::kInitialWebUI,
-         ::features::kWebUIToolbarProcessOverheadExperiment});
+        {::features::kInitialWebUI});
 
     // Architectural Fix: Initialize the mock environment early so startup WebUI
     // toolbar autocomplete requests are intercepted immediately instead of
@@ -246,7 +247,8 @@ IN_PROC_BROWSER_TEST_P(InlineLocationSignalingE2EInteractiveUiTest,
       GeolocationHeaderServiceFactory::GetForProfile(profile);
   ASSERT_TRUE(geo_service);
   if (GetParam().has_cached_location) {
-    geo_service->SetLocationForTesting(CreateMockGeoposition());
+    GeolocationHeaderServiceTestApi(geo_service)
+        .SetLocation(CreateMockGeoposition());
   }
 
   HostContentSettingsMap* settings_map =
@@ -277,8 +279,9 @@ IN_PROC_BROWSER_TEST_P(InlineLocationSignalingE2EInteractiveUiTest,
 
   // Wait for any asynchronous Mojo geolocation query triggered by the focus
   // flow or DSE change to complete before modifying omnibox state.
-  ASSERT_TRUE(base::test::RunUntil(
-      [&]() { return !geo_service->is_geolocation_bound_for_testing(); }));
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !GeolocationHeaderServiceTestApi(geo_service).is_geolocation_bound();
+  }));
 
   prime_histogram_tester.ExpectUniqueSample(
       "Omnibox.GeolocationHeaderService.PrimeLocationOutcome",
@@ -295,7 +298,8 @@ IN_PROC_BROWSER_TEST_P(InlineLocationSignalingE2EInteractiveUiTest,
     EXPECT_TRUE(base::test::RunUntil([&]() {
       return controller->done() &&
              std::ranges::any_of(controller->result(), [](const auto& match) {
-               return match.type == AutocompleteMatchType::SEARCH_SUGGEST;
+               return match.type ==
+                      omnibox::AutocompleteMatchType::kSearchSuggest;
              });
     }));
   }
@@ -349,7 +353,7 @@ IN_PROC_BROWSER_TEST_P(InlineLocationSignalingE2EInteractiveUiTest,
   // Perform navigation to DSE results page to trigger and verify navigation
   // telemetry.
   content::TestNavigationObserver navigation_observer(
-      browser()->tab_strip_model()->GetActiveWebContents());
+      browser()->GetTabStripModel()->GetActiveWebContents());
 
   // Trigger omnibox click navigation to verify click telemetry.
   // 1. Find the parent or the ills suggestion (based on test_parent_click).

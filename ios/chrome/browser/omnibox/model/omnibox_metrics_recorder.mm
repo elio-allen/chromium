@@ -174,7 +174,7 @@ constexpr base::TimeDelta kDefaultTimeDelta = base::Milliseconds(-1);
   log.ukm_source_id = _omniboxClient->GetUKMSourceId();
   log.input_state = _omniboxTextModel->input.input_state();
 
-  if ((disposition == WindowOpenDisposition::CURRENT_TAB) &&
+  if ((disposition == WindowOpenDisposition::kCurrentTab) &&
       _omniboxClient->CurrentPageExists()) {
     // If we know the destination is being opened in the current tab,
     // we can easily get the tab ID.  (If it's being opened in a new
@@ -192,7 +192,6 @@ constexpr base::TimeDelta kDefaultTimeDelta = base::Milliseconds(-1);
   OmniboxEventGlobalTracker::GetInstance()->OnURLOpened(&log);
 
   LOCAL_HISTOGRAM_BOOLEAN("Omnibox.EventCount", true);
-  omnibox::answer_data_parser::LogAnswerUsed(match.answer_type);
 
   TemplateURLService* service = _omniboxClient->GetTemplateURLService();
   TemplateURL* templateURL = match.GetTemplateURL(service);

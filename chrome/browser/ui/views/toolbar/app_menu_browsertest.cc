@@ -37,9 +37,9 @@
 #include "chrome/browser/sessions/tab_restore_service_factory.h"
 #include "chrome/browser/sessions/tab_restore_service_load_waiter.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/hats/mock_trust_safety_sentiment_service.h"
 #include "chrome/browser/ui/hats/trust_safety_sentiment_service_factory.h"
 #include "chrome/browser/ui/profiles/profile_view_utils.h"
@@ -51,12 +51,16 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/app_menu_button_observer.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/toolbar/app_menu_control.h"
 #include "chrome/browser/ui/views/toolbar/browser_app_menu_button.h"
+#include "chrome/browser/ui/views/toolbar/test_support/app_menu_test_accessor.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/upgrade_detector/upgrade_detector.h"
 #include "chrome/common/chrome_features.h"
+#include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
 #include "components/password_manager/core/common/password_manager_features.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_pref_names.h"
@@ -66,8 +70,11 @@
 #include "components/subscription_eligibility/subscription_eligibility_prefs.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/scoped_accessibility_mode_override.h"
+#include "google_apis/gaia/google_service_auth_error.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/accessibility/ax_action_data.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/gfx/image/image_unittest_util.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/menu/menu_item_view.h"
@@ -88,11 +95,8 @@ class AppMenuBrowserTest : public UiBrowserTest {
  public:
   AppMenuBrowserTest() {
     // Disable the comparison tables submenu.
-    // TODO(crbug.com/429347589): Clean up and update test to work by triggering
-    // disruptive notification revocation (or other SH feature).
     scoped_feature_list_.InitWithFeatures(
-        {}, /*disabled_features=*/{
-            features::kSafetyHubDisruptiveNotificationRevocation});
+        {}, /*disabled_features=*/{features::kAppMenuGlowUp});
   }
 
   // UiBrowserTest:
@@ -104,31 +108,28 @@ class AppMenuBrowserTest : public UiBrowserTest {
   // Changes the return value of `browser()` as long as the returned object is
   // alive. This resetting behavior is necessary to null `browser_` before its
   // destruction, lest the allocator complain about dangling refs.
-  [[nodiscard]] base::AutoReset<raw_ptr<Browser>> SetBrowser(Browser* browser) {
-    return base::AutoReset<raw_ptr<Browser>>(&browser_, browser);
+  [[nodiscard]] base::AutoReset<raw_ptr<BrowserWindowInterface>> SetBrowser(
+      BrowserWindowInterface* browser) {
+    return base::AutoReset<raw_ptr<BrowserWindowInterface>>(&browser_, browser);
   }
 
-  Browser* browser() {
+  BrowserWindowInterface* browser() {
     return browser_ ? browser_.get() : UiBrowserTest::browser();
   }
 
-  BrowserAppMenuButton* menu_button() {
-    return views::AsViewClass<BrowserAppMenuButton>(
-        views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
-            kToolbarAppMenuButtonElementId,
-            BrowserView::GetBrowserViewForBrowser(browser())
-                ->GetElementContext()));
+  AppMenuTestAccessor app_menu_test_accessor() {
+    return AppMenuTestAccessor(browser());
   }
 
  private:
-  raw_ptr<Browser> browser_ = nullptr;
+  raw_ptr<BrowserWindowInterface> browser_ = nullptr;
   std::optional<int> command_id_;
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 void AppMenuBrowserTest::ShowUi(const std::string& name) {
   // Include mnemonics in screenshots so that we detect changes to them.
-  menu_button()->ShowMenu(views::MenuRunner::SHOULD_SHOW_MNEMONICS);
+  app_menu_test_accessor().ShowMenu(views::MenuRunner::SHOULD_SHOW_MNEMONICS);
 
   if (base::StartsWith(name, "main")) {
     return;
@@ -173,16 +174,17 @@ void AppMenuBrowserTest::ShowUi(const std::string& name) {
   }
   command_id_ = id_entry->second;
   views::MenuItemView* const menu_root =
-      menu_button()->app_menu()->root_menu_item();
+      app_menu_test_accessor().GetRootMenuItemView();
   menu_root->GetMenuController()->SelectItemAndOpenSubmenu(
       menu_root->GetMenuItemByID(command_id_.value()));
 }
 
 bool AppMenuBrowserTest::VerifyUi() {
-  if (!menu_button()->IsMenuShowing()) {
+  if (!app_menu_test_accessor().IsMenuShowing()) {
     return false;
   }
-  views::MenuItemView* menu_item = menu_button()->app_menu()->root_menu_item();
+  views::MenuItemView* menu_item =
+      app_menu_test_accessor().GetRootMenuItemView();
   if (command_id_.has_value()) {
     menu_item = menu_item->GetMenuItemByID(command_id_.value());
   }
@@ -212,9 +214,8 @@ void AppMenuBrowserTest::WaitForUserDismissal() {
     const base::RepeatingClosure quit_closure_;
   } waiter(run_loop.QuitClosure());
 
-  base::ScopedObservation<BrowserAppMenuButton, CloseWaiter> observation(
-      &waiter);
-  observation.Observe(menu_button());
+  base::ScopedObservation<AppMenuControl, CloseWaiter> observation(&waiter);
+  observation.Observe(app_menu_test_accessor().GetControl());
 
   run_loop.Run();
 }
@@ -232,7 +233,8 @@ IN_PROC_BROWSER_TEST_F(AppMenuBrowserTest, ShowWithRecentlyClosedWindow) {
   TabRestoreServiceLoadWaiter tab_restore_service_load_waiter(
       tab_restore_service);
   tab_restore_service_load_waiter.Wait();
-  Browser* second_browser = CreateBrowser(browser()->GetProfile());
+  BrowserWindowInterface* second_browser =
+      CreateBrowser(browser()->GetProfile());
   content::WebContents* new_contents = chrome::AddSelectedTabWithURL(
       second_browser,
       chrome_test_utils::GetTestUrl(
@@ -247,19 +249,21 @@ IN_PROC_BROWSER_TEST_F(AppMenuBrowserTest, ShowWithRecentlyClosedWindow) {
                                     &sessions::tab_restore::Entry::type));
 
   // Show the AppMenu.
-  menu_button()->ShowMenu(views::MenuRunner::NO_FLAGS);
+  app_menu_test_accessor().ShowMenu(views::MenuRunner::NO_FLAGS);
 }
 
 IN_PROC_BROWSER_TEST_F(AppMenuBrowserTest, ExpandCollapse) {
-  EXPECT_FALSE(menu_button()->IsMenuShowing());
+  content::ScopedAccessibilityModeOverride mode_override(ui::kAXModeComplete);
+
+  EXPECT_FALSE(app_menu_test_accessor().IsMenuShowing());
 
   ui::AXActionData action_data;
   action_data.action = ax::mojom::Action::kExpand;
-  menu_button()->HandleAccessibleAction(action_data);
-  EXPECT_TRUE(menu_button()->IsMenuShowing());
+  app_menu_test_accessor().HandleAccessibleAction(action_data);
+  EXPECT_TRUE(app_menu_test_accessor().IsMenuShowing());
   action_data.action = ax::mojom::Action::kCollapse;
-  menu_button()->HandleAccessibleAction(action_data);
-  EXPECT_FALSE(menu_button()->IsMenuShowing());
+  app_menu_test_accessor().HandleAccessibleAction(action_data);
+  EXPECT_FALSE(app_menu_test_accessor().IsMenuShowing());
 }
 
 // There should be at least one subtest below for every distinct submenu of the
@@ -299,6 +303,23 @@ IN_PROC_BROWSER_TEST_F(AppMenuBrowserTest, DISABLED_InvokeUi_main_incognito) {
   ShowAndVerifyUi();
 }
 
+class AppMenuBrowserIsolatedModeTest : public AppMenuBrowserTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    AppMenuBrowserTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(
+        enterprise_isolated_mode::switches::
+            kForceEnterpriseIsolatedModeReplacesIncognito);
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(AppMenuBrowserIsolatedModeTest,
+                       DISABLED_InvokeUi_main_isolated) {
+  // Incognito browser with isolated mode enabled by switch.
+  auto browser_resetter = SetBrowser(CreateIncognitoBrowser());
+  ShowAndVerifyUi();
+}
+
 // TODO(crbug.com/375132024): Re-enable test.
 IN_PROC_BROWSER_TEST_F(AppMenuBrowserTest, DISABLED_InvokeUi_history) {
   ShowAndVerifyUi();
@@ -315,8 +336,9 @@ IN_PROC_BROWSER_TEST_F(AppMenuBrowserTest, DISABLED_InvokeUi_more_tools) {
 }
 
 IN_PROC_BROWSER_TEST_F(AppMenuBrowserTest, AppMenuViewAccessibleProperties) {
-  menu_button()->ShowMenu(views::MenuRunner::SHOULD_SHOW_MNEMONICS);
-  auto* app_menu_view = menu_button()->app_menu()->GetZoomAppMenuViewForTest();
+  app_menu_test_accessor().ShowMenu(views::MenuRunner::SHOULD_SHOW_MNEMONICS);
+  auto* app_menu_view = AppMenu::GetZoomAppMenuViewForTest(
+      app_menu_test_accessor().GetRootMenuItemView());
   ui::AXNodeData data;
 
   ASSERT_TRUE(app_menu_view);
@@ -325,9 +347,9 @@ IN_PROC_BROWSER_TEST_F(AppMenuBrowserTest, AppMenuViewAccessibleProperties) {
 }
 
 IN_PROC_BROWSER_TEST_F(AppMenuBrowserTest, FullscreenButtonState) {
-  menu_button()->ShowMenu(views::MenuRunner::NO_FLAGS);
-  views::View& zoom_view =
-      CHECK_DEREF(menu_button()->app_menu()->GetZoomAppMenuViewForTest());
+  app_menu_test_accessor().ShowMenu(views::MenuRunner::NO_FLAGS);
+  views::View& zoom_view = CHECK_DEREF(AppMenu::GetZoomAppMenuViewForTest(
+      app_menu_test_accessor().GetRootMenuItemView()));
 
   EXPECT_THAT(
       zoom_view.GetChildrenInZOrder(),
@@ -358,9 +380,9 @@ IN_PROC_BROWSER_TEST_F(AppMenuBrowserTest, FullscreenButtonStateInFullscreen) {
   chrome::ToggleFullscreenMode(browser());
   ASSERT_TRUE(BrowserView::GetBrowserViewForBrowser(browser())->IsFullscreen());
 
-  menu_button()->ShowMenu(views::MenuRunner::NO_FLAGS);
-  views::View& zoom_view =
-      CHECK_DEREF(menu_button()->app_menu()->GetZoomAppMenuViewForTest());
+  app_menu_test_accessor().ShowMenu(views::MenuRunner::NO_FLAGS);
+  views::View& zoom_view = CHECK_DEREF(AppMenu::GetZoomAppMenuViewForTest(
+      app_menu_test_accessor().GetRootMenuItemView()));
 
   EXPECT_THAT(
       zoom_view.GetChildrenInZOrder(),
@@ -546,6 +568,64 @@ IN_PROC_BROWSER_TEST_F(
   ShowAndVerifyUi();
 }
 
+IN_PROC_BROWSER_TEST_F(AppMenuAiRingBrowserTest,
+                       InvokeUi_main_signedin_profile_signin_pending_state) {
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(browser()->GetProfile());
+  AccountInfo account_info = signin::MakePrimaryAccountAvailable(
+      identity_manager, "user@example.com", signin::ConsentLevel::kSignin);
+  gfx::Image fake_image = gfx::test::CreateImage(20, 20, SK_ColorBLUE);
+  signin::SimulateAccountImageFetch(
+      identity_manager, account_info.GetAccountId(),
+      "http://example.com/avatar.jpg", fake_image);
+
+  signin::UpdatePersistentErrorOfRefreshTokenForAccount(
+      identity_manager, account_info.GetAccountId(),
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+              CREDENTIALS_REJECTED_BY_SERVER));
+
+  ShowAndVerifyUi();
+}
+
+IN_PROC_BROWSER_TEST_F(AppMenuAiRingBrowserTest,
+                       InvokeUi_main_signedin_profile_with_ai_subscription) {
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(browser()->GetProfile());
+  AccountInfo account_info = signin::MakePrimaryAccountAvailable(
+      identity_manager, "user@example.com", signin::ConsentLevel::kSignin);
+  gfx::Image fake_image = gfx::test::CreateImage(20, 20, SK_ColorBLUE);
+  signin::SimulateAccountImageFetch(
+      identity_manager, account_info.GetAccountId(),
+      "http://example.com/avatar.jpg", fake_image);
+
+  browser()->GetProfile()->GetPrefs()->SetInteger(
+      subscription_eligibility::prefs::kAiSubscriptionTier, 1);
+
+  ShowAndVerifyUi();
+}
+
+IN_PROC_BROWSER_TEST_F(
+    AppMenuAiRingBrowserTest,
+    InvokeUi_main_signed_in_profile_with_ai_subscription_signin_pending) {
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(browser()->GetProfile());
+  AccountInfo account_info = signin::MakePrimaryAccountAvailable(
+      identity_manager, "user@example.com", signin::ConsentLevel::kSignin);
+  gfx::Image fake_image = gfx::test::CreateImage(20, 20, SK_ColorBLUE);
+  signin::SimulateAccountImageFetch(
+      identity_manager, account_info.GetAccountId(),
+      "http://example.com/avatar.jpg", fake_image);
+  browser()->GetProfile()->GetPrefs()->SetInteger(
+      subscription_eligibility::prefs::kAiSubscriptionTier, 1);
+  signin::UpdatePersistentErrorOfRefreshTokenForAccount(
+      identity_manager, account_info.GetAccountId(),
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+              CREDENTIALS_REJECTED_BY_SERVER));
+
+  ShowAndVerifyUi();
+}
 #endif
 
 // Test case for Safety Hub notification.
@@ -558,7 +638,7 @@ IN_PROC_BROWSER_TEST_F(AppMenuBrowserTest, Safety_Hub_shown_notification) {
   safety_hub_test_util::RunUntilPasswordCheckCompleted(browser()->GetProfile());
   safety_hub_test_util::GenerateSafetyHubMenuNotification(
       browser()->GetProfile());
-  menu_button()->ShowMenu(views::MenuRunner::SHOULD_SHOW_MNEMONICS);
+  app_menu_test_accessor().ShowMenu(views::MenuRunner::SHOULD_SHOW_MNEMONICS);
   // Set the elapsed timer of the menu to start 10 seconds ago.
   {
     base::subtle::ScopedTimeClockOverrides override(
@@ -570,14 +650,14 @@ IN_PROC_BROWSER_TEST_F(AppMenuBrowserTest, Safety_Hub_shown_notification) {
                  base::Seconds(10);
         },
         /*thread_ticks_override=*/nullptr);
-    menu_button()->SetMenuTimerForTesting(base::ElapsedTimer());
+    app_menu_test_accessor().SetMenuTimerForTesting(base::ElapsedTimer());
   }
   EXPECT_CALL(
       *mock_sentiment_service,
       TriggerSafetyHubSurvey(
           TrustSafetySentimentService::FeatureArea::kSafetyHubNotification,
           testing::_));
-  menu_button()->CloseMenu();
+  app_menu_test_accessor().CloseMenu();
 }
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -595,9 +675,8 @@ class AppMenuProfileGradientRingBrowserTest : public AppMenuBrowserTest {
   }
 
   int GetProfileIconWidth() {
-    AppMenu* app_menu = menu_button()->app_menu();
-    CHECK(app_menu);
-    views::MenuItemView* menu_root = app_menu->root_menu_item();
+    views::MenuItemView* menu_root =
+        app_menu_test_accessor().GetRootMenuItemView();
     CHECK(menu_root);
     views::MenuItemView* profile_item =
         menu_root->GetMenuItemByID(AppMenuModel::kProfileMenuPlaceholder);
@@ -608,9 +687,8 @@ class AppMenuProfileGradientRingBrowserTest : public AppMenuBrowserTest {
   }
 
   void CloseMenuAndWait() {
-    AppMenu* app_menu = menu_button()->app_menu();
-    ASSERT_TRUE(app_menu);
-    views::MenuItemView* menu_root = app_menu->root_menu_item();
+    views::MenuItemView* menu_root =
+        app_menu_test_accessor().GetRootMenuItemView();
     ASSERT_TRUE(menu_root);
     views::SubmenuView* submenu = menu_root->GetSubmenu();
     ASSERT_TRUE(submenu);
@@ -618,9 +696,9 @@ class AppMenuProfileGradientRingBrowserTest : public AppMenuBrowserTest {
     ASSERT_TRUE(menu_widget);
 
     views::test::WidgetDestroyedWaiter waiter(menu_widget);
-    menu_button()->CloseMenu();
+    app_menu_test_accessor().CloseMenu();
     waiter.Wait();
-    ASSERT_FALSE(menu_button()->IsMenuShowing());
+    ASSERT_FALSE(app_menu_test_accessor().IsMenuShowing());
   }
 
  private:
@@ -637,31 +715,73 @@ IN_PROC_BROWSER_TEST_F(AppMenuProfileGradientRingBrowserTest,
 
   // Simulate account image fetch.
   gfx::Image fake_image = gfx::test::CreateImage(20, 20, SK_ColorBLUE);
-  signin::SimulateAccountImageFetch(identity_manager, account_info.account_id,
-                                    "http://example.com/avatar.jpg",
-                                    fake_image);
+  signin::SimulateAccountImageFetch(
+      identity_manager, account_info.GetAccountId(),
+      "http://example.com/avatar.jpg", fake_image);
 
   // 1. Get initial size (no subscription).
-  menu_button()->ShowMenu(views::MenuRunner::SHOULD_SHOW_MNEMONICS);
-  ASSERT_TRUE(menu_button()->IsMenuShowing());
+  app_menu_test_accessor().ShowMenu(views::MenuRunner::SHOULD_SHOW_MNEMONICS);
+  ASSERT_TRUE(app_menu_test_accessor().IsMenuShowing());
   int initial_size = GetProfileIconWidth();
   ASSERT_GT(initial_size, 0);
   CloseMenuAndWait();
 
   // 2. Set AI subscription and check size increases.
   SetAiSubscriptionTierForProfile(1);
-  menu_button()->ShowMenu(views::MenuRunner::SHOULD_SHOW_MNEMONICS);
-  ASSERT_TRUE(menu_button()->IsMenuShowing());
+  app_menu_test_accessor().ShowMenu(views::MenuRunner::SHOULD_SHOW_MNEMONICS);
+  ASSERT_TRUE(app_menu_test_accessor().IsMenuShowing());
   int size_with_ring = GetProfileIconWidth();
   EXPECT_GT(size_with_ring, initial_size);
   CloseMenuAndWait();
 
   // 3. Clear subscription and check size goes back to initial.
   SetAiSubscriptionTierForProfile(0);
-  menu_button()->ShowMenu(views::MenuRunner::SHOULD_SHOW_MNEMONICS);
-  ASSERT_TRUE(menu_button()->IsMenuShowing());
+  app_menu_test_accessor().ShowMenu(views::MenuRunner::SHOULD_SHOW_MNEMONICS);
+  ASSERT_TRUE(app_menu_test_accessor().IsMenuShowing());
   int final_size = GetProfileIconWidth();
   EXPECT_EQ(final_size, initial_size);
+  CloseMenuAndWait();
+}
+
+IN_PROC_BROWSER_TEST_F(AppMenuProfileGradientRingBrowserTest,
+                       ProfileMenuIconDottedRingPrecedenceOverGradientRing) {
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(browser()->GetProfile());
+  AccountInfo account_info = signin::MakePrimaryAccountAvailable(
+      identity_manager, "user@example.com", signin::ConsentLevel::kSignin);
+
+  gfx::Image fake_image = gfx::test::CreateImage(20, 20, SK_ColorBLUE);
+  signin::SimulateAccountImageFetch(
+      identity_manager, account_info.GetAccountId(),
+      "http://example.com/avatar.jpg", fake_image);
+
+  // Initial avatar size without subscription.
+  app_menu_test_accessor().ShowMenu(views::MenuRunner::SHOULD_SHOW_MNEMONICS);
+  ASSERT_TRUE(app_menu_test_accessor().IsMenuShowing());
+  int initial_size = GetProfileIconWidth();
+  ASSERT_GT(initial_size, 0);
+  CloseMenuAndWait();
+
+  // Setting AI subscription increases avatar width because of gradient ring.
+  SetAiSubscriptionTierForProfile(1);
+  app_menu_test_accessor().ShowMenu(views::MenuRunner::SHOULD_SHOW_MNEMONICS);
+  ASSERT_TRUE(app_menu_test_accessor().IsMenuShowing());
+  int size_with_gradient_ring = GetProfileIconWidth();
+  EXPECT_GT(size_with_gradient_ring, initial_size);
+  CloseMenuAndWait();
+
+  // Persistent auth error causes dotted ring to take precedence, which renders
+  // at the standard avatar icon size rather than the expanded gradient ring
+  // size.
+  signin::UpdatePersistentErrorOfRefreshTokenForAccount(
+      identity_manager, account_info.GetAccountId(),
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+              CREDENTIALS_REJECTED_BY_SERVER));
+  app_menu_test_accessor().ShowMenu(views::MenuRunner::SHOULD_SHOW_MNEMONICS);
+  ASSERT_TRUE(app_menu_test_accessor().IsMenuShowing());
+  int size_with_dotted_ring = GetProfileIconWidth();
+  EXPECT_EQ(size_with_dotted_ring, initial_size);
   CloseMenuAndWait();
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS)

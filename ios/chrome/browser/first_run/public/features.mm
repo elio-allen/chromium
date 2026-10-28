@@ -16,14 +16,15 @@ BASE_FEATURE(kBestFeaturesScreenInFirstRun,
              "BestFeaturesScreenInFirstRunExperience",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kManualLogUploadsInTheFRE, base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kSkipDefaultBrowserPromoInFirstRun,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kUpdatedFirstRunSequence, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kUpdatedFirstRunSequence, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kPostFREIphInProfileAgent, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kAndroidSwitcherDefaultBrowserPromoInFRE,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 const char kAnimatedDefaultBrowserPromoInFREExperimentType[] =
     "AnimatedDefaultBrowserPromoInFREExperimentType";
@@ -32,6 +33,17 @@ const char kBestFeaturesScreenInFirstRunParam[] =
     "BestFeaturesScreenInFirstRunParam";
 
 const char kUpdatedFirstRunSequenceParam[] = "updated-first-run-sequence-param";
+
+const char kAndroidSwitcherDefaultBrowserPromoInFREParam[] =
+    "android-switcher-default-browser-promo-in-fre-param";
+
+const char kAndroidSwitcherDefaultBrowserPromoInFREParamDisabled[] = "disabled";
+
+const char kAndroidSwitcherDefaultBrowserPromoInFREParamSegmentationSignal[] =
+    "segmentation-signal";
+
+const char kAndroidSwitcherDefaultBrowserPromoInFREParamSwitcherInfoSignal[] =
+    "switcher-info-signal";
 
 BASE_FEATURE_PARAM(int,
                    kBestFeaturesScreenInFirstRunParamFeature,
@@ -43,7 +55,7 @@ BASE_FEATURE_PARAM(int,
                    kUpdatedFirstRunSequenceParamFeature,
                    &kUpdatedFirstRunSequence,
                    kUpdatedFirstRunSequenceParam,
-                   1);
+                   2);
 
 BASE_FEATURE_PARAM(
     int,
@@ -52,6 +64,27 @@ BASE_FEATURE_PARAM(
     kAnimatedDefaultBrowserPromoInFREExperimentType,
     static_cast<int>(AnimatedDefaultBrowserPromoInFREExperimentType::
                          kAnimationWithActionButtons));
+
+constexpr base::FeatureParam<
+    AndroidSwitcherDefaultBrowserPromoInFREVariationType>::Option
+    kAndroidSwitcherDefaultBrowserPromoInFREOptions[] = {
+        {AndroidSwitcherDefaultBrowserPromoInFREVariationType::kDisabled,
+         kAndroidSwitcherDefaultBrowserPromoInFREParamDisabled},
+        {AndroidSwitcherDefaultBrowserPromoInFREVariationType::
+             kSegmentationSignal,
+         kAndroidSwitcherDefaultBrowserPromoInFREParamSegmentationSignal},
+        {AndroidSwitcherDefaultBrowserPromoInFREVariationType::
+             kSwitcherInfoSignal,
+         kAndroidSwitcherDefaultBrowserPromoInFREParamSwitcherInfoSignal},
+};
+
+BASE_FEATURE_ENUM_PARAM(
+    AndroidSwitcherDefaultBrowserPromoInFREVariationType,
+    kAndroidSwitcherDefaultBrowserPromoInFREParamFeature,
+    &kAndroidSwitcherDefaultBrowserPromoInFRE,
+    kAndroidSwitcherDefaultBrowserPromoInFREParam,
+    AndroidSwitcherDefaultBrowserPromoInFREVariationType::kDisabled,
+    &kAndroidSwitcherDefaultBrowserPromoInFREOptions);
 
 BestFeaturesScreenVariationType GetBestFeaturesScreenVariationType() {
   if (IsBestOfAppBestFeaturesEnabled()) {
@@ -90,6 +123,14 @@ bool IsSkipDefaultBrowserPromoInFirstRunEnabled(bool is_in_eea_country) {
 
 bool IsPostFREIphInProfileAgentEnabled() {
   return base::FeatureList::IsEnabled(kPostFREIphInProfileAgent);
+}
+
+AndroidSwitcherDefaultBrowserPromoInFREVariationType
+GetAndroidSwitcherDefaultBrowserPromoInFREVariationType() {
+  if (!base::FeatureList::IsEnabled(kAndroidSwitcherDefaultBrowserPromoInFRE)) {
+    return AndroidSwitcherDefaultBrowserPromoInFREVariationType::kDisabled;
+  }
+  return kAndroidSwitcherDefaultBrowserPromoInFREParamFeature.Get();
 }
 
 }  // namespace first_run

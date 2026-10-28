@@ -62,9 +62,6 @@ enum DataType {
   // Usage counts and last use dates for Wallet cards. This data is both
   // readable and writable.
   AUTOFILL_WALLET_METADATA,
-  // Offers and rewards from the user's account. These are read-only on the
-  // client side.
-  AUTOFILL_WALLET_OFFER,
   // Autofill usage data of a payment method related to a specific merchant.
   AUTOFILL_WALLET_USAGE,
   // A theme object.
@@ -114,8 +111,6 @@ enum DataType {
   WIFI_CONFIGURATIONS,
   // A web app object.
   WEB_APPS,
-  // A WebAPK object.
-  WEB_APKS,
   // OS-specific preferences (a.k.a. "OS settings"). ChromeOS only.
   OS_PREFERENCES,
   // Synced before other user types. Never encrypted. ChromeOS only.
@@ -149,20 +144,11 @@ enum DataType {
   // the client.
   COLLABORATION_GROUP,
 
-  // Origin-specific email addresses forwarded from the user's account.
-  // Read-only on the client.
-  PLUS_ADDRESS,
-
   // Product comparison groups.
   PRODUCT_COMPARISON,
 
   // Browser cookies, ChromeOS only.
   COOKIES,
-
-  // Settings for PLUS_ADDRESS forwarded from the user's account. Since the
-  // settings originate from the user's account, this is not reusing any of the
-  // standard syncable prefs.
-  PLUS_ADDRESS_SETTING,
 
   // Valuables stored in the Google Wallet.
   // Read-only on the client.
@@ -213,7 +199,10 @@ enum DataType {
   // Information about a history journey.
   JOURNEY,
 
-  LAST_USER_DATA_TYPE = JOURNEY,
+  // User entity suppression records for Autofill AI.
+  AUTOFILL_ENTITY_SUPPRESSION,
+
+  LAST_USER_DATA_TYPE = AUTOFILL_ENTITY_SUPPRESSION,
 
   // ---- Control Types ----
   // An object representing a set of Nigori keys.
@@ -291,7 +280,7 @@ enum class DataTypeForHistograms {
   kOsPreferences = 46,
   kOsPriorityPreferences = 47,
   kSharingMessage = 48,
-  kAutofillWalletOffer = 49,
+  kDeprecatedAutofillWalletOffer = 49,
   kWorkspaceDesk = 50,
   kHistory = 51,
   kPrintersAuthorizationServers = 52,
@@ -304,13 +293,13 @@ enum class DataTypeForHistograms {
   kIncomingPasswordSharingInvitations = 59,
   kOutgoingPasswordSharingInvitations = 60,
   kAutofillWalletCredential = 61,
-  kWebApks = 62,
+  // kDeprecatedWebApks = 62,
   kSharedTabGroupData = 63,
   kCollaborationGroup = 64,
-  kPlusAddresses = 65,
+  // kDeprecatedPlusAddresses = 65,
   kProductComparison = 66,
   kCookies = 67,
-  kPlusAddressSettings = 68,
+  // kDeprecatedPlusAddressSettings = 68,
   kAutofillValuable = 69,
   kSharedTabGroupAccountData = 70,
   kSharedComment = 71,
@@ -327,7 +316,8 @@ enum class DataTypeForHistograms {
   kEncryptedTabContextItem = 82,
   kNotebook = 83,
   kJourney = 84,
-  kMaxValue = kJourney,
+  kAutofillEntitySuppression = 85,
+  kMaxValue = kAutofillEntitySuppression,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/sync/enums.xml:SyncDataTypes)
 
@@ -348,15 +338,12 @@ DataTypeSet ProtocolTypes();
 // preference flag, so not all of them are individually user-selectable.
 DataTypeSet UserTypes();
 
-// User types which are not user-controlled.
+// User types which are not user-controlled, or for which the user controls are
+// outside of sync settings.
 inline constexpr DataTypeSet AlwaysPreferredUserTypes() {
-  // TODO(crbug.com/477624427): add SKILL to a corresponding UserSelectableType
-  // or another toggle.
   return {ACCOUNT_SETTING,
           DEVICE_INFO,
           USER_CONSENTS,
-          PLUS_ADDRESS,
-          PLUS_ADDRESS_SETTING,
           PRIORITY_PREFERENCES,
           SECURITY_EVENTS,
           SEND_TAB_TO_SELF,
@@ -364,7 +351,10 @@ inline constexpr DataTypeSet AlwaysPreferredUserTypes() {
           SHARING_MESSAGE,
           SKILL,
           AI_THREAD,
-          GEMINI_THREAD};
+          GEMINI_THREAD,
+          ENCRYPTED_TAB_CONTEXT_CONTAINER,
+          ENCRYPTED_TAB_CONTEXT_ITEM,
+          AUTOFILL_ENTITY_SUPPRESSION};
 }
 
 // User types which are always encrypted.

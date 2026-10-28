@@ -123,7 +123,13 @@ class CONTENT_EXPORT BackForwardCache {
     kSharedWorkerWithNoActiveClient = 73,
     kWebLocksContention = 74,
     kForwardCacheDisabled = 75,
-    kMaxValue = kForwardCacheDisabled,
+    kRfhEnforceInsecureNavigationsSet = 76,
+    kRfhEnforceInsecureRequestPolicy = 77,
+    kRfhHadStickyUserActivationBeforeNavigationChanged = 78,
+    kRfhUpdateAdFrameStatus = 79,
+    kRfhDidChangeName = 80,
+    kRfhDidChangeOpener = 81,
+    kMaxValue = kRfhDidChangeOpener,
   };
   // LINT.ThenChange(//tools/metrics/histograms/metadata/navigation/enums.xml:BackForwardCacheNotRestoredReason)
 

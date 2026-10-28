@@ -21,6 +21,7 @@
 #include "chrome/browser/ui/find_bar/find_bar_controller.h"
 #include "chrome/browser/ui/find_bar/find_bar_state.h"
 #include "chrome/browser/ui/find_bar/find_bar_state_factory.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/find_bar_host.h"
@@ -57,6 +58,7 @@
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/separator.h"
 #include "ui/views/layout/box_layout.h"
+#include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/metadata/view_factory.h"
 #include "ui/views/painter.h"
@@ -65,9 +67,16 @@
 #include "ui/views/widget/widget.h"
 
 namespace {
-void SetCommonButtonAttributes(views::ImageButton* button) {
+void SetCommonButtonAttributes(views::ImageButton* button,
+                               const gfx::VectorIcon& icon) {
   views::ConfigureVectorImageButton(button);
   views::InstallCircleHighlightPathGenerator(button);
+  views::SetImageFromVectorIconWithColor(
+      button, icon, {kColorFindBarButtonIcon, kColorFindBarButtonIconDisabled});
+  const ui::ImageModel hovered_image =
+      ui::ImageModel::FromVectorIcon(icon, kColorFindBarButtonIconHovered);
+  button->SetImageModel(views::Button::STATE_HOVERED, hovered_image);
+  button->SetImageModel(views::Button::STATE_PRESSED, hovered_image);
 }
 }  // namespace
 
@@ -75,6 +84,10 @@ DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(FindBarView, kElementId);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(FindBarView, kTextField);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(FindBarView, kPreviousButtonElementId);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(FindBarView, kNextButtonElementId);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(FindBarView,
+                                      kPreviousOutsideViewportButtonElementId);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(FindBarView,
+                                      kNextOutsideViewportButtonElementId);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(FindBarView, kCloseButtonElementId);
 
 class FindBarMatchCountLabel : public views::Label {
@@ -244,7 +257,8 @@ FindBarView::FindBarView(FindBarHost* host) {
                   .SetTooltipText(l10n_util::GetStringUTF16(
                       IDS_FIND_IN_PAGE_PREVIOUS_TOOLTIP))
                   .SetCallback(base::BindRepeating(
-                      &FindBarView::FindNext, base::Unretained(this), true))
+                      &FindBarView::FindNext, base::Unretained(this),
+                      /*reverse=*/true, /*skip_viewport=*/false))
                   .SetProperty(views::kMarginsKey, image_button_margins),
               views::Builder<views::ImageButton>()
                   .CopyAddressTo(&find_next_button_)
@@ -256,7 +270,38 @@ FindBarView::FindBarView(FindBarHost* host) {
                   .SetTooltipText(
                       l10n_util::GetStringUTF16(IDS_FIND_IN_PAGE_NEXT_TOOLTIP))
                   .SetCallback(base::BindRepeating(
-                      &FindBarView::FindNext, base::Unretained(this), false))
+                      &FindBarView::FindNext, base::Unretained(this),
+                      /*reverse=*/false, /*skip_viewport=*/false))
+                  .SetProperty(views::kMarginsKey, image_button_margins),
+              views::Builder<views::ImageButton>()
+                  .CopyAddressTo(&find_previous_outside_viewport_button_)
+                  .SetAccessibleName(l10n_util::GetStringUTF16(
+                      IDS_FIND_IN_PAGE_PREVIOUS_OUTSIDE_VIEWPORT_TOOLTIP))
+                  .SetID(VIEW_ID_FIND_IN_PAGE_PREVIOUS_OUTSIDE_VIEWPORT_BUTTON)
+                  .SetProperty(views::kElementIdentifierKey,
+                               kPreviousOutsideViewportButtonElementId)
+                  .SetTooltipText(l10n_util::GetStringUTF16(
+                      IDS_FIND_IN_PAGE_PREVIOUS_OUTSIDE_VIEWPORT_TOOLTIP))
+                  .SetVisible(base::FeatureList::IsEnabled(
+                      features::kFindInPageSkipViewport))
+                  .SetCallback(base::BindRepeating(
+                      &FindBarView::FindNext, base::Unretained(this),
+                      /*reverse=*/true, /*skip_viewport=*/true))
+                  .SetProperty(views::kMarginsKey, image_button_margins),
+              views::Builder<views::ImageButton>()
+                  .CopyAddressTo(&find_next_outside_viewport_button_)
+                  .SetAccessibleName(l10n_util::GetStringUTF16(
+                      IDS_FIND_IN_PAGE_NEXT_OUTSIDE_VIEWPORT_TOOLTIP))
+                  .SetID(VIEW_ID_FIND_IN_PAGE_NEXT_OUTSIDE_VIEWPORT_BUTTON)
+                  .SetProperty(views::kElementIdentifierKey,
+                               kNextOutsideViewportButtonElementId)
+                  .SetTooltipText(l10n_util::GetStringUTF16(
+                      IDS_FIND_IN_PAGE_NEXT_OUTSIDE_VIEWPORT_TOOLTIP))
+                  .SetVisible(base::FeatureList::IsEnabled(
+                      features::kFindInPageSkipViewport))
+                  .SetCallback(base::BindRepeating(
+                      &FindBarView::FindNext, base::Unretained(this),
+                      /*reverse=*/false, /*skip_viewport=*/true))
                   .SetProperty(views::kMarginsKey, image_button_margins),
               views::Builder<views::ImageButton>()
                   .CopyAddressTo(&close_button_)
@@ -273,64 +318,6 @@ FindBarView::FindBarView(FindBarHost* host) {
 
   main_container->SetFlexForView(find_text_, 1, true);
 
-  // Theme-aware image models.
-  views::SetImageFromVectorIconWithColor(
-      find_previous_button_,
-      features::IsRoundedIconsEnabled() ? vector_icons::kKeyboardArrowUpIcon
-                                        : kKeyboardArrowUpChromeRefreshOldIcon,
-      {kColorFindBarButtonIcon, kColorFindBarButtonIconDisabled});
-  find_previous_button_->SetImageModel(
-      views::Button::STATE_HOVERED,
-      ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
-                                         ? vector_icons::kKeyboardArrowUpIcon
-                                         : kKeyboardArrowUpChromeRefreshOldIcon,
-                                     kColorFindBarButtonIconHovered));
-  find_previous_button_->SetImageModel(
-      views::Button::STATE_PRESSED,
-      ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
-                                         ? vector_icons::kKeyboardArrowUpIcon
-                                         : kKeyboardArrowUpChromeRefreshOldIcon,
-                                     kColorFindBarButtonIconHovered));
-
-  views::SetImageFromVectorIconWithColor(
-      find_next_button_,
-      features::IsRoundedIconsEnabled()
-          ? kKeyboardArrowDownIcon
-          : kKeyboardArrowDownChromeRefreshOldIcon,
-      {kColorFindBarButtonIcon, kColorFindBarButtonIconDisabled});
-  find_next_button_->SetImageModel(
-      views::Button::STATE_HOVERED,
-      ui::ImageModel::FromVectorIcon(
-          features::IsRoundedIconsEnabled()
-              ? kKeyboardArrowDownIcon
-              : kKeyboardArrowDownChromeRefreshOldIcon,
-          kColorFindBarButtonIconHovered));
-  find_next_button_->SetImageModel(
-      views::Button::STATE_PRESSED,
-      ui::ImageModel::FromVectorIcon(
-          features::IsRoundedIconsEnabled()
-              ? kKeyboardArrowDownIcon
-              : kKeyboardArrowDownChromeRefreshOldIcon,
-          kColorFindBarButtonIconHovered));
-
-  views::SetImageFromVectorIconWithColor(
-      close_button_,
-      features::IsRoundedIconsEnabled() ? kCloseSmallIcon
-                                        : kCloseChromeRefreshOldIcon,
-      {kColorFindBarButtonIcon, kColorFindBarButtonIconDisabled});
-  close_button_->SetImageModel(
-      views::Button::STATE_HOVERED,
-      ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
-                                         ? kCloseSmallIcon
-                                         : kCloseChromeRefreshOldIcon,
-                                     kColorFindBarButtonIconHovered));
-  close_button_->SetImageModel(
-      views::Button::STATE_PRESSED,
-      ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
-                                         ? kCloseSmallIcon
-                                         : kCloseChromeRefreshOldIcon,
-                                     kColorFindBarButtonIconHovered));
-
   SetOrientation(views::BoxLayout::Orientation::kVertical);
   SetHost(host);
   SetFlipCanvasOnPaintForRTLUI(true);
@@ -338,11 +325,11 @@ FindBarView::FindBarView(FindBarHost* host) {
   AddChildView(std::move(main_container));
 
   const float corner_radius = layout_provider->GetCornerRadiusMetric(
-      views::ShapeContextTokens::kFindBarViewRadius);
+      ChromeShapeContextTokens::kFindBarViewRadius);
   {
     auto border = std::make_unique<views::BubbleBorder>(
         views::BubbleBorder::NONE, views::BubbleBorder::STANDARD_SHADOW);
-    border->SetColor(kColorFindBarBackground);
+    border->set_background_color(kColorFindBarBackground);
     border->set_md_shadow_elevation(
         layout_provider->GetCornerRadiusMetric(views::Emphasis::kHigh));
     border->set_rounded_corners(gfx::RoundedCornersF(corner_radius));
@@ -354,9 +341,21 @@ FindBarView::FindBarView(FindBarHost* host) {
   find_text_->SetFontList(
       views::Textfield::GetDefaultFontList().DeriveWithWeight(
           gfx::Font::Weight::MEDIUM));
-  SetCommonButtonAttributes(find_previous_button_);
-  SetCommonButtonAttributes(find_next_button_);
-  SetCommonButtonAttributes(close_button_);
+  SetCommonButtonAttributes(find_previous_button_,
+                            features::IsRoundedIconsEnabled()
+                                ? vector_icons::kKeyboardArrowUpIcon
+                                : kKeyboardArrowUpChromeRefreshOldIcon);
+  SetCommonButtonAttributes(find_next_button_,
+                            features::IsRoundedIconsEnabled()
+                                ? kKeyboardArrowDownIcon
+                                : kKeyboardArrowDownChromeRefreshOldIcon);
+  SetCommonButtonAttributes(find_previous_outside_viewport_button_,
+                            kKeyboardDoubleArrowUpIcon);
+  SetCommonButtonAttributes(find_next_outside_viewport_button_,
+                            kKeyboardDoubleArrowDownIcon);
+  SetCommonButtonAttributes(close_button_, features::IsRoundedIconsEnabled()
+                                               ? kCloseSmallIcon
+                                               : kCloseChromeRefreshOldIcon);
 }
 
 FindBarView::~FindBarView() = default;
@@ -439,7 +438,10 @@ void FindBarView::ClearMatchCount() {
 
 bool FindBarView::ContainsFocus() const {
   return find_text_->HasFocus() || find_previous_button_->HasFocus() ||
-         find_next_button_->HasFocus() || close_button_->HasFocus();
+         find_next_button_->HasFocus() ||
+         find_previous_outside_viewport_button_->HasFocus() ||
+         find_next_outside_viewport_button_->HasFocus() ||
+         close_button_->HasFocus();
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -506,18 +508,13 @@ bool FindBarView::HandleKeyEvent(views::Textfield* sender,
 
   if (key_event.key_code() == ui::VKEY_RETURN &&
       key_event.type() == ui::EventType::kKeyPressed) {
-    // Pressing Return/Enter starts the search (unless text box is empty).
-    std::u16string find_string(find_text_->GetText());
-    if (!find_string.empty()) {
-      FindBarController* controller = find_bar_host_->GetFindBarController();
-      find_in_page::FindTabHelper* find_tab_helper =
-          find_in_page::FindTabHelper::FromWebContents(
-              controller->web_contents());
-      // Search forwards for enter, backwards for shift-enter.
-      find_tab_helper->StartFinding(
-          find_string, !key_event.IsShiftDown() /* forward_direction */,
-          false /* case_sensitive */, true /* find_match */);
-    }
+    // Pressing Return/Enter searches forwards, or backwards for Shift+Enter.
+    // Holding Alt jumps to the first match outside of the viewport instead.
+    // (Ctrl+Enter is an accelerator of FindBarHost that activates the match.)
+    const bool skip_viewport =
+        key_event.IsAltDown() &&
+        base::FeatureList::IsEnabled(features::kFindInPageSkipViewport);
+    FindNext(/*reverse=*/key_event.IsShiftDown(), skip_viewport);
     return true;
   }
 
@@ -531,7 +528,7 @@ bool FindBarView::HandleMouseEvent(views::Textfield* sender,
     // On macOS, clicking on the find text field should also activate the owner
     // widget (if it isn't already), so that the user can interact with the text
     // field.
-    DCHECK(find_bar_host_);
+    CHECK(find_bar_host_, base::NotFatalUntil::M162);
     find_bar_host_->ActivateOwnerWidgetIfNecessary();
   }
 #endif  // BUILDFLAG(IS_MAC)
@@ -594,9 +591,9 @@ FindBarView::CreateClipboardWriter() {
 }
 
 void FindBarView::Find(std::u16string_view search_text) {
-  DCHECK(find_bar_host_);
+  CHECK(find_bar_host_, base::NotFatalUntil::M162);
   FindBarController* controller = find_bar_host_->GetFindBarController();
-  DCHECK(controller);
+  CHECK(controller, base::NotFatalUntil::M162);
   content::WebContents* web_contents = controller->web_contents();
   // We must guard against a NULL web_contents, which can happen if the text
   // in the Find box is changed right after the tab is destroyed. Otherwise, it
@@ -618,7 +615,7 @@ void FindBarView::Find(std::u16string_view search_text) {
       false /* case_sensitive */, true /* find_match */);
 }
 
-void FindBarView::FindNext(bool reverse) {
+void FindBarView::FindNext(bool reverse, bool skip_viewport) {
   if (!find_bar_host_) {
     return;
   }
@@ -626,10 +623,10 @@ void FindBarView::FindNext(bool reverse) {
     find_in_page::FindTabHelper* find_tab_helper =
         find_in_page::FindTabHelper::FromWebContents(
             find_bar_host_->GetFindBarController()->web_contents());
-    find_tab_helper->StartFinding(std::u16string(find_text_->GetText()),
-                                  !reverse, /* forward_direction */
-                                  false,    /* case_sensitive */
-                                  true /* find_match */);
+    find_tab_helper->StartFinding(
+        std::u16string(find_text_->GetText()), /*forward_direction=*/!reverse,
+        /*case_sensitive=*/false, /*find_match=*/true, /*scroll_to_match=*/true,
+        /*run_synchronously_for_testing=*/false, skip_viewport);
   }
 }
 
@@ -645,6 +642,8 @@ void FindBarView::UpdateMatchCountAppearance(bool no_match) {
   bool enable_buttons = !find_text_->GetText().empty() && !no_match;
   find_previous_button_->SetEnabled(enable_buttons);
   find_next_button_->SetEnabled(enable_buttons);
+  find_previous_outside_viewport_button_->SetEnabled(enable_buttons);
+  find_next_outside_viewport_button_->SetEnabled(enable_buttons);
 }
 
 BEGIN_METADATA(FindBarView)

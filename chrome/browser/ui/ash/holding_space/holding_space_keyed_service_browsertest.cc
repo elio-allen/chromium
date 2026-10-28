@@ -28,6 +28,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_path_override.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/unguessable_token.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
 #include "chrome/browser/ash/drive/drive_integration_service_factory.h"
@@ -36,10 +37,10 @@
 #include "chrome/browser/ash/file_manager/volume_manager.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/component_loader.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/ash/holding_space/holding_space_keyed_service_factory.h"
 #include "chrome/browser/ui/ash/holding_space/holding_space_test_util.h"
 #include "chrome/browser/ui/ash/holding_space/holding_space_util.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
@@ -313,7 +314,8 @@ class HoldingSpaceKeyedServiceBrowserTest : public InProcessBrowserTest {
     fake_drivefs_helper_ =
         std::make_unique<drive::FakeDriveFsHelper>(profile, test_mount_point_);
     drive_integration_service_ = new drive::DriveIntegrationService(
-        g_browser_process->local_state(), profile, "",
+        g_browser_process->local_state(), profile,
+        IdentityManagerFactory::GetForProfile(profile), "",
         test_cache_root_.GetPath(),
         fake_drivefs_helper_->CreateFakeDriveFsListenerFactory());
     return drive_integration_service_;
@@ -849,7 +851,6 @@ IN_PROC_BROWSER_TEST_P(HoldingSpaceKeyedServiceFlexibleFsBrowserTest,
 
   chromeos::FakePowerManagerClient::Get()->SendSuspendImminent(
       power_manager::SuspendImminent::IDLE);
-  base::RunLoop().RunUntilIdle();
 
   // Holding space model gets cleared on suspend.
   EXPECT_TRUE(holding_space_model->items().empty());

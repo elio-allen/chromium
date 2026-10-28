@@ -5,6 +5,7 @@
 #include "components/safe_browsing/content/browser/browser_url_loader_throttle.h"
 
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "base/functional/callback.h"
@@ -20,6 +21,7 @@
 #include "components/safe_browsing/content/browser/safe_browsing_navigation_observer.h"
 #include "components/safe_browsing/content/browser/safe_browsing_navigation_observer_manager.h"
 #include "components/safe_browsing/content/browser/url_checker_holder.h"
+#include "components/safe_browsing/core/browser/db/test_database_manager.h"
 #include "components/safe_browsing/core/browser/realtime/fake_url_lookup_service.h"
 #include "components/safe_browsing/core/browser/safe_browsing_url_checker_impl.h"
 #include "components/safe_browsing/core/browser/url_checker_delegate.h"
@@ -27,6 +29,7 @@
 #include "components/safe_browsing/core/common/hashprefix_realtime/hash_realtime_utils.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/fake_service_worker_context.h"
@@ -64,7 +67,7 @@ class MockUrlCheckerDelegate : public UrlCheckerDelegate {
   MOCK_METHOD1(NotifySuspiciousSiteDetected,
                void(const base::RepeatingCallback<content::WebContents*()>&));
   MOCK_METHOD2(ShowSuspiciousSiteWarning,
-               void(int64_t,
+               void(const security_interstitials::UnsafeResource&,
                     const base::RepeatingCallback<content::WebContents*()>&));
   MOCK_METHOD0(GetUIManager, BaseUIManager*());
   MOCK_METHOD0(GetThreatTypes, const SBThreatTypeSet&());
@@ -79,7 +82,7 @@ class MockUrlCheckerDelegate : public UrlCheckerDelegate {
   MOCK_METHOD1(AreSuspiciousSiteWarningsAllowed,
                bool(const base::RepeatingCallback<content::WebContents*()>&));
 
-  SafeBrowsingDatabaseManager* GetDatabaseManager() override { return nullptr; }
+  MOCK_METHOD0(GetDatabaseManager, SafeBrowsingDatabaseManager*());
 
   bool ShouldSkipRequestCheck(
       const GURL& original_url,
@@ -96,6 +99,37 @@ class MockUrlCheckerDelegate : public UrlCheckerDelegate {
 
  private:
   bool should_skip_request_check_ = false;
+};
+
+class CallbackTaskRunnerRecordingDatabaseManager
+    : public TestSafeBrowsingDatabaseManager {
+ public:
+  CallbackTaskRunnerRecordingDatabaseManager()
+      : TestSafeBrowsingDatabaseManager(content::GetUIThreadTaskRunner({})) {}
+  bool CheckBrowseUrl(const GURL& url,
+                      const SBThreatTypeSet& threat_types,
+                      Client* client,
+                      CheckBrowseUrlType check_type) override {
+    runners_.push_back(client->GetCustomCallbackTaskRunner());
+    return true;
+  }
+  void CheckUrlForHighConfidenceAllowlist(
+      const GURL& url,
+      CheckUrlForHighConfidenceAllowlistCallback callback) override {
+    std::move(callback).Run(/*url_on_high_confidence_allowlist=*/true,
+                            /*logging_details=*/std::nullopt);
+  }
+  ThreatSource GetBrowseUrlThreatSource(
+      CheckBrowseUrlType check_type) const override {
+    return ThreatSource::LOCAL_PVER4;
+  }
+  std::vector<scoped_refptr<base::SequencedTaskRunner>> TakeRunners() {
+    return std::exchange(runners_, {});
+  }
+
+ private:
+  ~CallbackTaskRunnerRecordingDatabaseManager() override = default;
+  std::vector<scoped_refptr<base::SequencedTaskRunner>> runners_;
 };
 
 class MockThrottleDelegate : public blink::URLLoaderThrottle::Delegate {
@@ -262,7 +296,6 @@ struct WillStartRequestOptionalArgs {
 
 struct SetUpTestOptionalArgs {
   bool url_real_time_lookup_enabled = false;
-  bool should_sync_checker_check_allowlist = false;
 };
 
 }  // namespace
@@ -288,12 +321,10 @@ class SBBrowserUrlLoaderThrottleTestBase : public ::testing::Test {
     EXPECT_CALL(mock_web_contents_getter_, Run())
         .WillRepeatedly(::testing::Return(web_contents_));
     ui_manager_ = base::MakeRefCounted<BaseUIManager>();
-    async_check_tracker_ =
-        async_check_enabled
-            ? base::WrapUnique(new AsyncCheckTracker(
-                  web_contents_, ui_manager_.get(),
-                  optional_args.should_sync_checker_check_allowlist))
-            : nullptr;
+    async_check_tracker_ = async_check_enabled
+                               ? base::WrapUnique(new AsyncCheckTracker(
+                                     web_contents_, ui_manager_.get()))
+                               : nullptr;
     std::optional<int64_t> navigation_id =
         async_check_enabled ? std::optional<int64_t>(1u) : std::nullopt;
 
@@ -902,7 +933,8 @@ TEST_P(SBBrowserUrlLoaderThrottleTest, VerifyRedirectIpAddressRecorded) {
 
   SafeBrowsingNavigationObserver::MaybeCreateForWebContents(
       local_web_contents, settings_map.get(), &observer_manager, &pref_service,
-      /*has_safe_browsing_service=*/true);
+      /*has_safe_browsing_service=*/true,
+      /*is_referrer_chain_needed_for_enterprise=*/false);
 
   // Simulate starting request for the original URL.
   url_ = GURL("https://original.example.com/");
@@ -1006,21 +1038,6 @@ TEST_F(SBBrowserUrlLoaderThrottleAsyncCheckTest, VerifyCheckerParams) {
   EXPECT_TRUE(
       throttle_->GetAsyncSBCheckerForTesting()->IsAsyncCheckForTesting());
   EXPECT_FALSE(throttle_->GetSyncSBCheckerForTesting()
-                   ->IsCheckAllowlistBeforeHashDatabaseForTesting());
-}
-
-TEST_F(SBBrowserUrlLoaderThrottleAsyncCheckTest,
-       VerifyCheckerParams_WithSyncCheckerCheckAllowlistEnabled) {
-  SetUpTest(/*optional_args=*/{.should_sync_checker_check_allowlist = true});
-  EXPECT_EQ(throttle_->GetSyncSBCheckerForTesting(), nullptr);
-  EXPECT_EQ(throttle_->GetAsyncSBCheckerForTesting(), nullptr);
-  AddCallbackInfo(/*should_proceed=*/true,
-                  /*should_show_interstitial=*/false,
-                  /*should_delay_callback=*/false);
-  CallWillStartRequest();
-  EXPECT_TRUE(throttle_->GetSyncSBCheckerForTesting()
-                  ->IsCheckAllowlistBeforeHashDatabaseForTesting());
-  EXPECT_FALSE(throttle_->GetAsyncSBCheckerForTesting()
                    ->IsCheckAllowlistBeforeHashDatabaseForTesting());
 }
 
@@ -1353,6 +1370,87 @@ TEST_F(SBBrowserUrlLoaderThrottleAsyncCheckTest,
       "SafeBrowsing.BrowserThrottle.IsAsyncCheckTrackerAliveOnTransfer",
       /*sample=*/false,
       /*expected_bucket_count=*/1);
+}
+
+TEST_F(SBBrowserUrlLoaderThrottleAsyncCheckTest,
+       PrioritizeNavigationCallbacksScoping) {
+  base::test::ScopedFeatureList feature_list(
+      kPrioritizeSafeBrowsingNavigationCallbacks);
+  SetUpTest();
+  auto db_manager =
+      base::MakeRefCounted<CallbackTaskRunnerRecordingDatabaseManager>();
+  EXPECT_CALL(*url_checker_delegate_, GetDatabaseManager())
+      .WillRepeatedly(::testing::Return(db_manager.get()));
+  SBThreatTypeSet threat_types = {SBThreatType::SB_THREAT_TYPE_URL_PHISHING};
+  EXPECT_CALL(*url_checker_delegate_, GetThreatTypes())
+      .WillRepeatedly(::testing::ReturnRef(threat_types));
+  EXPECT_CALL(*url_checker_delegate_, IsUrlAllowlisted(::testing::_))
+      .WillRepeatedly(::testing::Return(false));
+
+  auto run_start =
+      [&](std::optional<int64_t> nav_id, int load_flags,
+          bool url_real_time_lookup_enabled,
+          hash_realtime_utils::HashRealTimeSelection hash_realtime_selection,
+          bool async_check_enabled) {
+        auto throttle = BrowserURLLoaderThrottle::Create(
+            base::BindRepeating(
+                [](scoped_refptr<UrlCheckerDelegate> d) { return d; },
+                url_checker_delegate_),
+            mock_web_contents_getter_.Get(), content::FrameTreeNodeId(), nav_id,
+            url_real_time_lookup_enabled ? url_lookup_service_->GetWeakPtr()
+                                         : nullptr,
+            /*hash_realtime_service=*/nullptr, hash_realtime_selection,
+            async_check_enabled ? async_check_tracker_->GetWeakPtr() : nullptr,
+            /*referring_app_info=*/std::nullopt,
+            /*v5_get_hash_protocol_manager=*/nullptr);
+        bool defer = false;
+        network::ResourceRequest request;
+        request.url = GURL("https://example.com/");
+        request.destination = network::mojom::RequestDestination::kDocument;
+        request.load_flags = load_flags;
+        throttle->WillStartRequest(&request, &defer);
+        return db_manager->TakeRunners();
+      };
+
+  auto prioritized = content::GetUIThreadTaskRunner(
+      {content::BrowserTaskType::kNavigationNetworkResponse});
+  auto normal = content::GetUIThreadTaskRunner({});
+  using Selection = hash_realtime_utils::HashRealTimeSelection;
+
+  EXPECT_THAT(
+      run_start(/*nav_id=*/1, /*load_flags=*/0,
+                /*url_real_time_lookup_enabled=*/false, Selection::kNone,
+                /*async_check_enabled=*/false),
+      ::testing::ElementsAre(prioritized));
+  EXPECT_THAT(run_start(/*nav_id=*/1, /*load_flags=*/0,
+                        /*url_real_time_lookup_enabled=*/false,
+                        Selection::kHashRealTimeService,
+                        /*async_check_enabled=*/true),
+              ::testing::ElementsAre(prioritized, nullptr));
+  EXPECT_THAT(run_start(/*nav_id=*/1, /*load_flags=*/0,
+                        /*url_real_time_lookup_enabled=*/true, Selection::kNone,
+                        /*async_check_enabled=*/false),
+              ::testing::ElementsAre(nullptr));
+  EXPECT_THAT(run_start(/*nav_id=*/1, /*load_flags=*/0,
+                        /*url_real_time_lookup_enabled=*/false,
+                        Selection::kHashRealTimeService,
+                        /*async_check_enabled=*/false),
+              ::testing::ElementsAre(nullptr));
+  EXPECT_THAT(run_start(/*nav_id=*/1, /*load_flags=*/0,
+                        /*url_real_time_lookup_enabled=*/false,
+                        Selection::kDatabaseManager,
+                        /*async_check_enabled=*/false),
+              ::testing::ElementsAre(nullptr));
+  EXPECT_THAT(
+      run_start(/*nav_id=*/std::nullopt, /*load_flags=*/0,
+                /*url_real_time_lookup_enabled=*/false, Selection::kNone,
+                /*async_check_enabled=*/false),
+      ::testing::ElementsAre(normal));
+  EXPECT_THAT(
+      run_start(/*nav_id=*/1, net::LOAD_PREFETCH,
+                /*url_real_time_lookup_enabled=*/false, Selection::kNone,
+                /*async_check_enabled=*/false),
+      ::testing::ElementsAre(normal));
 }
 
 }  // namespace safe_browsing

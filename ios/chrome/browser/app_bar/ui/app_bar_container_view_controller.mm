@@ -144,6 +144,19 @@
   _fullscreenProgress = 1;
 }
 
+- (void)viewWillTransitionToSize:(CGSize)size
+       withTransitionCoordinator:
+           (id<UIViewControllerTransitionCoordinator>)coordinator {
+  [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+  __weak __typeof(self) weakSelf = self;
+  [coordinator
+      animateAlongsideTransition:^(
+          id<UIViewControllerTransitionCoordinatorContext> context) {
+        [weakSelf.view windowSizeDidChange];
+      }
+                      completion:nil];
+}
+
 #pragma mark - AppBarContainerViewDelegate
 
 - (void)appBarContainerDidMoveToWindow:(AppBarContainerView*)appBarContainer {
@@ -154,9 +167,6 @@
 
 - (void)updateForFullscreenProgress:(CGFloat)progress {
   _fullscreenProgress = progress;
-  if (self.sceneLayoutState.assistantContainerInvoked) {
-    return;
-  }
   [self updateAndApplyLayout];
 }
 
@@ -166,10 +176,8 @@
   AppBarPosition position = self.sceneLayoutState.appBarPosition;
   switch (position) {
     case AppBarPosition::kBottom: {
-      CGFloat minHeight =
-          IsAppBarHiddenInFullscreen() ? 0 : kAppBarHeightFullscreen;
-      agent->AddObscuredInsetRange(UIRectEdgeBottom, minHeight,
-                                   [self appBarHeightPortrait]);
+      CGFloat maxInset = [self appBarHeightAboveSafeAreaPortrait];
+      agent->AddObscuredInsetRange(UIRectEdgeBottom, 0, maxInset);
       break;
     }
     case AppBarPosition::kLeft:
@@ -186,22 +194,12 @@
 }
 
 - (void)fullscreenWillUpdateState:(FullscreenBrowserAgent*)agent {
-  if (self.sceneLayoutState.assistantContainerInvoked &&
-      !IsAppBarHiddenInFullscreen()) {
-    _fullscreenProgress = agent->bottom_progress();
-    agent->AddObscuredInset(UIRectEdgeBottom, kAppBarHeightFullscreen);
-    return;
-  }
-
   AppBarPosition position = self.sceneLayoutState.appBarPosition;
   switch (position) {
     case AppBarPosition::kBottom: {
       _fullscreenProgress = agent->bottom_progress();
-      CGFloat minHeight =
-          IsAppBarHiddenInFullscreen() ? 0 : kAppBarHeightFullscreen;
-      CGFloat currentHeight =
-          minHeight +
-          ([self appBarHeightPortrait] - minHeight) * agent->bottom_progress();
+      CGFloat maxInset = [self appBarHeightAboveSafeAreaPortrait];
+      CGFloat currentHeight = maxInset * agent->bottom_progress();
       agent->AddObscuredInset(UIRectEdgeBottom, currentHeight);
       [self updateLayout];
       // If this is inside an animation, layout immediately.
@@ -253,14 +251,9 @@
   }
 
   self.view.transform = CGAffineTransformMakeRotation(angle);
-  CGFloat progress = _fullscreenProgress;
-  if (self.sceneLayoutState.assistantContainerInvoked &&
-      !IsAppBarHiddenInFullscreen()) {
-    progress = 0.0;
-  }
   self.view.assistantContainerInvoked =
       self.sceneLayoutState.assistantContainerInvoked;
-  self.view.fullscreenProgress = progress;
+  self.view.fullscreenProgress = _fullscreenProgress;
   self.view.appBarPosition = position;
   [_appBar updateForAngle:-angle];
   [self
@@ -286,6 +279,13 @@
 
 - (CGFloat)appBarHeightPortrait {
   return [_appBar currentAppBarHeightPortrait];
+}
+
+// Returns the portrait App Bar height above the bottom safe area inset, since
+// the bottom safe area inset is owned and reported by `BrowserViewController`.
+- (CGFloat)appBarHeightAboveSafeAreaPortrait {
+  return std::max<CGFloat>(0.0, [self appBarHeightPortrait] -
+                                    self.view.window.safeAreaInsets.bottom);
 }
 
 @end

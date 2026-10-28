@@ -6,6 +6,7 @@
 
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
+#include "build/build_config.h"
 
 namespace features {
 
@@ -144,8 +145,7 @@ const base::FeatureParam<DevToolsFreestylerUserTier>
         &devtools_freestyler_user_tier_options};
 
 // Whether the DevTools AI Code Completion for Styles pane is enabled.
-BASE_FEATURE(kDevToolsAiCodeCompletionStyles,
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kDevToolsAiCodeCompletionStyles, base::FEATURE_ENABLED_BY_DEFAULT);
 const base::FeatureParam<std::string> kDevToolsAiCodeCompletionStylesModelId{
     &kDevToolsAiCodeCompletionStyles, "aida_model_id",
     /*default_value=*/""};
@@ -200,13 +200,14 @@ const base::FeatureParam<bool> kDevToolsGdpProfilesStarterBadgeEnabled{
 BASE_FEATURE(kDevToolsEnableDurableMessages, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // If enabled, allows starting remote debugging in a running Chrome instance.
+#if BUILDFLAG(IS_CHROMEOS)
+// Disabled on ChromeOS due to crbug.com/552883317.
+BASE_FEATURE(kDevToolsAcceptDebuggingConnections,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+#else
 BASE_FEATURE(kDevToolsAcceptDebuggingConnections,
              base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Whether the policy dialog should be shown instead of greying out the
-// Developer Tools toggle.
-// TODO(crbug.com/442892562): Remove this flag once the feature is launched.
-BASE_FEATURE(kDevToolsShowPolicyDialog, base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 BASE_FEATURE(kDevToolsAiAssistanceContextSelectionAgent,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -221,6 +222,13 @@ const base::FeatureParam<bool> kDevToolsConsoleInsightsTeasersAllowWithoutGpu{
     /*default_value=*/false};
 
 BASE_FEATURE(kDevToolsAiV2Architecture, base::FEATURE_DISABLED_BY_DEFAULT);
+const base::FeatureParam<DevToolsFreestylerUserTier>
+    kDevToolsAiV2ArchitectureUserTier{
+        &kDevToolsAiV2Architecture, "user_tier",
+        /*default_value=*/DevToolsFreestylerUserTier::kPublic,
+        &devtools_freestyler_user_tier_options};
+
+BASE_FEATURE(kDevToolsComments, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Whether the Protocol Monitor panel is enabled.
 BASE_FEATURE(kDevToolsProtocolMonitor, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -238,11 +246,26 @@ BASE_FEATURE(kDevToolsPlusButton, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Whether instrumentation breakpoints are enabled in DevTools.
 BASE_FEATURE(kDevToolsInstrumentationBreakpoints,
-             "DevToolsInstrumentationBreakpoints",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Whether source map scopes are enabled in the DevTools Sources panel.
 BASE_FEATURE(kDevToolsSourceMapScopesInSourcesPanel,
-             "DevToolsSourceMapScopesInSourcesPanel",
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Whether the A11y Announcements recording subpane is enabled in DevTools.
+BASE_FEATURE(kDevToolsAriaLiveRecording, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Whether mobile safe area emulation is enabled in DevTools.
+BASE_FEATURE(kDevToolsMobileSafeAreaEmulation,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Whether DevTools availability checking is performed at the target level.
+BASE_FEATURE(kDevToolsTargetLevelEvaluation, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Whether backend linking for network requests is enabled.
+BASE_FEATURE(kDevToolsNetworkBackendLinking, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Whether the Natural Language Interface feature enabled.
+BASE_FEATURE(kDevToolsAiNaturalLanguageInterface,
              base::FEATURE_DISABLED_BY_DEFAULT);
 }  // namespace features

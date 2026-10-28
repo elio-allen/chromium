@@ -3,6 +3,9 @@
 // found in the LICENSE file.
 
 import '//resources/cr_elements/cr_button/cr_button.js';
+import '//resources/cr_elements/cr_icon/cr_icon.js';
+import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
+import '//resources/cr_elements/icons.html.js';
 
 import {assertNotReached} from '//resources/js/assert.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
@@ -66,6 +69,9 @@ export class InstalledAppListItemElement extends CrLitElement {
     return {
       app: {type: Object},
       sourceMetadata: {type: Object},
+      isUpdating: {type: Boolean},
+      copied_: {type: Boolean, state: true},
+      subAppsExpanded_: {type: Boolean, state: true},
     };
   }
 
@@ -82,15 +88,69 @@ export class InstalledAppListItemElement extends CrLitElement {
       },
     },
     installedVersion: '',
+    subApps: [],
   };
+
+  accessor isUpdating: boolean = false;
 
   protected accessor sourceMetadata: SourceMetadata = {
     label: '',
     description: '',
   };
 
-  protected onUninstallClick() {
-    this.fire('request-uninstall', {app: this.app});
+  protected accessor copied_: boolean = false;
+  protected accessor subAppsExpanded_: boolean = false;
+  private copiedTimeoutId_: number|null = null;
+
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    if (this.copiedTimeoutId_ !== null) {
+      window.clearTimeout(this.copiedTimeoutId_);
+      this.copiedTimeoutId_ = null;
+    }
+  }
+
+  protected isManifestApp_(): boolean {
+    return !!this.app.source.updateInfo;
+  }
+
+  protected onCopyClick() {
+    if (this.app.source.updateInfo) {
+      navigator.clipboard.writeText(
+          this.app.source.updateInfo.updateManifestUrl);
+      this.copied_ = true;
+      if (this.copiedTimeoutId_ !== null) {
+        window.clearTimeout(this.copiedTimeoutId_);
+      }
+      this.copiedTimeoutId_ = window.setTimeout(() => {
+        this.copied_ = false;
+        this.copiedTimeoutId_ = null;
+      }, 2000);
+    }
+  }
+
+  protected onLaunchClick(e: Event) {
+    const appId =
+        (e.currentTarget as HTMLElement).dataset['appId'] ?? this.app.appId;
+    this.fire('request-launch', {appId});
+  }
+
+  protected onUpdateOptionsClick() {
+    this.fire('request-update-options', {app: this.app});
+  }
+
+  protected onUpdateClick() {
+    this.fire('request-update', {app: this.app});
+  }
+
+  protected onUninstallClick(e: Event) {
+    const appId =
+        (e.currentTarget as HTMLElement).dataset['appId'] ?? this.app.appId;
+    this.fire('request-uninstall', {appId});
+  }
+
+  protected onToggleSubAppsClick() {
+    this.subAppsExpanded_ = !this.subAppsExpanded_;
   }
 
   override willUpdate(changedProperties: PropertyValues<this>) {
@@ -98,6 +158,9 @@ export class InstalledAppListItemElement extends CrLitElement {
 
     if (changedProperties.has('app')) {
       this.sourceMetadata = this.computeSourceMetadata();
+      if (this.app.subApps.length === 0) {
+        this.subAppsExpanded_ = false;
+      }
     }
   }
 
@@ -121,8 +184,7 @@ export class InstalledAppListItemElement extends CrLitElement {
       const info = this.app.source.updateInfo;
       return {
         label: 'Update manifest',
-        description:
-            `${info.updateManifestUrl} (channel: ${info.updateChannel})`,
+        description: `${info.updateManifestUrl}`,
       };
     }
     assertNotReached();

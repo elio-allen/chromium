@@ -123,9 +123,10 @@ public class AwContextMenuCoordinator {
         mParams.destroy();
     }
 
-    void displayMenu() {
+    boolean displayMenu() {
         if (mItems.isEmpty()) {
-            return;
+            dismiss();
+            return false;
         }
 
         View layout =
@@ -181,6 +182,7 @@ public class AwContextMenuCoordinator {
         } else {
             showAsDialog(layout);
         }
+        return true;
     }
 
     /**
@@ -214,7 +216,6 @@ public class AwContextMenuCoordinator {
                         mWindowAndroid.getWindow(),
                         mWebContents,
                         mParams,
-                        /* leftContentOffsetPx= */ 0,
                         /* topContentOffsetPx= */ 0,
                         /* usePopupWindow= */ true,
                         dragDispatchingTargetView);
@@ -229,20 +230,20 @@ public class AwContextMenuCoordinator {
                     mContext.getResources().getDimensionPixelSize(R.dimen.context_menu_small_width);
         }
 
-        mPopupWindow =
-                new AnchoredPopupWindow(
-                        /* context= */ mContext,
-                        /* rootView= */ dragDispatchingTargetView,
-                        /* background= */ new ColorDrawable(Color.TRANSPARENT),
-                        /* contentView= */ menu,
-                        /* anchorRectProvider= */ new RectProvider(rect));
-
-        mPopupWindow.setSmartAnchorWithMaxWidth(true);
-        mPopupWindow.setVerticalOverlapAnchor(true);
-        mPopupWindow.setOutsideTouchable(true);
+        AnchoredPopupWindow.Builder builder =
+                new AnchoredPopupWindow.Builder(
+                                /* context= */ mContext,
+                                /* rootView= */ dragDispatchingTargetView,
+                                /* background= */ new ColorDrawable(Color.TRANSPARENT),
+                                /* contentViewCreator= */ () -> menu,
+                                /* anchorRectProvider= */ new RectProvider(rect))
+                        .setSmartAnchorWithMaxWidth(true)
+                        .setVerticalOverlapAnchor(true)
+                        .setOutsideTouchable(true);
         if (desiredPopupContentWidth != null) {
-            mPopupWindow.setDesiredContentWidth(desiredPopupContentWidth);
+            builder.setDesiredContentWidth(desiredPopupContentWidth);
         }
+        mPopupWindow = builder.build();
 
         // Required for dismissing the popup on backpress or if the webcontents visibility changes.
         mWebContentsObserver =

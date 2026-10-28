@@ -11,8 +11,8 @@
 #include "ash/wallpaper/views/wallpaper_view.h"
 #include "ui/aura/window.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
-#include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animation_observer.h"
+#include "ui/compositor/layer_solid_color.h"
 #include "ui/compositor/layer_tree_owner.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/display/screen.h"
@@ -144,7 +144,7 @@ void WallpaperWidgetController::OnColorProviderChanged() {
 
 void WallpaperWidgetController::CreateWallpaperUnderlayLayer() {
   wallpaper_underlay_layer_ = std::make_unique<ui::LayerSolidColor>();
-  wallpaper_underlay_layer_->SetName("WallpaperUnderlayLayer");
+  wallpaper_underlay_layer_->SetName("WallpaperWidget:WallpaperUnderlay");
   auto* wallpaper_view_layer = wallpaper_view_->layer();
   auto* wallpaper_view_layer_parent = wallpaper_view_layer->parent();
   wallpaper_view_layer_parent->Add(wallpaper_underlay_layer_.get());

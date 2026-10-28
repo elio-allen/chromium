@@ -33,10 +33,9 @@ class CORE_EXPORT ContainerTiming final
 
   static ContainerTiming& From(LocalDOMWindow&);
 
-  static inline bool ContributesToContainerTiming(const Element* element) {
-    return element && !element->IsInShadowTree() &&
-           element->SelfOrAncestorHasContainerTiming();
-  }
+  // The container-timing decision is made via the paint attribution tracker,
+  // populated during the pre-paint walk.
+  static bool ContributesToContainerTiming(Element* element);
 
   bool CanReportToContainerTiming() const;
   void MaybeUpdateContainerRootIdentifier(Element* element,
@@ -77,7 +76,10 @@ class CORE_EXPORT ContainerTiming final
     const DOMPaintTimingInfo first_paint_timing_info_;
     const AtomicString identifier_;
     DOMPaintTimingInfo last_new_painted_area_paint_timing_info_;
-    WeakMember<Element> last_new_painted_area_element_;
+    // The largest element, by its own clipped area, painted since the last
+    // entry was emitted, and that area. Both reset on emission.
+    WeakMember<Element> largest_painted_area_element_;
+    uint64_t largest_painted_area_ = 0;
     cc::Region painted_region_;
     bool has_pending_changes_ = false;
   };
@@ -86,7 +88,10 @@ class CORE_EXPORT ContainerTiming final
 
   Member<WindowPerformance> performance_;
   HeapHashMap<WeakMember<Element>, Member<Record>> container_root_records_;
-  Member<ContainerTimingPaintAttributionTracker> paint_attribution_tracker_;
+  // Never null: created in the constructor, which CHECKs that container timing
+  // is enabled, and never reassigned.
+  const Member<ContainerTimingPaintAttributionTracker>
+      paint_attribution_tracker_;
 };
 
 }  // namespace blink

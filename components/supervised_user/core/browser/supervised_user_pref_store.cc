@@ -10,23 +10,16 @@
 #include <utility>
 #include <vector>
 
-#include "base/command_line.h"
-#include "base/feature_list.h"
 #include "base/functional/bind.h"
-#include "base/logging.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "components/enterprise/isolated_mode/prefs.h"
 #include "components/feed/core/shared_prefs/pref_names.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_value_map.h"
-#include "components/safe_search_api/safe_search_util.h"
 #include "components/signin/public/base/signin_pref_names.h"
-#include "components/signin/public/base/signin_switches.h"
 #include "components/supervised_user/core/browser/device_parental_controls.h"
 #include "components/supervised_user/core/browser/family_link_settings_service.h"
-#include "components/supervised_user/core/browser/supervised_user_utils.h"
-#include "components/supervised_user/core/common/features.h"
 #include "components/supervised_user/core/common/pref_names.h"
 #include "components/supervised_user/core/common/supervised_user_constants.h"
 #include "components/sync/base/user_selectable_type.h"
@@ -35,14 +28,6 @@
 
 namespace supervised_user {
 namespace {
-
-const char kSupervisionConflictHistogramName[] =
-    "SupervisedUsers.FamilyLinkSupervisionConflict";
-enum class SupervisionHasConflict : int {
-  kNoConflict = 0,
-  kHasConflict = 1,
-  kMaxValue = kHasConflict,
-};
 
 struct FamilyLinkSettingsPrefMappingEntry {
   const char* settings_name;
@@ -69,19 +54,6 @@ FamilyLinkSettingsPrefMappingEntry kFamilyLinkWebFilteringPrefMapping[] = {
         supervised_user::kContentPackDefaultFilteringBehavior,
         prefs::kDefaultSupervisedUserFilteringBehavior,
     },
-    {
-        supervised_user::kContentPackManualBehaviorHosts,
-        prefs::kSupervisedUserManualHosts,
-    },
-    {
-        supervised_user::kContentPackManualBehaviorURLs,
-        prefs::kSupervisedUserManualURLs,
-    },
-    {
-        supervised_user::kSafeSitesEnabled,
-        prefs::kSupervisedUserSafeSites,
-    },
-
 };
 
 }  // namespace
@@ -93,6 +65,10 @@ void SetSupervisedUserPrefStoreDefaults(PrefValueMap& pref_values) {
   pref_values.SetInteger(
       policy::policy_prefs::kIncognitoModeAvailability,
       static_cast<int>(policy::IncognitoModeAvailability::kDisabled));
+  pref_values.SetInteger(
+      enterprise_isolated_mode::kEnterpriseIsolatedModeSettings,
+      static_cast<int>(
+          enterprise_isolated_mode::IsolatedModeSetting::kDisabled));
 }
 }  // namespace supervised_user
 
@@ -226,16 +202,6 @@ void SupervisedUserPrefStore::RecreatePreferences() {
                          !permissions_disallowed);
     }
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
-
-    // Apparently two parental controls systems are enabled at the same time.
-    // This is considered a conflict which in versions before
-    // kSupervisedUserUseUrlFilteringService was resolved in favor of Family
-    // Link settings.
-    if (device_parental_controls_state_.is_enabled) {
-      base::UmaHistogramEnumeration(
-          supervised_user::kSupervisionConflictHistogramName,
-          supervised_user::SupervisionHasConflict::kHasConflict);
-    }
   }
 
   // Merge device parental controls settings with the Family Link settings.

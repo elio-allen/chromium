@@ -6,7 +6,6 @@
 
 #include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
-#include "chrome/browser/media/webrtc/system_media_capture_permissions_mac.h"
 #include "content/public/browser/audio_service.h"
 #include "content/public/browser/browser_thread.h"
 #include "media/audio/audio_device_description.h"
@@ -30,19 +29,10 @@ AudioCapturePermissionCheckerMac::MaybeCreate(base::RepeatingClosure callback) {
 
 AudioCapturePermissionCheckerMac::AudioCapturePermissionCheckerMac(
     base::RepeatingClosure callback)
-    : callback_(std::move(callback)) {
-  // Capturing system audio on macOS requires the application to have
-  // system-level Screen recording permission. If screen recording is already
-  // denied, system audio capture will fail, so we can immediately initialize
-  // the state to denied.
-  if (system_media_permissions::CheckSystemScreenCapturePermission() ==
-      system_permission_settings::SystemPermission::kDenied) {
-    audio_permission_state_ = State::kDenied;
-  }
-}
+    : callback_(std::move(callback)) {}
 
 AudioCapturePermissionCheckerMac::~AudioCapturePermissionCheckerMac() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (input_ipc_) {
     input_ipc_->CloseStream();
     input_ipc_.reset();
@@ -52,18 +42,18 @@ AudioCapturePermissionCheckerMac::~AudioCapturePermissionCheckerMac() {
 void AudioCapturePermissionCheckerMac::SetAudioStreamFactoryForTest(
     mojo::PendingRemote<media::mojom::AudioStreamFactory>
         audio_stream_factory) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   audio_stream_factory_for_test_ = std::move(audio_stream_factory);
 }
 
 AudioCapturePermissionChecker::State
 AudioCapturePermissionCheckerMac::GetState() const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   return audio_permission_state_;
 }
 
 void AudioCapturePermissionCheckerMac::RunCheck() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (audio_permission_state_ != State::kUnknown) {
     return;
   }
@@ -108,12 +98,12 @@ void AudioCapturePermissionCheckerMac::OnError(
 void AudioCapturePermissionCheckerMac::OnMuted(bool is_muted) {}
 
 void AudioCapturePermissionCheckerMac::OnIPCClosed() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   input_ipc_.reset();
 }
 
 void AudioCapturePermissionCheckerMac::OnPermissionUpdate(bool has_permission) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (input_ipc_) {
     input_ipc_->CloseStream();
     input_ipc_.reset();

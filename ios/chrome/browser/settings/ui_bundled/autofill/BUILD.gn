@@ -4,28 +4,10 @@
 
 source_set("autofill") {
   sources = [
-    "autofill_add_credit_card_coordinator.h",
-    "autofill_add_credit_card_coordinator.mm",
-    "autofill_add_credit_card_coordinator_delegate.h",
-    "autofill_add_credit_card_mediator.h",
-    "autofill_add_credit_card_mediator.mm",
-    "autofill_add_credit_card_mediator_delegate.h",
-    "autofill_add_credit_card_view_controller.h",
-    "autofill_add_credit_card_view_controller.mm",
-    "autofill_add_credit_card_view_controller_delegate.h",
-    "autofill_add_credit_card_view_controller_presentation_delegate.h",
     "autofill_credit_card_edit_table_view_controller.h",
     "autofill_credit_card_edit_table_view_controller.mm",
     "autofill_credit_card_table_view_controller.h",
     "autofill_credit_card_table_view_controller.mm",
-    "autofill_cvc_storage_consumer.h",
-    "autofill_cvc_storage_view_controller.h",
-    "autofill_cvc_storage_view_controller.mm",
-    "autofill_cvc_storage_view_coordinator.h",
-    "autofill_cvc_storage_view_coordinator.mm",
-    "autofill_cvc_storage_view_coordinator_delegate.h",
-    "autofill_cvc_storage_view_mediator.h",
-    "autofill_cvc_storage_view_mediator.mm",
     "autofill_profile_edit_coordinator.h",
     "autofill_profile_edit_coordinator.mm",
     "autofill_profile_table_view_controller.h",
@@ -38,6 +20,7 @@ source_set("autofill") {
   public_deps = [
     "//ios/chrome/browser/settings/autofill/bnpl/coordinator",
     "//ios/chrome/browser/settings/autofill/bnpl/ui",
+    "//ios/chrome/browser/settings/autofill/payments/ui",
     "//ios/chrome/browser/settings/autofill/suggestions_from_gemini/coordinator",
     "//ios/chrome/browser/settings/autofill/suggestions_from_gemini/ui",
     "//ios/chrome/browser/settings/autofill/ui",
@@ -129,7 +112,6 @@ source_set("shared_ui") {
 source_set("unit_tests") {
   testonly = true
   sources = [
-    "autofill_add_credit_card_mediator_unittest.mm",
     "autofill_credit_card_table_view_controller_unittest.mm",
     "autofill_profile_table_view_controller+testing.h",
     "autofill_profile_table_view_controller_unittest.mm",
@@ -138,6 +120,8 @@ source_set("unit_tests") {
   deps = [
     ":autofill",
     "//base/test:test_support",
+    "//components/account_settings",
+    "//components/account_settings:test_support",
     "//components/application_locale_storage",
     "//components/autofill/core/browser",
     "//components/autofill/core/browser:test_support",
@@ -147,6 +131,7 @@ source_set("unit_tests") {
     "//components/strings",
     "//components/sync:test_support",
     "//ios/chrome/app/strings",
+    "//ios/chrome/browser/account_settings/model",
     "//ios/chrome/browser/autofill/model",
     "//ios/chrome/browser/autofill/model/message",
     "//ios/chrome/browser/autofill/ui_bundled:ui_type",
@@ -154,10 +139,13 @@ source_set("unit_tests") {
     "//ios/chrome/browser/autofill/ui_bundled/address_editor:constants",
     "//ios/chrome/browser/autofill/ui_bundled/cells",
     "//ios/chrome/browser/autofill/ui_bundled/util",
+    "//ios/chrome/browser/device_reauth/model",
     "//ios/chrome/browser/net/model:crurl",
     "//ios/chrome/browser/personal_context/model",
     "//ios/chrome/browser/settings/autofill/autofill_ai/ui",
     "//ios/chrome/browser/settings/autofill/bnpl/coordinator:unit_tests",
+    "//ios/chrome/browser/settings/autofill/payments/coordinator:unit_tests",
+    "//ios/chrome/browser/settings/autofill/payments/ui",
     "//ios/chrome/browser/settings/autofill/suggestions_from_gemini/coordinator:unit_tests",
     "//ios/chrome/browser/settings/autofill/suggestions_from_gemini/ui:unit_tests",
     "//ios/chrome/browser/settings/ui_bundled:settings_root",
@@ -194,9 +182,7 @@ source_set("eg2_tests") {
   testonly = true
   sources = [
     "autofill_add_address_manually_egtest.mm",
-    "autofill_add_credit_card_egtest.mm",
     "autofill_credit_card_settings_egtest.mm",
-    "autofill_cvc_storage_settings_egtest.mm",
     "autofill_edit_credit_card_egtest.mm",
     "autofill_profile_settings_egtest.mm",
   ]

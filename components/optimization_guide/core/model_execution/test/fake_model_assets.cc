@@ -7,17 +7,14 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/no_destructor.h"
-#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
 #include "components/optimization_guide/core/model_execution/on_device_features.h"
-#include "components/optimization_guide/core/model_execution/on_device_model_adaptation_loader.h"
-#include "components/optimization_guide/core/model_execution/on_device_model_component.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_feature_adapter.h"
+#include "components/optimization_guide/core/model_execution/on_device_model_names.h"
 #include "components/optimization_guide/core/model_execution/test/feature_config_builder.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
 #include "components/optimization_guide/proto/on_device_model_execution_config.pb.h"
-#include "components/version_info/version_info.h"
 #include "services/on_device_model/public/cpp/test_support/fake_service.h"
 #include "third_party/dawn/include/dawn/dawn_proc.h"
 
@@ -85,12 +82,8 @@ void FakeBaseModelAsset::Write(Content&& content) {
         temp_dir_.GetPath().Append(kProgramCacheFile);
     CHECK(base::WriteFile(program_cache_path,
                           std::string(content.shader_cache_data)));
-    std::string_view dawn_rev(
+    std::string current_version(
         reinterpret_cast<const char*>(dawnProcGetVersion()), 20);
-    // TODO(crbug.com/538727789): Remove Chrome version check once ML Drift
-    // incorporates kernel revision versioning into fingerprint keys.
-    std::string current_version =
-        base::StrCat({version_info::GetVersionNumber(), "_", dawn_rev});
     CHECK(base::WriteFile(
         program_cache_path.AddExtension(FILE_PATH_LITERAL(".dawn_version")),
         current_version));
@@ -107,11 +100,6 @@ base::DictValue FakeBaseModelAsset::Manifest() const {
                                    .Set("name", "Test")
                                    .Set("supported_performance_hints",
                                         supported_performance_hints_.Clone()));
-}
-
-void FakeBaseModelAsset::SetReadyIn(
-    OnDeviceModelComponentStateManager& manager) const {
-  manager.SetReady(base::Version(version()), path(), Manifest());
 }
 
 proto::OnDeviceBaseModelMetadata FakeBaseModelAsset::DefaultSpec() {
@@ -139,12 +127,11 @@ FakeAdaptationAsset::FakeAdaptationAsset(FakeAdaptationAsset::Content&& content)
   }
   std::vector<base::FilePath> additional_files = {config_path};
   if (content.weight) {
-    paths_ = std::make_unique<on_device_model::AdaptationAssetPaths>();
-    paths_->weights =
+    base::FilePath weights_path =
         temp_dir_.GetPath().Append(kOnDeviceModelAdaptationWeightsFile);
-    CHECK(base::WriteFile(paths_->weights,
+    CHECK(base::WriteFile(weights_path,
                           base::NumberToString(content.weight.value())));
-    additional_files.push_back(paths_->weights);
+    additional_files.push_back(weights_path);
   }
   model_info_ = {
       .model_file_path = base::FilePath::FromUTF8Unsafe(kTestAbsoluteFilePath),
@@ -152,51 +139,7 @@ FakeAdaptationAsset::FakeAdaptationAsset(FakeAdaptationAsset::Content&& content)
       .version = version(),
       .model_metadata = AnyWrapProto(content.metadata),
   };
-  metadata_ = std::make_unique<OnDeviceModelAdaptationMetadata>(
-      paths_.get(), version(),
-      base::MakeRefCounted<OnDeviceModelFeatureAdapter>(
-          std::move(content.config)));
 }
 FakeAdaptationAsset::~FakeAdaptationAsset() = default;
-
-void FakeAdaptationAsset::SendTo(
-    OnDeviceModelServiceController& controller) const {
-  controller.MaybeUpdateModelAdaptation(feature(), metadata());
-}
-
-FakeLanguageModelAsset::FakeLanguageModelAsset() {
-  CHECK(temp_dir_.CreateUniqueTempDir());
-  auto model_path = this->model_path();
-  CHECK(base::WriteFile(model_path, on_device_model::FakeLanguageModel()));
-  model_info_ = {
-      .model_file_path = model_path,
-      .version = 123,
-  };
-}
-FakeLanguageModelAsset::~FakeLanguageModelAsset() = default;
-
-base::FilePath FakeLanguageModelAsset::model_path() const {
-  return temp_dir_.GetPath().Append(kWeightsFile);
-}
-
-FakeSafetyModelAsset::FakeSafetyModelAsset(
-    proto::FeatureTextSafetyConfiguration&& config)
-    : FakeSafetyModelAsset(FakeSafetyModelAsset::Content{
-          .metadata = SafetyMetadata({std::move(config)})}) {}
-
-FakeSafetyModelAsset::FakeSafetyModelAsset(
-    FakeSafetyModelAsset::Content&& content) {
-  CHECK(temp_dir_.CreateUniqueTempDir());
-  auto data_path =
-      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("model.tflite"));
-  CHECK(base::WriteFile(data_path, on_device_model::FakeTsData()));
-  model_info_ = {
-      .model_file_path = data_path,
-      .version = content.model_info_version,
-      .model_metadata = AnyWrapProto(content.metadata),
-  };
-}
-
-FakeSafetyModelAsset::~FakeSafetyModelAsset() = default;
 
 }  // namespace optimization_guide

@@ -12,12 +12,17 @@
 #include <sys/types.h>
 
 #include <algorithm>
+#include <optional>
+#include <string>
+#include <utility>
 
 #include "base/compiler_specific.h"
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
+
+#if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/media/router/discovery/discovery_network_list_wifi.h"
-#include "net/base/net_errors.h"
+#endif
 
 #if !BUILDFLAG(IS_MAC)
 #include <netpacket/packet.h>
@@ -52,7 +57,6 @@ base::span<const uint8_t> SocketAddressAsByteSpan(const sll* ll_addr) {
 void GetDiscoveryNetworkInfoListImpl(
     const struct ifaddrs* if_list,
     std::vector<DiscoveryNetworkInfo>* network_info_list) {
-  std::string ssid;
   for (; if_list != nullptr; if_list = if_list->ifa_next) {
     if ((if_list->ifa_flags & IFF_RUNNING) == 0 ||
         (if_list->ifa_flags & IFF_UP) == 0) {
@@ -82,10 +86,12 @@ void GetDiscoveryNetworkInfoListImpl(
       continue;
     }
 
-    if (MaybeGetWifiSSID(name, &ssid)) {
-      network_info_list->push_back({name, ssid});
+#if !BUILDFLAG(IS_ANDROID)
+    if (std::optional<std::string> ssid = MaybeGetWifiSSID(name)) {
+      network_info_list->emplace_back(name, std::move(*ssid));
       continue;
     }
+#endif
 
     if (SOCKET_ADDRESS_LEN(ll_addr) == 0) {
       continue;

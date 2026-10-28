@@ -436,9 +436,7 @@ static PositionTemplate<Strategy> NextVisuallyDistinctCandidateAlgorithm(
   // Only skip non-editable content when explicitly requested via
   // kCanSkipOverEditingBoundary (used for caret navigation).
   const bool skip_non_editable =
-      rule == kCanSkipOverEditingBoundary &&
-      RuntimeEnabledFeatures::SkipNonEditableInAtomicMoveEnabled() &&
-      IsEditablePosition(position);
+      rule == kCanSkipOverEditingBoundary && IsEditablePosition(position);
   const EditingBoundaryCrossingRule boundary_rule =
       skip_non_editable ? kCanCrossEditingBoundary : rule;
   const PositionTemplate<Strategy> downstream_start =
@@ -531,9 +529,7 @@ PositionTemplate<Strategy> PreviousVisuallyDistinctCandidateAlgorithm(
   // Only skip non-editable content when explicitly requested via
   // kCanSkipOverEditingBoundary (used for caret navigation).
   const bool skip_non_editable =
-      rule == kCanSkipOverEditingBoundary &&
-      RuntimeEnabledFeatures::SkipNonEditableInAtomicMoveEnabled() &&
-      IsEditablePosition(position);
+      rule == kCanSkipOverEditingBoundary && IsEditablePosition(position);
   const EditingBoundaryCrossingRule boundary_rule =
       skip_non_editable ? kCanCrossEditingBoundary : rule;
   const PositionTemplate<Strategy> downstream_start =
@@ -847,6 +843,28 @@ PositionInFlatTree PreviousPositionOf(const PositionInFlatTree& position,
                                                                 move_type);
 }
 
+SelectionInDomTree NarrowSelectionToBackwardDeletionUnit(
+    const SelectionInDomTree& selection) {
+  if (!selection.IsRange()) {
+    return selection;
+  }
+  const Position& anchor = selection.Anchor();
+  const Position& focus = selection.Focus();
+  if (anchor.ComputeContainerNode() != focus.ComputeContainerNode()) {
+    return selection;
+  }
+  if (anchor.ComputeOffsetInContainerNode() -
+          focus.ComputeOffsetInContainerNode() <=
+      1) {
+    return selection;
+  }
+  const Position& end = selection.ComputeEndPosition();
+  return SelectionInDomTree::Builder()
+      .SetAsBackwardSelection(EphemeralRange(
+          PreviousPositionOf(end, PositionMoveType::kBackwardDeletion), end))
+      .Build();
+}
+
 template <typename Strategy>
 PositionTemplate<Strategy> NextPositionOfAlgorithm(
     const PositionTemplate<Strategy>& position,
@@ -960,7 +978,7 @@ TextDirection DirectionOfEnclosingBlockOfAlgorithm(
   if (!enclosing_block_element)
     return TextDirection::kLtr;
   LayoutObject* layout_object = enclosing_block_element->GetLayoutObject();
-  return layout_object ? layout_object->StyleRef().Direction()
+  return layout_object ? layout_object->Style().Direction()
                        : TextDirection::kLtr;
 }
 
@@ -977,7 +995,7 @@ TextDirection PrimaryDirectionOf(const Node& node) {
   TextDirection primary_direction = TextDirection::kLtr;
   for (const LayoutObject* r = node.GetLayoutObject(); r; r = r->Parent()) {
     if (r->IsLayoutBlockFlow()) {
-      primary_direction = r->StyleRef().Direction();
+      primary_direction = r->Style().Direction();
       break;
     }
   }
@@ -991,8 +1009,8 @@ const ComputedStyle* GetComputedStyleForElementOrLayoutObject(
     return element->GetComputedStyle();
   }
   // Text nodes and Document.
-  if (LayoutObject* layout_object = node.GetLayoutObject()) {
-    return layout_object->Style();
+  if (const LayoutObject* layout_object = node.GetLayoutObject()) {
+    return &layout_object->Style();
   }
   return nullptr;
 }
@@ -1407,9 +1425,9 @@ PositionWithAffinity PositionRespectingEditingBoundary(
   // TODO(yosin): Is this kIgnoreTransforms correct here?
   PhysicalOffset selection_end_point = hit_test_result.LocalPoint();
   PhysicalOffset absolute_point = target_object->LocalToAbsolutePoint(
-      selection_end_point, kIgnoreTransforms);
-  selection_end_point =
-      editable_object->AbsoluteToLocalPoint(absolute_point, kIgnoreTransforms);
+      selection_end_point, {MapCoordinatesMode::kIgnoreTransforms});
+  selection_end_point = editable_object->AbsoluteToLocalPoint(
+      absolute_point, {MapCoordinatesMode::kIgnoreTransforms});
   target_object = editable_object;
   // TODO(kojii): Support fragment-based |PositionForPoint|. LayoutObject-based
   // |PositionForPoint| may not work if NG block fragmented.
@@ -1858,16 +1876,10 @@ void InsertTextAndSendInputEventsOfTypeInsertReplacementText(
   if (is_canceled) {
     return;
   }
-  if (RuntimeEnabledFeatures::InputEventDataTransferForInsertCmdEnabled()) {
-    frame.GetEditor().InsertTextWithoutSendingTextEvent(
-        replacement, false, nullptr,
-        InputEvent::InputType::kInsertReplacementText,
-        EditCommand::PasswordEchoBehavior::kDoNotEcho, data_transfer);
-  } else {
-    frame.GetEditor().InsertTextWithoutSendingTextEvent(
-        replacement, false, nullptr,
-        InputEvent::InputType::kInsertReplacementText);
-  }
+  frame.GetEditor().InsertTextWithoutSendingTextEvent(
+      replacement, false, nullptr,
+      InputEvent::InputType::kInsertReplacementText,
+      EditCommand::PasswordEchoBehavior::kDoNotEcho, data_transfer);
 }
 
 // |IsEmptyNonEditableNodeInEditable()| is introduced for fixing
@@ -1915,8 +1927,11 @@ static scoped_refptr<Image> ImageFromNode(const Node& node) {
     return nullptr;
 
   if (layout_object->IsCanvas()) {
-    return To<HTMLCanvasElement>(const_cast<Node&>(node))
-        .Snapshot(kFrontBuffer);
+    const auto& canvas = To<HTMLCanvasElement>(node);
+    if (!canvas.OriginClean()) {
+      return nullptr;
+    }
+    return canvas.Snapshot(kFrontBuffer);
   }
 
   if (!layout_object->IsImage())

@@ -33,6 +33,7 @@ using Error = AudioInputStream::AudioInputCallback::Error;
 namespace {
 
 // Used to log errors in `CrasInputStream::Open`.
+// LINT.IfChange(StreamOpenResult)
 enum class StreamOpenResult {
   kCallbackOpenSuccess = 0,
   kCallbackOpenClientAlreadyOpen = 1,
@@ -45,8 +46,10 @@ enum class StreamOpenResult {
   kCallbackOpenCannotFindLoopbackDevice = 8,
   kMaxValue = kCallbackOpenCannotFindLoopbackDevice
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:CrasInputStreamOpenSuccess)
 
 // Used to log errors in `CrasInputStream::Start`.
+// LINT.IfChange(StreamStartResult)
 enum class StreamStartResult {
   kCallbackStartSuccess = 0,
   kCallbackStartErrorCreatingStreamParameters = 1,
@@ -55,6 +58,7 @@ enum class StreamStartResult {
   kCallbackStartFailedAddingStream = 4,
   kMaxValue = kCallbackStartFailedAddingStream
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:CrasInputStreamStartSuccess)
 
 void ReportStreamOpenResult(StreamOpenResult result) {
   base::UmaHistogramEnumeration("Media.Audio.CrasInputStreamOpenSuccess",
@@ -387,8 +391,8 @@ void CrasInputStream::Start(AudioInputCallback* callback) {
   // Initialize channel layout to all -1 to indicate that none of
   // the channels is set in the layout.
   int8_t layout[CRAS_CH_MAX];
-  for (size_t i = 0; i < std::size(layout); ++i) {
-    UNSAFE_TODO(layout[i]) = -1;
+  for (int8_t& channel : layout) {
+    channel = -1;
   }
 
   // Converts to CRAS defined channels. ChannelOrder will return -1

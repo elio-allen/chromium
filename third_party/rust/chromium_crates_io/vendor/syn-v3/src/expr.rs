@@ -816,7 +816,10 @@ impl Expr {
     pub const PLACEHOLDER: Self = Expr::Path(ExprPath {
         attrs: Vec::new(),
         qself: None,
-        path: Path { leading_colon: None, segments: Punctuated::new() },
+        path: Path {
+            leading_colon: None,
+            segments: Punctuated::new(),
+        },
     });
 
     /// An alternative to the primary `Expr::parse` parser (from the [`Parse`]
@@ -1135,7 +1138,10 @@ ast_struct! {
 impl From<usize> for Index {
     fn from(index: usize) -> Index {
         assert!(index < u32::MAX as usize);
-        Index { index: index as u32, span: Span::call_site() }
+        Index {
+            index: index as u32,
+            span: Span::call_site(),
+        }
     }
 }
 
@@ -1287,13 +1293,12 @@ pub(crate) mod parsing {
     #[cfg(feature = "full")]
     use crate::generics::{self, BoundLifetimes};
     use crate::ident::Ident;
-    #[cfg(feature = "full")]
     use crate::lifetime::Lifetime;
     use crate::lit::{Lit, LitFloat, LitInt};
     use crate::mac::{self, Macro};
     use crate::op::BinOp;
     use crate::parse::discouraged::Speculative as _;
-    use crate::parse::{Parse, ParseStream};
+    use crate::parse::{End, Parse, ParseStream};
     #[cfg(feature = "full")]
     use crate::pat::{Pat, PatType};
     use crate::path::{self, AngleBracketedGenericArguments, Path, QSelf};
@@ -1336,7 +1341,10 @@ pub(crate) mod parsing {
     #[cfg(feature = "full")]
     pub(super) fn parse_with_earlier_boundary_rule(input: ParseStream) -> Result<Expr> {
         let mut attrs = input.call(expr_attrs)?;
-        let mut expr = if input.peek(token::Group) {
+        let mut expr = if input.peek(token::Group) && {
+            let group = crate::group::parse_group(&input.fork())?;
+            !(group.content.peek(Lifetime) && group.content.peek2(End))
+        } {
             let allow_struct = AllowStruct(true);
             let atom = expr_group(input, allow_struct)?;
             if continue_parsing_early(&atom) {
@@ -1435,8 +1443,12 @@ pub(crate) mod parsing {
                 }
                 input.advance_to(&ahead);
                 let right = parse_binop_rhs(input, allow_struct, precedence)?;
-                lhs =
-                    Expr::Binary(ExprBinary { attrs: Vec::new(), left: Box::new(lhs), op, right });
+                lhs = Expr::Binary(ExprBinary {
+                    attrs: Vec::new(),
+                    left: Box::new(lhs),
+                    op,
+                    right,
+                });
             } else if Precedence::Assign >= base
                 && input.peek(Token![=])
                 && !input.peek(Token![=>])
@@ -1499,8 +1511,12 @@ pub(crate) mod parsing {
                 }
                 input.advance_to(&ahead);
                 let right = parse_binop_rhs(input, precedence)?;
-                lhs =
-                    Expr::Binary(ExprBinary { attrs: Vec::new(), left: Box::new(lhs), op, right });
+                lhs = Expr::Binary(ExprBinary {
+                    attrs: Vec::new(),
+                    left: Box::new(lhs),
+                    op,
+                    right,
+                });
             } else if Precedence::Cast >= base && input.peek(Token![as]) {
                 let as_token: Token![as] = input.parse()?;
                 let allow_plus = false;
@@ -1619,8 +1635,11 @@ pub(crate) mod parsing {
                 None
             };
             let mutability: Option<Token![mut]> = input.parse()?;
-            let const_token: Option<Token![const]> =
-                if raw.is_some() && mutability.is_none() { Some(input.parse()?) } else { None };
+            let const_token: Option<Token![const]> = if raw.is_some() && mutability.is_none() {
+                Some(input.parse()?)
+            } else {
+                None
+            };
             let expr = Box::new(unary_expr(input, allow_struct)?);
             if let Some(raw) = raw {
                 Ok(Expr::RawAddr(ExprRawAddr {
@@ -1634,7 +1653,12 @@ pub(crate) mod parsing {
                     expr,
                 }))
             } else {
-                Ok(Expr::Reference(ExprReference { attrs, and_token, mutability, expr }))
+                Ok(Expr::Reference(ExprReference {
+                    attrs,
+                    and_token,
+                    mutability,
+                    expr,
+                }))
             }
         } else if input.peek(Token![*]) || input.peek(Token![!]) || input.peek(Token![-]) {
             expr_unary(input, attrs, allow_struct).map(Expr::Unary)
@@ -1872,7 +1896,10 @@ pub(crate) mod parsing {
     // interactions, as they are fully contained.
     #[cfg(feature = "full")]
     fn atom_expr(input: ParseStream, allow_struct: AllowStruct) -> Result<Expr> {
-        if input.peek(token::Group) {
+        if input.peek(token::Group) && {
+            let group = crate::group::parse_group(&input.fork())?;
+            !(group.content.peek(Lifetime) && group.content.peek2(End))
+        } {
             expr_group(input, allow_struct)
         } else if input.peek(Lit) {
             input.parse().map(Expr::Lit)
@@ -1972,7 +1999,10 @@ pub(crate) mod parsing {
 
     #[cfg(not(feature = "full"))]
     fn atom_expr(input: ParseStream) -> Result<Expr> {
-        if input.peek(token::Group) {
+        if input.peek(token::Group) && {
+            let group = crate::group::parse_group(&input.fork())?;
+            !(group.content.peek(Lifetime) && group.content.peek2(End))
+        } {
             expr_group(input)
         } else if input.peek(Lit) {
             input.parse().map(Expr::Lit)
@@ -2049,7 +2079,12 @@ pub(crate) mod parsing {
             let (delimiter, tokens) = mac::parse_delimiter(input)?;
             return Ok(Expr::Macro(ExprMacro {
                 attrs: Vec::new(),
-                mac: Macro { path, bang_token, delimiter, tokens },
+                mac: Macro {
+                    path,
+                    bang_token,
+                    delimiter,
+                    tokens,
+                },
             }));
         }
 
@@ -2059,13 +2094,20 @@ pub(crate) mod parsing {
             return expr_struct_helper(input, qself, path).map(Expr::Struct);
         }
 
-        Ok(Expr::Path(ExprPath { attrs: Vec::new(), qself, path }))
+        Ok(Expr::Path(ExprPath {
+            attrs: Vec::new(),
+            qself,
+            path,
+        }))
     }
 
     #[cfg_attr(docsrs, doc(cfg(feature = "parsing")))]
     impl Parse for ExprMacro {
         fn parse(input: ParseStream) -> Result<Self> {
-            Ok(ExprMacro { attrs: Vec::new(), mac: input.parse()? })
+            Ok(ExprMacro {
+                attrs: Vec::new(),
+                mac: input.parse()?,
+            })
         }
     }
 
@@ -2100,7 +2142,11 @@ pub(crate) mod parsing {
             let value = content.parse()?;
             elems.push_value(value);
         }
-        Ok(Expr::Tuple(ExprTuple { attrs: Vec::new(), paren_token, elems }))
+        Ok(Expr::Tuple(ExprTuple {
+            attrs: Vec::new(),
+            paren_token,
+            elems,
+        }))
     }
 
     #[cfg(feature = "full")]
@@ -2128,7 +2174,11 @@ pub(crate) mod parsing {
                 let value = content.parse()?;
                 elems.push_value(value);
             }
-            Ok(Expr::Array(ExprArray { attrs: Vec::new(), bracket_token, elems }))
+            Ok(Expr::Array(ExprArray {
+                attrs: Vec::new(),
+                bracket_token,
+                elems,
+            }))
         } else if content.peek(Token![;]) {
             let semi_token: Token![;] = content.parse()?;
             let len: Expr = content.parse()?;
@@ -2162,7 +2212,11 @@ pub(crate) mod parsing {
                 elems.push_punct(punct);
             }
 
-            Ok(ExprArray { attrs: Vec::new(), bracket_token, elems })
+            Ok(ExprArray {
+                attrs: Vec::new(),
+                bracket_token,
+                elems,
+            })
         }
     }
 
@@ -2203,7 +2257,10 @@ pub(crate) mod parsing {
     #[cfg_attr(docsrs, doc(cfg(feature = "parsing")))]
     impl Parse for ExprLit {
         fn parse(input: ParseStream) -> Result<Self> {
-            Ok(ExprLit { attrs: Vec::new(), lit: input.parse()? })
+            Ok(ExprLit {
+                attrs: Vec::new(),
+                lit: input.parse()?,
+            })
         }
     }
 
@@ -2385,7 +2442,12 @@ pub(crate) mod parsing {
             attr::parsing::parse_inner(&content, &mut attrs)?;
             let stmts = content.call(Block::parse_within)?;
 
-            Ok(ExprLoop { attrs, label, loop_token, body: Block { brace_token, stmts } })
+            Ok(ExprLoop {
+                attrs,
+                label,
+                loop_token,
+                body: Block { brace_token, stmts },
+            })
         }
     }
 
@@ -2403,7 +2465,13 @@ pub(crate) mod parsing {
 
             let arms = Arm::parse_multiple(&content)?;
 
-            Ok(ExprMatch { attrs, match_token, expr: Box::new(expr), brace_token, arms })
+            Ok(ExprMatch {
+                attrs,
+                match_token,
+                expr: Box::new(expr),
+                brace_token,
+                arms,
+            })
         }
     }
 
@@ -2602,7 +2670,11 @@ pub(crate) mod parsing {
             let ty: Type = input.parse()?;
             let body: Block = input.parse()?;
             let output = ReturnType::Type(arrow_token, Box::new(ty));
-            let block = Expr::Block(ExprBlock { attrs: Vec::new(), label: None, block: body });
+            let block = Expr::Block(ExprBlock {
+                attrs: Vec::new(),
+                label: None,
+                block: body,
+            });
             (output, block)
         } else {
             let body = ambiguous_expr(input, allow_struct)?;
@@ -2723,7 +2795,10 @@ pub(crate) mod parsing {
     #[cfg_attr(docsrs, doc(cfg(feature = "parsing")))]
     impl Parse for Label {
         fn parse(input: ParseStream) -> Result<Self> {
-            Ok(Label { name: Lifetime::parse_any(input)?, colon_token: input.parse()? })
+            Ok(Label {
+                name: Lifetime::parse_any(input)?,
+                colon_token: input.parse()?,
+            })
         }
     }
 
@@ -2762,7 +2837,10 @@ pub(crate) mod parsing {
             // Not allowed: `break 'label: loop {...}`
             // Parentheses are required. `break ('label: loop {...})`
             let _: Expr = input.parse()?;
-            return Err(Error::new_range(label_begin..input.cursor(), "parentheses required"));
+            return Err(Error::new_range(
+                label_begin..input.cursor(),
+                "parentheses required",
+            ));
         }
 
         input.advance_to(&ahead);
@@ -2772,7 +2850,12 @@ pub(crate) mod parsing {
             None
         };
 
-        Ok(ExprBreak { attrs: Vec::new(), break_token, label, expr })
+        Ok(ExprBreak {
+            attrs: Vec::new(),
+            break_token,
+            label,
+            expr,
+        })
     }
 
     #[cfg_attr(docsrs, doc(cfg(feature = "parsing")))]
@@ -2795,7 +2878,12 @@ pub(crate) mod parsing {
                 unreachable!()
             };
 
-            Ok(FieldValue { attrs, member, colon_token, expr: value })
+            Ok(FieldValue {
+                attrs,
+                member,
+                colon_token,
+                expr: value,
+            })
         }
     }
 
@@ -2826,7 +2914,11 @@ pub(crate) mod parsing {
                     brace_token,
                     fields,
                     dot2_token: Some(content.parse()?),
-                    rest: if content.is_empty() { None } else { Some(Box::new(content.parse()?)) },
+                    rest: if content.is_empty() {
+                        None
+                    } else {
+                        Some(Box::new(content.parse()?))
+                    },
                 });
             }
 
@@ -2860,7 +2952,11 @@ pub(crate) mod parsing {
             let inner_attrs = content.call(Attribute::parse_inner)?;
             let stmts = content.call(Block::parse_within)?;
 
-            Ok(ExprUnsafe { attrs: inner_attrs, unsafe_token, block: Block { brace_token, stmts } })
+            Ok(ExprUnsafe {
+                attrs: inner_attrs,
+                unsafe_token,
+                block: Block { brace_token, stmts },
+            })
         }
     }
 
@@ -2876,7 +2972,11 @@ pub(crate) mod parsing {
             attr::parsing::parse_inner(&content, &mut attrs)?;
             let stmts = content.call(Block::parse_within)?;
 
-            Ok(ExprBlock { attrs, label, block: Block { brace_token, stmts } })
+            Ok(ExprBlock {
+                attrs,
+                label,
+                block: Block { brace_token, stmts },
+            })
         }
     }
 
@@ -2884,7 +2984,12 @@ pub(crate) mod parsing {
     fn expr_range(input: ParseStream, allow_struct: AllowStruct) -> Result<ExprRange> {
         let limits: RangeLimits = input.parse()?;
         let end = parse_range_end(input, &limits, allow_struct)?;
-        Ok(ExprRange { attrs: Vec::new(), start: None, limits, end })
+        Ok(ExprRange {
+            attrs: Vec::new(),
+            start: None,
+            limits,
+            end,
+        })
     }
 
     #[cfg(feature = "full")]
@@ -3067,7 +3172,9 @@ pub(crate) mod parsing {
                 member: Member::Unnamed(index),
             });
 
-            let dot_span = float_token.subspan(part_end..part_end + 1).unwrap_or(float_span);
+            let dot_span = float_token
+                .subspan(part_end..part_end + 1)
+                .unwrap_or(float_span);
             *dot_token = Token![.](dot_span);
             offset = part_end + 1;
         }
@@ -3332,7 +3439,12 @@ pub(crate) mod printing {
     fn print_expr_await(e: &ExprAwait, tokens: &mut TokenStream, fixup: FixupContext) {
         outer_attrs_to_tokens(&e.attrs, tokens);
         let (left_prec, left_fixup) = fixup.leftmost_subexpression_with_dot(&e.base);
-        print_subexpression(&e.base, left_prec < Precedence::Unambiguous, tokens, left_fixup);
+        print_subexpression(
+            &e.base,
+            left_prec < Precedence::Unambiguous,
+            tokens,
+            left_fixup,
+        );
         e.dot_token.to_tokens(tokens);
         e.await_token.to_tokens(tokens);
     }
@@ -3575,7 +3687,12 @@ pub(crate) mod printing {
     fn print_expr_field(e: &ExprField, tokens: &mut TokenStream, fixup: FixupContext) {
         outer_attrs_to_tokens(&e.attrs, tokens);
         let (left_prec, left_fixup) = fixup.leftmost_subexpression_with_dot(&e.base);
-        print_subexpression(&e.base, left_prec < Precedence::Unambiguous, tokens, left_fixup);
+        print_subexpression(
+            &e.base,
+            left_prec < Precedence::Unambiguous,
+            tokens,
+            left_fixup,
+        );
         e.dot_token.to_tokens(tokens);
         e.member.to_tokens(tokens);
     }
@@ -3663,7 +3780,12 @@ pub(crate) mod printing {
             #[cfg(feature = "full")]
             Precedence::Unambiguous,
         );
-        print_subexpression(&e.expr, left_prec < Precedence::Unambiguous, tokens, left_fixup);
+        print_subexpression(
+            &e.expr,
+            left_prec < Precedence::Unambiguous,
+            tokens,
+            left_fixup,
+        );
         e.bracket_token.surround(tokens, |tokens| {
             e.index.to_tokens(tokens);
         });
@@ -3761,7 +3883,12 @@ pub(crate) mod printing {
     fn print_expr_method_call(e: &ExprMethodCall, tokens: &mut TokenStream, fixup: FixupContext) {
         outer_attrs_to_tokens(&e.attrs, tokens);
         let (left_prec, left_fixup) = fixup.leftmost_subexpression_with_dot(&e.receiver);
-        print_subexpression(&e.receiver, left_prec < Precedence::Unambiguous, tokens, left_fixup);
+        print_subexpression(
+            &e.receiver,
+            left_prec < Precedence::Unambiguous,
+            tokens,
+            left_fixup,
+        );
         e.dot_token.to_tokens(tokens);
         e.method.to_tokens(tokens);
         if let Some(turbofish) = &e.turbofish {
@@ -3852,7 +3979,12 @@ pub(crate) mod printing {
         e.raw.to_tokens(tokens);
         e.mutability.to_tokens(tokens);
         let (right_prec, right_fixup) = fixup.rightmost_subexpression(&e.expr, Precedence::Prefix);
-        print_subexpression(&e.expr, right_prec < Precedence::Prefix, tokens, right_fixup);
+        print_subexpression(
+            &e.expr,
+            right_prec < Precedence::Prefix,
+            tokens,
+            right_fixup,
+        );
     }
 
     #[cfg_attr(docsrs, doc(cfg(feature = "printing")))]
@@ -3871,7 +4003,12 @@ pub(crate) mod printing {
             #[cfg(feature = "full")]
             Precedence::Prefix,
         );
-        print_subexpression(&e.expr, right_prec < Precedence::Prefix, tokens, right_fixup);
+        print_subexpression(
+            &e.expr,
+            right_prec < Precedence::Prefix,
+            tokens,
+            right_fixup,
+        );
     }
 
     #[cfg(feature = "full")]
@@ -3937,7 +4074,12 @@ pub(crate) mod printing {
     fn print_expr_try(e: &ExprTry, tokens: &mut TokenStream, fixup: FixupContext) {
         outer_attrs_to_tokens(&e.attrs, tokens);
         let (left_prec, left_fixup) = fixup.leftmost_subexpression_with_dot(&e.expr);
-        print_subexpression(&e.expr, left_prec < Precedence::Unambiguous, tokens, left_fixup);
+        print_subexpression(
+            &e.expr,
+            left_prec < Precedence::Unambiguous,
+            tokens,
+            left_fixup,
+        );
         e.question_token.to_tokens(tokens);
     }
 
@@ -3981,7 +4123,12 @@ pub(crate) mod printing {
             #[cfg(feature = "full")]
             Precedence::Prefix,
         );
-        print_subexpression(&e.expr, right_prec < Precedence::Prefix, tokens, right_fixup);
+        print_subexpression(
+            &e.expr,
+            right_prec < Precedence::Prefix,
+            tokens,
+            right_fixup,
+        );
     }
 
     #[cfg(feature = "full")]

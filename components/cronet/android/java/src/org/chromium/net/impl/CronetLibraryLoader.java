@@ -5,7 +5,6 @@
 package org.chromium.net.impl;
 
 import android.content.Context;
-import android.content.pm.ApplicationInfo;
 import android.os.ConditionVariable;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -21,6 +20,7 @@ import org.jni_zero.NativeMethods;
 
 import org.chromium.base.CommandLine;
 import org.chromium.base.ContextUtils;
+import org.chromium.base.JniAndroid;
 import org.chromium.base.Log;
 import org.chromium.base.TraceEvent;
 import org.chromium.base.metrics.ScopedSysTraceEvent;
@@ -72,9 +72,6 @@ public class CronetLibraryLoader {
 
     private static final ConditionVariable sHttpFlagsLoaded = new ConditionVariable();
 
-    @VisibleForTesting
-    public static final String TRACE_NET_LOG_SYSTEM_PROPERTY_KEY = "debug.cronet.trace_netlog";
-
     /**
      * This method will be called by the Zygote pre-fork to preload the native code. Which means
      * that this will be dead code in Chromium but it will be used in AOSP.
@@ -106,6 +103,17 @@ public class CronetLibraryLoader {
     @VisibleForTesting
     public static void loadLibrary() {
         sLibAlreadyLoaded = true;
+
+        // Ensure this code contains a reference to JniAndroid. This makes it so that when ProGuard
+        // runs, it will correctly catch issues where the JniAndroid class is missing from the APK.
+        // This is especially relevant for the cronet_package_with_nativejava_apk test. If we didn't
+        // have this, we run a high risk of the absence of this class going unnoticed because:
+        //  - It has no other Java references to it (it is only called from native code);
+        //  - It is only used for crash handling, which is not easy to test;
+        //  - The consequences of the class being missing are only visible when Cronet crashes - it
+        //    will not affect normal operation.
+        var unused = JniAndroid.class;
+
         if (BuildConfig.CRONET_FOR_AOSP_BUILD) {
             // For AOSP we have only one library name, and exceptions should propagate.
             System.loadLibrary(getLibraryName(LIBRARY_NAME_HTTPENGINE));
@@ -240,49 +248,6 @@ public class CronetLibraryLoader {
         return sInitThread.getLooper() == Looper.myLooper();
     }
 
-    private static @NetLogCaptureMode int getTraceNetLogCaptureMode() {
-        @NetLogCaptureMode int traceNetLogCaptureMode = NetLogCaptureMode.HEAVILY_REDACTED;
-        var requestedTraceNetLogCaptureMode =
-                AndroidOsSystemProperties.get(
-                        TRACE_NET_LOG_SYSTEM_PROPERTY_KEY, "heavily_redacted");
-        if (requestedTraceNetLogCaptureMode.equals("heavily_redacted")) {
-            traceNetLogCaptureMode = NetLogCaptureMode.HEAVILY_REDACTED;
-        } else if (requestedTraceNetLogCaptureMode.equals("on")) {
-            // Note DEFAULT is mapped to "on", not "default", to avoid confusion with regard to
-            // the default value of the system property.
-            traceNetLogCaptureMode = NetLogCaptureMode.DEFAULT;
-        } else if (requestedTraceNetLogCaptureMode.equals("include_sensitive")) {
-            traceNetLogCaptureMode = NetLogCaptureMode.INCLUDE_SENSITIVE;
-        } else if (requestedTraceNetLogCaptureMode.equals("everything")) {
-            traceNetLogCaptureMode = NetLogCaptureMode.EVERYTHING;
-        } else {
-            Log.w(
-                    TAG,
-                    "Unknown value for %s system property, ignoring: %s",
-                    TRACE_NET_LOG_SYSTEM_PROPERTY_KEY,
-                    requestedTraceNetLogCaptureMode);
-        }
-
-        if (traceNetLogCaptureMode > NetLogCaptureMode.HEAVILY_REDACTED) {
-            final var buildType = AndroidOsBuild.get().getType();
-            if (!buildType.equals("userdebug")
-                    && !buildType.equals("eng")
-                    && (ContextUtils.getApplicationContext().getApplicationInfo().flags
-                                    & ApplicationInfo.FLAG_DEBUGGABLE)
-                            == 0) {
-                Log.w(
-                        TAG,
-                        "Ignoring requested Cronet trace netlog capture mode (%s=%s) because"
-                                + " neither the device nor app are debuggable",
-                        TRACE_NET_LOG_SYSTEM_PROPERTY_KEY,
-                        requestedTraceNetLogCaptureMode);
-                traceNetLogCaptureMode = NetLogCaptureMode.HEAVILY_REDACTED;
-            }
-        }
-
-        return traceNetLogCaptureMode;
-    }
-
     /**
      * Runs Cronet initialization tasks on the init thread. Ensures that HTTP flags are loaded, the
      * NetworkChangeNotifier is initialzied and the init thread native MessageLoop is initialized.
@@ -302,10 +267,10 @@ public class CronetLibraryLoader {
             sHttpFlagsLoaded.open();
             NetworkChangeNotifier.init();
             NetworkChangeNotifier.setAutoDetectConnectivityState(
-                    new RegistrationPolicyAlwaysRegister(), /* forceUpdateNetworkState= */ false);
+                    new RegistrationPolicyAlwaysRegister());
 
             CronetPccAuditLogger.initialize();
-            final var traceNetLogCaptureMode = getTraceNetLogCaptureMode();
+            final var traceNetLogCaptureMode = DebugFlags.getTraceNetLogCaptureMode();
 
             try (var libLoadTraceEvent =
                     ScopedSysTraceEvent.scoped(

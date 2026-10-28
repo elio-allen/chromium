@@ -20,10 +20,6 @@ class AvatarBadgeView : public views::View {
   METADATA_HEADER(AvatarBadgeView, views::View)
 
  public:
-  // Returns the localized badge label string for the given subscription tier,
-  // or an empty string if the tier is not recognized.
-  static std::u16string GetAvatarBadgeLabel(int tier);
-
   // Constructs an AvatarBadgeView with the specified `label_text` and optional
   // decorative `wave_path`.
   explicit AvatarBadgeView(const std::u16string& label_text,

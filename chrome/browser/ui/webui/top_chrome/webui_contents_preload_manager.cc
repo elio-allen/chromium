@@ -22,9 +22,10 @@
 #include "chrome/browser/page_load_metrics/page_load_metrics_initialize.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/task_manager/web_contents_tags.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/prefs/prefs_tab_helper.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/webui/log_web_ui_url.h"
@@ -44,6 +45,7 @@
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "ui/base/models/menu_model.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/controls/webview/web_contents_set_background_color.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
@@ -77,7 +79,8 @@ class FixedCandidateSelector : public webui::PreloadCandidateSelector {
 
   // webui::PreloadCandidateSelector:
   void Init(const std::vector<GURL>& preloadable_urls) override {
-    DCHECK(std::ranges::contains(preloadable_urls, webui_url_));
+    CHECK(std::ranges::contains(preloadable_urls, webui_url_),
+          base::NotFatalUntil::M162);
   }
   std::optional<GURL> GetURLToPreload(
       webui::PreloadContext context) const override {
@@ -156,6 +159,13 @@ class WebUIContentsPreloadManager::WebUIControllerEmbedderStub final
   void ShowUI() override {
     CHECK(preload_state_);
     preload_state_->ready_to_show = true;
+    // The contents is created visible so that it loads at full priority. Once
+    // it is ready, hide it until it is shown: while visible, it keeps the
+    // shared top-chrome renderer at foreground priority.
+    if (base::FeatureList::IsEnabled(
+            features::kPreloadTopChromeWebUIHideWhenReady)) {
+      web_contents_->WasHidden();
+    }
   }
 
   // Attach this stub as the embedder of `web_contents`, assuming that the
@@ -278,6 +288,7 @@ constexpr base::MemoryConsumerTraits kWebUIContentsPreloadManagerTraits(
 
 WebUIContentsPreloadManager::WebUIContentsPreloadManager()
     : memory_consumer_registration_(
+          std::in_place,
           /*consumer_name=*/"WebUIContentsPreloadManager",
           kWebUIContentsPreloadManagerTraits,
           this,
@@ -302,6 +313,13 @@ WebUIContentsPreloadManager::WebUIContentsPreloadManager()
   }
 }
 
+void WebUIContentsPreloadManager::ReregisterMemoryConsumerForTesting() {
+  memory_consumer_registration_.emplace(
+      /*consumer_name=*/"WebUIContentsPreloadManager",
+      kWebUIContentsPreloadManagerTraits, this,
+      base::MemoryConsumerRegistration::CheckUnregister::kDisabled);
+}
+
 WebUIContentsPreloadManager::~WebUIContentsPreloadManager() = default;
 
 // static
@@ -310,7 +328,8 @@ WebUIContentsPreloadManager* WebUIContentsPreloadManager::GetInstance() {
   return s_instance.get();
 }
 
-void WebUIContentsPreloadManager::WarmupForBrowser(Browser* browser) {
+void WebUIContentsPreloadManager::WarmupForBrowser(
+    BrowserWindowInterface* browser) {
   // Most WebUIs, if not all, are hosted by a TYPE_NORMAL browser. This check
   // skips unnecessary preloading for the majority of WebUIs.
   if (browser->GetType() != BrowserWindowInterface::Type::TYPE_NORMAL) {
@@ -326,7 +345,7 @@ void WebUIContentsPreloadManager::WarmupForBrowser(Browser* browser) {
   if (IsDelayPreloadEnabled()) {
     MaybePreloadForBrowserContextLater(
         browser->GetProfile(),
-        browser->tab_strip_model()->GetActiveWebContents(),
+        browser->GetTabStripModel()->GetActiveWebContents(),
         PreloadReason::kBrowserWarmup);
   } else {
     MaybePreloadForBrowserContext(browser->GetProfile(),
@@ -449,7 +468,7 @@ RequestResult WebUIContentsPreloadManager::Request(
   // TODO(325836830): allow navigations between WebUIs.
   if (preloaded_web_contents_ &&
       preloaded_web_contents_->GetBrowserContext() == browser_context &&
-      (preloaded_web_contents_->GetURL().GetHost() == webui_url.GetHost() ||
+      (preloaded_web_contents_->GetURL().host() == webui_url.host() ||
        preloaded_web_contents_->GetURL().IsAboutBlank() ||
        webui_url.IsAboutBlank())) {
     preload_result = WebUIPreloadResult::kHit;
@@ -466,7 +485,7 @@ RequestResult WebUIContentsPreloadManager::Request(
 
   // Navigate to path if the request URL has a different path.
   if (!is_navigation_disabled_for_test_ &&
-      webui_url.GetPath() != web_contents_ret->GetURL().GetPath()) {
+      webui_url.path() != web_contents_ret->GetURL().path()) {
     CHECK(url::IsSameOriginWith(webui_url, web_contents_ret->GetURL()));
     LoadURLForContents(web_contents_ret.get(), webui_url);
   }
@@ -605,7 +624,7 @@ bool WebUIContentsPreloadManager::ShouldPreloadForBrowserContext(
   }
 
   // Don't preload if under heavy memory pressure.
-  if (memory_limit() <= base::kModerateMemoryPressureThreshold) {
+  if (memory_limit() <= base::MemoryLimit::ModeratePressureThreshold()) {
     return false;
   }
 

@@ -10,8 +10,8 @@
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "ui/compositor/compositor.h"
-#include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animation_sequence.h"
+#include "ui/compositor/layer_textured.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/gfx/animation/animation.h"
 #include "ui/gfx/geometry/point3_f.h"
@@ -581,7 +581,7 @@ void SquareInkDropRipple::AddPaintLayer(PaintedShape painted_shape) {
   layer->SetVisible(true);
   layer->SetOpacity(1.0);
   layer->SetMasksToBounds(false);
-  layer->SetName("PAINTED_SHAPE_COUNT:" + ToLayerName(painted_shape));
+  layer->SetName("SquareInkDropRipple:" + ToLayerName(painted_shape));
   callback_subscriptions_[painted_shape] =
       layer->GetAnimator()->AddSequenceScheduledCallback(base::BindRepeating(
           &SquareInkDropRipple::OnLayerAnimationSequenceScheduled,

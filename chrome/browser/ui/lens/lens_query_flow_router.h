@@ -12,17 +12,30 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/contextual_search/desktop_query_contextualizer_delegate.h"
 #include "chrome/browser/ui/contextual_search/tab_contextualization_controller.h"
-#include "chrome/browser/ui/lens/lens_overlay_query_controller.h"
 #include "chrome/browser/ui/lens/lens_search_controller.h"
 #include "components/contextual_search/contextual_search_session_handle.h"
 #include "components/lens/lens_overlay_invocation_source.h"
 
 namespace lens {
+class LensOverlayQueryController;
 
 using CreateSearchUrlRequestInfo = contextual_search::
     ContextualSearchContextController::CreateSearchUrlRequestInfo;
 using SearchUrlType =
     contextual_search::ContextualSearchContextController::SearchUrlType;
+
+// Returns true if the given invocation source originates from the Omnibox.
+bool IsOmniboxInvocationSource(
+    std::optional<lens::LensOverlayInvocationSource> invocation_source);
+
+// Returns true if the active tab should be forced to contextualize for the
+// given invocation source when no overlay token is present.
+// `session_handle` is the contextual search session the query will be issued
+// on, and may be null.
+bool ShouldFetchActiveTabForInvocationSource(
+    std::optional<lens::LensOverlayInvocationSource> invocation_source,
+    const contextual_search::ContextualSearchSessionHandle* session_handle =
+        nullptr);
 
 // A router for queries that Lens should perform.
 class LensQueryFlowRouter
@@ -34,6 +47,7 @@ class LensQueryFlowRouter
   enum class ContextUploadMode {
     kViewportOnly,
     kFullPage,
+    kSelectedRegionOnly,
   };
 
   explicit LensQueryFlowRouter(LensSearchController* lens_search_controller);
@@ -137,6 +151,9 @@ class LensQueryFlowRouter
       const std::optional<contextual_search::ContextUploadErrorType>&
           error_type);
 
+  // Testing method to trigger the controller destroyed callback.
+  void OnControllerDestroyedForTesting() { OnControllerDestroyed(); }
+
   // Handles the interaction response from the server.
   void HandleInteractionResponse(
       std::optional<lens::ImageCrop> image_crop,
@@ -172,8 +189,8 @@ class LensQueryFlowRouter
   // Returns whether the current active tab is context eligible.
   virtual bool IsActiveTabContextEligible() const;
 
-  // Returns whether full page context should be populated based on sign-in
-  // status, cobrowse eligibility, and permissions.
+  // Returns whether full page context should be populated based on page context
+  // eligibility and permissions.
   bool ShouldPopulateFullPageContext() const;
 
   virtual Profile* profile() const;
@@ -188,6 +205,7 @@ class LensQueryFlowRouter
       contextual_search::ContextUploadStatus context_upload_status,
       const std::optional<contextual_search::ContextUploadErrorType>&
           error_type) override;
+  void OnControllerDestroyed() override;
 
   // Callbacks for DesktopQueryContextualizerDelegate:
   contextual_search::ContextualSearchSessionHandle* GetOrCreateSessionHandle();
@@ -268,7 +286,12 @@ class LensQueryFlowRouter
       lens::MimeType primary_content_type,
       std::optional<uint32_t> pdf_current_page);
 
-  // Creates the search url request info from an interaction.
+  // Creates the search url request info from an interaction. If
+  // `viewport_region` is provided (e.g. in `kSelectedRegionOnly` mode),
+  // `region` represents the crop within the context image, while
+  // `viewport_region` represents the region in the full viewport coordinate
+  // frame used to remap interaction response objects/text back to the overlay
+  // viewport.
   std::unique_ptr<CreateSearchUrlRequestInfo>
   CreateSearchUrlRequestInfoFromInteraction(
       lens::mojom::CenterRotatedBoxPtr region,
@@ -277,7 +300,8 @@ class LensQueryFlowRouter
       lens::LensOverlaySelectionType lens_selection_type,
       std::map<std::string, std::string> additional_search_query_params,
       base::Time query_start_time,
-      lens::LensOverlayInvocationSource invocation_source);
+      lens::LensOverlayInvocationSource invocation_source,
+      lens::mojom::CenterRotatedBoxPtr viewport_region = nullptr);
 
   // Called when QueryContextualizer completes contextualization.
   void OnContextualizedComplete(

@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -315,6 +316,8 @@ class PdfViewWebPlugin final : public PDFiumEngineClient,
   bool CanUndo() const override;
   bool CanRedo() const override;
   bool CanCopy() const override;
+  std::optional<base::i18n::TextDirection> GetFocusedFormTextDirection()
+      const override;
   bool ExecuteEditCommand(const blink::WebString& name,
                           const blink::WebString& value) override;
   blink::WebURL LinkAtPosition(const gfx::Point& /*position*/) const override;
@@ -329,6 +332,7 @@ class PdfViewWebPlugin final : public PDFiumEngineClient,
   bool ShouldDispatchImeEventsToPlugin() override;
   blink::WebTextInputType GetPluginTextInputType() override;
   gfx::Rect GetPluginCaretBounds() override;
+  gfx::Rect GetPluginSelectionBounds() override;
   void ImeSetCompositionForPlugin(
       const blink::WebString& text,
       const std::vector<ui::ImeTextSpan>& ime_text_spans,
@@ -395,13 +399,16 @@ class PdfViewWebPlugin final : public PDFiumEngineClient,
                                                const std::u16string& haystack,
                                                bool case_sensitive) override;
   void DocumentLoadComplete() override;
+  void OnFirstContentPainted() override;
   void DocumentLoadFailed() override;
   void DocumentHasUnsupportedFeature(const std::string& feature) override;
   void DocumentLoadProgress(uint32_t available, uint32_t doc_size) override;
   void FormFieldFocusChange(PDFiumEngineClient::FocusFieldType type) override;
   bool IsPrintPreview() const override;
   SkColor GetBackgroundColor() const override;
-  void SelectionChanged(const gfx::Rect& left, const gfx::Rect& right) override;
+  void SelectionChanged(const gfx::Rect& left,
+                        const gfx::Rect& right,
+                        const gfx::Rect& bounding_box) override;
   void CaretChanged(const gfx::Rect& caret_rect) override;
   void EnteredEditMode() override;
   void DocumentFocusChanged(bool document_has_focus) override;
@@ -421,8 +428,7 @@ class PdfViewWebPlugin final : public PDFiumEngineClient,
   // pdf::mojom::PdfListener:
   void SetCaretPosition(const gfx::PointF& position) override;
   void MoveRangeSelectionExtent(const gfx::PointF& extent) override;
-  void SetSelectionBounds(const gfx::PointF& base,
-                          const gfx::PointF& extent) override;
+  void SetSelectionBase(const gfx::PointF& base) override;
   void GetPdfBytes(uint32_t size_limit, GetPdfBytesCallback callback) override;
   void GetPageText(int32_t page_index, GetPageTextCallback callback) override;
   void GetMostVisiblePageIndex(
@@ -729,6 +735,8 @@ class PdfViewWebPlugin final : public PDFiumEngineClient,
   bool Undo();
   bool Redo();
 
+  bool SetFocusedFormTextDirection(base::i18n::TextDirection direction);
+
   bool HandleWebInputEvent(const blink::WebInputEvent& event);
 
   // Helper method for converting IME text to input events.
@@ -860,6 +868,9 @@ class PdfViewWebPlugin final : public PDFiumEngineClient,
       blink::WebTextInputType::kWebTextInputTypeNone;
 
   gfx::Rect caret_rect_;
+  // The selection bounding box in pixels, with a top-left origin relative to
+  // the plugin.
+  gfx::Rect selection_bounding_box_;
 
   blink::WebString composition_text_;
 

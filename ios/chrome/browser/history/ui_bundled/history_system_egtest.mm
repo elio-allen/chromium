@@ -5,7 +5,6 @@
 #import <UIKit/UIKit.h>
 #import <XCTest/XCTest.h>
 
-#import "base/ios/ios_util.h"
 #import "base/strings/stringprintf.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/strings/utf_string_conversions.h"
@@ -17,7 +16,7 @@
 #import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
 #import "ios/chrome/browser/history/ui_bundled/history_ui_constants.h"
-#import "ios/chrome/browser/menu/ui_bundled/menu_action_type.h"
+#import "ios/chrome/browser/menu/public/menu_action_type.h"
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
 #import "ios/chrome/browser/popup_menu/public/popup_menu_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
@@ -217,18 +216,7 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
 // Tests that searching a typed URL (after history sync is enabled and the URL
 // is uploaded to the sync server) displays only entries matching the search
 // term.
-// TODO(crbug.com/437843552): Test is flaky on simulator. Reenable the test.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_testSearchSyncedHistory FLAKY_testSearchSyncedHistory
-#else
-#define MAYBE_testSearchSyncedHistory testSearchSyncedHistory
-#endif
-- (void)MAYBE_testSearchSyncedHistory {
-  // TODO(crbug.com/437314320): Re-enable the test on iOS26.
-  if (base::ios::IsRunningOnIOS26OrLater()) {
-    EARL_GREY_TEST_DISABLED(@"Test disabled on iOS 26.");
-  }
-
+- (void)testSearchSyncedHistory {
   const char syncedURL[] = "http://mockurl/sync/";
   const GURL mockURL(syncedURL);
 
@@ -269,37 +257,39 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
                                           kHistorySearchScrimIdentifier)]
       assertWithMatcher:grey_nil()];
 
-  [[EarlGrey
-      selectElementWithMatcher:
-          grey_allOf(chrome_test_util::StaticTextWithAccessibilityLabel(
-                         @"mockurl/sync/"),
-                     grey_sufficientlyVisible(), nil)]
-      assertWithMatcher:grey_notNil()];
-
-  [[EarlGrey
-      selectElementWithMatcher:
+  // The search results are fetched asynchronously. Wait for the non-matching
+  // entries to be filtered out before checking the synced entry, which is also
+  // part of the unfiltered list.
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
           HistoryEntry(
               base::UTF16ToUTF8(
                   url_formatter::
                       FormatUrlForDisplayOmitSchemePathTrivialSubdomainsAndMobilePrefix(
                           _URL1)),
-              kTitle1)] assertWithMatcher:grey_nil()];
-  [[EarlGrey
-      selectElementWithMatcher:
+              kTitle1)];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
           HistoryEntry(
               base::UTF16ToUTF8(
                   url_formatter::
                       FormatUrlForDisplayOmitSchemePathTrivialSubdomainsAndMobilePrefix(
                           _URL2)),
-              kTitle2)] assertWithMatcher:grey_nil()];
-  [[EarlGrey
-      selectElementWithMatcher:
+              kTitle2)];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
           HistoryEntry(
               base::UTF16ToUTF8(
                   url_formatter::
                       FormatUrlForDisplayOmitSchemePathTrivialSubdomainsAndMobilePrefix(
                           _URL3)),
-              _URL3.GetContent())] assertWithMatcher:grey_nil()];
+              _URL3.GetContent())];
+
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:
+          grey_allOf(chrome_test_util::StaticTextWithAccessibilityLabel(
+                         @"mockurl/sync/"),
+                     grey_sufficientlyVisible(), nil)];
 }
 
 // Tests clear browsing history.

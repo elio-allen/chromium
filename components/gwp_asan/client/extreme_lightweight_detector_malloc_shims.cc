@@ -6,8 +6,6 @@
 
 #include "partition_alloc/slot_start.h"
 
-#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
-
 #include <atomic>
 
 #include "base/compiler_specific.h"
@@ -163,8 +161,8 @@ inline bool Quarantine(void* object, size_t object_size, size_t alignment) {
     return false;
   }
 
-  partition_alloc::internal::UntaggedSlotStart slot_start =
-      partition_alloc::internal::SlotStart::Unchecked(object).Untag();
+  partition_alloc::UntaggedSlotStart slot_start =
+      partition_alloc::SlotStart::Unchecked(object).Untag();
 
   // TODO(yukishiino): It may and may not be more performative to get the root
   // via `FromAddrInFirstSuperpage(internal::ObjectPtr2Addr(object))`.
@@ -271,6 +269,7 @@ AllocatorDispatch allocator_dispatch = {
     nullptr,  // alloc_zero_initialized_function
     nullptr,  // alloc_zero_initialized_unchecked_function
     nullptr,  // alloc_aligned_function
+    nullptr,  // alloc_aligned_unchecked_function
     // realloc doesn't always deallocate memory, so the Extreme LUD doesn't
     // support realloc.
     nullptr,                     // realloc_function
@@ -291,6 +290,7 @@ AllocatorDispatch allocator_dispatch = {
     nullptr,  // try_free_default_function
     nullptr,  // aligned_malloc_function
     nullptr,  // aligned_malloc_unchecked_function
+    nullptr,  // aligned_calloc_unchecked_function
     // The same reason with realloc_function.
     nullptr,  // aligned_realloc_function
     nullptr,  // aligned_realloc_unchecked_function
@@ -334,10 +334,8 @@ void InstallExtremeLightweightDetectorHooks(
   sampling_state.Init(init_options.sampling_frequency);
   allocator_shim::InsertAllocatorDispatch(&allocator_dispatch);
 
-#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
   base::trace_event::MallocDumpProvider::SetExtremeLUDGetStatsCallback(
       base::BindRepeating(GetStats));
-#endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
 }
 
 ExtremeLightweightDetectorQuarantineBranch&
@@ -355,5 +353,3 @@ GetEludQuarantineBranchForLargeObjectsForTesting() {
 }
 
 }  // namespace gwp_asan::internal
-
-#endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)

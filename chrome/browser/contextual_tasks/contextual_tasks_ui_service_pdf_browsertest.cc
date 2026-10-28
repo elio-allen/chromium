@@ -13,7 +13,6 @@
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui_service_factory.h"
 #include "chrome/browser/pdf/pdf_extension_test_base.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/extensions/api/pdf_viewer_private.h"
 #include "components/contextual_tasks/public/contextual_tasks_service.h"
@@ -37,6 +36,27 @@ class ContextualTasksUiServicePdfBrowserTest : public PDFExtensionTestBase {
     enabled.push_back({contextual_tasks::kContextualTasks, {}});
     enabled.push_back({contextual_tasks::kContextualTasksPdfCitations, {}});
     return enabled;
+  }
+
+  std::vector<base::test::FeatureRef> GetDisabledFeatures() const override {
+    auto disabled = PDFExtensionTestBase::GetDisabledFeatures();
+    disabled.push_back(contextual_tasks::kContextualTasksClobberActiveTab);
+    return disabled;
+  }
+};
+
+class ContextualTasksUiServicePdfClobberActiveTabBrowserTest
+    : public ContextualTasksUiServicePdfBrowserTest {
+ public:
+  std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
+      const override {
+    auto enabled = ContextualTasksUiServicePdfBrowserTest::GetEnabledFeatures();
+    enabled.push_back({contextual_tasks::kContextualTasksClobberActiveTab, {}});
+    return enabled;
+  }
+
+  std::vector<base::test::FeatureRef> GetDisabledFeatures() const override {
+    return PDFExtensionTestBase::GetDisabledFeatures();
   }
 };
 
@@ -106,6 +126,36 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksUiServicePdfBrowserTest,
       [&]() { return browser()->tab_strip_model()->count() == 2; }));
 
   EXPECT_EQ(browser()->tab_strip_model()->count(), 2);
+}
+
+IN_PROC_BROWSER_TEST_F(ContextualTasksUiServicePdfClobberActiveTabBrowserTest,
+                       PdfCitation_NotHandledClobbersActiveTab) {
+  const GURL url = embedded_test_server()->GetURL("/pdf/test.pdf");
+  content::RenderFrameHost* extension_host = LoadPdfGetExtensionHost(url);
+  ASSERT_TRUE(extension_host);
+
+  EXPECT_EQ(browser()->tab_strip_model()->count(), 1);
+  tabs::TabInterface* active_tab = browser()->tab_strip_model()->GetActiveTab();
+
+  ContextualTasksService* contextual_tasks_service =
+      ContextualTasksServiceFactory::GetForProfile(browser()->GetProfile());
+  ContextualTask task = contextual_tasks_service->CreateTask();
+  contextual_tasks_service->AssociateTabWithTask(
+      task.GetTaskId(),
+      sessions::SessionTabHelper::IdForTab(active_tab->GetContents()));
+
+  ContextualTasksUiService* ui_service =
+      ContextualTasksUiServiceFactory::GetForBrowserContext(
+          browser()->GetProfile());
+
+  GURL bad_url("https://example.com/other.pdf#page=2");
+
+  ui_service->OnThreadLinkClicked(bad_url, task.GetTaskId(), nullptr,
+                                  browser()->GetWeakPtr(), url::Origin());
+
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return active_tab->GetContents()->GetVisibleURL() == bad_url; }));
+  EXPECT_EQ(browser()->tab_strip_model()->count(), 1);
 }
 
 }  // namespace contextual_tasks

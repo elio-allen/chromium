@@ -11,6 +11,7 @@
 #include "chrome/browser/glic/public/glic_passkeys.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/skills/skills_glic_mojom_util.h"
+#include "chrome/browser/skills/skills_service_factory.h"
 #include "chrome/browser/skills/skills_ui_window_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/webui/skills/skills_dialog_delegate.h"
@@ -24,11 +25,10 @@
 #include "components/skills/public/skills_service.h"
 #include "components/sync/protocol/skill_specifics.pb.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/views/window/dialog_delegate.h"
 #include "url/gurl.h"
-
-DEFINE_USER_DATA(skills::SkillsUiTabController);
 
 namespace {
 
@@ -39,9 +39,7 @@ using glic::mojom::SkillSource;
 namespace skills {
 
 SkillsUiTabController::SkillsUiTabController(tabs::TabInterface& tab)
-    : SkillsUiTabControllerInterface(tab),
-      tab_(tab),
-      scoped_unowned_user_data_(tab.GetUnownedUserDataHost(), *this) {
+    : SkillsUiTabControllerInterface(tab), tab_(tab) {
   will_detach_subscription_ = tab.RegisterWillDetach(base::BindRepeating(
       &SkillsUiTabController::OnTabWillDetach, base::Unretained(this)));
 }
@@ -134,6 +132,10 @@ void SkillsUiTabController::CloseDialog() {
   dialog_widget_->Close();
 }
 
+BrowserWindowInterface* SkillsUiTabController::GetBrowserWindowInterface() {
+  return tab_->GetBrowserWindowInterface();
+}
+
 void SkillsUiTabController::OnWidgetDestroyed(views::Widget* widget) {
   if (dialog_widget_.get() != widget) {
     return;
@@ -169,9 +171,22 @@ bool SkillsUiTabController::IsShowing() const {
   return dialog_widget_ != nullptr;
 }
 
+Profile* SkillsUiTabController::GetProfile() {
+  content::WebContents* contents = tab_->GetContents();
+  if (!contents) {
+    return nullptr;
+  }
+  return Profile::FromBrowserContext(contents->GetBrowserContext());
+}
+
 void SkillsUiTabController::InvokeSkill(std::string_view skill_id,
                                         std::string_view skill_name,
-                                        std::string_view skill_icon) {
+                                        std::string_view skill_icon,
+                                        bool auto_submit) {
+  if (!SkillsServiceFactory::IsSkillsEnabledForProfile(GetProfile())) {
+    return;
+  }
+
   last_invoked_skill_id_for_testing_ = skill_id;
 
   const skills::Skill* skill = nullptr;
@@ -235,13 +250,19 @@ void SkillsUiTabController::InvokeSkill(std::string_view skill_id,
         glic::mojom::InvocationPayload::NewSkillsPayload(
             std::move(mojo_skills_payload));
 
-    if (target_) {
+    if (!base::FeatureList::IsEnabled(features::kSkillsWebViewV2Enabled) &&
+        target_) {
+      // For v1, copy target. For v2, default to DefaultConversation.
       options.target = std::move(*target_);
-      target_.reset();
     }
-    service->InvokeWithAutoSubmit(
-        glic::InvokeWithAutoSubmitPasskeyProvider::GetPassKey(),
-        std::move(options));
+    target_.reset();
+    if (auto_submit) {
+      service->InvokeWithAutoSubmit(
+          glic::InvokeWithAutoSubmitPasskeyProvider::GetPassKey(),
+          std::move(options));
+    } else {
+      service->Invoke(std::move(options));
+    }
   }
 }
 

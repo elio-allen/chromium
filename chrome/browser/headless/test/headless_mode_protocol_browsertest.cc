@@ -9,15 +9,21 @@
 #include "base/base_paths.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/files/scoped_temp_dir.h"
 #include "base/json/json_writer.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/path_service.h"
 #include "base/strings/string_split.h"
+#include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "chrome/browser/headless/test/headless_browser_test_utils.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/common/pref_names.h"
 #include "components/headless/select_file_dialog/headless_select_file_dialog.h"
 #include "components/headless/test/shared_test_util.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/common/content_switches.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "services/network/public/cpp/network_switches.h"
@@ -35,10 +41,10 @@ static const char kDumpDevToolsProtocol[] = "dump-devtools-protocol";
 }  // namespace switches
 
 namespace {
-static const base::FilePath kTestDataDir(
-    FILE_PATH_LITERAL("chrome/browser/headless/test/data"));
-static const base::FilePath kSharedTestDataDir(
-    FILE_PATH_LITERAL("components/headless/test/data"));
+constexpr base::FilePath::CharType kTestDataDir[] =
+    FILE_PATH_LITERAL("chrome/browser/headless/test/data");
+constexpr base::FilePath::CharType kSharedTestDataDir[] =
+    FILE_PATH_LITERAL("components/headless/test/data");
 
 constexpr char kProtocolTestDir[] = "protocol";
 }  // namespace
@@ -47,7 +53,8 @@ HeadlessModeProtocolBrowserTest::HeadlessModeProtocolBrowserTest() = default;
 HeadlessModeProtocolBrowserTest::~HeadlessModeProtocolBrowserTest() = default;
 
 base::FilePath HeadlessModeProtocolBrowserTest::GetTestDataDir() {
-  return IsSharedTestScript() ? kSharedTestDataDir : kTestDataDir;
+  return base::FilePath(IsSharedTestScript() ? kSharedTestDataDir
+                                             : kTestDataDir);
 }
 
 base::FilePath HeadlessModeProtocolBrowserTest::GetScriptPath() {
@@ -83,9 +90,9 @@ void HeadlessModeProtocolBrowserTest::SetUpCommandLine(
     base::CommandLine* command_line) {
   command_line->AppendSwitchASCII(::network::switches::kHostResolverRules,
                                   "MAP *.test 127.0.0.1");
-  HeadlessModeDevTooledBrowserTest::SetUpCommandLine(command_line);
-
   feature_list_ = test_meta_info_.ProcessCommandLineSwitches(*command_line);
+
+  HeadlessModeDevTooledBrowserTest::SetUpCommandLine(command_line);
 }
 
 base::DictValue HeadlessModeProtocolBrowserTest::GetPageUrlExtraParams() {
@@ -375,18 +382,11 @@ HEADLESS_MODE_PROTOCOL_TEST(OzoneScreenSizeOverride,
                             "sanity/ozone-screen-size-override.js")
 #endif
 
-// This currently results in an unexpected screen orientation type,
-// see http://crbug.com/398150465.
 HEADLESS_MODE_PROTOCOL_TEST(MultipleScreenDetails,
                             "shared/multiple-screen-details.js")
 
-// TODO(crbug.com/543203215): Re-enable this test.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_MoveWindowBetweenScreens DISABLED_MoveWindowBetweenScreens
-#else
-#define MAYBE_MoveWindowBetweenScreens MoveWindowBetweenScreens
-#endif
-HEADLESS_MODE_PROTOCOL_TEST(MAYBE_MoveWindowBetweenScreens,
+// If this test flakes, please re-open http://crbug.com/543040219.
+HEADLESS_MODE_PROTOCOL_TEST(MoveWindowBetweenScreens,
                             "shared/move-window-between-screens.js")
 
 HEADLESS_MODE_PROTOCOL_TEST(WindowOpenOnSecondaryScreen,
@@ -401,13 +401,10 @@ HEADLESS_MODE_PROTOCOL_TEST(WindowOpenNoopenerClickOpenerId,
 HEADLESS_MODE_PROTOCOL_TEST(WindowOpenShiftClickOpenerId,
                             "shared/window-open-shift-click-opener-id.js")
 
-// TODO(crbug.com/40283476): CreateTargetSecondaryScreen is failing on Mac
-#if !BUILDFLAG(IS_MAC)
-#define MAYBE_CreateTargetSecondaryScreen CreateTargetSecondaryScreen
-#else
-#define MAYBE_CreateTargetSecondaryScreen DISABLED_CreateTargetSecondaryScreen
-#endif
-HEADLESS_MODE_PROTOCOL_TEST(MAYBE_CreateTargetSecondaryScreen,
+HEADLESS_MODE_PROTOCOL_TEST(WindowOpenMiddleClick,
+                            "shared/window-open-middle-click.js")
+
+HEADLESS_MODE_PROTOCOL_TEST(CreateTargetSecondaryScreen,
                             "shared/create-target-secondary-screen.js")
 
 HEADLESS_MODE_PROTOCOL_TEST(WindowOpenPopupPlacement,
@@ -426,13 +423,7 @@ HEADLESS_MODE_PROTOCOL_TEST(StartFullscreenSwitch,
 HEADLESS_MODE_PROTOCOL_TEST(StartFullscreenSwitchScaled,
                             "sanity/start-fullscreen-switch-scaled.js")
 
-// TODO(crbug.com/543040219): flaky on macOS.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_WindowStateTransitions DISABLED_WindowStateTransitions
-#else
-#define MAYBE_WindowStateTransitions WindowStateTransitions
-#endif
-HEADLESS_MODE_PROTOCOL_TEST(MAYBE_WindowStateTransitions,
+HEADLESS_MODE_PROTOCOL_TEST(WindowStateTransitions,
                             "shared/window-state-transitions.js")
 
 HEADLESS_MODE_PROTOCOL_TEST(WindowZoomOnSecondaryScreen,
@@ -440,7 +431,8 @@ HEADLESS_MODE_PROTOCOL_TEST(WindowZoomOnSecondaryScreen,
 
 // On macOS fullscreen uses display bounds rather than work area.
 #if BUILDFLAG(IS_MAC)
-HEADLESS_MODE_PROTOCOL_TEST(, "shared/window-zoom-size-matches-screen.js")
+HEADLESS_MODE_PROTOCOL_TEST(WindowZoomSizeMatchesScreen,
+                            "shared/window-zoom-size-matches-screen.js")
 #else
 HEADLESS_MODE_PROTOCOL_TEST(WindowZoomSizeMatchesWorkArea,
                             "shared/window-zoom-size-matches-work-area.js")
@@ -518,6 +510,21 @@ HEADLESS_MODE_PROTOCOL_TEST(RangeMouseEventAfterNodeRemoval,
 HEADLESS_MODE_PROTOCOL_TEST(GetCanvasContextWebGL,
                             "shared/get-canvas-context-webgl.js")
 
+HEADLESS_MODE_PROTOCOL_TEST(
+    WebGLAndWebGPUEnabledWithSwiftShader,
+    "shared/webgl-and-webgpu-enabled-with-swiftshader.js")
+
+// Headless Mode only disables GPU by default on Linux (where Ozone/Headless is
+// used).
+#if BUILDFLAG(IS_LINUX)
+HEADLESS_MODE_PROTOCOL_TEST(WebGLAndWebGPUDisabledByDefault,
+                            "shared/webgl-and-webgpu-disabled-by-default.js")
+
+HEADLESS_MODE_PROTOCOL_TEST(
+    WebGLAndWebGPUDisabledWithoutSwiftShader,
+    "shared/webgl-and-webgpu-disabled-without-swiftshader.js")
+#endif  // BUILDFLAG(IS_LINUX)
+
 HEADLESS_MODE_PROTOCOL_TEST(PopupWindowHasOpener,
                             "shared/popup-window-has-opener.js")
 
@@ -526,5 +533,82 @@ HEADLESS_MODE_PROTOCOL_TEST(NormalWindowHasOpener,
 
 HEADLESS_MODE_PROTOCOL_TEST(GetBrowserContexts,
                             "shared/get-browser-contexts.js")
+
+class HeadlessModeProtocolBrowserTestWithDownload
+    : public HeadlessModeProtocolBrowserTest {
+ public:
+  void SetUp() override {
+    ASSERT_TRUE(download_dir_.CreateUniqueTempDir());
+    HeadlessModeProtocolBrowserTest::SetUp();
+  }
+
+ protected:
+  base::DictValue GetPageUrlExtraParams() override {
+    base::DictValue dict;
+    dict.Set("downloadPath", download_dir_.GetPath().AsUTF8Unsafe());
+    return dict;
+  }
+
+ private:
+  base::ScopedTempDir download_dir_;
+};
+
+HEADLESS_MODE_PROTOCOL_TEST_F(HeadlessModeProtocolBrowserTestWithDownload,
+                              FileDownload,
+                              "shared/file-download.js")
+
+HEADLESS_MODE_PROTOCOL_TEST_F(HeadlessModeProtocolBrowserTestWithDownload,
+                              FileDownloadRepeated,
+                              "shared/file-download-repeated.js")
+
+HEADLESS_MODE_PROTOCOL_TEST_F(HeadlessModeProtocolBrowserTestWithDownload,
+                              FileDownloadSecondTab,
+                              "shared/file-download-second-tab.js")
+
+// Configure DeveloperToolsAvailabilityBlocklist before DevTools sessions attach
+// so URLBlocklistManager enforces the policy synchronously.
+class HeadlessModeDevToolsPolicyBlocklistProtocolTest
+    : public HeadlessModeProtocolBrowserTest {
+ public:
+  void SetUpOnMainThread() override {
+    HeadlessModeProtocolBrowserTest::SetUpOnMainThread();
+    base::ListValue blocklist;
+    blocklist.Append("a.test/protocol/blocked_route");
+    blocklist.Append("b.test/protocol/blocked_route");
+    browser()->GetProfile()->GetPrefs()->SetList(
+        prefs::kDeveloperToolsAvailabilityBlocklist, std::move(blocklist));
+  }
+};
+
+HEADLESS_MODE_PROTOCOL_TEST_F(HeadlessModeDevToolsPolicyBlocklistProtocolTest,
+                              SameDocumentNavigationBlocklist,
+                              "target/same-document-navigation-blocklist.js")
+
+HEADLESS_MODE_PROTOCOL_TEST_F(
+    HeadlessModeDevToolsPolicyBlocklistProtocolTest,
+    OopifSameDocumentNavigationBlocklist,
+    "target/oopif-same-document-navigation-blocklist.js")
+
+class HeadlessModeDevToolsPolicyAllowlistProtocolTest
+    : public HeadlessModeProtocolBrowserTest {
+ public:
+  void SetUpOnMainThread() override {
+    HeadlessModeProtocolBrowserTest::SetUpOnMainThread();
+    // Block a.test so non-allowlisted paths on a.test are disallowed while the
+    // test harness on harness.test remains unaffected.
+    base::ListValue blocklist;
+    blocklist.Append("a.test");
+    browser()->GetProfile()->GetPrefs()->SetList(
+        prefs::kDeveloperToolsAvailabilityBlocklist, std::move(blocklist));
+    base::ListValue allowlist;
+    allowlist.Append("a.test/protocol/inspector-protocol-page.html");
+    browser()->GetProfile()->GetPrefs()->SetList(
+        prefs::kDeveloperToolsAvailabilityAllowlist, std::move(allowlist));
+  }
+};
+
+HEADLESS_MODE_PROTOCOL_TEST_F(HeadlessModeDevToolsPolicyAllowlistProtocolTest,
+                              SameDocumentNavigationAllowlist,
+                              "target/same-document-navigation-allowlist.js")
 
 }  // namespace headless

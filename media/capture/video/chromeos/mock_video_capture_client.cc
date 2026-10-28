@@ -90,19 +90,10 @@ MockVideoCaptureClient::ReserveOutputBuffer(
     int frame_feedback_id,
     VideoCaptureDevice::Client::Buffer* buffer,
     int* require_new_buffer_id,
-    int* retire_old_buffer_id) {
+    int* retire_old_buffer_id,
+    const gfx::ColorSpace& color_space) {
   DoReserveOutputBuffer();
   NOTREACHED();
-}
-
-void MockVideoCaptureClient::OnIncomingCapturedBuffer(
-    Buffer buffer,
-    const VideoCaptureFormat& format,
-    base::TimeTicks reference_time,
-    base::TimeDelta timestamp,
-    std::optional<base::TimeTicks> capture_begin_time,
-    const std::optional<media::VideoFrameMetadata>& metadata) {
-  DoOnIncomingCapturedBuffer();
 }
 
 void MockVideoCaptureClient::OnIncomingCapturedBufferExt(

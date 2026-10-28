@@ -18,6 +18,7 @@
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
 #include "chrome/common/chrome_features.h"
+#include "components/browser_actuator/public/features.h"
 #include "components/gcm_driver/instance_id/instance_id_driver.h"
 #include "components/prefs/pref_registry.h"
 #include "components/prefs/pref_service_factory.h"
@@ -30,7 +31,6 @@
 #include "components/sync_device_info/fake_device_info_sync_service.h"
 #include "components/sync_preferences/pref_service_mock_factory.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
-#include "google_apis/gcm/engine/account_mapping.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -178,6 +178,15 @@ class SharingDeviceRegistrationImplTest : public testing::Test {
           syncer::DeviceInfo::SharingFeature::kOneTimeTokenBackendNotification);
     }
 
+    if (sharing_device_registration_.IsGlicExperimentalTriggeringSupported()) {
+      features.insert(
+          syncer::DeviceInfo::SharingFeature::kGlicExperimentalTriggering);
+    }
+
+    if (sharing_device_registration_.IsBrowserActuatorSupported()) {
+      features.insert(syncer::DeviceInfo::SharingFeature::kBrowserActuator);
+    }
+
     return features;
   }
 
@@ -243,6 +252,20 @@ TEST_F(SharingDeviceRegistrationImplTest,
 
   EXPECT_FALSE(
       sharing_device_registration_.IsGlicExperimentalTriggeringSupported());
+}
+
+TEST_F(SharingDeviceRegistrationImplTest, IsBrowserActuatorSupported_True) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(browser_actuator::kBrowserActuator);
+
+  EXPECT_TRUE(sharing_device_registration_.IsBrowserActuatorSupported());
+}
+
+TEST_F(SharingDeviceRegistrationImplTest, IsBrowserActuatorSupported_False) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(browser_actuator::kBrowserActuator);
+
+  EXPECT_FALSE(sharing_device_registration_.IsBrowserActuatorSupported());
 }
 
 TEST_F(SharingDeviceRegistrationImplTest, RegisterDeviceTest_Success) {

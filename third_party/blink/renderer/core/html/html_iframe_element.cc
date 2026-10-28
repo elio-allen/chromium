@@ -63,6 +63,7 @@
 #include "third_party/blink/renderer/platform/json/json_parser.h"
 #include "third_party/blink/renderer/platform/network/content_security_policy_parsers.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_to_number.h"
 
@@ -310,11 +311,10 @@ void HTMLIFrameElement::ParseAttribute(
       // invalid 'csp' attribute.
       required_csp_ = g_null_atom;
       GetDocument().AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
-          mojom::blink::ConsoleMessageSource::kOther,
-          mojom::blink::ConsoleMessageLevel::kError,
-          String::Format("'csp' attribute too long. The max length for the "
-                         "'csp' attribute is %zu bytes.",
-                         kMaxLengthCSPAttribute)));
+          ConsoleMessage::Source::kOther, ConsoleMessage::Level::kError,
+          Format("'csp' attribute too long. The max length for the 'csp' "
+                 "attribute is {} bytes.",
+                 kMaxLengthCSPAttribute)));
     } else if (required_csp_ != value) {
       required_csp_ = value;
       should_call_did_change_attributes = true;
@@ -378,26 +378,7 @@ void HTMLIFrameElement::ParseAttribute(
       }
       if (!params.new_value.IsNull()) {
         UseCounter::Count(GetDocument(),
-                          WebFeature::kSharedStorageAPI_Iframe_Attribute);
-      }
-    }
-  } else if (name == html_names::kSharedstoragewritableAttr &&
-             GetExecutionContext() &&
-             RuntimeEnabledFeatures::SharedStorageAPIEnabled(
-                 GetExecutionContext())) {
-    if (!GetExecutionContext()->IsSecureContext()) {
-      GetDocument().AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
-          mojom::blink::ConsoleMessageSource::kOther,
-          mojom::blink::ConsoleMessageLevel::kError,
-          String("sharedStorageWritable: sharedStorage operations "
-                 "are only available in secure contexts.")));
-    } else {
-      if (!params.new_value.IsNull()) {
-        UseCounter::Count(GetDocument(),
-                          WebFeature::kSharedStorageAPI_Iframe_Attribute);
-        Deprecation::CountDeprecation(
-            GetExecutionContext(),
-            mojom::blink::WebFeature::kSharedStorageAPIAll);
+                          WebFeature::kIframeAdAuctionHeadersAttribute);
       }
     }
   } else if (name == html_names::kCredentiallessAttr &&
@@ -634,10 +615,9 @@ HTMLIFrameElement::ConstructTrustTokenParams() const {
     GetDocument().AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
         mojom::blink::ConsoleMessageSource::kOther,
         mojom::blink::ConsoleMessageLevel::kError,
-        StrCat({"iframe trusttoken attribute was invalid JSON: ",
-                parse_error.message, " (line ",
-                String::Number(parse_error.line), ", col ",
-                String::Number(parse_error.column), ")"})));
+        Format("iframe trusttoken attribute was invalid JSON: {} (line {}, col "
+               "{})",
+               parse_error.message, parse_error.line, parse_error.column)));
     return nullptr;
   }
 
@@ -683,7 +663,7 @@ void HTMLIFrameElement::DidChangeAttributes() {
   // the subframe hasn't been created yet; or if we are in the middle of
   // swapping one frame for another, in which case the final state
   // will be propagated at the end of the swapping operation.
-  if (is_swapping_frames() || !ContentFrame()) {
+  if (IsSwappingFrames() || !ContentFrame()) {
     return;
   }
 

@@ -5,11 +5,13 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_PAYMENTS_PAYMENTS_CHURNED_USERS_MANAGER_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_PAYMENTS_PAYMENTS_CHURNED_USERS_MANAGER_H_
 
-#include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "components/autofill/core/browser/foundations/scoped_autofill_managers_observation.h"
 #include "components/autofill/core/browser/strike_databases/payments/payments_churned_users_strike_database.h"
 #include "components/autofill/core/browser/ui/payments/payments_ui_closed_reasons.h"
+
+class AccountInfo;
 
 namespace autofill::payments {
 
@@ -31,8 +33,14 @@ class PaymentsChurnedUsersManager : public AutofillManager::Observer {
                               AutofillManager::Observer::FieldTypeSource source,
                               bool small_forms_were_parsed) override;
 
+  PaymentsChurnedUsersStrikeDatabase* GetStrikeDatabaseForTesting() {
+    return strike_database_.get();
+  }
+
  private:
   void OnUiClosed(PaymentsUiClosedReason closed_reason);
+
+  AccountInfo GetAccountInfo() const;
 
   // The associated AutofillClient.
   const raw_ref<AutofillClient> client_;

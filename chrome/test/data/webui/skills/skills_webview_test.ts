@@ -2,11 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'chrome://skills/loading_page.js';
+
 import {loadTimeData} from '//resources/js/load_time_data.js';
+import {ErrorType} from 'chrome://skills/error_page.js';
 import {SkillsDialogType} from 'chrome://skills/skill.mojom-webui.js';
 import {SkillsWebview} from 'chrome://skills/v2/skills_webview.js';
-import {IS_FIRST_PARTY_QUERY_PARAMETER, IS_SAVING_GEMINI_QUERY_PARAMETER} from 'chrome://skills/v2/skills_webview_bridge_constants.js';
-import {assertEquals} from 'chrome://webui-test/chai_assert.js';
+import type {SkillsWebviewBridge} from 'chrome://skills/v2/skills_webview_bridge.js';
+import {IS_SAVING_GEMINI_QUERY_PARAMETER, SkillSource, SOURCE_QUERY_PARAMETER} from 'chrome://skills/v2/skills_webview_bridge_constants.js';
+import {assertEquals, assertFalse, assertNull, assertTrue} from 'chrome://webui-test/chai_assert.js';
 
 class TestSkillsWebview extends SkillsWebview {
   getRemoteUrlForTesting(): string {
@@ -34,6 +38,7 @@ suite('SkillsWebviewTest', () => {
     const url = new URL(webviewApp.getRemoteUrlForTesting());
     assertEquals(
         'true', url.searchParams.get(IS_SAVING_GEMINI_QUERY_PARAMETER));
+    assertEquals(null, url.searchParams.get(SOURCE_QUERY_PARAMETER));
   });
 
   test('SkillsWebview_AddWithId_FirstPartySkill', () => {
@@ -47,7 +52,8 @@ suite('SkillsWebviewTest', () => {
     const webviewApp = new TestSkillsWebview();
     const url = new URL(webviewApp.getRemoteUrlForTesting());
     assertEquals('some_id', url.searchParams.get('id'));
-    assertEquals('true', url.searchParams.get(IS_FIRST_PARTY_QUERY_PARAMETER));
+    assertEquals(
+        SkillSource.FIRST_PARTY, url.searchParams.get(SOURCE_QUERY_PARAMETER));
   });
 
   test('SkillsWebview_EditWithId_UserSkill', () => {
@@ -61,7 +67,8 @@ suite('SkillsWebviewTest', () => {
     const webviewApp = new TestSkillsWebview();
     const url = new URL(webviewApp.getRemoteUrlForTesting());
     assertEquals('some_id', url.searchParams.get('id'));
-    assertEquals(null, url.searchParams.get(IS_FIRST_PARTY_QUERY_PARAMETER));
+    assertEquals(
+        SkillSource.USER, url.searchParams.get(SOURCE_QUERY_PARAMETER));
   });
 
   test('SkillsWebview_LanguageCode', () => {
@@ -99,4 +106,154 @@ suite('SkillsWebviewTest', () => {
     const url = new URL(webviewApp.getRemoteUrlForTesting());
     assertEquals(null, url.searchParams.get('hl'));
   });
+
+  test('SkillsWebview_ShowsLoadingPageUntilHandshake', () => {
+    loadTimeData.overrideValues({
+      devMode: true,
+      isSkillsWebViewV2Enabled: true,
+      isSkillsEnabled: true,
+    });
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    const webview = document.createElement('webview');
+    webview.id = 'webview';
+    webview.setAttribute('hidden', '');
+    webview.setAttribute('autosize', 'on');
+    webview.setAttribute('minheight', '200');
+    webview.setAttribute('maxheight', '710');
+    const loadingPage = document.createElement('loading-page');
+    loadingPage.id = 'loading-page';
+    const errorPage = document.createElement('error-page');
+    errorPage.id = 'error-page';
+    errorPage.setAttribute('hidden', '');
+    document.body.appendChild(webview);
+    document.body.appendChild(loadingPage);
+    document.body.appendChild(errorPage);
+
+    new SkillsWebview();
+    assertFalse(loadingPage.hasAttribute('hidden'));
+    assertTrue(errorPage.hasAttribute('hidden'));
+    assertTrue(webview.hasAttribute('hidden'));
+  });
+
+  test('SkillsWebview_Disabled_ShowsErrorPage', async () => {
+    loadTimeData.overrideValues({
+      devMode: true,
+      isSkillsWebViewV2Enabled: true,
+      isSkillsEnabled: false,
+    });
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    const webview = document.createElement('webview');
+    webview.id = 'webview';
+    webview.setAttribute('autosize', 'on');
+    webview.setAttribute('minwidth', '512');
+    webview.setAttribute('minheight', '200');
+    webview.setAttribute('maxwidth', '512');
+    webview.setAttribute('maxheight', '710');
+    const loadingPage = document.createElement('loading-page');
+    loadingPage.id = 'loading-page';
+    const errorPage = document.createElement('error-page');
+    errorPage.id = 'error-page';
+    errorPage.setAttribute('hidden', '');
+    document.body.appendChild(webview);
+    document.body.appendChild(loadingPage);
+    document.body.appendChild(errorPage);
+
+    const webviewApp = new SkillsWebview();
+    await webviewApp.init();
+
+    assertTrue(loadingPage.hasAttribute('hidden'));
+    assertFalse(errorPage.hasAttribute('hidden'));
+    assertEquals(ErrorType.SKILLS_DISABLED, errorPage.errorType);
+    assertEquals('true', webview.getAttribute('hidden'));
+  });
+
+  test('LoadingPage_RendersPageSkeletonByDefault', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    const loadingPage = document.createElement('loading-page');
+    document.body.appendChild(loadingPage);
+    await loadingPage.updateComplete;
+
+    assertTrue(!!loadingPage.shadowRoot?.querySelector('.app-layout'));
+    assertEquals(null, loadingPage.shadowRoot?.querySelector('.dialog-layout'));
+  });
+
+  test('LoadingPage_RendersDialogSkeletonWhenDialogIsTrue', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    const loadingPage = document.createElement('loading-page');
+    loadingPage.dialog = true;
+    document.body.appendChild(loadingPage);
+    await loadingPage.updateComplete;
+
+    assertTrue(!!loadingPage.shadowRoot?.querySelector('.dialog-layout'));
+  });
+
+  test('LoadingPage_RendersEditorSkeletonWhenEditorIsTrue', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    const loadingPage = document.createElement('loading-page');
+    loadingPage.editor = true;
+    document.body.appendChild(loadingPage);
+    await loadingPage.updateComplete;
+
+    // Look for an editor specific element.
+    assertTrue(
+        !!loadingPage.shadowRoot?.querySelector('.skeleton-editor-card'));
+  });
+
+  test('SkillsWebview_OnUserSkillsUpdated_CallsBridge', () => {
+    class BridgeMockSkillsWebview extends SkillsWebview {
+      sentSkillsUpdated = false;
+      override bridge = {
+        sendSkillsUpdated: () => {
+          this.sentSkillsUpdated = true;
+        },
+      } as unknown as SkillsWebviewBridge;
+    }
+
+    const webviewApp = new BridgeMockSkillsWebview();
+    webviewApp.onUserSkillsUpdated();
+    assertTrue(webviewApp.sentSkillsUpdated);
+  });
+
+  test('ErrorPage_DoesNotRenderCancelButtonByDefault', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    const errorPage = document.createElement('error-page');
+    document.body.appendChild(errorPage);
+    await errorPage.updateComplete;
+
+    assertNull(errorPage.shadowRoot?.querySelector('#cancelButton'));
+  });
+
+  test('ErrorPage_RendersCancelButtonWhenDialogIsTrue', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    const errorPage = document.createElement('error-page');
+    errorPage.dialog = true;
+    document.body.appendChild(errorPage);
+    await errorPage.updateComplete;
+
+    assertTrue(!!errorPage.shadowRoot?.querySelector('#cancelButton'));
+  });
+
+  test('ErrorPage_RendersSignInButtonWhenDialogAndGlicNotEnabled', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    const errorPage = document.createElement('error-page');
+    errorPage.dialog = true;
+    errorPage.errorType = ErrorType.GLIC_NOT_ENABLED;
+    document.body.appendChild(errorPage);
+    await errorPage.updateComplete;
+
+    assertTrue(!!errorPage.shadowRoot?.querySelector('#signInButton'));
+  });
+
+  test(
+      'ErrorPage_DoesNotRenderSignInButtonWhenDialogAndSkillsDisabled',
+      async () => {
+        document.body.innerHTML = window.trustedTypes!.emptyHTML;
+        const errorPage = document.createElement('error-page');
+        errorPage.dialog = true;
+        errorPage.errorType = ErrorType.SKILLS_DISABLED;
+        document.body.appendChild(errorPage);
+        await errorPage.updateComplete;
+
+        assertNull(errorPage.shadowRoot?.querySelector('#signInButton'));
+      });
 });

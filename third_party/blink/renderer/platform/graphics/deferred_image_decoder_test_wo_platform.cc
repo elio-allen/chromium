@@ -127,7 +127,8 @@ TEST(DeferredImageDecoderTestWoPlatform, fragmentedSignature) {
                            ColorBehavior::kIgnore));
 
     // Append the rest of the data.  We should be able to sniff the signature
-    // now, even if segmented.
+    // now, even if segmented. Keep all_data_received false to exercise the
+    // incremental data path.
     buffer->Append(rest_of_data);
     EXPECT_TRUE(ImageDecoder::HasSufficientDataToSniffMimeType(
         *buffer, /*all_data_received=*/false));
@@ -182,6 +183,38 @@ TEST(DeferredImageDecoderTestWoPlatform, completeDataShorterThanSniffLength) {
       base::checked_cast<wtf_size_t>(info.computeMinByteSize()));
   SkPixmap pixmap(info, storage.data(), info.minRowBytes());
   EXPECT_TRUE(image->readPixels(pixmap, 0, 0));
+}
+
+// A high-bit-depth image is decoded into the F16 buffer that the generator's
+// SkImageInfo describes. The worker decoder must tag its output with the same
+// color space as the metadata decoder, or the one-shot decode into external
+// memory fails and ImageFrameGenerator latches a permanent decode failure.
+// A 16-bit lossy (XYB-encoded) JPEG XL file with an embedded ICC profile hits
+// this: jxl-rs outputs linear sRGB for float formats but sRGB for integer
+// formats. See crbug.com/574339645.
+TEST(DeferredImageDecoderTestWoPlatform, highBitDepthDecodeFromCompleteData) {
+  base::test::SingleThreadTaskEnvironment task_environment;
+  base::test::ScopedFeatureList feature_list(features::kJXLImageFormat);
+
+  const Vector<char> file = ReadFile("/images/resources/lossy_16bit_icc.jxl");
+  scoped_refptr<SharedBuffer> buffer = SharedBuffer::Create(base::span(file));
+
+  std::unique_ptr<DeferredImageDecoder> decoder = DeferredImageDecoder::Create(
+      buffer, true, ImageDecoder::kAlphaPremultiplied, ColorBehavior::kTag);
+  ASSERT_NE(decoder, nullptr);
+  ASSERT_TRUE(decoder->IsSizeAvailable());
+
+  sk_sp<PaintImageGenerator> generator = decoder->CreateGenerator();
+  ASSERT_NE(generator, nullptr);
+  const SkImageInfo& info = generator->GetSkImageInfo();
+  ASSERT_EQ(kRGBA_F16_SkColorType, info.colorType());
+
+  Vector<char> storage(
+      base::checked_cast<wtf_size_t>(info.computeMinByteSize()));
+  SkPixmap pixmap(info, storage.data(), info.minRowBytes());
+  EXPECT_TRUE(generator->GetPixels(pixmap, 0,
+                                   cc::PaintImage::GetNextGeneratorClientId(),
+                                   /*lazy_pixel_ref=*/0));
 }
 #endif  // BUILDFLAG(ENABLE_JXL_DECODER)
 

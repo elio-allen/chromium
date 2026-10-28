@@ -4,7 +4,8 @@
 
 #include "third_party/blink/renderer/platform/graphics/compositing/pending_layer.h"
 
-#include "base/containers/adapters.h"
+#include <ranges>
+
 #include "cc/base/features.h"
 #include "cc/layers/scrollbar_layer_base.h"
 #include "cc/layers/solid_color_layer.h"
@@ -43,6 +44,7 @@ void PreserveNearIntegralBounds(gfx::RectF& bounds) {
 
 PendingLayer::PendingLayer(const PaintArtifact& artifact,
                            const PaintChunk& first_chunk,
+                           DOMNodeId canvas_drawable_id,
                            CompositingType compositing_type)
     : chunks_(artifact, first_chunk),
       property_tree_state_(first_chunk.properties.Unalias()),
@@ -52,6 +54,7 @@ PendingLayer::PendingLayer(const PaintArtifact& artifact,
           first_chunk.background_color.is_solid_color ? 0 : kNotFound),
       compositing_type_(compositing_type),
       hit_test_opaqueness_(first_chunk.hit_test_opaqueness),
+      canvas_drawable_id_(canvas_drawable_id),
       has_text_(first_chunk.has_text),
       draws_content_(first_chunk.DrawsContent()),
       text_known_to_be_on_opaque_background_(
@@ -203,18 +206,6 @@ bool PendingLayer::Matches(const PendingLayer& old_pending_layer) const {
 // merged_area - (home_area + guest_area) <= kMergeSparsityAreaTolerance
 static constexpr float kMergeSparsityAreaTolerance = 10000;
 
-static DOMNodeId GetCanvasChildId(const EffectPaintPropertyNode& effect) {
-  if (!effect.IsInCanvasSubtree()) {
-    return kInvalidDOMNodeId;
-  }
-  for (const auto* e = &effect; e; e = e->UnaliasedParent()) {
-    if (e->HasCanvasChildState()) {
-      return e->CanvasChildId();
-    }
-  }
-  return kInvalidDOMNodeId;
-}
-
 bool PendingLayer::CanMerge(const PendingLayer& guest,
                             LCDTextPreference lcd_text_preference,
                             float device_pixel_ratio,
@@ -226,23 +217,15 @@ bool PendingLayer::CanMerge(const PendingLayer& guest,
                             wtf_size_t& merged_solid_color_chunk_index,
                             cc::HitTestOpaqueness& merged_hit_test_opaqueness,
                             bool& scroll_range_dependent) const {
-  DOMNodeId home_canvas_child_id =
-      GetCanvasChildId(GetPropertyTreeState().Effect());
-  DOMNodeId guest_canvas_child_id =
-      GetCanvasChildId(guest.GetPropertyTreeState().Effect());
-  if (home_canvas_child_id != guest_canvas_child_id &&
-      (home_canvas_child_id != kInvalidDOMNodeId ||
-       guest_canvas_child_id != kInvalidDOMNodeId)) {
+  if (canvas_drawable_id_ != guest.canvas_drawable_id_) {
     return false;
   }
 
   // Force merge all content under canvas so that it can be drawn using
   // html-in-canvas APIs, and so that it is not drawn as a regular
   // cc::Layer.
-  bool force_merge =
-      GetPropertyTreeState().Effect().IsInCanvasSubtree() &&
-      guest.GetPropertyTreeState().Effect().IsInCanvasSubtree() &&
-      home_canvas_child_id == guest_canvas_child_id;
+  bool force_merge = (canvas_drawable_id_ == guest.canvas_drawable_id_ &&
+                      canvas_drawable_id_ != kInvalidDOMNodeId);
 
   std::optional<PropertyTreeState::UpcastResult> upcast_result =
       CanUpcastWith(guest, guest.GetPropertyTreeState(), is_composited_scroll);
@@ -365,19 +348,16 @@ bool PendingLayer::CanMerge(const PendingLayer& guest,
           chunks_.size() + guest.solid_color_chunk_index_;
     }
 
-    if (property_tree_state_.Transform().NearestDirectlyCompositedAncestor() !=
-        guest.property_tree_state_.Transform()
-            .NearestDirectlyCompositedAncestor()) {
-      CHECK(RuntimeEnabledFeatures::MergeFixedLayersEnabled() ||
-            RuntimeEnabledFeatures::MergeStickyLayersEnabled());
-      if ((IsSolidColor() || guest.IsSolidColor()) &&
-          merged_solid_color_chunk_index == kNotFound) {
-        // Don't merge if that would cause a layer to lose its solid color,
-        // to prevent extra raster cost.
-        // TODO(crbug.com/507502290): This might benefit in other cases,
-        // perhaps with more sophisticated heuristics.
-        return false;
-      }
+    if (merged_solid_color_chunk_index == kNotFound &&
+        (IsSolidColor() || guest.IsSolidColor()) &&
+        property_tree_state_.Transform().NearestDirectlyCompositedAncestor() !=
+            guest.property_tree_state_.Transform()
+                .NearestDirectlyCompositedAncestor()) {
+      // Don't merge across compositing boundaries if that would cause a layer
+      // to lose its solid color, to prevent extra raster cost.
+      // TODO(crbug.com/507502290): This might benefit in other cases,
+      // perhaps with more sophisticated heuristics.
+      return false;
     }
   }
 
@@ -442,19 +422,6 @@ PendingLayer::MergeResult PendingLayer::Merge(
   hit_test_opaqueness_ = merged_hit_test_opaqueness;
   non_composited_scroll_translations_.append_range(
       guest.non_composited_scroll_translations_);
-
-  // For metrics.
-  merged_across_compositing_boundary_count_ +=
-      guest.merged_across_compositing_boundary_count_;
-  // We don't merge across compositing boundaries except for MergeFixedLayers
-  // and MergeStickyLayers.
-  if (property_tree_state_.Transform().NearestDirectlyCompositedAncestor() !=
-      guest.property_tree_state_.Transform()
-          .NearestDirectlyCompositedAncestor()) {
-    CHECK(RuntimeEnabledFeatures::MergeFixedLayersEnabled() ||
-          RuntimeEnabledFeatures::MergeStickyLayersEnabled());
-    merged_across_compositing_boundary_count_++;
-  }
 
   return {.merged = true, .scroll_range_dependent = scroll_range_dependent};
 }
@@ -531,6 +498,9 @@ bool PendingLayer::PropertyTreeStateChanged(
 }
 
 bool PendingLayer::MightOverlap(const PendingLayer& other) const {
+  if (canvas_drawable_id_ != other.canvas_drawable_id_) {
+    return false;
+  }
   return GeometryMapper::MightOverlapForCompositing(
       bounds_, GetPropertyTreeState(), other.bounds_,
       other.GetPropertyTreeState());
@@ -761,8 +731,8 @@ bool PendingLayer::UsesSolidColorLayer() const {
           .RequiresCompositingForBackdropFilterMask()) {
     return false;
   }
-  // We need a PictureLayer to draw canvas children with DrawElementImage.
-  if (property_tree_state_.Effect().RequiresCompositingForCanvasChild()) {
+  // We need a PictureLayer to draw canvas drawables with DrawElementImage.
+  if (property_tree_state_.Effect().RequiresCompositingForCanvasDrawable()) {
     return false;
   }
 #if BUILDFLAG(IS_MAC)
@@ -931,7 +901,7 @@ SkColor4f PendingLayer::ComputeBackgroundColor() const {
   SkColor4f background_color = background_colors.back();
   background_colors.pop_back();
 
-  for (const SkColor4f& color : base::Reversed(background_colors)) {
+  for (const SkColor4f& color : std::views::reverse(background_colors)) {
     background_color = SkColor4f::FromColor(color_utils::GetResultingPaintColor(
         color.toSkColor(), background_color.toSkColor()));
   }

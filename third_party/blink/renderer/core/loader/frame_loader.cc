@@ -58,6 +58,7 @@
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom-blink.h"
 #include "third_party/blink/public/mojom/loader/request_context_frame_type.mojom-blink.h"
+#include "third_party/blink/public/mojom/navigation/navigation_params.mojom-blink.h"
 #include "third_party/blink/public/platform/modules/service_worker/web_service_worker_network_provider.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/public/platform/web_content_settings_client.h"
@@ -68,6 +69,8 @@
 #include "third_party/blink/public/web/web_navigation_type.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_controller.h"
 #include "third_party/blink/renderer/bindings/core/v8/serialization/serialized_script_value.h"
+#include "third_party/blink/renderer/core/ad_tracker/extension_script_tracker.h"
+#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/document_init.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/ignore_opens_during_unload_count_incrementer.h"
@@ -80,6 +83,7 @@
 #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
 #include "third_party/blink/renderer/core/frame/csp/csp_source.h"
 #include "third_party/blink/renderer/core/frame/frame_console.h"
+#include "third_party/blink/renderer/core/frame/frame_swap_scope.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
@@ -109,7 +113,6 @@
 #include "third_party/blink/renderer/core/page/frame_tree.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/page/plugin_data.h"
-#include "third_party/blink/renderer/core/page/plugin_script_forbidden_scope.h"
 #include "third_party/blink/renderer/core/page/scrolling/fragment_anchor.h"
 #include "third_party/blink/renderer/core/page/scrolling/scrolling_coordinator.h"
 #include "third_party/blink/renderer/core/page/viewport_description.h"
@@ -249,6 +252,7 @@ void FrameLoader::Trace(Visitor* visitor) const {
 
 void FrameLoader::Init(
     const DocumentToken& document_token,
+    const InitiatorStateToken& initiator_state_token,
     std::unique_ptr<PolicyContainer> policy_container,
     const StorageKey& storage_key,
     ukm::SourceId document_ukm_source_id,
@@ -265,10 +269,7 @@ void FrameLoader::Init(
   }
   navigation_params->storage_key = storage_key;
   navigation_params->document_token = document_token;
-  // TODO(crbug.com/510258191): Plumb an initiator state token from the browser
-  // process when initializing a document following an IPC from the browser
-  // process.
-  navigation_params->initiator_state_token = base::UnguessableToken::Create();
+  navigation_params->initiator_state_token = initiator_state_token;
   navigation_params->frame_policy =
       frame_->Owner() ? frame_->Owner()->GetFramePolicy() : FramePolicy();
   navigation_params->document_ukm_source_id = document_ukm_source_id;
@@ -424,7 +425,8 @@ void FrameLoader::DispatchUnloadEventAndFillOldDocumentInfoIfNeeded(
       ScopedOldDocumentInfoForCommitCapturer::CurrentInfo();
   if (!old_document_info || !will_commit_new_document_in_this_frame ||
       !GetDocumentLoader()) {
-    frame_->GetDocument()->DispatchUnloadEvents(nullptr);
+    frame_->GetDocument()->DispatchUnloadEvents(
+        nullptr, will_commit_new_document_in_this_frame);
     return;
   }
   old_document_info->history_item = GetDocumentLoader()->GetHistoryItem();
@@ -438,7 +440,8 @@ void FrameLoader::DispatchUnloadEventAndFillOldDocumentInfoIfNeeded(
 
   base::ElapsedTimer elapsed_timer;
   frame_->GetDocument()->DispatchUnloadEvents(
-      &old_document_info->unload_timing_info);
+      &old_document_info->unload_timing_info,
+      will_commit_new_document_in_this_frame);
   old_document_info->total_lifecycle_events_processing_time_on_commit =
       std::max(
           old_document_info->total_lifecycle_events_processing_time_on_commit,
@@ -578,13 +581,27 @@ void FrameLoader::ProcessScrollForSameDocumentNavigation(
 
   // We need to scroll to the fragment whether or not a hash change occurred,
   // since the user might have scrolled since the previous navigation.
-  ProcessFragment(url, frame_load_type, kNavigationWithinSameDocument);
-  has_pending_cross_document_fragment_ = false;
+  if (url.HasFragmentIdentifier()) {
+    // If the same-document navigation explicitly navigates to a fragment, abort
+    // any pending cross-document text fragment and process the new fragment
+    // immediately.
+    has_pending_cross_document_fragment_ = false;
+    ProcessFragment(url, frame_load_type, kNavigationWithinSameDocument);
+  } else if (!has_pending_cross_document_fragment_ ||
+             (frame_->View() && frame_->GetPage() &&
+              frame_->GetPage()
+                  ->RelatedPagesMutationFromPreviousPageFinalized())) {
+    // Avoid prematurely processing a deferred cross-document text fragment
+    // until related pages state is finalized.
+    ProcessFragment(url, frame_load_type, kNavigationWithinSameDocument);
+    has_pending_cross_document_fragment_ = false;
+  }
 
   TakeObjectSnapshot();
 }
 
-bool FrameLoader::AllowRequestForThisFrame(const FrameLoadRequest& request) {
+bool FrameLoader::AllowRequestForThisFrame(const FrameLoadRequest& request,
+                                           bool is_same_document_navigation) {
   // If no origin Document* was specified, skip remaining security checks and
   // assume the caller has fully initialized the FrameLoadRequest.
   if (!request.GetOriginWindow())
@@ -603,7 +620,11 @@ bool FrameLoader::AllowRequestForThisFrame(const FrameLoadRequest& request) {
     }
   }
 
-  if (!request.CanDisplay(url)) {
+  // A fragment navigation initiated by this document does not load the URL
+  // again, even if its sandboxed origin cannot load local resources.
+  if (!request.CanDisplay(url) &&
+      !(is_same_document_navigation &&
+        request.GetOriginWindow() == frame_->DomWindow())) {
     request.GetOriginWindow()->AddConsoleMessage(
         MakeGarbageCollected<ConsoleMessage>(
             mojom::ConsoleMessageSource::kSecurity,
@@ -692,6 +713,14 @@ void FrameLoader::StartNavigation(FrameLoadRequest& request,
     element->CancelPendingLazyLoad();
 
   ResourceRequest& resource_request = request.GetResourceRequest();
+  String script_injector_host;
+  if (GetDocumentLoader() &&
+      GetDocumentLoader()->GetScriptInjectionPolicy() ==
+          mojom::blink::ScriptInjectionPolicy::kNavigationProtection) {
+    if (auto* extension_script_tracker = frame_->GetExtensionScriptTracker()) {
+      script_injector_host = extension_script_tracker->ExtensionScriptInStack();
+    }
+  }
   const KURL& url = resource_request.Url();
   LocalDOMWindow* origin_window = request.GetOriginWindow();
 
@@ -714,11 +743,44 @@ void FrameLoader::StartNavigation(FrameLoadRequest& request,
                url.GetString().Utf8(), "load_type",
                static_cast<int>(frame_load_type));
 
-  resource_request.SetHasUserGesture(
-      LocalFrame::HasTransientUserActivation(frame_.Get()));
+  // Convert navigations from the initial empty document to do replacement if
+  // needed. Note that we don't convert reloads or history navigations (so only
+  // kStandard navigations can get converted to do replacement).
+  if (frame_load_type == WebFrameLoadType::kStandard &&
+      IsOnInitialEmptyDocument()) {
+    frame_load_type = WebFrameLoadType::kReplaceCurrentItem;
+  }
 
-  if (!AllowRequestForThisFrame(request))
+  bool same_document_navigation =
+      request.GetNavigationPolicy() == kNavigationPolicyCurrentTab &&
+      ShouldPerformFragmentNavigation(
+          request.Form(), resource_request.HttpMethod(), frame_load_type, url);
+
+  if (RuntimeEnabledFeatures::
+          TreatMhtmlInitialDocumentLoadsAsCrossDocumentEnabled()) {
+    if (auto* parent = DynamicTo<LocalFrame>(frame_->Tree().Parent())) {
+      // Within MHTML archives, treat the initial about:blank#fragment
+      // navigation as cross-document. Although it appears to be a same-document
+      // fragment navigation, it actually commits a new document with a new
+      // opaque origin.
+      //
+      // TODO(crbug.com/423663315): Consider refining this logic to only treat
+      // the initial about:blank#fragment navigation in MHTML as cross-document
+      // if the MHTML archive actually overrides the about:blank resource. If it
+      // doesn't, the navigation may be better treated as same-document,
+      // matching non-MHTML behavior.
+      if (parent->Loader().GetDocumentLoader()->HasBeenLoadedAsWebArchive()) {
+        if (url.HasFragmentIdentifier() &&
+            frame_->GetDocument()->IsInitialEmptyDocument()) {
+          same_document_navigation = false;
+        }
+      }
+    }
+  }
+
+  if (!AllowRequestForThisFrame(request, same_document_navigation)) {
     return;
+  }
 
   // Block renderer-initiated loads of data: and filesystem: URLs in the top
   // frame (unless they are reload requests).
@@ -754,41 +816,6 @@ void FrameLoader::StartNavigation(FrameLoadRequest& request,
   if (url.ProtocolIs("filesystem")) {
     document_loader_->CountUse(
         mojom::blink::WebFeature::kFileSystemUrlNavigation);
-  }
-
-  // Convert navigations from the initial empty document to do replacement if
-  // needed. Note that we don't convert reloads or history navigations (so only
-  // kStandard navigations can get converted to do replacement).
-  if (frame_load_type == WebFrameLoadType::kStandard &&
-      IsOnInitialEmptyDocument()) {
-    frame_load_type = WebFrameLoadType::kReplaceCurrentItem;
-  }
-
-  bool same_document_navigation =
-      request.GetNavigationPolicy() == kNavigationPolicyCurrentTab &&
-      ShouldPerformFragmentNavigation(
-          request.Form(), resource_request.HttpMethod(), frame_load_type, url);
-
-  if (RuntimeEnabledFeatures::
-          TreatMhtmlInitialDocumentLoadsAsCrossDocumentEnabled()) {
-    if (auto* parent = DynamicTo<LocalFrame>(frame_->Tree().Parent())) {
-      // Within MHTML archives, treat the initial about:blank#fragment
-      // navigation as cross-document. Although it appears to be a same-document
-      // fragment navigation, it actually commits a new document with a new
-      // opaque origin.
-      //
-      // TODO(crbug.com/423663315): Consider refining this logic to only treat
-      // the initial about:blank#fragment navigation in MHTML as cross-document
-      // if the MHTML archive actually overrides the about:blank resource. If it
-      // doesn't, the navigation may be better treated as same-document,
-      // matching non-MHTML behavior.
-      if (parent->Loader().GetDocumentLoader()->HasBeenLoadedAsWebArchive()) {
-        if (url.HasFragmentIdentifier() &&
-            frame_->GetDocument()->IsInitialEmptyDocument()) {
-          same_document_navigation = false;
-        }
-      }
-    }
   }
 
   // Perform same document navigation.
@@ -911,17 +938,6 @@ void FrameLoader::StartNavigation(FrameLoadRequest& request,
     return;
   }
 
-  // A sandboxed iframe without `allow-popups` should not be able to
-  // open a new browsing context by emulating a user gesture in JS.
-  // (e.g. Ctrl+click).
-  if (request.GetNavigationPolicy() != kNavigationPolicyCurrentTab &&
-      request.GetTriggeringEventInfo() ==
-          mojom::blink::TriggeringEventInfo::kFromUntrustedEvent &&
-      frame_->GetSecurityContext()->IsSandboxed(
-          network::mojom::blink::WebSandboxFlags::kPopups)) {
-    return;
-  }
-
   if (request.GetNavigationPolicy() == kNavigationPolicyCurrentTab &&
       (!origin_window || origin_window->GetSecurityOrigin()->CanAccess(
                              frame_->DomWindow()->GetSecurityOrigin()))) {
@@ -1002,15 +1018,6 @@ void FrameLoader::StartNavigation(FrameLoadRequest& request,
           ? CSPDisposition::DO_NOT_CHECK
           : CSPDisposition::CHECK;
 
-  // Mark this frame as initiator if the request has not specified an initiator.
-  base::UnguessableToken initiator_state_token =
-      request.GetInitiatorStateToken().is_empty()
-          ? frame_->GetInitiatorStateToken()
-          : request.GetInitiatorStateToken();
-  CHECK(!initiator_state_token.is_empty());
-  DocumentToken initiator_document_token =
-      request.GetInitiatorDocumentToken().value_or(
-          frame_->GetDocument()->Token());
   Client()->BeginNavigation(
       resource_request, request.GetRequestorBaseURL(), request.GetFrameType(),
       origin_window, nullptr /* document_loader */, navigation_type,
@@ -1023,13 +1030,13 @@ void FrameLoader::StartNavigation(FrameLoadRequest& request,
       request.Form(), should_check_main_world_csp, request.GetBlobURLToken(),
       request.GetInputStartTime(), request.GetCreationTime(),
       request.HrefTranslate().GetString(), request.GetInitiatorFrameToken(),
-      initiator_state_token, initiator_document_token,
+      request.GetInitiatorStateToken(), request.GetInitiatorDocumentToken(),
       request.GetSourceLocation(),
       request.TakeInitiatorNavigationStateKeepAliveHandle(),
       request.IsContainerInitiated(),
       request.GetWindowFeatures().explicit_opener,
       request.TakeResumeDeferredCommitListener(),
-      request.GetScriptToolInvocationId());
+      request.GetScriptToolInvocationId(), script_injector_host);
 }
 
 static void FillStaticResponseIfNeeded(WebNavigationParams* params,
@@ -1271,7 +1278,8 @@ void FrameLoader::CommitNavigation(
     // DocumentLoader from reporting an error when detaching the pre-XSLT
     // document.
     if (commit_reason == CommitReason::kXSLT && document_loader_) {
-      DCHECK(XSLTProcessor::IsXSLTEnabled(nullptr));
+      DCHECK(
+          XSLTProcessor::IsXSLTEnabled(frame_ ? frame_->DomWindow() : nullptr));
       document_loader_->SetSentDidFinishLoad();
       previous_document_loader_for_xslt_ = document_loader_.Get();
     }
@@ -1285,7 +1293,7 @@ void FrameLoader::CommitNavigation(
     // this triggers a local RenderFrame swap, it might trigger the unloading
     // of the old RenderFrame's document, updating the contents of the
     // OldDocumentInfoForCommit set in `scoped_old_document_info` above.
-    // NOTE: it's important that SwapIn() happens before DetachDocument(),
+    // NOTE: it's important that DetachDocument() happens before SwapIn(),
     // because this ensures that the unload timing info generated by detaching
     // the provisional frame's document isn't the one that gets used.
     if (is_provisional && !frame_->SwapIn())
@@ -1339,7 +1347,8 @@ void FrameLoader::CommitNavigation(
       std::move(policy_container), std::move(extra_data));
 
   if (previous_document_loader_for_xslt_) {
-    DCHECK(XSLTProcessor::IsXSLTEnabled(nullptr));
+    DCHECK(
+        XSLTProcessor::IsXSLTEnabled(frame_ ? frame_->DomWindow() : nullptr));
     new_document_loader->InheritXsltUseCountersFrom(
         previous_document_loader_for_xslt_);
     previous_document_loader_for_xslt_ = nullptr;
@@ -1438,7 +1447,6 @@ bool FrameLoader::DetachDocument() {
   DCHECK(frame_->GetDocument());
   DCHECK(document_loader_);
 
-  PluginScriptForbiddenScope forbid_plugin_destructor_scripting;
   ClientNavigationState* client_navigation = client_navigation_.get();
 
   // Don't allow this frame to navigate anymore. This line is needed for

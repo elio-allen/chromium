@@ -63,7 +63,7 @@ bool IsFeatureEnabled(const base::Feature& feature) {
     }
   }
 
-  return feature.default_state == base::FEATURE_ENABLED_BY_DEFAULT;
+  return feature.GetDefaultState() == base::FEATURE_ENABLED_BY_DEFAULT;
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -118,7 +118,7 @@ void IsolateOriginsPolicyHandler::ApplyPolicySettings(const PolicyMap& policies,
 #if BUILDFLAG(IS_ANDROID)
   if (IsFeatureEnabled(site_isolation::features::kIsolateOriginsShortlist)) {
     if (base::SysInfo::AmountOfTotalPhysicalMemory() <=
-        base::MiBU(kLowMemoryDeviceThresholdMiB)) {
+        base::MiB(kLowMemoryDeviceThresholdMiB)) {
       value_to_use = policies.GetValue(key::kIsolateOriginsShortlist,
                                        base::Value::Type::STRING);
     } else {

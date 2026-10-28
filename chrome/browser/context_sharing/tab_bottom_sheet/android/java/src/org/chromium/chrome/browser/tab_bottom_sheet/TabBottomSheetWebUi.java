@@ -7,25 +7,37 @@ package org.chromium.chrome.browser.tab_bottom_sheet;
 import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.chrome.browser.tab_bottom_sheet.TabBottomSheetUtils.isActivityFinishingOrDestroyed;
+import static org.chromium.chrome.browser.tab_bottom_sheet.TabBottomSheetUtils.isEdgeToEdgeEnabled;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
+import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.view.View;
 import android.view.ViewTreeObserver;
 
 import androidx.annotation.ColorInt;
+import androidx.annotation.Px;
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.ActivityState;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.ResettersForTesting;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.version_info.VersionInfo;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.context_sharing.R;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.intents.BrowserIntentUtils;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabmodel.TabModelSelectorSupplier;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
 import org.chromium.components.embedder_support.contextmenu.ContextMenuPopulatorFactory;
 import org.chromium.components.embedder_support.view.ContentView;
 import org.chromium.components.thinwebview.ThinWebView;
@@ -37,11 +49,15 @@ import org.chromium.content_public.browser.ActionModeCallbackHelper;
 import org.chromium.content_public.browser.ImeAdapter;
 import org.chromium.content_public.browser.SelectionPopupController;
 import org.chromium.content_public.browser.ViewEventSink;
+import org.chromium.content_public.browser.Visibility;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.selection.SelectionDropdownMenuDelegate;
 import org.chromium.ui.base.ViewAndroidDelegate;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.base.WindowAndroid.ActivityStateObserver;
 import org.chromium.ui.base.WindowAndroid.KeyboardShortcutsDelegate;
+import org.chromium.ui.insets.InsetObserver;
+import org.chromium.ui.insets.InsetObserver.WindowInsetObserver;
 import org.chromium.ui.modelutil.MVCListAdapter;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.url.GURL;
@@ -55,6 +71,7 @@ public class TabBottomSheetWebUi {
 
     private final Context mContext;
     private final WindowAndroid mWindowAndroid;
+    private final @Nullable BottomSheetController mBottomSheetController;
     private final ContextMenuPopulatorFactory mContextMenuPopulatorFactory;
     private final SelectionDropdownMenuDelegate mSelectionDropdownMenuDelegate;
     private final WebViewResizingHelper mWebViewResizingHelper;
@@ -74,19 +91,68 @@ public class TabBottomSheetWebUi {
     // dropdown is dismissed if the window has not regained focus.
     private boolean mIgnoreClearFocusForDropdown;
 
+    // ThinWebView marks the WebContents visible once on attach and never hides it, so the page
+    // would otherwise not get a visibilitychange event when Chrome goes to the background. Mirror
+    // the host activity state the same way TabImpl does for tabs, so the page can release the
+    // microphone and other foreground-only resources. Only used for the Glic client while the
+    // GlicVoice feature is enabled.
+    private final ActivityStateObserver mActivityStateObserver =
+            new ActivityStateObserver() {
+                @Override
+                public void onActivityStopped() {
+                    updateWebContentsVisibility(Visibility.HIDDEN);
+                }
+
+                @Override
+                public void onActivityResumed() {
+                    updateWebContentsVisibility(Visibility.VISIBLE);
+                }
+            };
+    private boolean mIsObservingActivityState;
+
+    private final WindowInsetObserver mWindowInsetObserver =
+            new WindowInsetObserver() {
+                @Override
+                public void onInsetChanged() {
+                    updateSafeAreaInsets();
+                }
+
+                @Override
+                public void onKeyboardInsetChanged(int inset) {
+                    updateSafeAreaInsets();
+                }
+            };
+    private final BottomSheetObserver mBottomSheetObserver =
+            new BottomSheetObserver() {
+                @Override
+                public void onSheetContentChanged(@Nullable BottomSheetContent newContent) {
+                    updateSafeAreaInsets();
+                }
+
+                @Override
+                public void onContainerBottomMarginChanged(@Px int bottomMargin) {
+                    updateSafeAreaInsets();
+                }
+            };
+    private boolean mIsObservingInsets;
+
     TabBottomSheetWebUi(
             Context context,
             View containerView,
             WindowAndroid windowAndroid,
+            @Nullable BottomSheetController bottomSheetController,
             ContextMenuPopulatorFactory contextMenuPopulatorFactory,
             SelectionDropdownMenuDelegate selectionDropdownMenuDelegate,
             @ColorInt int backgroundColor,
+            @ColorInt int placeholderElemColor,
             @TabBottomSheetClientType int clientType,
             @CoBrowseContainerType int containerType,
             @Nullable BiConsumer<GURL, String> ephemeralTabOpener,
-            @Nullable BiConsumer<GURL, String> readLaterOpener) {
+            @Nullable BiConsumer<GURL, String> readLaterOpener,
+            @Nullable CoBrowseComponentProvider componentProvider) {
         mContext = context;
         mWindowAndroid = windowAndroid;
+        mBottomSheetController = bottomSheetController;
         mContextMenuPopulatorFactory = contextMenuPopulatorFactory;
         mSelectionDropdownMenuDelegate =
                 new SelectionDropdownMenuDelegateWrapper(selectionDropdownMenuDelegate);
@@ -100,7 +166,9 @@ public class TabBottomSheetWebUi {
                         containerView,
                         windowAndroid,
                         backgroundColor,
-                        containerType == CoBrowseContainerType.SIDE_PANEL);
+                        placeholderElemColor,
+                        containerType == CoBrowseContainerType.SIDE_PANEL,
+                        componentProvider);
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -118,9 +186,21 @@ public class TabBottomSheetWebUi {
 
         mWebContents = webContents;
         if (mWebContents == null) {
+            if (mIsObservingActivityState) {
+                mWindowAndroid.removeActivityStateObserver(mActivityStateObserver);
+                mIsObservingActivityState = false;
+            }
+            unregisterSafeAreaObservers();
             destroyThinWebView();
             return;
         }
+        if (!mIsObservingActivityState
+                && mClientType == TabBottomSheetClientType.GLIC
+                && ChromeFeatureList.isEnabled(ChromeFeatureList.GLIC_VOICE)) {
+            mWindowAndroid.addActivityStateObserver(mActivityStateObserver);
+            mIsObservingActivityState = true;
+        }
+        registerSafeAreaObservers();
 
         mWebContents.getEventForwarder().setCurrentTouchOffsetX(0.0f);
         mWebContents.getEventForwarder().setCurrentTouchOffsetY(0.0f);
@@ -132,16 +212,44 @@ public class TabBottomSheetWebUi {
         setupViewAndroidDelegate(contentView);
         setupContextMenuPopulator();
         attachToThinWebView(contentView);
+        // Attaching to ThinWebView marks the WebContents visible. Undo that if the host activity
+        // is already in the background.
+        if (mIsObservingActivityState
+                && mWindowAndroid.getActivityState() == ActivityState.STOPPED) {
+            updateWebContentsVisibility(Visibility.HIDDEN);
+        }
 
         // ThinWebView creates an orphaned WindowAndroid. We explicitly map the host
         // activity's KeyboardShortcutsDelegate to this orphaned window so that
         // keyboard shortcuts (Ctrl+T, etc.) aren't swallowed by Bottom Sheet WebUIs.
-        if (mWebContents.getTopLevelNativeWindow() != null) {
+        WindowAndroid thinWindow = mWebContents.getTopLevelNativeWindow();
+        if (thinWindow != null) {
             Activity activity = ContextUtils.activityFromContext(mContext);
             if (activity instanceof KeyboardShortcutsDelegate) {
-                mWebContents
-                        .getTopLevelNativeWindow()
-                        .setKeyboardShortcutsDelegate((KeyboardShortcutsDelegate) activity);
+                thinWindow.setKeyboardShortcutsDelegate((KeyboardShortcutsDelegate) activity);
+            }
+            // Forward the host WindowAndroid so permission requests from ThinWebView
+            // are routed through the host activity and resolved when onRequestPermissionsResult
+            // fires.
+            thinWindow.setAndroidPermissionDelegate(mWindowAndroid);
+
+            // Forward the host WindowAndroid's TabModelSelectorSupplier to the ThinWebView's
+            // orphaned window so that components querying the WebContents WindowAndroid
+            // (such as GlicTabPickerBridge) can access the host activity's tab model selector.
+            //
+            // Note this is a global change in behavior for this WebContents: any window-scoped
+            // lookup made from within this sheet - including
+            // TabModelSelectorSupplier#getCurrentTabFrom(webContents.getTopLevelNativeWindow()) -
+            // now resolves to the host activity's selector and its current tab, which is the tab
+            // in the background behind the sheet, instead of returning null. Autofill and password
+            // manager surfaces are not a concern here because attachToThinWebView() attaches tab
+            // helpers with enableBrowserAutofill = false, so ContentAutofillClient and the rest of
+            // the autofill infrastructure are never created for this WebContents.
+            MonotonicObservableSupplier<TabModelSelector> selectorSupplier =
+                    TabModelSelectorSupplier.from(mWindowAndroid);
+            if (selectorSupplier != null) {
+                TabModelSelectorSupplier.attach(
+                        thinWindow.getUnownedUserDataHost(), selectorSupplier);
             }
         }
 
@@ -251,6 +359,7 @@ public class TabBottomSheetWebUi {
             setAllowFullscreenIme(
                     mContext.getResources().getConfiguration().orientation
                             == Configuration.ORIENTATION_LANDSCAPE);
+            updateSafeAreaInsets();
         }
     }
 
@@ -268,8 +377,67 @@ public class TabBottomSheetWebUi {
         }
     }
 
+    // TODO(crbug.com/574638400): Move WebContents safe-area inset updates to WebViewResizingHelper.
+    void updateSafeAreaInsets() {
+        if (!isEdgeToEdgeEnabled()
+                || mContainerType == CoBrowseContainerType.SIDE_PANEL
+                || mWebContents == null
+                || mWebContents.isDestroyed()) {
+            return;
+        }
+
+        @Px
+        int topMarginPx =
+                mContext.getResources()
+                        .getDimensionPixelSize(R.dimen.tab_bottom_sheet_web_ui_top_margin);
+        float dipScale = mWindowAndroid.getDisplay().getDipScale();
+        int topInsetDip = (int) Math.ceil(topMarginPx / dipScale);
+        int bottomInsetDip = (int) Math.ceil(getBottomSafeAreaInsetPx() / dipScale);
+
+        Rect safeArea = new Rect(0, topInsetDip, 0, bottomInsetDip);
+        mWebContents.setDisplayCutoutSafeArea(safeArea);
+    }
+
+    private @Px int getBottomSafeAreaInsetPx() {
+        if (mBottomSheetController == null) return 0;
+        return mBottomSheetController.getEdgeToEdgeBottomInset();
+    }
+
+    private void registerSafeAreaObservers() {
+        if (mIsObservingInsets
+                || !isEdgeToEdgeEnabled()
+                || mContainerType == CoBrowseContainerType.SIDE_PANEL) {
+            return;
+        }
+        InsetObserver insetObserver = mWindowAndroid.getInsetObserver();
+        if (insetObserver != null) {
+            insetObserver.addObserver(mWindowInsetObserver);
+        }
+        if (mBottomSheetController != null) {
+            mBottomSheetController.addObserver(mBottomSheetObserver);
+        }
+        mIsObservingInsets = true;
+    }
+
+    private void unregisterSafeAreaObservers() {
+        if (!mIsObservingInsets) return;
+        InsetObserver insetObserver = mWindowAndroid.getInsetObserver();
+        if (insetObserver != null) {
+            insetObserver.removeObserver(mWindowInsetObserver);
+        }
+        if (mBottomSheetController != null) {
+            mBottomSheetController.removeObserver(mBottomSheetObserver);
+        }
+        mIsObservingInsets = false;
+    }
+
     @Nullable WebContents getWebContents() {
         return mWebContents;
+    }
+
+    private void updateWebContentsVisibility(@Visibility int visibility) {
+        if (mWebContents == null || mWebContents.isDestroyed()) return;
+        mWebContents.updateWebContentsVisibility(visibility);
     }
 
     void setIgnoreClearFocus(boolean ignoreClearFocus) {
@@ -284,6 +452,7 @@ public class TabBottomSheetWebUi {
 
     void destroy() {
         setWebContents(null, false);
+        mWebViewResizingHelper.destroy();
     }
 
     View getWebUiView() {

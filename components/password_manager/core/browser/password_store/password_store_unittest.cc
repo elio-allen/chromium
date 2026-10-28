@@ -21,6 +21,7 @@
 #include "base/synchronization/waitable_event.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
+#include "base/test/gmock_expected_support.h"
 #include "base/test/gmock_move_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
@@ -51,6 +52,8 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 using base::WaitableEvent;
+using base::test::ErrorIs;
+using base::test::ValueIs;
 using testing::_;
 using testing::DoAll;
 using testing::ElementsAre;
@@ -61,7 +64,6 @@ using testing::Pointee;
 using testing::SizeIs;
 using testing::UnorderedElementsAre;
 using testing::UnorderedElementsAreArray;
-using testing::VariantWith;
 using testing::WithArg;
 
 namespace password_manager {
@@ -268,7 +270,7 @@ TEST_F(PasswordStoreTest, AddLogins) {
   EXPECT_CALL(mock_consumer,
               OnGetPasswordStoreResultsOrErrorFrom(
                   store.get(),
-                  VariantWith<LoginsResult>(UnorderedElementsAreArray(
+                  ValueIs(UnorderedElementsAreArray(
                       StoredCredentialsIgnoringPrimaryKey(all_credentials)))));
   store->GetAutofillableLogins(mock_consumer.GetWeakPtr());
   WaitForPasswordStore();
@@ -326,7 +328,7 @@ TEST_F(PasswordStoreTest, UpdateLogins) {
       mock_consumer,
       OnGetPasswordStoreResultsOrErrorFrom(
           store.get(),
-          VariantWith<LoginsResult>(UnorderedElementsAreArray(
+          ValueIs(UnorderedElementsAreArray(
               StoredCredentialsIgnoringPrimaryKey(updated_credentials)))));
   store->GetAutofillableLogins(mock_consumer.GetWeakPtr());
   WaitForPasswordStore();
@@ -680,6 +682,46 @@ TEST_F(PasswordStoreTest, DoNotCallOnLoginsChangedIfUpdateReturnsError) {
   store->ShutdownOnUIThread();
 }
 
+TEST_F(PasswordStoreTest, CallOnErrorStateChangedIfGetLoginsReturnsError) {
+  PasswordFormDigest observed_form = {PasswordForm::Scheme::kHtml,
+                                      kTestWebRealm1, GURL(kTestWebRealm1)};
+  MockPasswordStoreObserver mock_observer;
+  MockPasswordStoreConsumer mock_consumer;
+  auto [store, fake_backend] = CreateUnownedStoreWithOwnedFakeBackend();
+  fake_backend->ReturnErrorOnRequest(kBackendError);
+  store->Init();
+  store->AddObserver(&mock_observer);
+
+  EXPECT_CALL(mock_observer,
+              OnErrorStateChanged(store.get(), ActionableError::kInactionable));
+  EXPECT_CALL(mock_consumer,
+              OnGetPasswordStoreResultsOrErrorFrom(store.get(), ErrorIs(_)));
+  store->GetLogins(observed_form, mock_consumer.GetWeakPtr());
+  WaitForPasswordStore();
+
+  store->RemoveObserver(&mock_observer);
+  store->ShutdownOnUIThread();
+}
+
+TEST_F(PasswordStoreTest, CallOnErrorStateChangedIfGetAllLoginsReturnsError) {
+  MockPasswordStoreObserver mock_observer;
+  MockPasswordStoreConsumer mock_consumer;
+  auto [store, fake_backend] = CreateUnownedStoreWithOwnedFakeBackend();
+  fake_backend->ReturnErrorOnRequest(kBackendError);
+  store->Init();
+  store->AddObserver(&mock_observer);
+
+  EXPECT_CALL(mock_observer,
+              OnErrorStateChanged(store.get(), ActionableError::kInactionable));
+  EXPECT_CALL(mock_consumer,
+              OnGetPasswordStoreResultsOrErrorFrom(store.get(), ErrorIs(_)));
+  store->GetAllLogins(mock_consumer.GetWeakPtr());
+  WaitForPasswordStore();
+
+  store->RemoveObserver(&mock_observer);
+  store->ShutdownOnUIThread();
+}
+
 TEST_F(PasswordStoreTest, AbleToSavePasswords) {
   scoped_refptr<PasswordStore> store = CreatePasswordStore();
   store->Init();
@@ -733,7 +775,7 @@ TEST_F(PasswordStoreTest, GetAllLogins) {
   EXPECT_CALL(
       mock_consumer,
       OnGetPasswordStoreResultsOrErrorFrom(
-          _, VariantWith<LoginsResult>(UnorderedElementsAreArray(
+          _, ValueIs(UnorderedElementsAreArray(
                  StoredCredentialsIgnoringPrimaryKey(expected_results)))));
   store->GetAllLogins(mock_consumer.GetWeakPtr());
   WaitForPasswordStore();

@@ -31,6 +31,7 @@
 
 #include "base/check_op.h"
 #include "base/dcheck_is_on.h"
+#include "base/memory/raw_ptr.h"
 #include "third_party/blink/renderer/core/dom/attribute.h"
 #include "third_party/blink/renderer/core/html/parser/html_parser_idioms.h"
 #include "third_party/blink/renderer/core/html/parser/literal_buffer.h"
@@ -55,33 +56,6 @@ struct DoctypeData {
   Vector<UChar> public_identifier_;
   Vector<UChar> system_identifier_;
   bool force_quirks_;
-};
-
-enum class DOMPartTokenType {
-  kChildNodePartStart,
-  kChildNodePartEnd,
-};
-
-struct DOMPartData {
-  USING_FAST_MALLOC(DOMPartData);
-
- public:
-  explicit DOMPartData(DOMPartTokenType type) : type_(type) {
-  }
-  DOMPartData(const DOMPartData&) = delete;
-  DOMPartData& operator=(const DOMPartData&) = delete;
-
-  Vector<String> metadata_;
-  DOMPartTokenType type_;
-};
-
-struct DOMPartsNeeded {
- public:
-  bool needs_node_part{false};
-  Vector<AtomicString> needs_attribute_parts{};
-  explicit operator bool() const {
-    return needs_node_part || !needs_attribute_parts.empty();
-  }
 };
 
 static inline Attribute* FindAttributeInVector(base::span<Attribute> attributes,
@@ -125,7 +99,6 @@ class HTMLToken {
     String Value() const { return value_.AsString(); }
 
     void AppendToValue(UChar c) { value_.AddChar(c); }
-    void ClearValue() { value_.clear(); }
 
    private:
     // TODO(chromium:1204030): Do a more rigorous study and select a
@@ -423,7 +396,10 @@ class HTMLToken {
   AttributeList attributes_;
 
   // A pointer into attributes_ used during lexing.
-  Attribute* current_attribute_ = nullptr;
+  // UnprotectedInReleaseForPerformance: Based on analysis of Speedometer 3
+  // (Editor-TipTap).
+  raw_ptr<Attribute, UnprotectedInReleaseForPerformance | DanglingUntriaged>
+      current_attribute_ = nullptr;
 
   // For DOCTYPE
   std::unique_ptr<DoctypeData> doctype_data_;

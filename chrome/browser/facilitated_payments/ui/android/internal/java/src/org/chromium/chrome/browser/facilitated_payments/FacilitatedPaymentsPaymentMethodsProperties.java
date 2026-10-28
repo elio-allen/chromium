@@ -8,6 +8,8 @@ import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 import android.view.View.OnClickListener;
 
+import androidx.annotation.IntDef;
+
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
@@ -18,6 +20,9 @@ import org.chromium.ui.modelutil.PropertyModel.ReadableObjectPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableBooleanPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableIntPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
+
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 
 /**
  * Properties defined here reflect the visible state of the facilitated payments bottom sheet
@@ -39,6 +44,16 @@ class FacilitatedPaymentsPaymentMethodsProperties {
     };
 
     // TODO: b/348595414 - Rename to FopSelectorItemType and move to a separate directory.
+    @IntDef({
+        ItemType.HEADER,
+        ItemType.BANK_ACCOUNT,
+        ItemType.ADDITIONAL_INFO,
+        ItemType.CONTINUE_BUTTON,
+        ItemType.FOOTER,
+        ItemType.EWALLET,
+        ItemType.PAYMENT_APP
+    })
+    @Retention(RetentionPolicy.SOURCE)
     @interface ItemType {
         // The header at the top of the FacilitatedPayments bottom sheet.
         int HEADER = 0;
@@ -267,6 +282,8 @@ class FacilitatedPaymentsPaymentMethodsProperties {
                 new WritableObjectPropertyKey<>("video_link_callback");
         static final WritableIntPropertyKey DECLINE_BUTTON_TEXT_ID =
                 new WritableIntPropertyKey("decline_button_text_id");
+        static final WritableObjectPropertyKey<String> ACCOUNT_EMAIL =
+                new WritableObjectPropertyKey<>("account_email");
 
         /** All the properties of Pix account linking prompt. */
         static final PropertyKey[] ALL_KEYS = {
@@ -274,7 +291,8 @@ class FacilitatedPaymentsPaymentMethodsProperties {
             DECLINE_BUTTON_CALLBACK,
             SETTINGS_LINK_CALLBACK,
             VIDEO_LINK_CALLBACK,
-            DECLINE_BUTTON_TEXT_ID
+            DECLINE_BUTTON_TEXT_ID,
+            ACCOUNT_EMAIL
         };
     }
 
@@ -311,6 +329,21 @@ class FacilitatedPaymentsPaymentMethodsProperties {
         static final PropertyKey[] ALL_KEYS = {
             EWALLET_NAME, ACCEPT_BUTTON_CALLBACK, DECLINE_BUTTON_CALLBACK, DECLINE_BUTTON_TEXT_ID
         };
+    }
+
+    /** Properties defined here reflect the visible state of the progress screen. */
+    static class ProgressScreenProperties {
+        /** Message string to be displayed. If empty, the message will be hidden. */
+        static final WritableObjectPropertyKey<String> MESSAGE_TEXT =
+                new WritableObjectPropertyKey<>("message_text");
+
+        /** Whether the GPay icon should be displayed. */
+        static final WritableBooleanPropertyKey SHOW_GPAY_ICON =
+                new WritableBooleanPropertyKey("show_gpay_icon");
+
+        static final PropertyKey[] ALL_KEYS = {MESSAGE_TEXT, SHOW_GPAY_ICON};
+
+        private ProgressScreenProperties() {}
     }
 
     private FacilitatedPaymentsPaymentMethodsProperties() {}

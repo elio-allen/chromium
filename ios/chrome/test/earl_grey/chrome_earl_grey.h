@@ -17,6 +17,15 @@
 #include "third_party/metrics_proto/user_demographics.pb.h"
 #include "url/gurl.h"
 
+#if !defined(__IPHONE_27_1) || __IPHONE_OS_VERSION_MAX_ALLOWED < __IPHONE_27_1
+typedef NS_ENUM(NSInteger, UIHingeStatus) {
+  UIHingeStatusUnknown = 0,
+  UIHingeStatusClosed = 1,
+  UIHingeStatusPartiallyOpen = 2,
+  UIHingeStatusFullyOpen = 3,
+};
+#endif
+
 @class FakeSystemIdentity;
 @class ElementSelector;
 @class JavaScriptExecutionResult;
@@ -34,7 +43,8 @@ UIWindow* GetAnyKeyWindow();
 void GREYAssertErrorNil(NSError* error);
 
 // Assert the error is nil. Postpone the error description to the error message.
-void GREYAssertErrorNil(NSError* error, NSString* description);
+void GREYAssertErrorNil(NSError* error, NSString* format, ...)
+    NS_FORMAT_FUNCTION(2, 3);
 
 }  // namespace chrome_test_util
 
@@ -49,13 +59,36 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // will properly synchronize the UI for Earl Grey tests.
 @interface ChromeEarlGreyImpl : BaseEGTestHelperImpl
 
-// Reloads the page without waiting for the page to load.
-- (void)startReloading;
-
 #pragma mark - Test Utilities
 
 // Wait until `matcher` is accessible (not nil) on the device.
 - (void)waitForMatcher:(id<GREYMatcher>)matcher;
+
+// Stops startup tracing, flushes trace file to disk, and returns trace file
+// path.
+- (NSString*)stopStartupTracing;
+
+// Starts manual tracing. Returns YES on success.
+- (BOOL)startManualTracing;
+
+// Starts manual tracing with `categoryFilter` (e.g., @"ui"). Returns YES on
+// success.
+- (BOOL)startManualTracingWithCategoryFilter:(NSString*)categoryFilter;
+
+// Stops manual tracing, flushes trace file to disk, and returns trace file
+// path.
+- (NSString*)stopManualTracing;
+
+// Returns YES if the trace file at `filePath` exists and has a size greater
+// than 0.
+- (BOOL)isTraceFileReadyAtPath:(NSString*)filePath;
+
+// Returns the content of the trace file at `filePath` as NSData, or nil if
+// reading failed.
+- (NSData*)traceDataForPath:(NSString*)filePath;
+
+// Removes the trace file at `filePath`. Returns YES if successfully deleted.
+- (BOOL)removeTraceFileAtPath:(NSString*)filePath;
 
 // Returns YES if `matcher` is sufficiently_visible;
 - (BOOL)isMatcherSufficientlyVisible:(id<GREYMatcher>)matcher;
@@ -101,17 +134,27 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Returns whether the bottom omnibox steady state feature is enabled.
 - (BOOL)isBottomOmniboxAvailable;
 
+// Returns whether the Pinned Tabs feature is enabled.
+- (BOOL)isPinnedTabsEnabled;
+
 // Returns whether the current layout is showing the bottom omnibox.
 - (BOOL)isCurrentLayoutBottomOmnibox;
-
-// Returns whether the ComposeboxIOS feature is enabled.
-- (BOOL)isComposeboxIOSEnabled;
 
 // Returns whether the Proactive Suggestions Framework feature is enabled.
 - (BOOL)isProactiveSuggestionsFrameworkEnabled;
 
 // Returns the interface orientation of the scene.
 - (UIInterfaceOrientation)interfaceOrientation;
+
+// Returns YES if running on an iPhone Duo simulator.
+- (BOOL)isDuoSimulator;
+
+// Sets the simulated hinge posture on an iPhone Duo simulator.
+- (void)setSimulatedDuoHingeStatus:(UIHingeStatus)hingeStatus
+    API_AVAILABLE(ios(27.1));
+
+// Sets the simulated device orientation on an iPhone Duo simulator.
+- (void)setSimulatedDuoOrientation:(UIDeviceOrientation)orientation;
 
 #pragma mark - Profile Utilities (EG2)
 
@@ -381,6 +424,10 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // given GUID.
 - (void)waitForSendTabToSelfEntryWithGUID:(NSString*)guid;
 
+// Waits for the local Send Tab To Self model to contain a target device with
+// the given `deviceName`.
+- (void)waitForSendTabToSelfTargetDevice:(NSString*)deviceName;
+
 // Returns the generated text fragment for the given URL, or nil if no entry
 // exists or no fragment is set.
 - (NSString*)textFragmentForSendTabToSelfEntryWithURL:(NSString*)URL;
@@ -400,14 +447,6 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 - (void)openSendTabToSelfNewBackgroundTabWithURL:(NSString*)url
                                     textFragment:(NSString*)textFragment
                                        entryGUID:(NSString*)guid;
-
-// Triggers a sync cycle for a `type`.
-- (void)triggerSyncCycleForType:(syncer::DataType)type;
-
-// Deletes an autofill profile from the fake sync server with `GUID`, if it
-// exists. If it doesn't exist, nothing is done.
-- (void)deleteAutofillProfileFromFakeSyncServerWithGUID:
-    (const std::string&)GUID;
 
 // Verifies the sessions hierarchy on the Sync FakeServer. `URLs` is
 // the collection of URLs that are to be expected for a single window. A
@@ -496,9 +535,6 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Returns the number of incognito tabs.
 - (NSUInteger)incognitoTabCount [[nodiscard]];
 
-// Returns the number of browsers.
-- (NSUInteger)browserCount [[nodiscard]];
-
 // Returns the number of the realized web states from the existing web states.
 - (NSInteger)realizedWebStatesCount [[nodiscard]];
 
@@ -529,6 +565,9 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Returns the tab title of the current tab.
 - (NSString*)currentTabTitle;
 
+// Waits for the tab title of the current tab to match `tabTitle`.
+- (void)waitForCurrentTabTitle:(NSString*)tabTitle;
+
 // Returns the tab title of the next tab. Assumes that next tab exists.
 - (NSString*)nextTabTitle;
 
@@ -558,9 +597,6 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Returns the number of windows, including background and disconnected or
 // archived windows.
 - (NSUInteger)windowCount [[nodiscard]];
-
-// Returns the number of foreground (visible on screen) windows.
-- (NSUInteger)foregroundWindowCount [[nodiscard]];
 
 // Waits for there to be `count` number of browsers within a timeout,
 // or a GREYAssert is induced.
@@ -646,6 +682,10 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // play well together, so EG often fails to interact with the tools menu in
 // secondary windows.
 - (void)openSettingsInWindowWithNumber:(int)windowNumber;
+
+// Shows the tab switcher directly (not via the UI) in the window with the
+// given number.
+- (void)showTabSwitcherInWindowWithNumber:(int)windowNumber;
 
 #pragma mark - SignIn Utilities (EG2)
 
@@ -755,13 +795,6 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Cache-Control response header says otherwise.
 - (void)purgeCachedWebViewPages;
 
-// Returns YES if the current WebState's web view uses the content inset to
-// correctly align the top of the content with the bottom of the top bar.
-- (BOOL)webStateWebViewUsesContentInset;
-
-// Returns the size of the current WebState's web view.
-- (CGSize)webStateWebViewSize;
-
 // Stops any pending navigations in all WebStates which are loading.
 - (void)stopAllWebStatesLoading;
 
@@ -802,11 +835,6 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // not be used.
 // Fails if the execution causes an error.
 - (void)evaluateJavaScriptForSideEffect:(NSString*)javaScript;
-
-// Same as -evaluateJavaScriptForSideEffect but executes the javascript in the
-// isolated world instead of the page content world. This allows interacting
-// with the gcrweb objects that are injected there.
-- (void)evaluateJavaScriptInIsolatedWorldForSideEffect:(NSString*)javaScript;
 
 // Returns the user agent that should be used for the mobile version.
 - (NSString*)mobileUserAgentString;
@@ -875,15 +903,14 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Returns whether Chrome Next is enabled.
 - (BOOL)isChromeNextEnabled;
 
+// Returns whether Next Old Design is enabled.
+- (BOOL)isNextOldDesignEnabled;
+
 // Returns whether overflow menu refactoring on the NTP is enabled.
 - (BOOL)isOverflowMenuNTPRefactorEnabled;
 
-// Returns whether the Chrome Next Share Icon is visible.
-- (BOOL)isChromeNextShareIconVisible;
-
-// Returns YES if the view with `accessibilityID` or any of its ancestors is
-// animating.
-- (BOOL)isViewAnimatingWithAccessibilityID:(NSString*)accessibilityID;
+// Returns whether Aim Cobrowse Web Selection Search is enabled.
+- (BOOL)isAimCobrowseWebSelectionSearchEnabled;
 
 // Waits for the view with `accessibilityID` to stop animating within `timeout`.
 - (void)waitForViewToStopAnimatingWithAccessibilityID:(NSString*)accessibilityID
@@ -954,8 +981,6 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Gets the value of a local state pref.
 - (bool)localStateBooleanPref:(const std::string&)prefName;
 - (int)localStateIntegerPref:(const std::string&)prefName;
-- (std::string)localStateStringPref:(const std::string&)prefName;
-- (base::Time)localStateTimePref:(const std::string&)prefName;
 
 // Sets the integer value for the local state pref with `prefName`. `value`
 // can be either a casted enum or any other numerical value. Local State
@@ -1066,18 +1091,6 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 
 #pragma mark - Watcher utilities
 
-// Starts monitoring for buttons (based on traits) with the given
-// (accessibility) `labels`. Monitoring will stop once all are found, or if
-// timeout expires. If a previous set is currently being watched for it gets
-// replaced with this set. Note that timeout is best effort and can be a bit
-// longer than specified. This method returns immediately.
-- (void)watchForButtonsWithLabels:(NSArray<NSString*>*)labels
-                          timeout:(base::TimeDelta)timeout;
-
-// Returns YES if the button with given (accessibility) `label` was observed at
-// some point since `watchForButtonsWithLabels:timeout:` was called.
-- (BOOL)watcherDetectedButtonWithLabel:(NSString*)label;
-
 // Clear the watcher list, stopping monitoring.
 - (void)stopWatcher;
 
@@ -1085,9 +1098,6 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 
 // Clears default browser promo data to restart capping for the promos.
 - (void)clearDefaultBrowserPromoData;
-
-// Copies a chrome:// URL that doesn't require internet connection.
-- (void)copyURLToPasteBoard;
 
 #pragma mark - ActivitySheet utilities
 
@@ -1132,11 +1142,6 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 #pragma mark - Notification Utilities
 
 - (void)requestTipsNotification:(TipsNotificationType)type;
-
-#pragma mark - Variations Utilities
-
-// Forces an override of the variations stored permanent country.
-- (void)overrideVariationsServiceStoredPermanentCountry:(NSString*)country;
 
 #pragma mark - Shared Tab Groups Utilities
 

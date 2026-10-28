@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 import {SuggestionsFromGeminiAction, SuggestionsFromGeminiEntryPoint, YourSavedInfoDataCategory, YourSavedInfoDataChip, YourSavedInfoRelatedService} from 'chrome://settings/settings.js';
-import type {AiPageComposeInteractions, AiPageHistorySearchInteractions, AiPageInteractions, AiPageSuggestionsInteractions, AutofillSettingsReferrer, DeleteBrowsingDataAction, MetricsBrowserProxy, PrivacyElementInteractions, PrivacyGuideInteractions, PrivacyGuideSettingsStates, PrivacyGuideStepsEligibleAndReached, SafeBrowsingInteractions, SafetyCheckNotificationsModuleInteractions, SafetyCheckUnusedSitePermissionsModuleInteractions, SafetyHubCardState, SafetyHubEntryPoint, SafetyHubModuleType, SafetyHubSurfaces} from 'chrome://settings/settings.js';
+import type {AiPageComposeInteractions, AiPageHistorySearchInteractions, AiPageInteractions, AiPageSuggestionsInteractions, AutofillSettingsReferrer, DeleteBrowsingDataAction, MetricsBrowserProxy, PrivacyElementInteractions, PrivacyGuideInteractions, PrivacyGuideSettingsStates, PrivacyGuideStepsEligibleAndReached, SafeBrowsingInteractions, SafetyCheckUnusedSitePermissionsModuleInteractions, SafetyHubCardState, SafetyHubEntryPoint, SafetyHubModuleType, SafetyHubSurfaces, SettingsSearchExitReasonDesktop} from 'chrome://settings/settings.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 
 export class TestMetricsBrowserProxy extends TestBrowserProxy implements
@@ -20,6 +20,7 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
       'recordPrivacyGuideSettingsStatesHistogram',
       'recordPrivacyGuideStepsEligibleAndReachedHistogram',
       'recordDeleteBrowsingDataAction',
+      'recordClearBrowsingDataCancelled',
       'recordSafetyHubAbusiveNotificationPermissionRevocationInteractionsHistogram',
       'recordSafetyHubCardStateClicked',
       'recordSafetyHubDashboardAnyWarning',
@@ -28,8 +29,6 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
       'recordSafetyHubImpression',
       'recordSafetyHubInteraction',
       'recordSafetyHubModuleWarningImpression',
-      'recordSafetyHubNotificationPermissionsModuleInteractionsHistogram',
-      'recordSafetyHubNotificationPermissionsModuleListCountHistogram',
       'recordSafetyHubUnusedSitePermissionsModuleInteractionsHistogram',
       'recordSafetyHubUnusedSitePermissionsModuleListCountHistogram',
       // <if expr="_google_chrome and is_win">
@@ -39,6 +38,10 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
       'recordAiPageHistorySearchInteractions',
       'recordAiPageComposeInteractions',
       'recordAiPageSuggestionsInteractions',
+      'recordSettingsSearchExitReason',
+      'recordSettingsSearchResultDwellTime',
+      'recordSettingsNavCategoryClicked',
+      'recordSettingsSearchQueryEntered',
       'recordAutofillSettingsReferrer',
       'recordYourSavedInfoCategoryClick',
       'recordYourSavedInfoDataChipClick',
@@ -46,6 +49,22 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
       'recordSuggestionsFromGeminiEntryPointClick',
       'recordSuggestionsFromGeminiAction',
     ]);
+  }
+
+  recordSettingsSearchExitReason(reason: SettingsSearchExitReasonDesktop) {
+    this.methodCalled('recordSettingsSearchExitReason', reason);
+  }
+
+  recordSettingsSearchResultDwellTime(time: number) {
+    this.methodCalled('recordSettingsSearchResultDwellTime', time);
+  }
+
+  recordSettingsNavCategoryClicked() {
+    this.methodCalled('recordSettingsNavCategoryClicked');
+  }
+
+  recordSettingsSearchQueryEntered() {
+    this.methodCalled('recordSettingsSearchQueryEntered');
   }
 
   recordAction(action: string) {
@@ -98,6 +117,10 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
     this.methodCalled('recordDeleteBrowsingDataAction', action);
   }
 
+  recordClearBrowsingDataCancelled() {
+    this.methodCalled('recordClearBrowsingDataCancelled');
+  }
+
   recordSafetyHubAbusiveNotificationPermissionRevocationInteractionsHistogram(
       interaction: SafetyCheckUnusedSitePermissionsModuleInteractions) {
     this.methodCalled(
@@ -120,7 +143,7 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
   }
 
   recordSafetyHubEntryPointShown(page: SafetyHubEntryPoint) {
-    this.methodCalled('recordSafetyHubModuleWarningImpression', page);
+    this.methodCalled('recordSafetyHubEntryPointShown', page);
   }
 
   recordSafetyHubImpression(surface: SafetyHubSurfaces) {
@@ -133,20 +156,6 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
 
   recordSafetyHubModuleWarningImpression(module: SafetyHubModuleType) {
     this.methodCalled('recordSafetyHubModuleWarningImpression', module);
-  }
-
-  recordSafetyHubNotificationPermissionsModuleInteractionsHistogram(
-      interaction: SafetyCheckNotificationsModuleInteractions) {
-    this.methodCalled(
-        'recordSafetyHubNotificationPermissionsModuleInteractionsHistogram',
-        interaction);
-  }
-
-  recordSafetyHubNotificationPermissionsModuleListCountHistogram(
-      suggestions: number) {
-    this.methodCalled(
-        'recordSafetyHubNotificationPermissionsModuleListCountHistogram',
-        suggestions);
   }
 
   recordSafetyHubUnusedSitePermissionsModuleInteractionsHistogram(
@@ -189,7 +198,7 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
 
   recordYourSavedInfoCategoryClick(category: YourSavedInfoDataCategory) {
     this.methodCalled('recordYourSavedInfoCategoryClick', [category]);
-    if (category !== YourSavedInfoDataCategory.MAX_VALUE) {
+    if (category !== YourSavedInfoDataCategory.COUNT) {
       this.recordAction(`Settings.YourSavedInfo.CategoryClick.${
           YourSavedInfoDataCategory[category]}`);
     }
@@ -197,7 +206,7 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
 
   recordYourSavedInfoDataChipClick(chip: YourSavedInfoDataChip) {
     this.methodCalled('recordYourSavedInfoDataChipClick', [chip]);
-    if (chip !== YourSavedInfoDataChip.MAX_VALUE) {
+    if (chip !== YourSavedInfoDataChip.COUNT) {
       this.recordAction(
           `Settings.YourSavedInfo.ChipClick.${YourSavedInfoDataChip[chip]}`);
     }
@@ -205,7 +214,7 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
 
   recordYourSavedInfoRelatedServiceClick(service: YourSavedInfoRelatedService) {
     this.methodCalled('recordYourSavedInfoRelatedServiceClick', [service]);
-    if (service !== YourSavedInfoRelatedService.MAX_VALUE) {
+    if (service !== YourSavedInfoRelatedService.COUNT) {
       this.recordAction(`Settings.YourSavedInfo.RelatedServiceClick.${
           YourSavedInfoRelatedService[service]}`);
     }
@@ -214,7 +223,7 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
   recordSuggestionsFromGeminiEntryPointClick(
       entryPoint: SuggestionsFromGeminiEntryPoint) {
     this.methodCalled('recordSuggestionsFromGeminiEntryPointClick', entryPoint);
-    if (entryPoint !== SuggestionsFromGeminiEntryPoint.MAX_VALUE) {
+    if (entryPoint !== SuggestionsFromGeminiEntryPoint.COUNT) {
       const actionMap = {
         [SuggestionsFromGeminiEntryPoint.YOUR_SAVED_INFO]:
             'PersonalContext.Settings.EntryPoint.AutofillAndPasswordsSettings',
@@ -231,7 +240,7 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
 
   recordSuggestionsFromGeminiAction(action: SuggestionsFromGeminiAction) {
     this.methodCalled('recordSuggestionsFromGeminiAction', action);
-    if (action !== SuggestionsFromGeminiAction.MAX_VALUE) {
+    if (action !== SuggestionsFromGeminiAction.COUNT) {
       const actionMap = {
         [SuggestionsFromGeminiAction.MANAGE_CONNECTED_APPS_CLICK]:
             'PersonalContext.Settings.ManageConnectedAppsClick',

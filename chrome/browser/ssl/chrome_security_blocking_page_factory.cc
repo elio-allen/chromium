@@ -34,6 +34,7 @@
 #include "components/security_interstitials/core/controller_client.h"
 #include "components/security_interstitials/core/metrics_helper.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/page_transition_types.h"
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 #include "base/enterprise_util.h"
@@ -53,7 +54,6 @@
 #if BUILDFLAG(ENABLE_CAPTIVE_PORTAL_DETECTION)
 #include "chrome/browser/captive_portal/captive_portal_service_factory.h"
 #include "chrome/browser/net/system_network_context_manager.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -88,9 +88,10 @@ void OpenLoginPage(content::WebContents* web_contents) {
   // the platform's portal detection URL in a new tab.
   const std::string url = security_interstitials::GetCaptivePortalServerUrl(
       base::android::AttachCurrentThread());
-  content::OpenURLParams params(GURL(url), content::Referrer(),
-                                WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                ui::PAGE_TRANSITION_LINK, false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(url), WindowOpenDisposition::kNewForegroundTab,
+          ui::PAGE_TRANSITION_LINK);
   web_contents->OpenURL(params, /*navigation_handle_callback=*/{});
 #else
   ChromeSecurityBlockingPageFactory::OpenLoginTabForWebContents(web_contents,
@@ -327,6 +328,8 @@ ChromeSecurityBlockingPageFactory::CreateHttpsOnlyModeBlockingPage(
       interstitial_state.enabled_by_typically_secure_browsing = true;
     } else if (*url_type_param == "incognito") {
       interstitial_state.enabled_by_incognito = true;
+    } else if (*url_type_param == "isolated_mode") {
+      interstitial_state.enabled_by_isolated_mode = true;
     }
   } else {
     interstitial_state.enabled_by_advanced_protection =
@@ -364,10 +367,10 @@ void OpenLoginTab(BrowserWindowInterface* browser,
   WindowOpenDisposition disposition;
   switch (portal_type) {
     case captive_portal::CaptivePortalWindowType::kPopup:
-      disposition = WindowOpenDisposition::NEW_POPUP;
+      disposition = WindowOpenDisposition::kNewPopup;
       break;
     case captive_portal::CaptivePortalWindowType::kTab:
-      disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+      disposition = WindowOpenDisposition::kNewForegroundTab;
       break;
     default:
       NOTREACHED() << "Invalid captive portal window type";
@@ -469,9 +472,9 @@ void ChromeSecurityBlockingPageFactory::
         ProfileBrowserCollection::GetForProfile(profile)->FindTabbedBrowser();
     // Create browser if not exists.
     if (!browser && GetBrowserWindowCreationStatusForProfile(*profile) ==
-                        Browser::CreationStatus::kOk) {
-      Browser::CreateParams params(profile, /*user_gesture=*/true);
-      browser = Browser::Create(params);
+                        BrowserWindowInterface::CreationStatus::kOk) {
+      BrowserWindowCreateParams params(profile, /*from_user_gesture=*/true);
+      browser = CreateBrowserWindow(std::move(params));
     }
 
     if (browser && browser->GetWindow()) {

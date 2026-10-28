@@ -5,6 +5,8 @@
 #include "chrome/browser/glic/common/instance_independent_hotkey_manager.h"
 
 #include <array>
+#include <optional>
+#include <utility>
 
 #include "base/feature_list.h"
 #include "build/build_config.h"
@@ -19,9 +21,21 @@
 #include "chrome/browser/glic/widget/browser_conditions.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "components/prefs/pref_service.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/glic/glic_selection_observer.h"
+#include "chrome/browser/glic/public/glic_side_panel_coordinator.h"
+#include "chrome/browser/glic/selection/selection_overlay.mojom.h"
+#include "chrome/browser/glic/selection/selection_overlay_controller.h"
+#include "components/tabs/public/tab_interface.h"
+#include "ui/gfx/geometry/rect.h"
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/platform_util.h"
+#endif
 
 namespace glic {
 
@@ -30,6 +44,13 @@ constexpr LocalHotkeyManager::Command kSupportedCommands[] = {
     LocalHotkeyManager::Command::kPanelToggle,
     LocalHotkeyManager::Command::kCaptureRegion,
 };
+
+#if !BUILDFLAG(IS_ANDROID)
+BrowserWindowInterface* GetLastActiveBrowser(Profile* profile) {
+  auto* const collection = ProfileBrowserCollection::GetForProfile(profile);
+  return collection ? collection->GetLastActiveBrowser() : nullptr;
+}
+#endif
 }  // namespace
 
 InstanceIndependentHotkeyManager::InstanceIndependentHotkeyManager(
@@ -63,7 +84,10 @@ InstanceIndependentHotkeyManager::InstanceIndependentHotkeyManager(
 InstanceIndependentHotkeyManager::~InstanceIndependentHotkeyManager() = default;
 
 void InstanceIndependentHotkeyManager::UpdateHotkeyRegistration() {
-  if (GlicLauncherConfiguration::IsEnabled() &&
+  const bool registration_allowed =
+      base::FeatureList::IsEnabled(features::kGlicHotkeyLocalScope) ||
+      GlicLauncherConfiguration::IsLauncherIconEnabled();
+  if (registration_allowed &&
       GlicEnabling::IsEnabledAndConsentForProfile(profile_)) {
     if (!hotkey_manager_) {
       hotkey_manager_ = std::make_unique<LocalHotkeyManager>(
@@ -78,20 +102,49 @@ void InstanceIndependentHotkeyManager::UpdateHotkeyRegistration() {
 
 #if !BUILDFLAG(IS_ANDROID)
 void InstanceIndependentHotkeyManager::RequestCaptureRegion() {
-  BrowserWindowInterface* const bwi =
-      GlobalBrowserCollection::GetInstance()->GetActiveBrowser();
+  BrowserWindowInterface* const bwi = GetLastActiveBrowser(profile_);
   // bwi is guaranteed to be valid and belong to profile_ because of
   // CanHandleAccelerators.
   CHECK(bwi);
   CHECK_EQ(bwi->GetProfile(), profile_);
+#if BUILDFLAG(IS_CHROMEOS)
+  if (platform_util::IsBrowserLockedFullscreen(bwi)) {
+    return;
+  }
+#endif
   auto* active_tab = bwi->GetActiveTabInterface();
   if (!active_tab) {
     return;
   }
-  GlicInvokeOptions options(
-      Target(*active_tab), glic::mojom::InvocationSource::kCaptureRegionHotkey);
-  options.wait_for_panel_open = true;
-  coordinator_->Invoke(std::move(options));
+  if (!base::FeatureList::IsEnabled(features::kGlicSelectionOverlayPromptBox) ||
+      GlicSidePanelCoordinator::IsShowing(active_tab)) {
+    GlicInvokeOptions options(
+        Target(*active_tab),
+        glic::mojom::InvocationSource::kCaptureRegionHotkey);
+    options.wait_for_panel_open = true;
+    coordinator_->Invoke(std::move(options));
+    return;
+  }
+
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(active_tab->GetContents());
+  if (!controller) {
+    return;
+  }
+  if (auto* selection_observer = GlicSelectionObserver::From(active_tab)) {
+    if (std::optional<gfx::Rect> bounds =
+            selection_observer->GetCurrentSelectionBounds()) {
+      selection_observer->DismissUI(
+          GlicSelectionObserver::DismissReason::kActionTaken);
+      controller->ShowWithSelection(
+          selection_observer->GetSelectedFrame(), *bounds,
+          selection::InteractionOptions::New(
+              /*hide_handles=*/true, /*disable_multi_select=*/true,
+              /*skip_intro_animation=*/true));
+      return;
+    }
+  }
+  controller->Show(/*options=*/nullptr);
 }
 #endif
 
@@ -128,7 +181,16 @@ bool InstanceIndependentHotkeyManager::AcceleratorPressed(
 }
 
 bool InstanceIndependentHotkeyManager::CanHandleAccelerators() const {
-  return hotkey_manager_ && GlicEnabling::IsEnabledAndConsentForProfile(profile_);
+  if (!hotkey_manager_ || !GlicEnabling::IsEnabledAndConsentForProfile(profile_)) {
+    return false;
+  }
+#if BUILDFLAG(IS_CHROMEOS)
+  BrowserWindowInterface* const bwi = GetLastActiveBrowser(profile_);
+  if (bwi && platform_util::IsBrowserLockedFullscreen(bwi)) {
+    return false;
+  }
+#endif
+  return true;
 }
 
 }  // namespace glic

@@ -4,6 +4,11 @@
 
 #include "components/crx_file/crx_creator.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
+#include <string>
+
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"

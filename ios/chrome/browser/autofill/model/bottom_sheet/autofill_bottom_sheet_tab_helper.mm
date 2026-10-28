@@ -85,9 +85,10 @@ bool HasAnyCreditCardSuggestion(NSArray<FormSuggestion*>* suggestions) {
   return false;
 }
 
-// Returns true if `suggestions` consists of only the save-and-fill suggestion.
+// Returns true if the first suggestion is the save-and-fill suggestion.
 bool HasScanCardSaveAndFillSuggestion(NSArray<FormSuggestion*>* suggestions) {
-  return [suggestions count] == 1 &&
+  // AtMemory appends an additional suggestion whenever other suggestions exist.
+  return [suggestions count] >= 1 &&
          suggestions[0].type ==
              autofill::SuggestionType::kSaveAndFillCreditCardEntry;
 }
@@ -210,9 +211,9 @@ void AutofillBottomSheetTabHelper::ShowEditAddressBottomSheet() {
 
 void AutofillBottomSheetTabHelper::SetAutofillBottomSheetHandler(
     id<AutofillCommands> commands_handler) {
-  if (!commands_handler) {
-    // Means that the web state has been destroyed therefore dismiss the edit
-    // address bottom sheet if it's shown.
+  if (!commands_handler && commands_handler_) {
+    // If the handler is being cleared, dismiss the edit address bottom sheet
+    // if it is currently shown.
     [commands_handler_ dismissEditAddressBottomSheet];
   }
   commands_handler_ = commands_handler;
@@ -327,10 +328,11 @@ void AutofillBottomSheetTabHelper::MaybeShowPaymentsBottomSheet(
   // the bottom sheet as a valid signal as a manual gesture.
   params.has_user_gesture = true;
 
-  auto completion = base::CallbackToBlock(base::BindOnce(
-      &AutofillBottomSheetTabHelper::
-          OnSuggestionsRetrievedForPaymentsBottomSheet,
-      weak_factory_.GetWeakPtr(), params, base::TimeTicks::Now()));
+  auto completion = base::CallbackToBlock(
+      base::BindOnce(&AutofillBottomSheetTabHelper::
+                         OnSuggestionsRetrievedForPaymentsBottomSheet,
+                     suggestion_request_weak_factory_.GetWeakPtr(), params,
+                     base::TimeTicks::Now()));
   [provider retrieveSuggestionsForForm:params
                               webState:web_state_
               accessoryViewUpdateBlock:completion];
@@ -411,7 +413,7 @@ void AutofillBottomSheetTabHelper::ShowProactivePasswordGenerationBottomSheet(
   [generation_provider_
       triggerPasswordGenerationForFormId:params.form_renderer_id
                          fieldIdentifier:params.field_renderer_id
-                                 inFrame:frame
+                                 inFrame:frame->AsWeakPtr()
                                proactive:YES];
 }
 
@@ -616,16 +618,45 @@ void AutofillBottomSheetTabHelper::RefocusElementIfNeeded(
                  web_state_->GetWeakPtr()));
 }
 
-// WebStateObserver
+void AutofillBottomSheetTabHelper::CancelPendingSuggestionRequests() {
+  suggestion_request_weak_factory_.InvalidateWeakPtrs();
+}
 
-void AutofillBottomSheetTabHelper::DidFinishNavigation(
+// WebStateObserver:
+
+void AutofillBottomSheetTabHelper::DidStartNavigation(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
+  CHECK(navigation_context);
   if (navigation_context->IsSameDocument()) {
     return;
   }
 
-  // Clear all registered renderer ids
+  CancelPendingSuggestionRequests();
+}
+
+void AutofillBottomSheetTabHelper::DidFinishNavigation(
+    web::WebState* web_state,
+    web::NavigationContext* navigation_context) {
+  CHECK(navigation_context);
+  if (navigation_context->IsSameDocument() ||
+      !navigation_context->HasCommitted()) {
+    return;
+  }
+
+  CancelPendingSuggestionRequests();
+
+  // Clear all registered renderer IDs.
+  registered_password_renderer_ids_.clear();
+  registered_payments_renderer_ids_.clear();
+  registered_password_generation_renderer_ids_.clear();
+  registered_ambient_renderer_ids_.clear();
+}
+
+void AutofillBottomSheetTabHelper::RenderProcessGone(web::WebState* web_state) {
+  CancelPendingSuggestionRequests();
+
+  // Clear all registered renderer IDs.
   registered_password_renderer_ids_.clear();
   registered_payments_renderer_ids_.clear();
   registered_password_generation_renderer_ids_.clear();
@@ -633,6 +664,7 @@ void AutofillBottomSheetTabHelper::DidFinishNavigation(
 }
 
 void AutofillBottomSheetTabHelper::WebStateDestroyed(web::WebState* web_state) {
+  CancelPendingSuggestionRequests();
   web_state->RemoveObserver(this);
   frames_manager_observation_.Reset();
   web_state_ = nullptr;
@@ -697,93 +729,49 @@ void AutofillBottomSheetTabHelper::UpdateListenersForPaymentsForm(
     return;
   }
 
-  if (base::FeatureList::IsEnabled(
-          autofill::features::kAutofillAcrossIframesIos)) {
-    // Partition the fields by their frames to attach the listeners.
-    std::map<autofill::LocalFrameToken, std::vector<autofill::FieldRendererId>>
-        fields_to_attach_by_frame;
-    std::map<autofill::LocalFrameToken, std::vector<autofill::FieldRendererId>>
-        fields_to_detach_by_frame;
+  // Partition the fields by their frames to attach the listeners.
+  std::map<autofill::LocalFrameToken, std::vector<autofill::FieldRendererId>>
+      fields_to_attach_by_frame;
+  std::map<autofill::LocalFrameToken, std::vector<autofill::FieldRendererId>>
+      fields_to_detach_by_frame;
 
-    for (const auto& field : form_structure->fields()) {
-      autofill::FieldGlobalId field_id = field->global_id();
-      if (should_attach_listeners && IsPaymentsBottomSheetTriggeringField(
-                                         field->Type().GetCreditCardType())) {
-        fields_to_attach_by_frame[field_id.frame_token].push_back(
-            field_id.renderer_id);
-      } else if (UseListenersInvalidation()) {
-        fields_to_detach_by_frame[field_id.frame_token].push_back(
-            field_id.renderer_id);
-      }
+  for (const auto& field : form_structure->fields()) {
+    autofill::FieldGlobalId field_id = field->global_id();
+    if (should_attach_listeners && IsPaymentsBottomSheetTriggeringField(
+                                       field->Type().GetCreditCardType())) {
+      fields_to_attach_by_frame[field_id.frame_token].push_back(
+          field_id.renderer_id);
+    } else if (UseListenersInvalidation()) {
+      fields_to_detach_by_frame[field_id.frame_token].push_back(
+          field_id.renderer_id);
     }
+  }
 
-    if (UseListenersInvalidation()) {
-      for (const auto& [frame, renderer_ids] : fields_to_detach_by_frame) {
-        std::string renderer_form_frame_id =
-            base::ToLowerASCII(frame.ToString());
-        auto& registered_ids =
-            registered_payments_renderer_ids_[renderer_form_frame_id];
-        std::set<autofill::FieldRendererId> ids_to_detach;
-        for (auto id : renderer_ids) {
-          if (registered_ids.contains(id)) {
-            ids_to_detach.insert(id);
-            registered_ids.erase(id);
-          }
-        }
-        if (!ids_to_detach.empty()) {
-          DetachListenersForFrame(renderer_form_frame_id, ids_to_detach,
-                                  /*refocus=*/false);
-        }
-      }
-    }
-
-    for (const auto& [frame, renderer_ids] : fields_to_attach_by_frame) {
+  if (UseListenersInvalidation()) {
+    for (const auto& [frame, renderer_ids] : fields_to_detach_by_frame) {
       std::string renderer_form_frame_id = base::ToLowerASCII(frame.ToString());
-      AttachListeners(renderer_ids,
-                      registered_payments_renderer_ids_[renderer_form_frame_id],
-                      renderer_form_frame_id,
-                      /*allow_autofocus=*/false, only_new);
-    }
-  } else {
-    std::vector<autofill::FieldRendererId> fields_to_attach;
-    std::vector<autofill::FieldRendererId> fields_to_detach;
-    for (const auto& field : form_structure->fields()) {
-      if (should_attach_listeners && IsPaymentsBottomSheetTriggeringField(
-                                         field->Type().GetCreditCardType())) {
-        fields_to_attach.push_back(field->renderer_id());
-      } else if (UseListenersInvalidation()) {
-        fields_to_detach.push_back(field->renderer_id());
-      }
-    }
-
-    // TODO(crbug.com/40266699): Remove `frame` once `renderer_ids` are
-    // FieldGlobalIds.
-    web::WebFrame* frame =
-        static_cast<autofill::AutofillDriverIOS&>(manager.driver()).web_frame();
-    if (!frame) {
-      return;
-    }
-    std::string frame_id = frame->GetFrameId();
-
-    if (UseListenersInvalidation()) {
-      auto& registered_ids = registered_payments_renderer_ids_[frame_id];
+      auto& registered_ids =
+          registered_payments_renderer_ids_[renderer_form_frame_id];
       std::set<autofill::FieldRendererId> ids_to_detach;
-      for (auto id : fields_to_detach) {
+      for (auto id : renderer_ids) {
         if (registered_ids.contains(id)) {
           ids_to_detach.insert(id);
           registered_ids.erase(id);
         }
       }
       if (!ids_to_detach.empty()) {
-        DetachListenersForFrame(frame_id, ids_to_detach, /*refocus=*/false);
+        DetachListenersForFrame(renderer_form_frame_id, ids_to_detach,
+                                /*refocus=*/false);
       }
     }
+  }
 
-    if (!fields_to_attach.empty()) {
-      AttachListeners(fields_to_attach,
-                      registered_payments_renderer_ids_[frame_id], frame_id,
-                      /*allow_autofocus=*/false, only_new);
-    }
+  for (const auto& [frame, renderer_ids] : fields_to_attach_by_frame) {
+    std::string renderer_form_frame_id = base::ToLowerASCII(frame.ToString());
+    AttachListeners(renderer_ids,
+                    registered_payments_renderer_ids_[renderer_form_frame_id],
+                    renderer_form_frame_id,
+                    /*allow_autofocus=*/false, only_new);
   }
 }
 

@@ -42,7 +42,7 @@ import org.chromium.ui.base.TestActivity;
 
 /** Unit tests for {@link TopControlsLockCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE, qualifiers = "sw320dp")
+@Config(qualifiers = "sw320dp")
 public class TopControlsLockCoordinatorTest {
     @Rule public MockitoRule mockitoRule = MockitoJUnit.rule();
 
@@ -101,7 +101,7 @@ public class TopControlsLockCoordinatorTest {
     }
 
     @Test
-    @Config(qualifiers = "sw720dp")
+    @Config(qualifiers = "sw1200dp")
     public void testLockWhenOnLargeTabletAndStripVisible() {
         when(mAppHeaderState.isInDesktopWindow()).thenReturn(false);
         mTabStripVisibilitySupplier.set(StripVisibilityState.VISIBLE);
@@ -123,7 +123,7 @@ public class TopControlsLockCoordinatorTest {
     }
 
     @Test
-    @Config(qualifiers = "sw720dp")
+    @Config(qualifiers = "sw1200dp")
     public void testUnlockWhenStripHidden() {
         when(mAppHeaderState.isInDesktopWindow()).thenReturn(false);
         createCoordinator();
@@ -162,7 +162,7 @@ public class TopControlsLockCoordinatorTest {
     }
 
     @Test
-    @Config(qualifiers = "sw720dp")
+    @Config(qualifiers = "sw1200dp")
     public void testDeferredLocking() {
         when(mAppHeaderState.isInDesktopWindow()).thenReturn(false);
         TopControlsLockCoordinator coordinator = createCoordinator();
@@ -190,7 +190,7 @@ public class TopControlsLockCoordinatorTest {
     }
 
     @Test
-    @Config(qualifiers = "sw720dp")
+    @Config(qualifiers = "sw1200dp")
     public void testNullDesktopWindowStateManager() {
         TopControlsLockCoordinator coordinator =
                 new TopControlsLockCoordinator(
@@ -207,7 +207,7 @@ public class TopControlsLockCoordinatorTest {
     }
 
     @Test
-    @Config(qualifiers = "sw720dp")
+    @Config(qualifiers = "sw1200dp")
     public void testDestroy() {
         TopControlsLockCoordinator coordinator = createCoordinator();
         verify(mDesktopWindowStateManager).addObserver(mAppHeaderObserverCaptor.capture());
@@ -234,7 +234,7 @@ public class TopControlsLockCoordinatorTest {
         when(mSideUiStateProvider.getCurrentSideUiSpecs()).thenReturn(specs);
         coordinator.setSideUiStateProvider(mSideUiStateProvider);
 
-        verify(mTopControlsStacker).setScrollingDisabled(true);
-        verify(mTopControlsStacker).requestLayerUpdatePost(false);
+        verify(mTopControlsStacker).setScrollingDisabled(false);
+        verify(mTopControlsStacker, never()).requestLayerUpdatePost(anyBoolean());
     }
 }

@@ -8,6 +8,8 @@
 #import <memory>
 #import <string>
 
+#import "base/functional/callback.h"
+#import "base/time/time.h"
 #import "components/enterprise/connectors/core/cloud_content_scanning/clipboard_request_handler.h"
 #import "url/gurl.h"
 
@@ -51,6 +53,28 @@ std::unique_ptr<ClipboardRequestHandler> CreateTestClipboardRequestHandlerIOS(
     std::string data,
     ClipboardRequestHandler::CompletionCallback callback,
     BinaryUploadRequest::BrowserPolicyConnectorGetter policy_getter);
+
+// This method is used to inject a `closure_callback` in between getting the
+// `RequestHandlerResult` from scanning and before providing the result to the
+// tab helper. It can be used to inject code for verification or simulate change
+// of "Pasting state" to invalidate a paste event.
+void SetMockClipboardRequestHandlerWithClosureForTesting(
+    TriggeredRule::Action action,
+    base::RepeatingClosure closure_callback);
+
+// This method is used to simulate a scan that never completes by dropping the
+// completion callback without executing it, preventing the tab helper from
+// receiving a result. The `closure_callback` is executed to allow the test to
+// wait for the background request to be triggered.
+void SetMockClipboardRequestHandlerWithClosureAndNoResultForTesting(
+    TriggeredRule::Action action,
+    base::RepeatingClosure closure_callback);
+
+// Sets the ClipboardRequestHandler factory for testing that delays calling its
+// completion callback by `delay`.
+void SetMockClipboardRequestHandlerWithDelayForTesting(
+    base::TimeDelta delay,
+    TriggeredRule::Action action = TriggeredRule::ACTION_UNSPECIFIED);
 
 }  // namespace enterprise_connectors
 

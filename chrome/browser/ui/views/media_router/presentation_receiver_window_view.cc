@@ -14,7 +14,6 @@
 #include "chrome/browser/content_settings/mixed_content_settings_tab_helper.h"
 #include "chrome/browser/content_settings/page_specific_content_settings_delegate.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ssl/chrome_security_state_tab_helper.h"
 #include "chrome/browser/subresource_filter/chrome_content_subresource_filter_web_contents_helper_factory.h"
 #include "chrome/browser/ui/accelerator_table.h"
 #include "chrome/browser/ui/media_router/presentation_receiver_window_delegate.h"
@@ -28,6 +27,7 @@
 #include "content/public/common/content_constants.h"
 #include "ui/base/accelerators/accelerator_manager.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/layout/box_layout.h"
@@ -84,7 +84,7 @@ class FullscreenWindowObserver : public aura::WindowObserver {
   }
 
   void OnWindowDestroying(aura::Window* window) override {
-    DCHECK(window_observation_.IsObserving());
+    CHECK(window_observation_.IsObserving(), base::NotFatalUntil::M162);
     window_observation_.Reset();
   }
 
@@ -118,8 +118,8 @@ PresentationReceiverWindowView::PresentationReceiverWindowView(
           },
           this));
 
-  DCHECK(frame);
-  DCHECK(delegate);
+  CHECK(frame, base::NotFatalUntil::M162);
+  CHECK(delegate, base::NotFatalUntil::M162);
 }
 
 PresentationReceiverWindowView::~PresentationReceiverWindowView() {
@@ -144,7 +144,7 @@ void PresentationReceiverWindowView::Init() {
   // configurable. We fetch and use the default mapping.
   bool result = GetDefaultMacAcceleratorForCommandId(IDC_FULLSCREEN,
                                                      &fullscreen_accelerator_);
-  DCHECK(result);
+  CHECK(result, base::NotFatalUntil::M162);
 #else
   const auto accelerators = GetAcceleratorList();
   const auto fullscreen_accelerator = std::ranges::find(
@@ -155,20 +155,20 @@ void PresentationReceiverWindowView::Init() {
 #endif
 
   auto* const focus_manager = GetFocusManager();
-  DCHECK(focus_manager);
+  CHECK(focus_manager, base::NotFatalUntil::M162);
   focus_manager->RegisterAccelerator(
       fullscreen_accelerator_, ui::AcceleratorManager::kNormalPriority, this);
 
   auto* const web_contents = GetWebContents();
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
 
   // ContentInfoBarManager comes before common tab helpers since
   // ContentSubresourceFilterThrottleManager has it as a dependency.
   infobars::ContentInfoBarManager::CreateForWebContents(web_contents);
 
-  ChromeSecurityStateTabHelper::CreateForWebContents(web_contents);
   CreateSubresourceFilterWebContentsHelper(web_contents);
-  MixedContentSettingsTabHelper::CreateForWebContents(web_contents);
+  mixed_content_settings_tab_helper_ =
+      std::make_unique<MixedContentSettingsTabHelper>(web_contents);
   content_settings::PageSpecificContentSettings::CreateForWebContents(
       web_contents,
       std::make_unique<PageSpecificContentSettingsDelegate>(web_contents));
@@ -192,7 +192,7 @@ void PresentationReceiverWindowView::Init() {
 
   web_view_ = AddChildView(std::make_unique<views::WebView>(profile));
   web_view_->SetWebContents(web_contents);
-  web_view_->set_allow_accelerators(true);
+  web_view_->set_allow_accelerators_deprecated(true);
   box->SetFlexForView(web_view_, 1);
 
   location_bar_view_->Init();
@@ -232,7 +232,7 @@ void PresentationReceiverWindowView::UpdateWindowTitle() {
 }
 
 void PresentationReceiverWindowView::UpdateLocationBar() {
-  DCHECK(location_bar_view_);
+  CHECK(location_bar_view_, base::NotFatalUntil::M162);
   location_bar_view_->Update(nullptr);
 }
 
@@ -442,13 +442,13 @@ void PresentationReceiverWindowView::OnWidgetDestroying(views::Widget* widget) {
 web_modal::WebContentsModalDialogHost*
 PresentationReceiverWindowView::GetWebContentsModalDialogHost(
     content::WebContents* web_contents) {
-  DCHECK_EQ(GetWebContents(), web_contents);
+  CHECK_EQ(GetWebContents(), web_contents, base::NotFatalUntil::M162);
   return this;
 }
 
 bool PresentationReceiverWindowView::IsWebContentsVisible(
     content::WebContents* web_contents) {
-  DCHECK_EQ(GetWebContents(), web_contents);
+  CHECK_EQ(GetWebContents(), web_contents, base::NotFatalUntil::M162);
   return web_view_ && web_view_->IsDrawn();
 }
 

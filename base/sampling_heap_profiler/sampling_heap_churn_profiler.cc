@@ -35,7 +35,7 @@ bool SamplingHeapChurnProfiler::ShouldRecordAllocFree() const {
   if (running_sessions_.load(std::memory_order_relaxed) == 0) {
     return false;
   }
-  return base::RandDouble() < subsampling_chance_;
+  return generator_.RandDouble() < subsampling_chance_;
 }
 
 std::vector<SamplingHeapProfiler::Sample>

@@ -18,6 +18,21 @@ BASE_DECLARE_FEATURE(kPersonalContext);
 // Controls whether the Personal Context non-eligibility UMA metric is logged.
 BASE_DECLARE_FEATURE(kPersonalContextLogNonEligibilityUma);
 
+// Controls whether Personal Context generates/syncs the device HPKE public key
+// and handles encrypted payloads.
+BASE_DECLARE_FEATURE(kPersonalContextHandleEncryptedPayloads);
+
+// Controls whether Personal Context encryption eligibility also requires the
+// Autofill settings toggle (`kPersonalContextInAutofillSettingsToggleStatus`)
+// to be enabled.
+BASE_DECLARE_FEATURE(kPersonalContextRequireSettingsToggleForEncryption);
+
+// Controls whether Driver's license entities are supported in Ambient Autofill.
+BASE_DECLARE_FEATURE(kAutofillAmbientAutofillDriversLicense);
+
+// Controls whether Passport entities are supported in Ambient Autofill.
+BASE_DECLARE_FEATURE(kAutofillAmbientAutofillPassport);
+
 }  // namespace personal_context::features
 
 #endif  // COMPONENTS_PERSONAL_CONTEXT_CORE_PERSONAL_CONTEXT_FEATURES_H_

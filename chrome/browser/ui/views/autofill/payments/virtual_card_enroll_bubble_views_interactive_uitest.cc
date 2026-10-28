@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/autofill/payments/virtual_card_enroll_bubble_views.h"
+
 #include <memory>
 #include <string>
 
@@ -11,24 +13,24 @@
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/autofill/payments/virtual_card_enroll_bubble_controller_impl.h"
 #include "chrome/browser/ui/autofill/payments/virtual_card_enroll_bubble_controller_impl_test_api.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/autofill/payments/dialog_view_ids.h"
-#include "chrome/browser/ui/views/autofill/payments/virtual_card_enroll_bubble_views.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
-#include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
-#include "chrome/browser/ui/views/page_action/test_support/page_action_test_support.h"
+#include "chrome/browser/ui/views/page_action/page_action_view_interface.h"
+#include "chrome/browser/ui/views/page_action/test_support/page_action_test_accessor.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/autofill/core/browser/metrics/payments/virtual_card_enrollment_metrics.h"
 #include "components/autofill/core/browser/payments/legal_message_line.h"
 #include "components/autofill/core/browser/payments/payments_service_url.h"
 #include "components/autofill/core/browser/payments/test_legal_message_line.h"
 #include "components/autofill/core/browser/payments/virtual_card_enrollment_manager.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/strings/grit/components_strings.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
@@ -63,8 +65,8 @@ class VirtualCardEnrollBubbleViewsInteractiveUiTest
     VirtualCardEnrollBubbleControllerImpl* controller =
         static_cast<VirtualCardEnrollBubbleControllerImpl*>(
             VirtualCardEnrollBubbleControllerImpl::GetOrCreate(
-                browser()->tab_strip_model()->GetActiveWebContents()));
-    DCHECK(controller);
+                browser()->GetTabStripModel()->GetActiveWebContents()));
+    CHECK(controller, base::NotFatalUntil::M162);
     CreateVirtualCardEnrollmentFields();
   }
 
@@ -114,7 +116,11 @@ class VirtualCardEnrollBubbleViewsInteractiveUiTest
 
   void ReshowBubble() { GetController()->ReshowBubble(); }
 
-  bool IsIconVisible() { return GetIconView() && GetIconView()->GetVisible(); }
+  bool IsIconVisible() {
+    return page_actions::PageActionTestAccessor(browser(),
+                                                kActionVirtualCardEnroll)
+        .GetVisible();
+  }
 
   bool IsLoadingProgressRowVisible() {
     return GetBubbleViews() &&
@@ -123,13 +129,13 @@ class VirtualCardEnrollBubbleViewsInteractiveUiTest
   }
 
   VirtualCardEnrollBubbleControllerImpl* GetController() {
-    if (!browser() || !browser()->tab_strip_model() ||
-        !browser()->tab_strip_model()->GetActiveWebContents()) {
+    if (!browser() || !browser()->GetTabStripModel() ||
+        !browser()->GetTabStripModel()->GetActiveWebContents()) {
       return nullptr;
     }
 
     return VirtualCardEnrollBubbleControllerImpl::FromWebContents(
-        browser()->tab_strip_model()->GetActiveWebContents());
+        browser()->GetTabStripModel()->GetActiveWebContents());
   }
 
   VirtualCardEnrollBubbleViews* GetBubbleViews() {
@@ -154,14 +160,12 @@ class VirtualCardEnrollBubbleViewsInteractiveUiTest
         payments::GetVirtualCardEnrollmentSupportUrl());
   }
 
-  IconLabelBubbleView* GetIconView() {
+  page_actions::PageActionViewInterface* GetIconView() {
     BrowserView* browser_view =
         BrowserView::GetBrowserViewForBrowser(browser());
     auto* provider = browser_view->toolbar_button_provider();
-    IconLabelBubbleView* icon = page_actions::GetIconLabelBubbleViewForTesting(
-        provider->GetPageActionViewInterface(kActionVirtualCardEnroll),
-        kActionVirtualCardEnroll);
-    DCHECK(icon);
+    auto* icon = provider->GetPageActionViewInterface(kActionVirtualCardEnroll);
+    CHECK(icon, base::NotFatalUntil::M162);
     return icon;
   }
 
@@ -236,7 +240,7 @@ class VirtualCardEnrollBubbleViewsInteractiveUiTest
                                VIRTUAL_CARD_ENROLLMENT_BUBBLE_NOT_INTERACTED) {
       GetBubbleViews()->GetWidget()->CloseWithReason(closed_reason);
     } else {
-      browser()->tab_strip_model()->CloseAllTabs();
+      browser()->GetTabStripModel()->CloseAllTabs();
     }
 
     destroyed_waiter.Wait();
@@ -654,7 +658,7 @@ IN_PROC_BROWSER_TEST_P(
       true, 1);
 
   // Switch back to the tab containing the bubble
-  browser()->tab_strip_model()->ActivateTabAt(0);
+  browser()->GetTabStripModel()->ActivateTabAt(0);
 
   // Verify close metrics: never closed
   histogram_tester.ExpectTotalCount(
@@ -681,7 +685,7 @@ IN_PROC_BROWSER_TEST_P(
       GetFieldsForSource(virtual_card_enrollment_source), base::DoNothing(),
       base::DoNothing());
 
-  EXPECT_EQ(GetIconView()->GetViewAccessibility().GetCachedName(),
+  EXPECT_EQ(GetIconView()->GetAccessibleName(),
             l10n_util::GetStringUTF16(
                 IDS_AUTOFILL_VIRTUAL_CARD_ENROLLMENT_FALLBACK_ICON_TOOLTIP));
 }

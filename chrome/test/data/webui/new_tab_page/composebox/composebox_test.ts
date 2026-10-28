@@ -2,23 +2,34 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {ComposeboxElement, SubmitButtonIconType} from 'chrome://new-tab-page/lazy_load.js';
-import {$$} from 'chrome://new-tab-page/new_tab_page.js';
-import {InputType, ToolMode} from 'chrome://resources/cr_components/composebox/composebox_query.mojom-webui.js';
+import type {ComposeboxElement, NtpComposeboxElement} from 'chrome://new-tab-page/lazy_load.js';
+import {AimButtonMode, SubmitButtonIconType} from 'chrome://new-tab-page/lazy_load.js';
+import {$$, InputSource, QueryActionOverride, SearchboxTutorial} from 'chrome://new-tab-page/new_tab_page.js';
+import {GlifAnimationState} from 'chrome://resources/cr_components/composebox/common.js';
+import type {ComposeboxAimButtonElement} from 'chrome://resources/cr_components/composebox/composebox_aim_button.js';
+import {InputType, ModelMode, ToolMode} from 'chrome://resources/cr_components/composebox/composebox_query.mojom-webui.js';
+import type {ComposeboxToolChipElement} from 'chrome://resources/cr_components/composebox/composebox_tool_chip.js';
 import type {ContextualEntrypointAndMenuElement} from 'chrome://resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
+import type {ComposeboxFileCarouselElement} from 'chrome://resources/cr_components/composebox/file_carousel.js';
 import {WindowProxy as CrWindowProxy} from 'chrome://resources/cr_components/composebox/window_proxy.js';
 import type {SearchAnimatedGlowElement} from 'chrome://resources/cr_components/search/animated_glow.js';
+import {GlowMode} from 'chrome://resources/cr_components/search/constants.js';
 import {createAutocompleteResultForTesting, createSearchMatchForTesting} from 'chrome://resources/cr_components/searchbox/searchbox_browser_proxy.js';
+import type {CrIconElement} from 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
+import {SuggestInventory} from 'chrome://resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
 import type {SelectedFileInfo} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
-import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {MockInputState} from 'chrome://webui-test/cr_components/searchbox/searchbox_test_utils.js';
 import {MockTimer} from 'chrome://webui-test/mock_timer.js';
 import {TestMock} from 'chrome://webui-test/test_mock.js';
 import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
-import {ADD_FILE_CONTEXT_FN, createComposeboxElement, getSubmitContainer, getSubmitIcon, MockInputState, setupComposeboxTest} from './test_support.js';
+import {createFuseboxAction} from '../test_support.js';
 
-suite(`NewTabPageComposeboxTest`, () => {
+import {ADD_FILE_CONTEXT_FN, createComposeboxElement, getSubmitContainer, getSubmitIcon, setupComposeboxTest} from './test_support.js';
+
+suite('NewTabPageComposeboxTest', () => {
   const testProxy = setupComposeboxTest();
 
   test(
@@ -34,6 +45,27 @@ suite(`NewTabPageComposeboxTest`, () => {
         assertFalse(animatedGlow.darkThemeColorsEnabled);
       });
 
+  test(
+      'updates search-animated-glow glowMode based on willFulfillInAim',
+      async () => {
+        createComposeboxElement(testProxy);
+        await microtasksFinished();
+
+        const animatedGlow = testProxy.element.shadowRoot
+                                 .querySelector<SearchAnimatedGlowElement>(
+                                     'search-animated-glow');
+        assertTrue(!!animatedGlow);
+        assertTrue(testProxy.element.willFulfillInAim);
+        assertTrue(testProxy.element.hasAttribute('will-fulfill-in-aim'));
+        assertEquals(GlowMode.OUTER_GLOW, animatedGlow.glowMode);
+
+        testProxy.element.willFulfillInAim = false;
+        await microtasksFinished();
+
+        assertFalse(testProxy.element.hasAttribute('will-fulfill-in-aim'));
+        assertEquals(GlowMode.NONE, animatedGlow.glowMode);
+      });
+
   test('ntp composebox uses configured forward submit icon', async () => {
     createComposeboxElement(testProxy, {
       searchboxNextEnabled: true,
@@ -42,9 +74,10 @@ suite(`NewTabPageComposeboxTest`, () => {
     testProxy.element.searchboxLayoutMode = 'Compact';
     await microtasksFinished();
 
-    testProxy.element.getInputElement().$.input.value = 'test';
-    testProxy.element.getInputElement().$.input.dispatchEvent(
-        new Event('input'));
+    const input = testProxy.element.getInputElement()
+                      .shadowRoot.querySelector<HTMLTextAreaElement>('#input')!;
+    input.value = 'test';
+    input.dispatchEvent(new Event('input'));
     await microtasksFinished();
 
     const submitIcon = getSubmitIcon(testProxy);
@@ -59,9 +92,10 @@ suite(`NewTabPageComposeboxTest`, () => {
     testProxy.element.searchboxLayoutMode = 'Compact';
     await microtasksFinished();
 
-    testProxy.element.getInputElement().$.input.value = 'test';
-    testProxy.element.getInputElement().$.input.dispatchEvent(
-        new Event('input'));
+    const input = testProxy.element.getInputElement()
+                      .shadowRoot.querySelector<HTMLTextAreaElement>('#input')!;
+    input.value = 'test';
+    input.dispatchEvent(new Event('input'));
     await microtasksFinished();
 
     const submitIcon = getSubmitIcon(testProxy);
@@ -108,20 +142,27 @@ suite(`NewTabPageComposeboxTest`, () => {
             'cr-composebox-submit'));
 
         // Add input and files.
-        testProxy.element.getInputElement().$.input.value = 'test';
-        testProxy.element.getInputElement().$.input.dispatchEvent(
-            new Event('input'));
+        const input =
+            testProxy.element.getInputElement()
+                .shadowRoot.querySelector<HTMLTextAreaElement>('#input')!;
+        input.value = 'test';
+        input.dispatchEvent(new Event('input'));
         const dataTransfer = new DataTransfer();
         dataTransfer.items.add(
             new File(['foo1'], 'foo1.pdf', {type: 'application/pdf'}));
-        testProxy.element.$.fileInputs.$.fileInput.files = dataTransfer.files;
-        testProxy.element.$.fileInputs.$.fileInput.dispatchEvent(
-            new Event('change'));
+        const fileInput = testProxy.element.$.fileInputs.shadowRoot
+                              .querySelector<HTMLInputElement>('#fileInput')!;
+        fileInput.files = dataTransfer.files;
+        fileInput.dispatchEvent(new Event('change'));
 
         await testProxy.searchboxHandler.whenCalled(ADD_FILE_CONTEXT_FN);
         await microtasksFinished();
 
-        assertEquals(testProxy.element.$.carousel.files.length, 1);
+        assertEquals(
+            testProxy.element.shadowRoot
+                .querySelector<ComposeboxFileCarouselElement>(
+                    '#carousel')!.files.length,
+            1);
 
         // Clear input.
         $$<HTMLElement>(
@@ -136,19 +177,119 @@ suite(`NewTabPageComposeboxTest`, () => {
       });
 
   test(
+      'clear functionality preserves restored tabs when context management ' +
+          'enabled',
+      async () => {
+        loadTimeData.overrideValues({
+          'clearAllInputsWhenSubmittingQuery': true,
+          'contextManagementInComposeboxEnabled': true,
+        });
+        createComposeboxElement(testProxy, {
+          searchboxNextEnabled: true,
+        });
+        await microtasksFinished();
+
+        testProxy.searchboxCallbackRouterRemote.setAimThreadRestoredTabs([{
+          tabId: 10,
+          title: 'Restored Tab',
+          url: 'https://example.com/restored',
+          showInCurrentTabChip: false,
+          showInPreviousTabChip: false,
+          lastActive: {internalValue: 0n},
+          isLoading: false,
+        }]);
+        await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
+        await microtasksFinished();
+        assertEquals(testProxy.element.aimThreadRestoredTabs.length, 1);
+
+        const input =
+            testProxy.element.getInputElement()
+                .shadowRoot.querySelector<HTMLTextAreaElement>('#input')!;
+        input.value = 'draft query';
+        input.dispatchEvent(new Event('input'));
+        await microtasksFinished();
+
+        $$<HTMLElement>(
+            testProxy.element.getInputElement(), '#cancelIcon')!.click();
+        await microtasksFinished();
+
+        assertEquals(testProxy.searchboxHandler.getCallCount('clearFiles'), 1);
+        assertEquals(testProxy.searchboxHandler.getArgs('clearFiles')[0], true);
+        assertEquals(testProxy.element.aimThreadRestoredTabs.length, 1);
+        assertEquals(testProxy.element.aimThreadRestoredTabs[0]!.tabId, 10);
+      });
+
+  test(
+      'clear functionality resets restored tabs when context management ' +
+          'disabled or source is Omnibox',
+      async () => {
+        loadTimeData.overrideValues({
+          'clearAllInputsWhenSubmittingQuery': false,
+          'contextManagementInComposeboxEnabled': false,
+        });
+        createComposeboxElement(testProxy, {
+          searchboxNextEnabled: true,
+        });
+        await microtasksFinished();
+
+        const restoredTab = {
+          tabId: 10,
+          title: 'Restored Tab',
+          url: 'https://example.com/restored',
+          showInCurrentTabChip: false,
+          showInPreviousTabChip: false,
+          lastActive: {internalValue: 0n},
+          isLoading: false,
+        };
+        testProxy.searchboxCallbackRouterRemote.setAimThreadRestoredTabs(
+            [restoredTab]);
+        await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
+        await microtasksFinished();
+        assertEquals(testProxy.element.aimThreadRestoredTabs.length, 1);
+
+        const input =
+            testProxy.element.getInputElement()
+                .shadowRoot.querySelector<HTMLTextAreaElement>('#input')!;
+        input.value = 'draft query';
+        input.dispatchEvent(new Event('input'));
+        await microtasksFinished();
+
+        $$<HTMLElement>(
+            testProxy.element.getInputElement(), '#cancelIcon')!.click();
+        await microtasksFinished();
+        assertEquals(testProxy.element.aimThreadRestoredTabs.length, 0);
+
+        // Even with context management enabled, Omnibox source resets restored
+        // tabs on cancel.
+        testProxy.element.contextManagementInComposeboxEnabled = true;
+        testProxy.element.composeboxSource = 'Omnibox';
+        testProxy.searchboxCallbackRouterRemote.setAimThreadRestoredTabs(
+            [restoredTab]);
+        await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
+        await microtasksFinished();
+        assertEquals(testProxy.element.aimThreadRestoredTabs.length, 1);
+
+        input.value = 'draft query 2';
+        input.dispatchEvent(new Event('input'));
+        await microtasksFinished();
+
+        $$<HTMLElement>(
+            testProxy.element.getInputElement(), '#cancelIcon')!.click();
+        await microtasksFinished();
+        assertEquals(testProxy.element.aimThreadRestoredTabs.length, 0);
+      });
+
+  test(
       'suggestion activity link triggers navigation', async () => {
         createComposeboxElement(testProxy);
         await microtasksFinished();
 
-        const matches = [
-          createSearchMatchForTesting({
-            isNoncannedAimSuggestion: true,
-          }),
-        ];
+        const matches = [createSearchMatchForTesting()];
         testProxy.searchboxCallbackRouterRemote.autocompleteResultChanged(
             createAutocompleteResultForTesting({
               queryId: testProxy.element.activeQueryId,
               matches,
+              showAimActivityLink: true,
             }));
         await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
         await microtasksFinished();
@@ -189,15 +330,12 @@ suite(`NewTabPageComposeboxTest`, () => {
         createComposeboxElement(testProxy);
         await microtasksFinished();
 
-        const matches = [
-          createSearchMatchForTesting({
-            isNoncannedAimSuggestion: false,
-          }),
-        ];
+        const matches = [createSearchMatchForTesting()];
         testProxy.searchboxCallbackRouterRemote.autocompleteResultChanged(
             createAutocompleteResultForTesting({
               queryId: testProxy.element.activeQueryId,
               matches,
+              showAimActivityLink: false,
             }));
         await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
         await microtasksFinished();
@@ -230,9 +368,11 @@ suite(`NewTabPageComposeboxTest`, () => {
           searchboxNextEnabled: true,
         });
         testProxy.element.searchboxLayoutMode = 'Compact';
-        testProxy.element.getInputElement().$.input.value = 'test';
-        testProxy.element.getInputElement().$.input.dispatchEvent(
-            new Event('input'));
+        const input =
+            testProxy.element.getInputElement()
+                .shadowRoot.querySelector<HTMLTextAreaElement>('#input')!;
+        input.value = 'test';
+        input.dispatchEvent(new Event('input'));
         await microtasksFinished();
 
         const composeboxSubmit =
@@ -248,9 +388,11 @@ suite(`NewTabPageComposeboxTest`, () => {
           searchboxNextEnabled: true,
         });
         testProxy.element.searchboxLayoutMode = 'Compact';
-        testProxy.element.getInputElement().$.input.value = '';
-        testProxy.element.getInputElement().$.input.dispatchEvent(
-            new Event('input'));
+        const input =
+            testProxy.element.getInputElement()
+                .shadowRoot.querySelector<HTMLTextAreaElement>('#input')!;
+        input.value = '';
+        input.dispatchEvent(new Event('input'));
         await microtasksFinished();
 
         const composeboxSubmit =
@@ -270,9 +412,10 @@ suite(`NewTabPageComposeboxTest`, () => {
         testProxy.searchboxHandler.getCallCount('openAutocompleteMatch'), 0);
 
     // Arrange.
-    testProxy.element.getInputElement().$.input.value = 'test';
-    testProxy.element.getInputElement().$.input.dispatchEvent(
-        new Event('input'));
+    const input = testProxy.element.getInputElement()
+                      .shadowRoot.querySelector<HTMLTextAreaElement>('#input')!;
+    input.value = 'test';
+    input.dispatchEvent(new Event('input'));
     const matches =
         [createSearchMatchForTesting({allowedToBeDefaultMatch: true})];
     testProxy.searchboxCallbackRouterRemote.autocompleteResultChanged(
@@ -302,9 +445,10 @@ suite(`NewTabPageComposeboxTest`, () => {
         testProxy.searchboxHandler.getCallCount('openAutocompleteMatch'), 0);
 
     // Arrange.
-    testProxy.element.getInputElement().$.input.value = 'test';
-    testProxy.element.getInputElement().$.input.dispatchEvent(
-        new Event('input'));
+    const input = testProxy.element.getInputElement()
+                      .shadowRoot.querySelector<HTMLTextAreaElement>('#input')!;
+    input.value = 'test';
+    input.dispatchEvent(new Event('input'));
     const matches =
         [createSearchMatchForTesting({allowedToBeDefaultMatch: true})];
     testProxy.searchboxCallbackRouterRemote.autocompleteResultChanged(
@@ -322,7 +466,7 @@ suite(`NewTabPageComposeboxTest`, () => {
       cancelable: true,
       composed: true,
     });
-    testProxy.element.getInputElement().$.input.dispatchEvent(shiftEnterEvent);
+    input.dispatchEvent(shiftEnterEvent);
     await microtasksFinished();
 
     // Assert.
@@ -335,7 +479,7 @@ suite(`NewTabPageComposeboxTest`, () => {
       cancelable: true,
       composed: true,
     });
-    testProxy.element.getInputElement().$.input.dispatchEvent(enterEvent);
+    input.dispatchEvent(enterEvent);
     await microtasksFinished();
 
     // Assert call occurs.
@@ -399,6 +543,80 @@ suite(`NewTabPageComposeboxTest`, () => {
     assertTrue(openMenuCalled);
   });
 
+  test(
+      'tool chip uses Clank layout for ImageGen and Canvas on Android',
+      async () => {
+        createComposeboxElement(testProxy, {
+          searchboxNextEnabled: true,
+        });
+        testProxy.element.searchboxLayoutMode = 'Compact';
+        testProxy.element.inToolMode = true;
+
+        try {
+          // Guard off: ImageGen renders the legacy layout.
+          loadTimeData.overrideValues({
+            isAndroid: false,
+            useSearchboxConfigIconIds: false,
+          });
+          testProxy.searchboxCallbackRouterRemote.onInputStateChanged(
+              new MockInputState({activeTool: ToolMode.kImageGen}));
+          await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
+          await microtasksFinished();
+
+          let chip = testProxy.element.shadowRoot
+                         .querySelector<ComposeboxToolChipElement>(
+                             '#toolChipsContainer cr-composebox-tool-chip');
+          assertTrue(
+              !!chip!.shadowRoot.querySelector('#leftCloseIcon'),
+              'ImageGen should render the legacy layout when isAndroid is' +
+                  ' false');
+          assertEquals(
+              'composebox:nanoBanana-custom',
+              chip!.shadowRoot.querySelector<CrIconElement>('.tool-icon')!.icon,
+              'ImageGen should keep the legacy banana icon when isAndroid is' +
+                  ' false');
+
+          // Guard on: ImageGen and Canvas render the Clank layout.
+          loadTimeData.overrideValues({isAndroid: true});
+          testProxy.searchboxCallbackRouterRemote.onInputStateChanged(
+              new MockInputState({activeTool: ToolMode.kImageGen}));
+          await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
+          await microtasksFinished();
+
+          chip = testProxy.element.shadowRoot
+                     .querySelector<ComposeboxToolChipElement>(
+                         '#toolChipsContainer cr-composebox-tool-chip');
+          assertTrue(
+              !!chip!.shadowRoot.querySelector('.chip-close-icon'),
+              'ImageGen should render the Clank close icon when isAndroid is' +
+                  ' true');
+          assertEquals(
+              'composebox:nanoBanana-clank',
+              chip!.shadowRoot
+                  .querySelector<CrIconElement>('.chip-leading-icon')!.icon,
+              'ImageGen should use the Clank banana icon when isAndroid is' +
+                  ' true');
+
+          testProxy.searchboxCallbackRouterRemote.onInputStateChanged(
+              new MockInputState({activeTool: ToolMode.kCanvas}));
+          await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
+          await microtasksFinished();
+
+          chip = testProxy.element.shadowRoot
+                     .querySelector<ComposeboxToolChipElement>(
+                         '#toolChipsContainer cr-composebox-tool-chip');
+          assertTrue(
+              !!chip!.shadowRoot.querySelector('.chip-close-icon'),
+              'Canvas should render the Clank close icon when isAndroid is' +
+                  ' true');
+        } finally {
+          loadTimeData.overrideValues({
+            isAndroid: false,
+            useSearchboxConfigIconIds: true,
+          });
+        }
+      });
+
   // Required to test how the voice chips are integrated into NTP html
   // (event listeners, id's, classes, etc.):
   suite('voice search', () => {
@@ -426,6 +644,32 @@ suite(`NewTabPageComposeboxTest`, () => {
       await testProxy.element.updateComplete;
     });
 
+    test(
+        'background is opaque when energy effect is enabled during voice search',
+        async () => {
+          // Enter voice search mode with static energy effect enabled.
+          testProxy.element.energyEffectEnabled = true;
+          testProxy.element.energyEffectAnimationEnabled = false;
+          testProxy.element.isListening = true;
+          testProxy.element.inVoiceSearchMode = true;
+          await testProxy.element.updateComplete;
+
+          const animatedGlow = testProxy.element.shadowRoot
+                                   .querySelector<SearchAnimatedGlowElement>(
+                                       'search-animated-glow');
+          assertTrue(!!animatedGlow);
+          await animatedGlow.updateComplete;
+
+          // Verify that search-animated-glow preserves 'display: contents' and
+          // isn't forced to 'display: block' / 'position: absolute'
+          const computedStyle = window.getComputedStyle(animatedGlow);
+          assertEquals(
+              'contents', computedStyle.display,
+              'search-animated-glow should be display: contents during voice search to preserve layout');
+          assertNotEquals(
+              'absolute', computedStyle.position,
+              'search-animated-glow should not be absolute during voice search');
+        });
 
     test(
         'voice search button tab order precedes cancel button' +
@@ -505,10 +749,7 @@ suite(`NewTabPageComposeboxTest`, () => {
       assertTrue(!!submitButton);
       await submitButton.updateComplete;
 
-      const submitContainer =
-          submitButton.shadowRoot.querySelector<HTMLElement>(
-              '#submitContainer');
-      assertTrue(!!submitContainer);
+      const submitContainer = submitButton.$.submitContainer;
       submitContainer.click();
 
       await microtasksFinished();
@@ -615,7 +856,7 @@ suite(`NewTabPageComposeboxTest`, () => {
       removeImgButton!.click();
       await microtasksFinished();
       await testProxy.element.updateComplete;
-      assertEquals(0, testProxy.element.files.size);
+      assertEquals(0, testProxy.element.attachedContext.size);
 
       // Remove toolchip:
       testProxy.element.inToolMode = false;
@@ -668,13 +909,13 @@ suite(`NewTabPageComposeboxTest`, () => {
       removeImgButton!.click();
       await microtasksFinished();
       await testProxy.element.updateComplete;
-      assertEquals(0, testProxy.element.files.size);
+      assertEquals(0, testProxy.element.attachedContext.size);
 
       // Submit:
       await submitVoiceSearch();
 
       assertTrue(testProxy.element.inToolMode);
-      assertEquals(0, testProxy.element.files.size);
+      assertEquals(0, testProxy.element.attachedContext.size);
     });
 
     test('remove toolchip but submit image in voice search mode', async () => {
@@ -726,7 +967,7 @@ suite(`NewTabPageComposeboxTest`, () => {
       await submitVoiceSearch();
 
       assertFalse(testProxy.element.inToolMode);
-      assertEquals(1, testProxy.element.files.size);
+      assertEquals(1, testProxy.element.attachedContext.size);
     });
 
     test(
@@ -781,7 +1022,7 @@ suite(`NewTabPageComposeboxTest`, () => {
           removeImgButton!.click();
           await microtasksFinished();
           await testProxy.element.updateComplete;
-          assertEquals(0, testProxy.element.files.size);
+          assertEquals(0, testProxy.element.attachedContext.size);
 
           // Remove tool chip from voice tool chips container:
           const toolChip =
@@ -813,7 +1054,7 @@ suite(`NewTabPageComposeboxTest`, () => {
           await testProxy.element.updateComplete;
 
           assertFalse(testProxy.element.inToolMode);
-          assertEquals(0, testProxy.element.files.size);
+          assertEquals(0, testProxy.element.attachedContext.size);
         });
 
     test(
@@ -871,6 +1112,502 @@ suite(`NewTabPageComposeboxTest`, () => {
               'absolute',
               window.getComputedStyle(voiceSearchContainer).position);
         });
+  });
+
+  test('handleFuseboxAction applies and resets action state', async () => {
+    const composebox = document.createElement('ntp-composebox');
+    assertTrue(composebox.shouldHandleSuggestionFuseboxActions());
+    const inputStateRequested =
+        testProxy.searchboxHandler.whenCalled('getInputState');
+    document.body.appendChild(composebox);
+    await inputStateRequested;
+    await microtasksFinished();
+
+    await composebox.handleFuseboxAction({
+      suggestion: 'paste suggestion',
+      files: [],
+      fuseboxAction: createFuseboxAction({
+        preselectedTool: ToolMode.kDeepSearch,
+        preferredInventory: SuggestInventory.kBrainstorm,
+        preselectedModel: ModelMode.kGeminiPro,
+        queryActionOverride: QueryActionOverride.kPaste,
+      }),
+    });
+    await microtasksFinished();
+    await composebox.updateComplete;
+
+    assertEquals('paste suggestion', composebox.input);
+    assertEquals(SuggestInventory.kBrainstorm, composebox.suggestInventory);
+    assertEquals(
+        1, testProxy.searchboxHandler.getCallCount('setActiveToolMode'));
+    assertEquals(
+        ToolMode.kDeepSearch,
+        testProxy.searchboxHandler.getArgs('setActiveToolMode')[0][0]);
+    assertEquals(
+        1, testProxy.searchboxHandler.getCallCount('setActiveModelMode'));
+    assertEquals(
+        ModelMode.kGeminiPro,
+        testProxy.searchboxHandler.getArgs('setActiveModelMode')[0][0]);
+
+    await composebox.handleFuseboxAction({
+      suggestion: 'second suggestion',
+      files: [],
+      fuseboxAction: createFuseboxAction({
+        queryActionOverride: QueryActionOverride.kPaste,
+      }),
+    });
+    await microtasksFinished();
+    await composebox.updateComplete;
+
+    assertEquals('second suggestion', composebox.input);
+    assertEquals(null, composebox.suggestInventory);
+    assertEquals(
+        1, testProxy.searchboxHandler.getCallCount('setActiveToolMode'));
+    assertEquals(
+        2, testProxy.searchboxHandler.getCallCount('setActiveModelMode'));
+    assertEquals(
+        ModelMode.kUnspecified,
+        testProxy.searchboxHandler.getArgs('setActiveModelMode')[1][0]);
+  });
+
+  test(
+      'handleFuseboxAction triggers imageInput click for kInputSourceGallery',
+      async () => {
+        const composebox = document.createElement('ntp-composebox');
+        document.body.appendChild(composebox);
+        await microtasksFinished();
+
+        let imageInputClicked = false;
+        const imageInput =
+            composebox.$.fileInputs.shadowRoot.querySelector<HTMLInputElement>(
+                '#imageInput')!;
+        imageInput.addEventListener('click', (e: Event) => {
+          e.preventDefault();
+          imageInputClicked = true;
+        });
+
+        await composebox.handleFuseboxAction({
+          suggestion: '',
+          files: [],
+          fuseboxAction: createFuseboxAction({
+            preselectedInputSource: InputSource.kInputSourceGallery,
+          }),
+        });
+        await microtasksFinished();
+
+        assertTrue(imageInputClicked);
+      });
+
+  test(
+      'handleFuseboxAction triggers fileInput click for kInputSourceFilePicker',
+      async () => {
+        const composebox = document.createElement('ntp-composebox');
+        document.body.appendChild(composebox);
+        await microtasksFinished();
+
+        let fileInputClicked = false;
+        const fileInput =
+            composebox.$.fileInputs.shadowRoot.querySelector<HTMLInputElement>(
+                '#fileInput')!;
+        fileInput.addEventListener('click', (e: Event) => {
+          e.preventDefault();
+          fileInputClicked = true;
+        });
+
+        await composebox.handleFuseboxAction({
+          suggestion: '',
+          files: [],
+          fuseboxAction: createFuseboxAction({
+            preselectedInputSource: InputSource.kInputSourceFilePicker,
+          }),
+        });
+        await microtasksFinished();
+
+        assertTrue(fileInputClicked);
+      });
+
+  test(
+      'getFileInputsElement returns element or null when disabled',
+      async () => {
+        const composebox = document.createElement('ntp-composebox');
+        composebox.contextMenuEnabled = true;
+        document.body.appendChild(composebox);
+        await microtasksFinished();
+
+        assertEquals(
+            composebox.$.fileInputs, composebox.getFileInputsElement());
+        composebox.contextMenuEnabled = false;
+        assertEquals(null, composebox.getFileInputsElement());
+      });
+
+  test(
+      'handleFuseboxAction opens tab picker for kInputSourceTabPicker',
+      async () => {
+        const composebox = document.createElement('ntp-composebox');
+        composebox.contextMenuEnabled = true;
+        document.body.appendChild(composebox);
+        await microtasksFinished();
+
+        await composebox.handleFuseboxAction({
+          suggestion: '',
+          files: [],
+          fuseboxAction: createFuseboxAction({
+            preselectedInputSource: InputSource.kInputSourceTabPicker,
+          }),
+        });
+        await microtasksFinished();
+
+        assertTrue(composebox.shareTabsFlyoutOpen);
+      });
+
+  test(
+      'handleFuseboxAction triggers voice search for kInputSourceVoice',
+      async () => {
+        const composebox = document.createElement('ntp-composebox');
+        document.body.appendChild(composebox);
+        await microtasksFinished();
+
+        let voiceSearchClicked = false;
+        composebox.onVoiceSearchButtonClick = () => {
+          voiceSearchClicked = true;
+        };
+
+        await composebox.handleFuseboxAction({
+          suggestion: '',
+          files: [],
+          fuseboxAction: createFuseboxAction({
+            preselectedInputSource: InputSource.kInputSourceVoice,
+          }),
+        });
+        await microtasksFinished();
+
+        assertTrue(voiceSearchClicked);
+      });
+
+  test(
+      'hint action sets the placeholder and survives input state updates',
+      async () => {
+        const composebox = document.createElement('ntp-composebox');
+        document.body.appendChild(composebox);
+        await microtasksFinished();
+        await composebox.updateComplete;
+        await composebox.getInputElement().updateComplete;
+        const input =
+            composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+                '#input')!;
+
+        await composebox.handleFuseboxAction({
+          suggestion: 'chip hint',
+          files: [],
+          fuseboxAction: createFuseboxAction({
+            queryActionOverride: QueryActionOverride.kHint,
+          }),
+        });
+        await composebox.updateComplete;
+        await composebox.getInputElement().updateComplete;
+        assertEquals('chip hint', input.getAttribute('placeholder'));
+
+        // An asynchronous input state update carrying its own hint must not
+        // clobber the active chip hint.
+        testProxy.searchboxCallbackRouterRemote.onInputStateChanged(
+            new MockInputState({hintText: 'server hint'}));
+        await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
+        await microtasksFinished();
+        await composebox.updateComplete;
+        await composebox.getInputElement().updateComplete;
+        assertEquals('chip hint', input.getAttribute('placeholder'));
+      });
+
+  // Verify that actions trigger the contextual entrypoint energy effect
+  // animation only when energyEffectAnimationEnabled is true and
+  // searchboxTutorial requests kGlowPlusButton.
+  [null, SearchboxTutorial.kUnspecified, SearchboxTutorial.kGlowPlusButton]
+      .forEach(searchboxTutorial => {
+        [false, true].forEach(energyEffectAnimationEnabled => {
+          test(
+              `handleFuseboxAction animation with tutorial=${
+                  searchboxTutorial}, energyEnabled=${
+                  energyEffectAnimationEnabled}`,
+              async () => {
+                const composebox = document.createElement('ntp-composebox');
+                composebox.energyEffectAnimationEnabled =
+                    energyEffectAnimationEnabled;
+                document.body.appendChild(composebox);
+                await microtasksFinished();
+
+                const action = createFuseboxAction({
+                  preselectedTool: ToolMode.kUnspecified,
+                  searchboxTutorial,
+                });
+
+                const expectedState =
+                    searchboxTutorial === SearchboxTutorial.kGlowPlusButton &&
+                        energyEffectAnimationEnabled ?
+                    GlifAnimationState.STARTED :
+                    GlifAnimationState.INELIGIBLE;
+                await composebox.handleFuseboxAction({
+                  suggestion: '',
+                  files: [],
+                  fuseboxAction: action,
+                });
+                await new Promise(resolve => requestAnimationFrame(resolve));
+                assertEquals(expectedState, composebox.glifAnimationState);
+              });
+        });
+      });
+
+  suite('outside click', () => {
+    const FLAG = 'composeboxRealboxOutsideClick';
+    let originalFlag: boolean;
+
+    suiteSetup(() => {
+      originalFlag = loadTimeData.valueExists(FLAG) ?
+          loadTimeData.getBoolean(FLAG) :
+          false;
+      loadTimeData.overrideValues({[FLAG]: true});
+    });
+
+    suiteTeardown(() => {
+      loadTimeData.overrideValues({[FLAG]: originalFlag});
+    });
+
+    async function createComposebox(): Promise<NtpComposeboxElement> {
+      const composebox = document.createElement('ntp-composebox');
+      document.body.appendChild(composebox);
+      await testProxy.searchboxHandler.whenCalled('getInputState');
+      await microtasksFinished();
+      await composebox.updateComplete;
+      return composebox;
+    }
+
+    async function sendTwoMatches(queryId: number, sequenceId: number = 0) {
+      testProxy.searchboxCallbackRouterRemote.autocompleteResultChanged(
+          createAutocompleteResultForTesting({
+            queryId,
+            sequenceId,
+            matches: [
+              createSearchMatchForTesting(),
+              createSearchMatchForTesting(),
+            ],
+          }));
+      await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
+      await microtasksFinished();
+    }
+
+    test('hides suggestions until focus returns', async () => {
+      const composebox = await createComposebox();
+      const queryId = composebox.activeQueryId;
+      assertTrue(queryId >= 0);
+      assertTrue(composebox.hasAttribute('should-remain-folded_'));
+      composebox.focused = false;
+      composebox.input = 'a\nb';
+      await composebox.updateComplete;
+      assertFalse(composebox.hasAttribute('should-remain-folded_'));
+      composebox.focused = true;
+      composebox.input = '';
+      await composebox.updateComplete;
+
+      await sendTwoMatches(queryId);
+      assertTrue(composebox.showDropdown);
+      assertFalse(composebox.hasAttribute('should-remain-folded_'));
+      const stopCount =
+          testProxy.searchboxHandler.getCallCount('stopAutocomplete');
+      const queryCount =
+          testProxy.searchboxHandler.getCallCount('queryAutocomplete');
+
+      composebox.focused = false;
+      await composebox.updateComplete;
+
+      assertFalse(composebox.showDropdown);
+      assertTrue(composebox.hasAttribute('should-remain-folded_'));
+      assertEquals(queryId, composebox.activeQueryId);
+      assertEquals(
+          stopCount,
+          testProxy.searchboxHandler.getCallCount('stopAutocomplete'));
+
+      await sendTwoMatches(queryId, /*sequenceId=*/ 7);
+      assertFalse(composebox.showDropdown);
+      assertTrue(!!composebox.result);
+      assertEquals(7, composebox.result.sequenceId);
+
+      composebox.input = 'draft';
+      await composebox.updateComplete;
+      assertFalse(composebox.showDropdown);
+      assertFalse(composebox.hasAttribute('should-remain-folded_'));
+
+      composebox.focused = true;
+      await composebox.updateComplete;
+      assertTrue(composebox.showDropdown);
+      assertFalse(composebox.hasAttribute('should-remain-folded_'));
+      assertEquals('', composebox.lastQueriedInput);
+      assertEquals(
+          queryCount,
+          testProxy.searchboxHandler.getCallCount('queryAutocomplete'));
+    });
+
+    test('folds without matches when the flag is off', async () => {
+      loadTimeData.overrideValues({[FLAG]: false});
+      try {
+        const composebox = await createComposebox();
+        composebox.focused = false;
+        composebox.input = 'a\nb';
+        await composebox.updateComplete;
+        assertTrue(composebox.hasAttribute('should-remain-folded_'));
+        await sendTwoMatches(composebox.activeQueryId);
+        assertTrue(composebox.showDropdown);
+      } finally {
+        loadTimeData.overrideValues({[FLAG]: true});
+      }
+    });
+  });
+
+  suite('persistent AIM button', () => {
+    // Both flags are read when the element is constructed, so they must be
+    // overridden before createComposeboxElement().
+    async function createWithAimButton(
+        enabled: boolean, withX: boolean,
+        properties: Partial<ComposeboxElement> = {}) {
+      loadTimeData.overrideValues({
+        'composeboxPersistentAimButton': enabled,
+        'composeboxPersistentAimButtonWithX': withX,
+      });
+      createComposeboxElement(
+          testProxy, {searchboxNextEnabled: true, ...properties});
+      testProxy.element.searchboxLayoutMode = 'Compact';
+      await microtasksFinished();
+    }
+
+    function queryAimButton(): ComposeboxAimButtonElement|null {
+      return testProxy.element.shadowRoot
+          .querySelector<ComposeboxAimButtonElement>(
+              'cr-composebox-aim-button');
+    }
+
+    function getAimButton(): ComposeboxAimButtonElement {
+      const aimButton = queryAimButton();
+      assertTrue(!!aimButton);
+      return aimButton;
+    }
+
+    async function typeInput(text: string) {
+      const input =
+          testProxy.element.getInputElement()
+              .shadowRoot.querySelector<HTMLTextAreaElement>('#input')!;
+      input.value = text;
+      input.dispatchEvent(new Event('input'));
+      await microtasksFinished();
+    }
+
+    async function showMatch(allowedToBeDefaultMatch: boolean) {
+      testProxy.searchboxCallbackRouterRemote.autocompleteResultChanged(
+          createAutocompleteResultForTesting({
+            queryId: testProxy.element.activeQueryId,
+            input: 'test',
+            matches: [createSearchMatchForTesting(
+                {fillIntoEdit: 'test', allowedToBeDefaultMatch})],
+          }));
+      await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
+      await microtasksFinished();
+    }
+
+    [false, true].forEach(enabled => {
+      [false, true].forEach(withX => {
+        test(
+            `mounts per flags: enabled=${enabled}, withX=${withX}`,
+            async () => {
+              await createWithAimButton(enabled, withX);
+              await typeInput('test');
+
+              const aimButton = queryAimButton();
+              assertEquals(enabled, !!aimButton);
+              // The AIM button replaces the clear (X) and submit buttons.
+              assertEquals(
+                  enabled, testProxy.element.getInputElement().hideCancel);
+              assertEquals(
+                  !enabled,
+                  !!testProxy.element.shadowRoot.querySelector(
+                      'cr-composebox-submit'));
+              if (aimButton) {
+                assertEquals(withX, aimButton.showExitIcon);
+              }
+            });
+      });
+    });
+
+    test('binds label and titles', async () => {
+      await createWithAimButton(true, false);
+      const aimButton = getAimButton();
+      assertEquals('AI Mode', aimButton.label);
+      assertEquals('Exit AI Mode', aimButton.exitTitle);
+      assertEquals('Send', aimButton.sendTitle);
+    });
+
+    test('mode follows the input and is held after submit', async () => {
+      await createWithAimButton(
+          true, false, {clearAllInputsWhenSubmittingQuery: true});
+      const aimButton = getAimButton();
+      assertEquals(AimButtonMode.EXIT, aimButton.mode);
+
+      await typeInput('test');
+      assertEquals(AimButtonMode.SEND, aimButton.mode);
+
+      // Submitting clears the input, but SEND is held while the navigation
+      // is pending and the button is not dimmed.
+      aimButton.$.button.click();
+      await microtasksFinished();
+      assertEquals(1, testProxy.searchboxHandler.getCallCount('submitQuery'));
+      assertEquals('', testProxy.element.input);
+      assertTrue(testProxy.element.submitting);
+      assertEquals(AimButtonMode.SEND, aimButton.mode);
+      assertFalse(aimButton.disabled);
+    });
+
+    test('EXIT click closes the composebox', async () => {
+      await createWithAimButton(true, false);
+      const closed = eventToPromise('close-composebox', testProxy.element);
+      getAimButton().$.button.click();
+      await closed;
+      assertEquals(0, testProxy.searchboxHandler.getCallCount('submitQuery'));
+    });
+
+    test('SEND keyboard activation opens the match via keyboard', async () => {
+      await createWithAimButton(true, false);
+      await typeInput('test');
+      await showMatch(/*allowedToBeDefaultMatch=*/ true);
+      assertEquals(0, testProxy.element.selectedMatchIndex);
+
+      // cr-button turns Enter keydown into click(); the AIM button forwards
+      // the keyboard event so the modifiers and `viaKeyboard` survive.
+      getAimButton().$.button.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        altKey: true,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      }));
+      await microtasksFinished();
+
+      assertEquals(
+          1, testProxy.searchboxHandler.getCallCount('openAutocompleteMatch'));
+      const args =
+          testProxy.searchboxHandler.getArgs('openAutocompleteMatch')[0];
+      assertDeepEquals(
+          {altKey: true, ctrlKey: false, metaKey: false, shiftKey: false},
+          args[5]);
+      assertTrue(args[6]);
+    });
+
+    test('focusin in SEND selects the first match', async () => {
+      await createWithAimButton(true, false);
+      await typeInput('test');
+      await showMatch(/*allowedToBeDefaultMatch=*/ false);
+      assertEquals(-1, testProxy.element.selectedMatchIndex);
+
+      getAimButton().dispatchEvent(
+          new FocusEvent('focusin', {bubbles: true, composed: true}));
+      await microtasksFinished();
+      assertEquals(0, testProxy.element.selectedMatchIndex);
+    });
   });
 });
 
@@ -946,7 +1683,7 @@ suite('NewTabPageComposeboxResizeObserverTest', () => {
   test(
       'observeResize emits composebox resize events for host and dropdown',
       async () => {
-        testProxy.element = new ComposeboxElement();
+        testProxy.element = document.createElement('cr-composebox');
         Object.assign(testProxy.element, {observeResize: true});
         document.body.appendChild(testProxy.element);
         await flushComposebox();
@@ -977,7 +1714,7 @@ suite('NewTabPageComposeboxResizeObserverTest', () => {
       });
 
   test('observeResize false skips public resize observers', async () => {
-    testProxy.element = new ComposeboxElement();
+    testProxy.element = document.createElement('cr-composebox');
     Object.assign(testProxy.element, {observeResize: false});
     document.body.appendChild(testProxy.element);
     await flushComposebox();
@@ -994,7 +1731,7 @@ suite('NewTabPageComposeboxResizeObserverTest', () => {
   });
 
   test('observeResize changes resync public resize observers', async () => {
-    testProxy.element = new ComposeboxElement();
+    testProxy.element = document.createElement('cr-composebox');
     Object.assign(testProxy.element, {observeResize: false});
     document.body.appendChild(testProxy.element);
     await flushComposebox();
@@ -1023,4 +1760,27 @@ suite('NewTabPageComposeboxResizeObserverTest', () => {
         0, getActiveObserversForTarget(testProxy.element.$.matches).length);
     assertTrue(composeboxObservers.every(observer => observer.disconnected));
   });
+
+  // TODO(crbug.com/570702014): Smart Tab Sharing is desktop-only.
+  // <if expr="not is_android">
+  test(
+      'smartTabSharingActive causes hasTabs true and input has has-tabs class',
+      async () => {
+        testProxy.searchboxHandler.setPromiseResolveFor(
+            'getSmartTabSharingActive', {active: true});
+        createComposeboxElement(testProxy, {
+          searchboxNextEnabled: true,
+          smartTabSharingActive: true,
+          smartTabSharingVisible: true,
+        });
+        await microtasksFinished();
+        await testProxy.element.updateComplete;
+
+        assertTrue(testProxy.element.hasTabs());
+        assertFalse(testProxy.element.hasAttribute('should-remain-folded_'));
+
+        const inputElement = testProxy.element.getInputElement();
+        assertTrue(inputElement.classList.contains('has-tabs'));
+      });
+  // </if>
 });

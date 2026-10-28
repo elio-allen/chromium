@@ -11,7 +11,6 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.DestroyObserver;
 import org.chromium.chrome.browser.page_load_metrics.PageLoadMetrics;
-import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabObserver;
@@ -32,7 +31,7 @@ import java.util.Set;
  * attach to the current active tab.
  */
 @NullMarked
-public class TabObserverRegistrar implements TabModelObserver, DestroyObserver {
+public class TabObserverRegistrar implements TabModelObserver {
     private @Nullable CustomTabActivityTabProvider mTabProvider;
     private final Set<PageLoadMetrics.Observer> mPageLoadMetricsObservers = new HashSet<>();
     private final Set<TabObserver> mTabObservers = new HashSet<>();
@@ -82,7 +81,9 @@ public class TabObserverRegistrar implements TabModelObserver, DestroyObserver {
         mTabProvider = tabProvider;
         mTabProvider.addObserver(mActivityTabProviderObserver);
 
-        lifecycleDispatcher.register(this);
+        // Do not implement DestroyObserver directly because TabModelObserver#onDestroy() shares the
+        // same method name and runs in TabCollectionTabModelImpl#destroy() before Tab#destroy().
+        lifecycleDispatcher.register((DestroyObserver) this::destroy);
     }
 
     /** Registers a {@link PageLoadMetrics.Observer} to be managed by this Registrar. */
@@ -198,8 +199,7 @@ public class TabObserverRegistrar implements TabModelObserver, DestroyObserver {
         }
     }
 
-    @Override
-    public void onDestroy() {
+    public void destroy() {
         removePageLoadMetricsObservers();
         if (mTabProviderTab != null) {
             removeTabObservers(mTabProviderTab, mActivityTabObservers.iterator());
@@ -217,7 +217,7 @@ public class TabObserverRegistrar implements TabModelObserver, DestroyObserver {
      * A class for observing the activity tab. When the activity tab changes, the observer is
      * switched to that tab.
      */
-    public abstract static class CustomTabTabObserver extends EmptyTabObserver {
+    public abstract static class CustomTabTabObserver implements TabObserver {
         /**
          * Called when the initial tab is created or the observer is registered with {@link
          * TabObserverRegistrar}, whichever occurs last.

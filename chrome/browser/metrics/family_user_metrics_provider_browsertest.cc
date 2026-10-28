@@ -16,7 +16,7 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/test/base/fake_gaia_mixin.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "chromeos/ash/components/policy/device_policy/cached_device_policy_updater.h"
@@ -119,8 +119,8 @@ IN_PROC_BROWSER_TEST_P(FamilyUserMetricsProviderTest, UserCategory) {
         IdentityManagerFactory::GetForProfile(profile);
     AccountInfo account_info =
         signin::MakeAccountAvailable(identity_manager, kSecondaryEDUEmail);
-    EXPECT_TRUE(
-        identity_manager->HasAccountWithRefreshToken(account_info.account_id));
+    EXPECT_TRUE(identity_manager->HasAccountWithRefreshToken(
+        account_info.GetAccountId()));
   }
 
   // Simulate calling ProvideHistograms() after logging in.

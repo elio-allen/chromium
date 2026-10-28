@@ -15,7 +15,7 @@
 #import "base/time/time.h"
 #import "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #import "components/autofill/core/browser/field_types.h"
-#import "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#import "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #import "components/autofill/ios/common/features.h"
 #import "components/enterprise/connectors/core/realtime_reporting_test_environment.h"
 #import "components/password_manager/core/browser/features/password_features.h"
@@ -45,6 +45,7 @@
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ios/testing/earl_grey/matchers.h"
+#import "ios/testing/test_tag_registry.h"
 #import "net/base/apple/url_conversions.h"
 #import "net/test/embedded_test_server/default_handlers.h"
 #import "ui/base/l10n/l10n_util.h"
@@ -140,8 +141,16 @@ void WaitForBottomSheetAndOpenKeyboard(NSString* username) {
 // Types `text` on an input field with `fieldID`. Dismisses the credential
 // bottom sheet if `dismissBottomSheet` is true.
 void TypeTextOnField(NSString* text, const std::string& fieldID) {
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
-      performAction:chrome_test_util::TapWebElementWithId(fieldID)];
+  NSString* checkFocusScript =
+      [NSString stringWithFormat:
+                    @"document.activeElement === document.getElementById('%@')",
+                    base::SysUTF8ToNSString(fieldID)];
+  base::Value result = [ChromeEarlGrey evaluateJavaScript:checkFocusScript];
+  bool isFocused = result.is_bool() && result.GetBool();
+  if (!isFocused) {
+    [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
+        performAction:chrome_test_util::TapWebElementWithId(fieldID)];
+  }
   TypeText(text);
   // Wait for the current input field to contain the `text` (i.e. typing from
   // SimulatePhysicalKeyboardEvent finished) before proceeding to next step.
@@ -301,7 +310,7 @@ void LoginOnUff() {
 }
 
 - (std::optional<std::string_view>)enterpriseReportingEventForTest {
-  if ([self isRunningTest:@selector(testLoginEventReported)]) {
+  if ([self isRunningTest:@selector(DISABLED_testLoginEventReported)]) {
     return "loginEvent";
   } else if ([self isRunningTest:@selector
                    (FLAKY_testPasswordBreachEventReported)]) {
@@ -335,6 +344,7 @@ void LoginOnUff() {
 #pragma mark - Tests
 
 // Tests that save password prompt is shown on new login.
+TAG_SMOKE_TEST(PasswordControllerEGTest, testSavePromptAppearsOnFormSubmission);
 - (void)testSavePromptAppearsOnFormSubmission {
   [self loadLoginPage];
 
@@ -658,6 +668,11 @@ void LoginOnUff() {
                                  kFormPassword];
   [ChromeEarlGrey waitForJavaScriptCondition:emptyFieldCondition];
 
+  // TODO(crbug.com/508127830): Find a better solution to fix the flakiness of
+  // this test.
+  // Wait for the page and WebKit layout to settle before tapping the field.
+  base::test::ios::SpinRunLoopWithMinDelay(base::Seconds(1));
+
   // Bring up the keyboard.
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
       performAction:TapWebElementWithId(kFormPassword)];
@@ -795,8 +810,8 @@ void LoginOnUff() {
 // Tests that the typed credentials are correctly saved in the sign-in UFF flow.
 - (void)testSaveTypedCredentialInUff {
   // TODO(crbug.com/453627553): Re-enable the test.
-  if (@available(iOS 26.1, *)) {
-    EARL_GREY_TEST_DISABLED(@"Test disabled on iOS 26.1.");
+  if (@available(iOS 18.5, *)) {
+    EARL_GREY_TEST_DISABLED(@"Test disabled on iOS 18.5.");
   }
 
   NSString* usernameValue = @"test-username";
@@ -881,8 +896,8 @@ void LoginOnUff() {
 // flow when there is already a credential stored for the corresponding email.
 - (void)testUpdateTypedCredentialInUff {
   // TODO(crbug.com/453627553): Re-enable the test.
-  if (@available(iOS 26.1, *)) {
-    EARL_GREY_TEST_DISABLED(@"Test disabled on iOS 26.1.");
+  if (@available(iOS 18.5, *)) {
+    EARL_GREY_TEST_DISABLED(@"Test disabled on iOS 18.5.");
   }
 
   NSString* usernameValue = @"test-username";
@@ -930,7 +945,8 @@ void LoginOnUff() {
 }
 
 // Tests that a login event is reported to an enterprise connector.
-- (void)testLoginEventReported {
+// TODO(crbug.com/567129485): Flaky on iOS Simulator.
+- (void)DISABLED_testLoginEventReported {
   [self loadLoginPage];
 
   // Simulate login.

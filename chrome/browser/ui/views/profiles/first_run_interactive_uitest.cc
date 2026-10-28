@@ -4,46 +4,59 @@
 
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <variant>
 
 #include "base/auto_reset.h"
 #include "base/check_deref.h"
+#include "base/json/json_reader.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/strings/to_string.h"
 #include "base/test/bind.h"
+#include "base/test/gmock_callback_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/test/with_feature_override.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/feature_engagement/tracker_factory.h"
-#include "chrome/browser/first_run/first_run.h"
 #include "chrome/browser/policy/cloud/user_policy_signin_service_factory.h"
 #include "chrome/browser/policy/cloud/user_policy_signin_service_test_util.h"
+#include "chrome/browser/prefs/incognito_mode_prefs.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engine_choice/search_engine_choice_dialog_service.h"
 #include "chrome/browser/search_engine_choice/search_engine_choice_dialog_service_factory.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
+#include "chrome/browser/shell_integration.h"
 #include "chrome/browser/signin/chrome_signin_client_test_util.h"
 #include "chrome/browser/signin/dice_tab_helper.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/process_dice_header_delegate_impl.h"
+#include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/sync/sync_service_factory.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/hats/hats_service_factory.h"
 #include "chrome/browser/ui/hats/mock_hats_service.h"
 #include "chrome/browser/ui/profiles/profile_picker.h"
 #include "chrome/browser/ui/signin/signin_view_controller.h"
 #include "chrome/browser/ui/startup/first_run_service.h"
 #include "chrome/browser/ui/startup/first_run_test_util.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/toolbar/avatar_toolbar_iph_controller.h"
+#include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
 #include "chrome/browser/ui/views/profiles/avatar_toolbar_button.h"
+#include "chrome/browser/ui/views/profiles/feature_showcase/feature_showcase_constants.h"
 #include "chrome/browser/ui/views/profiles/first_run_flow_controller.h"
 #include "chrome/browser/ui/views/profiles/profile_management_flow_controller.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_interactive_uitest_base.h"
@@ -51,15 +64,24 @@
 #include "chrome/browser/ui/views/profiles/profile_picker_view.h"
 #include "chrome/browser/ui/webui/intro/intro_ui.h"
 #include "chrome/browser/ui/webui/signin/signin_ui_error.h"
-#include "chrome/browser/ui/webui/signin/signin_url_utils.h"
 #include "chrome/browser/ui/webui/whats_new/whats_new_fetcher.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/browser_resources.h"
+#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "chrome/test/user_education/interactive_feature_promo_test.h"
 #include "components/feature_engagement/public/feature_constants.h"
+#include "components/metrics/metrics_pref_names.h"
+#include "components/policy/core/browser/browser_policy_connector.h"
+#include "components/policy/core/common/mock_configuration_policy_provider.h"
+#include "components/policy/core/common/mock_policy_service.h"
+#include "components/policy/core/common/policy_map.h"
+#include "components/policy/core/common/policy_pref_names.h"
+#include "components/policy/core/common/policy_service.h"
+#include "components/policy/policy_constants.h"
 #include "components/regional_capabilities/enums.h"
 #include "components/regional_capabilities/regional_capabilities_switches.h"
 #include "components/search_engines/search_engine_choice/search_engine_choice_utils.h"
@@ -75,11 +97,12 @@
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/signin/public/identity_manager/signin_constants.h"
-#include "components/sync/base/features.h"
 #include "components/sync/base/user_selectable_type.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/test/test_sync_service.h"
 #include "components/user_education/views/help_bubble_view.h"
+#include "components/variations/pref_names.h"
+#include "components/variations/service/variations_service.h"
 #include "components/variations/variations_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -134,6 +157,9 @@ DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kProfilePickerViewId);
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsId);
 DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kButtonEnabled);
 DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kButtonDisabled);
+DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kButtonVisible);
+DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kDialogOpened);
+DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kDialogClosed);
 
 enum class SyncButtonsFeatureConfig : int {
   // Deprecated: kDisabled = 0,
@@ -143,8 +169,6 @@ enum class SyncButtonsFeatureConfig : int {
   kAsyncEqualButtons = 2,
   // Simulate async load that will deadline.
   kDeadlined = 3,
-  // User interacts with the UI before capabilities are loaded.
-  kButtonsStillLoading = 4,
 };
 
 GURL GetHistorySyncOptinURL() {
@@ -159,18 +183,15 @@ std::unique_ptr<KeyedService> CreateTestSyncService(
 struct FirstRunVersion {
   struct Legacy {};
 
-  struct Refreshed {
-    switches::FirstRunDesktopSignInPromoVariation variant =
-        switches::FirstRunDesktopSignInPromoVariation::kDefault;
-  };
+  struct Refreshed {};
 
   struct Revamped {
-    switches::FirstRunDesktopSignInPromoVariation variant =
-        switches::FirstRunDesktopSignInPromoVariation::kDefault;
     bool sound_enabled = true;
   };
 
-  using Value = std::variant<Legacy, Refreshed, Revamped>;
+  struct PreFirstRunRefreshed {};
+
+  using Value = std::variant<Legacy, Refreshed, Revamped, PreFirstRunRefreshed>;
 };
 
 struct TestParam {
@@ -190,9 +211,7 @@ std::string SupervisionToString(const TestParamInfo<TestParam>& info) {
                                              : "ForAdultUser";
 }
 
-// Returned type is optional, because for the kButtonsStillLoading no buttons
-// are yet presented (consequently, no metric recorded).
-std::optional<::signin_metrics::SyncButtonsType> ExpectedButtonShownMetric(
+::signin_metrics::SyncButtonsType ExpectedButtonShownMetric(
     SyncButtonsFeatureConfig config) {
   switch (config) {
     case SyncButtonsFeatureConfig::kAsyncNotEqualButtons:
@@ -202,8 +221,6 @@ std::optional<::signin_metrics::SyncButtonsType> ExpectedButtonShownMetric(
           kSyncEqualWeightedFromCapability;
     case SyncButtonsFeatureConfig::kDeadlined:
       return ::signin_metrics::SyncButtonsType::kSyncEqualWeightedFromDeadline;
-    default:
-      return std::nullopt;
   }
 }
 
@@ -222,35 +239,17 @@ std::string VersionSuffix(const FirstRunVersion::Value& version) {
   return std::visit(
       absl::Overload{
           [](FirstRunVersion::Legacy) -> std::string { return "LegacyView"; },
-          [](FirstRunVersion::Refreshed refreshed) -> std::string {
-            switch (refreshed.variant) {
-              case switches::FirstRunDesktopSignInPromoVariation::kDefault:
-                return "RefreshedViewDefault";
-              case switches::FirstRunDesktopSignInPromoVariation::
-                  kDontSignInInTheTopCorner:
-                return "RefreshedViewDontSignInTopCorner";
-              case switches::FirstRunDesktopSignInPromoVariation::
-                  kDontSignInOnGaiaPage:
-                return "RefreshedViewDontSignInGaiaPage";
-            }
+          [](FirstRunVersion::Refreshed) -> std::string {
+            return "RefreshedView";
           },
-          [](FirstRunVersion::Revamped revamped) {
-            std::string base_suffix;
-            switch (revamped.variant) {
-              case switches::FirstRunDesktopSignInPromoVariation::kDefault:
-                base_suffix = "RevampedViewDefault";
-                break;
-              case switches::FirstRunDesktopSignInPromoVariation::
-                  kDontSignInInTheTopCorner:
-                base_suffix = "RevampedViewDontSignInTopCorner";
-                break;
-              case switches::FirstRunDesktopSignInPromoVariation::
-                  kDontSignInOnGaiaPage:
-                base_suffix = "RevampedViewDontSignInGaiaPage";
-                break;
-            }
-            return base_suffix + (revamped.sound_enabled ? "" : "NoSound");
-          }},
+          [](FirstRunVersion::Revamped revamped) -> std::string {
+            return revamped.sound_enabled ? "RevampedView"
+                                          : "RevampedViewNoSound";
+          },
+          [](FirstRunVersion::PreFirstRunRefreshed) -> std::string {
+            return "PreFirstRunRefreshedView";
+          },
+      },
       version);
   NOTREACHED();
 }
@@ -274,15 +273,12 @@ const std::vector<TestParam>& GetTestParams() {
              SyncButtonsFeatureConfig::kAsyncNotEqualButtons},
         {.test_suffix = "AsyncCapabilitiesDeadlined",
          .sync_buttons_feature_config = SyncButtonsFeatureConfig::kDeadlined},
-        {.test_suffix = "AsyncCapabilitiesPending",
-         .sync_buttons_feature_config =
-             SyncButtonsFeatureConfig::kButtonsStillLoading},
         {.test_suffix = "DefaultWithSyncEngineAwaiting",
          .with_sync_engine_ready = false},
     };
 
-    // Triplicate each test param to cover the legacy, refreshed, and revamped
-    // views.
+    // Multiply each test param to cover the legacy, refreshed, revamped, and
+    // pre first run refreshed views.
     std::vector<TestParam> test_params;
     test_params.reserve(std::size(base_test_params) *
                         std::variant_size<FirstRunVersion::Value>());
@@ -290,14 +286,17 @@ const std::vector<TestParam>& GetTestParams() {
       test_params.push_back(test_param);
 
       TestParam test_param_refreshed = test_param;
-      test_param_refreshed.flow_version = FirstRunVersion::Refreshed{
-          .variant = switches::FirstRunDesktopSignInPromoVariation::kDefault};
+      test_param_refreshed.flow_version = FirstRunVersion::Refreshed{};
       test_params.push_back(std::move(test_param_refreshed));
 
       TestParam test_param_revamped = test_param;
-      test_param_revamped.flow_version = FirstRunVersion::Revamped{
-          .variant = switches::FirstRunDesktopSignInPromoVariation::kDefault};
+      test_param_revamped.flow_version = FirstRunVersion::Revamped{};
       test_params.push_back(std::move(test_param_revamped));
+
+      TestParam test_param_pre_first_run_refreshed = test_param;
+      test_param_pre_first_run_refreshed.flow_version =
+          FirstRunVersion::PreFirstRunRefreshed{};
+      test_params.push_back(std::move(test_param_pre_first_run_refreshed));
     }
     return test_params;
   }());
@@ -315,38 +314,33 @@ class FirstRunInteractiveUiBaseTest
   explicit FirstRunInteractiveUiBaseTest(
       const TestParam& params = TestParam(),
       const std::vector<base::test::FeatureRefAndParams>&
-          fixture_enabled_features = {},
-      const std::vector<base::test::FeatureRef>& fixture_disabled_features = {})
+          fixture_enabled_features = {})
       : InteractiveFeaturePromoTestMixin<FirstRunServiceBrowserTestBase>(
             UseDefaultTrackerAllowingPromos(
                 {feature_engagement::kIPHSupervisedUserProfileSigninFeature})),
         params_(params) {
     std::vector<base::test::FeatureRefAndParams> enabled_features =
         fixture_enabled_features;
-    std::vector<base::test::FeatureRef> disabled_features =
-        fixture_disabled_features;
+    std::vector<base::test::FeatureRef> disabled_features;
     std::visit(
         absl::Overload{
             [&](FirstRunVersion::Legacy) {
               disabled_features.push_back(switches::kFirstRunDesktopRefresh);
               disabled_features.push_back(switches::kFirstRunDesktopRevamp);
+              disabled_features.push_back(switches::kPreFirstRunDesktopRefresh);
             },
-            [&](FirstRunVersion::Refreshed refreshed) {
+            [&](FirstRunVersion::Refreshed) {
               enabled_features.push_back(
-                  {switches::kFirstRunDesktopRefresh,
-                   {{switches::kFirstRunDesktopSignInPromoVariation.name,
-                     switches::kFirstRunDesktopSignInPromoVariation.GetName(
-                         refreshed.variant)}}});
+                  {switches::kFirstRunDesktopRefresh, {}});
               enabled_features.push_back(
                   {switches::kFirstRunDesktopChoiceScreenRefresh, {}});
+
               disabled_features.push_back(switches::kFirstRunDesktopRevamp);
+              disabled_features.push_back(switches::kPreFirstRunDesktopRefresh);
             },
             [&](FirstRunVersion::Revamped revamped) {
               enabled_features.push_back(
-                  {switches::kFirstRunDesktopRefresh,
-                   {{switches::kFirstRunDesktopSignInPromoVariation.name,
-                     switches::kFirstRunDesktopSignInPromoVariation.GetName(
-                         revamped.variant)}}});
+                  {switches::kFirstRunDesktopRefresh, {}});
               enabled_features.push_back(
                   {switches::kFirstRunDesktopChoiceScreenRefresh, {}});
               enabled_features.push_back(
@@ -359,7 +353,20 @@ class FirstRunInteractiveUiBaseTest
                 disabled_features.push_back(
                     switches::kFirstRunDesktopRevampSound);
               }
-            }},
+
+              disabled_features.push_back(switches::kPreFirstRunDesktopRefresh);
+            },
+            [&](FirstRunVersion::PreFirstRunRefreshed) {
+              enabled_features.push_back(
+                  {switches::kFirstRunDesktopRefresh, {}});
+              enabled_features.push_back(
+                  {switches::kFirstRunDesktopRevamp, {}});
+              enabled_features.push_back(
+                  {switches::kFirstRunDesktopChoiceScreenRefresh, {}});
+              enabled_features.push_back(
+                  {switches::kPreFirstRunDesktopRefresh, {}});
+            },
+        },
         params_.flow_version);
     scoped_feature_list_.InitWithFeaturesAndParameters(enabled_features,
                                                        disabled_features);
@@ -436,6 +443,18 @@ class FirstRunInteractiveUiBaseTest
     }
   }
 
+  const DeepQuery& GetSkipDefaultBrowserButtonQuery() const {
+    if (UseRefreshedView()) {
+      static const base::NoDestructor<DeepQuery> kQuery(
+          {"default-browser-app-refresh", "#skip-button"});
+      return *kQuery;
+    } else {
+      static const base::NoDestructor<DeepQuery> kQuery(
+          {"default-browser-app", "#skip-button"});
+      return *kQuery;
+    }
+  }
+
   const DeepQuery& GetFinishOrContinueStartBrowsingButtonQuery() const {
     static const base::NoDestructor<DeepQuery> kQuery(
         {"finish-or-continue-app", "#startBrowsingButton"});
@@ -446,42 +465,6 @@ class FirstRunInteractiveUiBaseTest
     static const base::NoDestructor<DeepQuery> kQuery(
         {"finish-or-continue-app", "#continueEducationButton"});
     return *kQuery;
-  }
-
-  const DeepQuery& GetOptInSyncButtonQuery() const {
-    if (UseRefreshedView()) {
-      static const base::NoDestructor<DeepQuery> kQuery(
-          {"sync-confirmation-app-refresh", "#confirmButton"});
-      return *kQuery;
-    } else {
-      static const base::NoDestructor<DeepQuery> kQuery(
-          {"sync-confirmation-app", "#confirmButton"});
-      return *kQuery;
-    }
-  }
-
-  const DeepQuery& GetDontSyncButtonQuery() const {
-    if (UseRefreshedView()) {
-      static const base::NoDestructor<DeepQuery> kQuery(
-          {"sync-confirmation-app-refresh", "#notNowButton"});
-      return *kQuery;
-    } else {
-      static const base::NoDestructor<DeepQuery> kQuery(
-          {"sync-confirmation-app", "#notNowButton"});
-      return *kQuery;
-    }
-  }
-
-  const DeepQuery& GetSettingsButtonQuery() const {
-    if (UseRefreshedView()) {
-      static const base::NoDestructor<DeepQuery> kQuery(
-          {"sync-confirmation-app-refresh", "#settingsButton"});
-      return *kQuery;
-    } else {
-      static const base::NoDestructor<DeepQuery> kQuery(
-          {"sync-confirmation-app", "#settingsButton"});
-      return *kQuery;
-    }
   }
 
   const DeepQuery& GetOptInSyncHistoryButtonQuery() const {
@@ -531,15 +514,81 @@ class FirstRunInteractiveUiBaseTest
     return *kQuery;
   }
 
-  GURL GetFinishOrContinueURL() {
+  GURL GetFinishOrContinueURL(bool expected_showcase) {
     return net::AppendQueryParameter(
         GURL(chrome::kChromeUIIntroURL)
             .Resolve(chrome::kChromeUIIntroFinishOrContinueSubPage),
-        "showcase", base::ToString(!GetForcedFeatureShowcaseSteps().empty()));
+        "showcase", base::ToString(expected_showcase));
   }
 
-  virtual std::vector<std::string> GetForcedFeatureShowcaseSteps() const {
-    return {};
+  GURL GetFeatureShowcaseUrl(const std::vector<std::string>& steps) const {
+    return net::AppendQueryParameter(GURL(chrome::kChromeUIFeatureShowcaseURL),
+                                     "steps", base::JoinString(steps, ","));
+  }
+
+  GURL GetFeatureShowcaseUrl() const {
+    if (const auto steps = GetForcedFeatureShowcaseSteps()) {
+      return GetFeatureShowcaseUrl(*steps);
+    }
+    return GURL(chrome::kChromeUIFeatureShowcaseURL);
+  }
+
+  GURL GetWelcomeURL() const {
+    return GURL(chrome::kChromeUIIntroURL)
+        .Resolve(chrome::kChromeUIIntroWelcomeSubPage);
+  }
+
+  const DeepQuery& GetWelcomeAcceptButtonQuery() const {
+    static const base::NoDestructor<DeepQuery> kQuery(
+        {"welcome-app", "#acceptButton"});
+    return *kQuery;
+  }
+
+  const DeepQuery& GetWelcomeFooterQuery() const {
+    static const base::NoDestructor<DeepQuery> kQuery(
+        {"welcome-app", "#footer"});
+    return *kQuery;
+  }
+
+  const DeepQuery& GetWelcomeMetricsManageLinkQuery() const {
+    static const base::NoDestructor<DeepQuery> kQuery(
+        {"welcome-app", "localized-link", "a"});
+    return *kQuery;
+  }
+
+  const DeepQuery& GetWelcomeMetricsDialogQuery() const {
+    static const base::NoDestructor<DeepQuery> kQuery(
+        {"welcome-app", "#dialog"});
+    return *kQuery;
+  }
+
+  const DeepQuery& GetWelcomeMetricsDialogActionButtonQuery() const {
+    static const base::NoDestructor<DeepQuery> kQuery(
+        {"welcome-app", "#dialogActionButton"});
+    return *kQuery;
+  }
+
+  const DeepQuery& GetWelcomeDefaultBrowserContainerQuery() const {
+    static const base::NoDestructor<DeepQuery> kQuery(
+        {"welcome-app", "#default-browser-container"});
+    return *kQuery;
+  }
+
+  const DeepQuery& GetWelcomeDefaultBrowserToggleQuery() const {
+    static const base::NoDestructor<DeepQuery> kQuery(
+        {"welcome-app", "#default-browser-toggle"});
+    return *kQuery;
+  }
+
+  // Returns the steps to force via the `--force-fre-feature-showcase-steps`
+  // command-line switch during test execution:
+  // - `std::nullopt`: does not force any steps and real eligibility checking
+  // is invoked.
+  // - Non-empty vector: forces the specified step(s) without eligibility checks
+  // - Empty vector: forces empty list and feature showcase is skipped
+  virtual std::optional<std::vector<std::string>>
+  GetForcedFeatureShowcaseSteps() const {
+    return std::nullopt;
   }
 
   // FirstRunServiceBrowserTestBase:
@@ -550,10 +599,13 @@ class FirstRunInteractiveUiBaseTest
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     FirstRunServiceBrowserTestBase::SetUpCommandLine(command_line);
-    if (UseRevampedView()) {
-      command_line->AppendSwitchASCII(
-          switches::kForceFreFeatureShowcaseSteps,
-          base::JoinString(GetForcedFeatureShowcaseSteps(), ","));
+    if (!UseRevampedView()) {
+      return;
+    }
+
+    if (const auto steps = GetForcedFeatureShowcaseSteps()) {
+      command_line->AppendSwitchASCII(switches::kForceFreFeatureShowcaseSteps,
+                                      base::JoinString(*steps, ","));
     }
   }
 
@@ -631,19 +683,41 @@ class FirstRunInteractiveUiBaseTest
     return WaitForStateChange(web_contents_id, button_disabled);
   }
 
+  auto WaitForDialogOpened(const ui::ElementIdentifier web_contents_id,
+                           const DeepQuery& dialog_query) {
+    StateChange dialog_opened;
+    dialog_opened.event = kDialogOpened;
+    dialog_opened.where = dialog_query;
+    dialog_opened.type = StateChange::Type::kExistsAndConditionTrue;
+    dialog_opened.test_function = "(dialog) => dialog.open";
+    return WaitForStateChange(web_contents_id, dialog_opened);
+  }
+
+  auto WaitForDialogClosed(const ui::ElementIdentifier web_contents_id,
+                           const DeepQuery& dialog_query) {
+    StateChange dialog_closed;
+    dialog_closed.event = kDialogClosed;
+    dialog_closed.where = dialog_query;
+    dialog_closed.type = StateChange::Type::kExistsAndConditionTrue;
+    dialog_closed.test_function = "(dialog) => !dialog.open";
+    return WaitForStateChange(web_contents_id, dialog_closed);
+  }
+
+  auto WaitForToggleUnchecked(const ui::ElementIdentifier web_contents_id,
+                              const DeepQuery& toggle_query) {
+    return WaitForJsResultAt(web_contents_id, toggle_query,
+                             "(el) => el.checked", false);
+  }
+
   auto WaitForButtonVisible(const ui::ElementIdentifier web_contents_id,
                             const DeepQuery& button_query) {
-    StateChange button_disabled;
-    button_disabled.event = kButtonDisabled;
-    button_disabled.where = button_query;
-    button_disabled.type = StateChange::Type::kExistsAndConditionTrue;
-    // See
-    // chrome/browser/resources/signin/sync_confirmation/sync_confirmation_app.ts::getConfirmButtonClass_
-    // to understand how buttons are hidden for the duration of capability
-    // loading.
-    button_disabled.test_function =
+    StateChange button_visible;
+    button_visible.event = kButtonVisible;
+    button_visible.where = button_query;
+    button_visible.type = StateChange::Type::kExistsAndConditionTrue;
+    button_visible.test_function =
         "(btn) => !btn.classList.contains('visibility-hidden')";
-    return WaitForStateChange(web_contents_id, button_disabled);
+    return WaitForStateChange(web_contents_id, button_visible);
   }
 
   // Waits for the intro buttons to be shown and presses to proceed according
@@ -652,8 +726,13 @@ class FirstRunInteractiveUiBaseTest
     const DeepQuery& button =
         sign_in ? GetSignInButtonQuery() : GetDontSignInButtonQuery();
     return Steps(
-        WaitForWebContentsReady(kWebContentsId,
-                                GURL(chrome::kChromeUIIntroURL)),
+        If([this] { return UsePreFirstRunRefreshedView(); },
+           // If the pre-FRE-refreshed view is used, the intro step isn't the
+           // first one, we need to wait for the navigation before asserting.
+           Then(WaitForWebContentsNavigation(kWebContentsId,
+                                             GURL(chrome::kChromeUIIntroURL))),
+           Else(WaitForWebContentsReady(kWebContentsId,
+                                        GURL(chrome::kChromeUIIntroURL)))),
 
         // Waiting for the animation to complete so we can start interacting
         // with the button.
@@ -668,7 +747,8 @@ class FirstRunInteractiveUiBaseTest
 
   void SimulateSignIn(const std::string& account_email,
                       const std::string& account_given_name,
-                      bool with_extended_info = true) {
+                      bool with_extended_info = true,
+                      bool with_gemini_capabilities = false) {
     enable_disclaimer_on_primary_account_change_resetter_ =
         enterprise_util::DisableAutomaticManagementDisclaimerUntilReset(
             profile());
@@ -699,13 +779,20 @@ class FirstRunInteractiveUiBaseTest
               .Build();
     }
     AccountCapabilitiesTestMutator mutator(&account_info);
+    if (params_.sync_buttons_feature_config !=
+        SyncButtonsFeatureConfig::kDeadlined) {
+      mutator.SetAllSupportedCapabilities(true);
+    }
     mutator.set_is_subject_to_enterprise_features(account_email ==
                                                   kTestEnterpriseEmail);
 
-    if (params_.with_supervision.has_value()) {
-      mutator.set_is_subject_to_parental_controls(
-          params_.with_supervision.value_or(false));
+    if (with_gemini_capabilities) {
+      mutator.set_can_use_model_execution_features(true);
+      mutator.set_can_use_gemini_in_chrome(true);
     }
+
+    mutator.set_is_subject_to_parental_controls(
+        params_.with_supervision.value_or(false));
 
     switch (params_.sync_buttons_feature_config) {
       case SyncButtonsFeatureConfig::kAsyncNotEqualButtons:
@@ -719,7 +806,6 @@ class FirstRunInteractiveUiBaseTest
                 false);
         break;
       case SyncButtonsFeatureConfig::kDeadlined:
-      case SyncButtonsFeatureConfig::kButtonsStillLoading:
         // Screen configures itself without capabilities.
         break;
     }
@@ -743,7 +829,7 @@ class FirstRunInteractiveUiBaseTest
       auto process_dice_header_delegate_impl =
           ProcessDiceHeaderDelegateImpl::Create(web_contents());
       process_dice_header_delegate_impl->CompleteChromeSignInAfterGaiaSignin(
-          account_info);
+          account_info.GetCoreAccountInfo());
     }
   }
 
@@ -823,17 +909,53 @@ class FirstRunInteractiveUiBaseTest
 
   bool UseRevampedView() const {
     return std::holds_alternative<FirstRunVersion::Revamped>(
+               params_.flow_version) ||
+           std::holds_alternative<FirstRunVersion::PreFirstRunRefreshed>(
+               params_.flow_version);
+  }
+
+  bool UsePreFirstRunRefreshedView() const {
+    return std::holds_alternative<FirstRunVersion::PreFirstRunRefreshed>(
         params_.flow_version);
   }
 
-  auto CompleteFinishOrContinueStep(bool start_browsing = true) {
+  auto CompleteFinishOrContinueStep(
+      bool start_browsing = true,
+      std::optional<bool> expected_showcase = std::nullopt) {
+    bool has_showcase = expected_showcase.has_value()
+                            ? expected_showcase.value()
+                            : (GetForcedFeatureShowcaseSteps().has_value() &&
+                               !GetForcedFeatureShowcaseSteps()->empty());
     const DeepQuery& button =
         start_browsing ? GetFinishOrContinueStartBrowsingButtonQuery()
                        : GetFinishOrContinueEducationButtonQuery();
+    return Steps(WaitForWebContentsNavigation(
+                     kWebContentsId, GetFinishOrContinueURL(has_showcase)),
+                 EnsurePresent(kWebContentsId, button),
+                 PressJsButton(kWebContentsId, button));
+  }
+
+  auto CompleteWelcomeStep() {
+    return Steps(WaitForWebContentsReady(kWebContentsId, GetWelcomeURL()),
+                 EnsurePresent(kWebContentsId, GetWelcomeAcceptButtonQuery()),
+                 PressJsButton(kWebContentsId, GetWelcomeAcceptButtonQuery()));
+  }
+
+  auto SkipDefaultBrowserStep() {
     return Steps(
-        WaitForWebContentsNavigation(kWebContentsId, GetFinishOrContinueURL()),
-        EnsurePresent(kWebContentsId, button),
-        PressJsButton(kWebContentsId, button));
+        WaitForWebContentsNavigation(
+            kWebContentsId, GURL(chrome::kChromeUIIntroDefaultBrowserURL)),
+        EnsurePresent(kWebContentsId, GetSkipDefaultBrowserButtonQuery()),
+        PressJsButton(kWebContentsId, GetSkipDefaultBrowserButtonQuery()));
+  }
+
+  InteractiveTestApi::MultiStep DeclineHistorySync() {
+    return Steps(
+        WaitForWebContentsNavigation(kWebContentsId, GetHistorySyncOptinURL()),
+        WaitForButtonVisible(kWebContentsId, GetDontSyncHistoryButtonQuery()),
+        EnsurePresent(kWebContentsId, GetDontSyncHistoryButtonQuery()),
+        PressJsButton(kWebContentsId, GetDontSyncHistoryButtonQuery())
+            .SetMustRemainVisible(false));
   }
 
  private:
@@ -857,6 +979,13 @@ class FirstRunInteractiveUiTest
           fixture_enabled_features = {})
       : FirstRunInteractiveUiBaseTest(TestParam{.flow_version = GetParam()},
                                       fixture_enabled_features) {}
+
+ protected:
+  // FirstRunInteractiveUiBaseTest:
+  std::optional<std::vector<std::string>> GetForcedFeatureShowcaseSteps()
+      const override {
+    return std::vector<std::string>();
+  }
 };
 
 IN_PROC_BROWSER_TEST_P(FirstRunInteractiveUiTest, SignInError) {
@@ -867,9 +996,11 @@ IN_PROC_BROWSER_TEST_P(FirstRunInteractiveUiTest, SignInError) {
   OpenFirstRun(proceed_future.GetCallback());
   RunTestSequenceInContext(
       views::ElementTrackerViews::GetContextForView(view()),
-      // Wait for the profile picker to show the intro.
+      // Wait for the profile picker to show the intro or the welcome page.
       WaitForShow(kProfilePickerViewId),
       InstrumentNonTabWebView(kWebContentsId, web_view()),
+      If([this] { return UsePreFirstRunRefreshedView(); },
+         Then(CompleteWelcomeStep())),
       CompleteIntroStep(/*sign_in=*/true),
       // Wait for switch to the Gaia sign-in page to complete.
       WaitForWebContentsNavigation(kWebContentsId,
@@ -884,11 +1015,9 @@ IN_PROC_BROWSER_TEST_P(FirstRunInteractiveUiTest, SignInError) {
   // The error dialog is shown to the user.
   RunTestSequence(
       InAnyContext(WaitForShow(SigninViewController::kSigninErrorViewId)));
-  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    histogram_tester().ExpectUniqueSample(
-        "ProfilePicker.FREFlow.SignInError",
-        SigninUIError::Type::kUsernameNotAllowedByPatternFromPrefs, 1);
-  }
+  histogram_tester().ExpectUniqueSample(
+      "ProfilePicker.FREFlow.SignInError",
+      SigninUIError::Type::kUsernameNotAllowedByPatternFromPrefs, 1);
 }
 
 IN_PROC_BROWSER_TEST_P(FirstRunInteractiveUiTest, ExitAtSignIn) {
@@ -900,9 +1029,11 @@ IN_PROC_BROWSER_TEST_P(FirstRunInteractiveUiTest, ExitAtSignIn) {
   RunTestSequenceInContext(
       views::ElementTrackerViews::GetContextForView(view()),
 
-      // Wait for the profile picker to show the intro.
+      // Wait for the profile picker to show the intro or the welcome page.
       WaitForShow(kProfilePickerViewId),
       InstrumentNonTabWebView(kWebContentsId, web_view()),
+      If([this] { return UsePreFirstRunRefreshedView(); },
+         Then(CompleteWelcomeStep())),
       CompleteIntroStep(/*sign_in=*/true),
       // Wait for switch to the Gaia sign-in page to complete.
       // Note: kPickerWebContentsId now points to the new profile's WebContents.
@@ -930,7 +1061,8 @@ INSTANTIATE_TEST_SUITE_P(,
                          FirstRunInteractiveUiTest,
                          Values(FirstRunVersion::Legacy{},
                                 FirstRunVersion::Refreshed{},
-                                FirstRunVersion::Revamped{}),
+                                FirstRunVersion::Revamped{},
+                                FirstRunVersion::PreFirstRunRefreshed{}),
                          [](const TestParamInfo<FirstRunVersion::Value>& info) {
                            return VersionSuffix(info.param);
                          });
@@ -964,15 +1096,8 @@ class FirstRunBackNavigationInteractiveUiTest
   std::unique_ptr<base::AutoReset<bool>> scoped_chrome_build_override_;
 };
 
-// TODO(crbug.com/366119368): Re-enable this test
-#if BUILDFLAG(IS_WIN)
-#define MAYBE_BackNavigationDisabledOnSteps \
-  DISABLED_BackNavigationDisabledOnSteps
-#else
-#define MAYBE_BackNavigationDisabledOnSteps BackNavigationDisabledOnSteps
-#endif
 IN_PROC_BROWSER_TEST_P(FirstRunBackNavigationInteractiveUiTest,
-                       MAYBE_BackNavigationDisabledOnSteps) {
+                       BackNavigationDisabledOnSteps) {
   base::test::TestFuture<bool> proceed_future;
 
   ASSERT_TRUE(IsProfileNameDefault());
@@ -982,10 +1107,23 @@ IN_PROC_BROWSER_TEST_P(FirstRunBackNavigationInteractiveUiTest,
   RunTestSequenceInContext(
       views::ElementTrackerViews::GetContextForView(view()),
 
-      // Intro step: back navigation should be ignored.
       WaitForShow(kProfilePickerViewId),
       InstrumentNonTabWebView(kWebContentsId, web_view()),
-      WaitForWebContentsReady(kWebContentsId, GURL(chrome::kChromeUIIntroURL)),
+
+      If([this] { return UsePreFirstRunRefreshedView(); },
+         Then(
+             // Welcome step: back navigation should be ignored.
+             WaitForWebContentsReady(kWebContentsId, GetWelcomeURL()),
+             EnsurePresent(kWebContentsId, GetWelcomeAcceptButtonQuery()),
+             SendAccelerator(kProfilePickerViewId, GetAccelerator(IDC_BACK)),
+             EnsurePresent(kWebContentsId, GetWelcomeAcceptButtonQuery()),
+             PressJsButton(kWebContentsId, GetWelcomeAcceptButtonQuery()),
+             WaitForWebContentsNavigation(kWebContentsId,
+                                          GURL(chrome::kChromeUIIntroURL))),
+         Else(WaitForWebContentsReady(kWebContentsId,
+                                      GURL(chrome::kChromeUIIntroURL)))),
+
+      // Intro step: back navigation should be ignored.
       WaitForStateChange(kWebContentsId, IsVisible(GetDontSignInButtonQuery())),
       EnsurePresent(kWebContentsId, GetDontSignInButtonQuery()),
       SendAccelerator(kProfilePickerViewId, GetAccelerator(IDC_BACK)),
@@ -1015,8 +1153,9 @@ IN_PROC_BROWSER_TEST_P(FirstRunBackNavigationInteractiveUiTest,
       // Finish or Continue step: back navigation should be ignored.
       If([this]() { return UseRevampedView(); },
          Then(Steps(
-             WaitForWebContentsNavigation(kWebContentsId,
-                                          GetFinishOrContinueURL()),
+             WaitForWebContentsNavigation(
+                 kWebContentsId,
+                 GetFinishOrContinueURL(/*expected_showcase=*/false)),
              EnsurePresent(kWebContentsId,
                            GetFinishOrContinueStartBrowsingButtonQuery()),
              SendAccelerator(kProfilePickerViewId, GetAccelerator(IDC_BACK)),
@@ -1033,7 +1172,8 @@ INSTANTIATE_TEST_SUITE_P(,
                          FirstRunBackNavigationInteractiveUiTest,
                          Values(FirstRunVersion::Legacy{},
                                 FirstRunVersion::Refreshed{},
-                                FirstRunVersion::Revamped{}),
+                                FirstRunVersion::Revamped{},
+                                FirstRunVersion::PreFirstRunRefreshed{}),
                          [](const TestParamInfo<FirstRunVersion::Value>& info) {
                            return VersionSuffix(info.param);
                          });
@@ -1055,16 +1195,10 @@ class WithTestSyncServiceMixin : public T {
 using FirstRunInteractiveUiTestWithSyncService =
     WithTestSyncServiceMixin<FirstRunInteractiveUiTest>;
 
-// TODO(crbug.com/366119368): Re-enable this test
-#if BUILDFLAG(IS_WIN)
-#define MAYBE_SignIn DISABLED_SignIn
-#else
-#define MAYBE_SignIn SignIn
-#endif
 // Simplified version of the Signin flow in the FRE, without the Search Engine
 // Choice and Default Browser screen showing. For the full flow, check
 // `FirstRunParameterizedInteractiveUiTest_SignInAndSync` test below.
-IN_PROC_BROWSER_TEST_P(FirstRunInteractiveUiTestWithSyncService, MAYBE_SignIn) {
+IN_PROC_BROWSER_TEST_P(FirstRunInteractiveUiTestWithSyncService, SignIn) {
   ASSERT_TRUE(IsProfileNameDefault());
 
   base::test::TestFuture<bool> proceed_future;
@@ -1073,9 +1207,11 @@ IN_PROC_BROWSER_TEST_P(FirstRunInteractiveUiTestWithSyncService, MAYBE_SignIn) {
   RunTestSequenceInContext(
       views::ElementTrackerViews::GetContextForView(view()),
 
-      // Wait for the profile picker to show the intro.
+      // Wait for the profile picker to show the intro or the welcome page.
       WaitForShow(kProfilePickerViewId),
       InstrumentNonTabWebView(kWebContentsId, web_view()),
+      If([this] { return UsePreFirstRunRefreshedView(); },
+         Then(CompleteWelcomeStep())),
       CompleteIntroStep(/*sign_in=*/true),
       // Wait for switch to the Gaia sign-in page to complete.
       // Note: kPickerWebContentsId now points to the new profile's WebContents.
@@ -1087,44 +1223,19 @@ IN_PROC_BROWSER_TEST_P(FirstRunInteractiveUiTestWithSyncService, MAYBE_SignIn) {
   // Pulled out of the test sequence because it waits using `RunLoop`s.
   SimulateSignIn(kTestEmail, kTestGivenName);
 
-  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    GURL history_page_url = GetHistorySyncOptinURL();
-    RunTestSequenceInContext(
-        views::ElementTrackerViews::GetContextForView(view()),
-        // Web Contents already instrumented in the previous sequence.
-        If([this]() { return UseRevampedView(); },
-           Then(WaitForWebContentsNavigation(
-               kWebContentsId,
-               GURL(chrome::kChromeUIIntroURL)
-                   .Resolve(chrome::kChromeUIIntroSignInCelebrationSubPage)))),
-        WaitForWebContentsNavigation(kWebContentsId, history_page_url),
-        // Button is visible once capabilities are loaded or defaulted.
-        WaitForButtonVisible(kWebContentsId, GetDontSyncHistoryButtonQuery()),
-        EnsurePresent(kWebContentsId, GetDontSyncHistoryButtonQuery()),
-        PressJsButton(kWebContentsId, GetDontSyncHistoryButtonQuery())
-            .SetMustRemainVisible(false));
-  } else {
-    GURL sync_page_url = AppendSyncConfirmationQueryParams(
-        GURL("chrome://sync-confirmation/"), SyncConfirmationStyle::kWindow,
-        /*is_sync_promo=*/true);
-    RunTestSequenceInContext(
-        views::ElementTrackerViews::GetContextForView(view()),
-        // Web Contents already instrumented in the previous sequence.
-        If([this]() { return UseRevampedView(); },
-           Then(WaitForWebContentsNavigation(
-               kWebContentsId,
-               GURL(chrome::kChromeUIIntroURL)
-                   .Resolve(chrome::kChromeUIIntroSignInCelebrationSubPage)))),
-        WaitForWebContentsNavigation(kWebContentsId, sync_page_url),
-        // Button is visible once capabilities are loaded or defaulted.
-        WaitForButtonVisible(kWebContentsId, GetDontSyncButtonQuery()),
-        EnsurePresent(kWebContentsId, GetDontSyncButtonQuery()),
-        PressJsButton(kWebContentsId, GetDontSyncButtonQuery())
-            .SetMustRemainVisible(false));
-  }
-
   RunTestSequenceInContext(
       views::ElementTrackerViews::GetContextForView(view()),
+      // Web Contents already instrumented in the previous sequence.
+      If([this]() { return UseRevampedView(); },
+         Then(WaitForWebContentsNavigation(
+             kWebContentsId,
+             GURL(chrome::kChromeUIIntroURL)
+                 .Resolve(chrome::kChromeUIIntroSignInCelebrationSubPage)))),
+      DeclineHistorySync(),
+#if BUILDFLAG(IS_WIN)
+      If([this]() { return !UseRevampedView(); },
+         Then(SkipDefaultBrowserStep())),
+#endif  // BUILDFLAG(IS_WIN)
       If([this]() { return UseRevampedView(); },
          Then(CompleteFinishOrContinueStep())));
 
@@ -1158,7 +1269,17 @@ IN_PROC_BROWSER_TEST_P(FirstRunInteractiveUiTestWithSyncService, MAYBE_SignIn) {
     ++expected_step_shown_duration_count;
     ++expected_step_total_duration_count;
   } else {
+#if BUILDFLAG(IS_WIN)
+    ExpectStepHistograms(Step::kDefaultBrowser, /*shown=*/true);
+    ++expected_step_shown_duration_count;
+#else
     ExpectStepHistograms(Step::kDefaultBrowser, /*shown=*/false);
+#endif  // BUILDFLAG(IS_WIN)
+  }
+  if (UsePreFirstRunRefreshedView()) {
+    ExpectStepHistograms(Step::kWelcome, /*shown=*/true);
+    ++expected_step_shown_duration_count;
+    ++expected_step_total_duration_count;
   }
   ExpectStepHistograms(Step::kSearchEngineChoice, /*shown=*/false);
   ExpectStepHistograms(Step::kFinishFlow, /*shown=*/true, /*with_exit=*/true);
@@ -1168,11 +1289,72 @@ IN_PROC_BROWSER_TEST_P(FirstRunInteractiveUiTestWithSyncService, MAYBE_SignIn) {
                                       expected_step_total_duration_count);
 }
 
+IN_PROC_BROWSER_TEST_P(FirstRunInteractiveUiTestWithSyncService,
+                       SignInForcedIncognitoClosesPicker) {
+  base::test::TestFuture<bool> proceed_future;
+
+  ASSERT_TRUE(IsProfileNameDefault());
+  Profile* test_profile = profile();
+
+  OpenFirstRun(proceed_future.GetCallback());
+
+  RunTestSequenceInContext(
+      views::ElementTrackerViews::GetContextForView(view()),
+      // Wait for the profile picker to show the intro or welcome step.
+      WaitForShow(kProfilePickerViewId),
+      InstrumentNonTabWebView(kWebContentsId, web_view()),
+      If([this] { return UsePreFirstRunRefreshedView(); },
+         Then(CompleteWelcomeStep())),
+      CompleteIntroStep(/*sign_in=*/true),
+      // Wait for switch to the Gaia sign-in page to complete.
+      WaitForWebContentsNavigation(kWebContentsId,
+                                   GetSigninChromeSyncDiceUrl()));
+
+  ConfigureTestSyncService(SyncServiceFactory::GetForProfile(test_profile),
+                           syncer::SyncService::TransportState::ACTIVE);
+  SimulateSignIn(kTestEmail, kTestGivenName);
+
+  // Close the initial test browser window so that finishing FRE opens a new
+  // browser window.
+  CloseBrowserSynchronously(browser());
+
+  IncognitoModePrefs::SetAvailability(
+      test_profile->GetPrefs(), policy::IncognitoModeAvailability::kForced);
+
+  RunTestSequenceInContext(
+      views::ElementTrackerViews::GetContextForView(view()),
+      If([this]() { return UseRevampedView(); },
+         Then(WaitForWebContentsNavigation(
+             kWebContentsId,
+             GURL(chrome::kChromeUIIntroURL)
+                 .Resolve(chrome::kChromeUIIntroSignInCelebrationSubPage)))),
+      DeclineHistorySync(),
+#if BUILDFLAG(IS_WIN)
+      If([this]() { return !UseRevampedView(); },
+         Then(SkipDefaultBrowserStep())),
+#endif  // BUILDFLAG(IS_WIN)
+      If([this]() { return UseRevampedView(); },
+         Then(CompleteFinishOrContinueStep())));
+
+  WaitForPickerClosed();
+
+  ASSERT_TRUE(proceed_future.Get());
+  BrowserWindowInterface* incognito_browser =
+      ProfileBrowserCollection::GetForProfile(test_profile)
+          ->FindTabbedBrowser(
+              /*match_original_profiles=*/true);
+  ASSERT_TRUE(incognito_browser);
+  EXPECT_TRUE(incognito_browser->GetProfile()->IsOffTheRecord());
+  EXPECT_EQ(test_profile,
+            incognito_browser->GetProfile()->GetOriginalProfile());
+}
+
 INSTANTIATE_TEST_SUITE_P(,
                          FirstRunInteractiveUiTestWithSyncService,
                          Values(FirstRunVersion::Legacy{},
                                 FirstRunVersion::Refreshed{},
-                                FirstRunVersion::Revamped{}),
+                                FirstRunVersion::Revamped{},
+                                FirstRunVersion::PreFirstRunRefreshed{}),
                          [](const TestParamInfo<FirstRunVersion::Value>& info) {
                            return VersionSuffix(info.param);
                          });
@@ -1193,6 +1375,14 @@ class FirstRunParameterizedInteractiveUiTest
                 /*force_chrome_build=*/true));
   }
 
+ protected:
+  // FirstRunInteractiveUiBaseTest:
+  std::optional<std::vector<std::string>> GetForcedFeatureShowcaseSteps()
+      const override {
+    return std::vector<std::string>();
+  }
+
+ public:
   // FirstRunInteractiveUiTest:
   void SetUpCommandLine(base::CommandLine* command_line) override {
     FirstRunInteractiveUiBaseTest::SetUpCommandLine(command_line);
@@ -1260,10 +1450,14 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTest, CloseWindow) {
   RunTestSequenceInContext(
       views::ElementTrackerViews::GetContextForView(view()),
 
-      // Wait for the profile picker to show the intro.
+      // Wait for the profile picker to show the intro or the welcome page.
       WaitForShow(kProfilePickerViewId),
       InstrumentNonTabWebView(kWebContentsId, web_view()),
-      WaitForWebContentsReady(kWebContentsId, GURL(chrome::kChromeUIIntroURL)),
+
+      If([this]() { return UsePreFirstRunRefreshedView(); },
+         Then(WaitForWebContentsReady(kWebContentsId, GetWelcomeURL())),
+         Else(WaitForWebContentsReady(kWebContentsId,
+                                      GURL(chrome::kChromeUIIntroURL)))),
 
       // Send "Close window" keyboard shortcut and wait for view to close.
       SendAccelerator(kProfilePickerViewId, GetAccelerator(IDC_CLOSE_WINDOW))
@@ -1274,17 +1468,21 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTest, CloseWindow) {
   ASSERT_TRUE(IsProfileNameDefault());
 
   // Checking the expected metrics from this flow.
-  histogram_tester().ExpectUniqueSample(
-      "Signin.SignIn.Offered", signin_metrics::AccessPoint::kForYouFre, 1);
   histogram_tester().ExpectBucketCount(
       "ProfilePicker.FirstRun.ExitStatus",
       ProfilePicker::FirstRunExitStatus::kQuitAtEnd, 1);
-
-  ExpectStepHistograms(Step::kIntro, /*shown=*/true, /*with_exit=*/true);
   histogram_tester().ExpectTotalCount("ProfilePicker.FREFlow.StepShownDuration",
                                       1);
   histogram_tester().ExpectTotalCount("ProfilePicker.FREFlow.StepTotalDuration",
                                       1);
+
+  if (UsePreFirstRunRefreshedView()) {
+    ExpectStepHistograms(Step::kWelcome, /*shown=*/true, /*with_exit=*/true);
+  } else {
+    ExpectStepHistograms(Step::kIntro, /*shown=*/true, /*with_exit=*/true);
+    histogram_tester().ExpectUniqueSample(
+        "Signin.SignIn.Offered", signin_metrics::AccessPoint::kForYouFre, 1);
+  }
 }
 
 #if BUILDFLAG(IS_MAC)
@@ -1296,10 +1494,14 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTest,
   RunTestSequenceInContext(
       views::ElementTrackerViews::GetContextForView(view()),
 
-      // Wait for the profile picker to show the intro.
+      // Wait for the profile picker to show the intro or the welcome page.
       WaitForShow(kProfilePickerViewId),
       InstrumentNonTabWebView(kWebContentsId, web_view()),
-      WaitForWebContentsReady(kWebContentsId, GURL(chrome::kChromeUIIntroURL)),
+
+      If([this]() { return UsePreFirstRunRefreshedView(); },
+         Then(WaitForWebContentsReady(kWebContentsId, GetWelcomeURL())),
+         Else(WaitForWebContentsReady(kWebContentsId,
+                                      GURL(chrome::kChromeUIIntroURL)))),
 
       // Send "Close app" keyboard shortcut. Note that this may synchronously
       // close the dialog so we need to let the step know that this is ok.
@@ -1312,118 +1514,21 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTest,
   histogram_tester().ExpectBucketCount(
       "ProfilePicker.FirstRun.ExitStatus",
       ProfilePicker::FirstRunExitStatus::kAbandonedFlow, 1);
-
-  ExpectStepHistograms(Step::kIntro, /*shown=*/true, /*with_exit=*/true);
   histogram_tester().ExpectTotalCount("ProfilePicker.FREFlow.StepShownDuration",
                                       1);
   histogram_tester().ExpectTotalCount("ProfilePicker.FREFlow.StepTotalDuration",
                                       1);
+
+  if (UsePreFirstRunRefreshedView()) {
+    ExpectStepHistograms(Step::kWelcome, /*shown=*/true, /*with_exit=*/true);
+  } else {
+    ExpectStepHistograms(Step::kIntro, /*shown=*/true, /*with_exit=*/true);
+  }
 }
 #endif
 
-IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTest, GoToSettings) {
-  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    GTEST_SKIP() << "History optin screen does not have a settings button";
-  }
-
-  base::test::TestFuture<bool> proceed_future;
-
-  ASSERT_TRUE(IsProfileNameDefault());
-
-  OpenFirstRun(proceed_future.GetCallback());
-  RunTestSequenceInContext(
-      views::ElementTrackerViews::GetContextForView(view()),
-
-      // Wait for the profile picker to show the intro.
-      WaitForShow(kProfilePickerViewId),
-      InstrumentNonTabWebView(kWebContentsId, web_view()),
-      CompleteIntroStep(/*sign_in=*/true),
-      // Wait for switch to the Gaia sign-in page to complete.
-      // Note: kPickerWebContentsId now points to the new profile's WebContents.
-      WaitForWebContentsNavigation(kWebContentsId,
-                                   GetSigninChromeSyncDiceUrl()));
-
-  // Pulled out of the test sequence because it waits using `RunLoop`s.
-  SimulateSignIn(kTestEmail, kTestGivenName);
-
-  RunTestSequenceInContext(
-      views::ElementTrackerViews::GetContextForView(view()),
-      If([this]() { return UseRevampedView(); },
-         Then(WaitForWebContentsNavigation(
-             kWebContentsId,
-             GURL(chrome::kChromeUIIntroURL)
-                 .Resolve(chrome::kChromeUIIntroSignInCelebrationSubPage)))),
-      WaitForWebContentsNavigation(
-          kWebContentsId,
-          AppendSyncConfirmationQueryParams(GURL("chrome://sync-confirmation/"),
-                                            SyncConfirmationStyle::kWindow,
-                                            /*is_sync_promo=*/true)),
-
-      // Wait for opt-in button to appear for all test cases except for
-      // kButtonsStillLoadings.
-      If(
-          [&]() {
-            return SyncButtonsFeatureConfig() !=
-                   SyncButtonsFeatureConfig::kButtonsStillLoading;
-          },
-          Then(
-              WaitForButtonVisible(kWebContentsId, GetOptInSyncButtonQuery()))),
-
-      // Click "Settings" to proceed to the browser.
-      EnsurePresent(kWebContentsId, GetSettingsButtonQuery()),
-      PressJsButton(kWebContentsId, GetSettingsButtonQuery()));
-
-  // Wait for the picker to be closed and deleted.
-  WaitForPickerClosed();
-  ASSERT_EQ(
-      browser()->tab_strip_model()->GetActiveWebContents()->GetVisibleURL(),
-      GURL(chrome::kChromeUISettingsURL).Resolve(chrome::kSyncSetupSubPage));
-
-  SearchEngineChoiceDialogService* search_engine_choice_dialog_service =
-      SearchEngineChoiceDialogServiceFactory::GetForProfile(profile());
-  EXPECT_FALSE(
-      search_engine_choice_dialog_service->IsShowingDialog(*browser()));
-
-  EXPECT_TRUE(proceed_future.Get());
-  EXPECT_EQ(base::ASCIIToUTF16(kTestGivenName), GetProfileName());
-
-  // Checking the expected metrics from this flow.
-  histogram_tester().ExpectUniqueSample(
-      "Signin.SignIn.Offered", signin_metrics::AccessPoint::kForYouFre, 1);
-  histogram_tester().ExpectUniqueSample(
-      "Signin.SignIn.Started", signin_metrics::AccessPoint::kForYouFre, 1);
-  histogram_tester().ExpectUniqueSample(
-      "Signin.SignIn.Completed", signin_metrics::AccessPoint::kForYouFre, 1);
-  histogram_tester().ExpectUniqueSample(
-      "Signin.SyncOptIn.Started", signin_metrics::AccessPoint::kForYouFre, 1);
-
-  if (ExpectedButtonShownMetric(SyncButtonsFeatureConfig()).has_value()) {
-    histogram_tester().ExpectUniqueSample(
-        "Signin.SyncButtons.Shown",
-        *ExpectedButtonShownMetric(SyncButtonsFeatureConfig()), 1);
-  }
-  histogram_tester().ExpectUniqueSample(
-      "ProfilePicker.FirstRun.ExitStatus",
-      ProfilePicker::FirstRunExitStatus::kCompleted, 1);
-
-  ExpectStepHistograms(Step::kIntro, /*shown=*/true);
-  ExpectStepHistograms(Step::kAccountSelection, /*shown=*/true);
-  ExpectStepHistograms(Step::kPostSignInFlow, /*shown=*/true);
-  ExpectStepHistograms(Step::kFinishFlow, /*shown=*/true, /*with_exit=*/true);
-  histogram_tester().ExpectTotalCount("ProfilePicker.FREFlow.StepShownDuration",
-                                      4);
-  histogram_tester().ExpectTotalCount("ProfilePicker.FREFlow.StepTotalDuration",
-                                      4);
-  // Those steps are not even attempted
-  ExpectStepHistograms(Step::kSearchEngineChoice, /*shown=*/false,
-                       /*with_exit=*/false, /*count=*/0);
-  ExpectStepHistograms(Step::kDefaultBrowser, /*shown=*/false,
-                       /*with_exit=*/false, /*count=*/0);
-}
-
-// TODO(crbug.com/366119368): Re-enable this test
 // TODO(crbug.com/525637007): Test is flaky on Linux TSan bots.
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
+#if BUILDFLAG(IS_LINUX)
 #define MAYBE_PeekAndDeclineSignIn DISABLED_PeekAndDeclineSignIn
 #else
 #define MAYBE_PeekAndDeclineSignIn PeekAndDeclineSignIn
@@ -1439,9 +1544,11 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTest,
   RunTestSequenceInContext(
       views::ElementTrackerViews::GetContextForView(view()),
 
-      // Wait for the profile picker to show the intro.
+      // Wait for the profile picker to show the intro or the welcome page.
       WaitForShow(kProfilePickerViewId),
       InstrumentNonTabWebView(kWebContentsId, web_view()),
+      If([this] { return UsePreFirstRunRefreshedView(); },
+         Then(CompleteWelcomeStep())),
       CompleteIntroStep(/*sign_in=*/true),
       // Wait for switch to the Gaia sign-in page to complete.
       // Note: kPickerWebContentsId now points to the new profile's
@@ -1496,9 +1603,15 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTest,
   } else {
     ExpectStepHistograms(Step::kDefaultBrowser, /*shown=*/true);
   }
+  int expected_step_shown_duration_count = 6;
+  if (UsePreFirstRunRefreshedView()) {
+    ExpectStepHistograms(Step::kWelcome, /*shown=*/true);
+    ++expected_step_total_duration_count;
+    ++expected_step_shown_duration_count;
+  }
   ExpectStepHistograms(Step::kFinishFlow, /*shown=*/true, /*with_exit=*/true);
   histogram_tester().ExpectTotalCount("ProfilePicker.FREFlow.StepShownDuration",
-                                      6);
+                                      expected_step_shown_duration_count);
   histogram_tester().ExpectTotalCount("ProfilePicker.FREFlow.StepTotalDuration",
                                       expected_step_total_duration_count);
   // Sign in was never completed - step is not even attempted.
@@ -1506,14 +1619,8 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTest,
                        /*with_exit=*/false, /*count=*/0);
 }
 
-// TODO(crbug.com/366119368): Re-enable this test
-#if BUILDFLAG(IS_WIN)
-#define MAYBE_DeclineProfileManagement DISABLED_DeclineProfileManagement
-#else
-#define MAYBE_DeclineProfileManagement DeclineProfileManagement
-#endif
 IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTest,
-                       MAYBE_DeclineProfileManagement) {
+                       DeclineProfileManagement) {
   base::test::TestFuture<bool> proceed_future;
 
   policy::UserPolicySigninServiceFactory::GetInstance()->SetTestingFactory(
@@ -1526,10 +1633,12 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTest,
   RunTestSequenceInContext(
       views::ElementTrackerViews::GetContextForView(view()),
 
-      // Wait for the profile picker to show the intro.
+      // Wait for the profile picker to show the intro or the welcome page.
       WaitForShow(kProfilePickerViewId),
       InstrumentNonTabWebView(kWebContentsId, web_view()),
 
+      If([this] { return UsePreFirstRunRefreshedView(); },
+         Then(CompleteWelcomeStep())),
       CompleteIntroStep(/*sign_in=*/true),
 
       // Wait for switch to the Gaia sign-in page to complete.
@@ -1548,10 +1657,8 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTest,
       // Initially the loading screen is shown.
       WaitForWebContentsNavigation(
           kWebContentsId,
-          AppendSyncConfirmationQueryParams(
-              GURL(chrome::kChromeUISyncConfirmationURL)
-                  .Resolve(chrome::kChromeUISyncConfirmationLoadingPath),
-              SyncConfirmationStyle::kWindow, /*is_sync_promo=*/true)));
+          GURL(chrome::kChromeUIHistorySyncOptinURL)
+              .Resolve(chrome::kChromeUIHistorySyncOptinLoadingPath)));
 
   AccountInfo account_info =
       identity_manager->FindExtendedAccountInfoByAccountId(
@@ -1569,8 +1676,9 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTest,
       // is managed and requiring to show the enterprise management opt-in.
       WaitForWebContentsNavigation(
           kWebContentsId,
-          UseRefreshedView() ? GURL(chrome::kChromeUIManagedUserProfileNoticeRefreshURL)
-                             : GURL(chrome::kChromeUIManagedUserProfileNoticeUrl)),
+          UseRefreshedView()
+              ? GURL(chrome::kChromeUIManagedUserProfileNoticeRefreshURL)
+              : GURL(chrome::kChromeUIManagedUserProfileNoticeUrl)),
       EnsurePresent(kWebContentsId, GetDeclineManagementButtonQuery()),
       PressJsButton(kWebContentsId, GetDeclineManagementButtonQuery()),
 
@@ -1601,16 +1709,10 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTest,
       "Signin.SignIn.Started", signin_metrics::AccessPoint::kForYouFre, 1);
   histogram_tester().ExpectUniqueSample(
       "Signin.SignIn.Completed", signin_metrics::AccessPoint::kForYouFre, 1);
-  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    histogram_tester().ExpectUniqueSample(
-        "Signin.HistorySyncOptIn.Started",
-        signin_metrics::AccessPoint::kForYouFre, 0);
-    histogram_tester().ExpectTotalCount("Signin.HistorySyncOptIn.Completed", 0);
-  } else {
-    histogram_tester().ExpectUniqueSample(
-        "Signin.SyncOptIn.Started", signin_metrics::AccessPoint::kForYouFre, 1);
-    histogram_tester().ExpectTotalCount("Signin.SyncOptIn.Completed", 0);
-  }
+  histogram_tester().ExpectUniqueSample("Signin.HistorySyncOptIn.Started",
+                                        signin_metrics::AccessPoint::kForYouFre,
+                                        0);
+  histogram_tester().ExpectTotalCount("Signin.HistorySyncOptIn.Completed", 0);
   histogram_tester().ExpectUniqueSample(
       "ProfilePicker.FirstRun.ExitStatus",
       ProfilePicker::FirstRunExitStatus::kCompleted, 1);
@@ -1628,9 +1730,15 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTest,
   } else {
     ExpectStepHistograms(Step::kDefaultBrowser, /*shown=*/true);
   }
+  int expected_step_shown_duration_count = 6;
+  if (UsePreFirstRunRefreshedView()) {
+    ExpectStepHistograms(Step::kWelcome, /*shown=*/true);
+    ++expected_step_shown_duration_count;
+    ++expected_step_total_duration_count;
+  }
   ExpectStepHistograms(Step::kFinishFlow, /*shown=*/true, /*with_exit=*/true);
   histogram_tester().ExpectTotalCount("ProfilePicker.FREFlow.StepShownDuration",
-                                      6);
+                                      expected_step_shown_duration_count);
   histogram_tester().ExpectTotalCount("ProfilePicker.FREFlow.StepTotalDuration",
                                       expected_step_total_duration_count);
 }
@@ -1654,13 +1762,8 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTestWithSyncService,
     GTEST_SKIP() << "Test is flaky on win64";
   }
 
-  if (SyncButtonsFeatureConfig() ==
-      SyncButtonsFeatureConfig::kButtonsStillLoading) {
-    GTEST_SKIP() << "Sync not possible until buttons stop loading";
-  }
-
   auto iph_delay =
-      AvatarToolbarButton::SetScopedIPHMinDelayAfterCreationForTesting(
+      AvatarToolbarIphController::SetScopedIPHMinDelayAfterCreationForTesting(
           base::Seconds(0));
   base::test::TestFuture<bool> proceed_future;
 
@@ -1674,7 +1777,13 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTestWithSyncService,
       // Wait for the profile picker to show the intro.
       WaitForShow(kProfilePickerViewId),
       InstrumentNonTabWebView(kWebContentsId, web_view()),
-      WaitForWebContentsReady(kWebContentsId, GURL(chrome::kChromeUIIntroURL)),
+
+      If([this] { return UsePreFirstRunRefreshedView(); },
+         Then(CompleteWelcomeStep(),
+              WaitForWebContentsNavigation(kWebContentsId,
+                                           GURL(chrome::kChromeUIIntroURL))),
+         Else(WaitForWebContentsReady(kWebContentsId,
+                                      GURL(chrome::kChromeUIIntroURL)))),
 
       // Waiting for the animation to complete so we can start interacting with
       // the button.
@@ -1715,69 +1824,34 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTestWithSyncService,
   histogram_tester().ExpectUniqueSample(
       "Signin.SignIn.Completed", signin_metrics::AccessPoint::kForYouFre, 1);
 
-  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    GURL history_page_url = GetHistorySyncOptinURL();
-    RunTestSequenceInContext(
-        views::ElementTrackerViews::GetContextForView(view()),
-        // Web Contents already instrumented in the previous sequence.
-        WaitForStateChange(kWebContentsId,
-                           PageWithUrl(history_page_url.spec())),
-        Do([&] {
-          histogram_tester().ExpectUniqueSample(
-              "Signin.HistorySyncOptIn.Started",
-              signin_metrics::AccessPoint::kForYouFre, 1);
-        }),
-        // Button is visible once capabilities are loaded or defaulted.
-        WaitForButtonVisible(kWebContentsId, GetOptInSyncHistoryButtonQuery()),
+  GURL history_page_url = GetHistorySyncOptinURL();
+  RunTestSequenceInContext(
+      views::ElementTrackerViews::GetContextForView(view()),
+      // Web Contents already instrumented in the previous sequence.
+      WaitForStateChange(kWebContentsId, PageWithUrl(history_page_url.spec())),
+      Do([&] {
+        histogram_tester().ExpectUniqueSample(
+            "Signin.HistorySyncOptIn.Started",
+            signin_metrics::AccessPoint::kForYouFre, 1);
+      }),
+      // Button is visible once capabilities are loaded or defaulted.
+      WaitForButtonVisible(kWebContentsId, GetOptInSyncHistoryButtonQuery()),
 
-        EnsurePresent(kWebContentsId, GetOptInSyncHistoryButtonQuery()),
-        PressJsButton(kWebContentsId, GetOptInSyncHistoryButtonQuery())
-            .SetMustRemainVisible(false),
+      EnsurePresent(kWebContentsId, GetOptInSyncHistoryButtonQuery()),
+      PressJsButton(kWebContentsId, GetOptInSyncHistoryButtonQuery())
+          .SetMustRemainVisible(false),
 
-        CompleteSearchEngineChoiceStep(),
-        If([this]() { return !UseRevampedView(); },
-           Then(CompleteDefaultBrowserStep())),
-        If([this]() { return UseRevampedView(); },
-           Then(CompleteFinishOrContinueStep())));
-  } else {
-    GURL sync_page_url = AppendSyncConfirmationQueryParams(
-        GURL("chrome://sync-confirmation/"), SyncConfirmationStyle::kWindow,
-        /*is_sync_promo=*/true);
-    RunTestSequenceInContext(
-        views::ElementTrackerViews::GetContextForView(view()),
-        // Web Contents already instrumented in the previous sequence.
-        WaitForStateChange(kWebContentsId, PageWithUrl(sync_page_url.spec())),
-        Do([&] {
-          histogram_tester().ExpectUniqueSample(
-              "Signin.SyncOptIn.Started",
-              signin_metrics::AccessPoint::kForYouFre, 1);
-        }),
-
-        // Button is visible once capabilities are loaded or defaulted.
-        WaitForButtonVisible(kWebContentsId, GetOptInSyncButtonQuery()),
-
-        EnsurePresent(kWebContentsId, GetOptInSyncButtonQuery()),
-        PressJsButton(kWebContentsId, GetOptInSyncButtonQuery())
-            .SetMustRemainVisible(false),
-
-        CompleteSearchEngineChoiceStep(),
-        If([this]() { return !UseRevampedView(); },
-           Then(CompleteDefaultBrowserStep())),
-        If([this]() { return UseRevampedView(); },
-           Then(CompleteFinishOrContinueStep())));
-  }
+      CompleteSearchEngineChoiceStep(),
+      If([this]() { return !UseRevampedView(); },
+         Then(CompleteDefaultBrowserStep())),
+      If([this]() { return UseRevampedView(); },
+         Then(CompleteFinishOrContinueStep())));
 
   WaitForPickerClosed();
 
-  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    histogram_tester().ExpectUniqueSample(
-        "Signin.HistorySyncOptIn.Completed",
-        signin_metrics::AccessPoint::kForYouFre, 1);
-  } else {
-    histogram_tester().ExpectUniqueSample(
-        "Signin.SyncOptIn.Completed", signin_metrics::AccessPoint::kForYouFre,
-        1);
-  }
+  histogram_tester().ExpectUniqueSample("Signin.HistorySyncOptIn.Completed",
+                                        signin_metrics::AccessPoint::kForYouFre,
+                                        1);
 
   histogram_tester().ExpectBucketCount(
       search_engines::kSearchEngineChoiceScreenEventsHistogram,
@@ -1798,23 +1872,15 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTestWithSyncService,
       "Signin.SignIn.Started", signin_metrics::AccessPoint::kForYouFre, 1);
   histogram_tester().ExpectUniqueSample(
       "Signin.SignIn.Completed", signin_metrics::AccessPoint::kForYouFre, 1);
-  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    histogram_tester().ExpectUniqueSample(
-        "Signin.HistorySyncOptIn.Started",
-        signin_metrics::AccessPoint::kForYouFre, 1);
-    histogram_tester().ExpectUniqueSample(
-        "Signin.HistorySyncOptIn.Completed",
-        signin_metrics::AccessPoint::kForYouFre, 1);
-  } else {
-    histogram_tester().ExpectUniqueSample(
-        "Signin.SyncOptIn.Started", signin_metrics::AccessPoint::kForYouFre, 1);
-    histogram_tester().ExpectUniqueSample(
-        "Signin.SyncOptIn.Completed", signin_metrics::AccessPoint::kForYouFre,
-        1);
-  }
+  histogram_tester().ExpectUniqueSample("Signin.HistorySyncOptIn.Started",
+                                        signin_metrics::AccessPoint::kForYouFre,
+                                        1);
+  histogram_tester().ExpectUniqueSample("Signin.HistorySyncOptIn.Completed",
+                                        signin_metrics::AccessPoint::kForYouFre,
+                                        1);
   histogram_tester().ExpectUniqueSample(
       "Signin.SyncButtons.Shown",
-      *ExpectedButtonShownMetric(SyncButtonsFeatureConfig()), 1);
+      ExpectedButtonShownMetric(SyncButtonsFeatureConfig()), 1);
   histogram_tester().ExpectUniqueSample(
       "ProfilePicker.FirstRun.ExitStatus",
       ProfilePicker::FirstRunExitStatus::kCompleted, 1);
@@ -1835,9 +1901,15 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTestWithSyncService,
         "ProfilePicker.FirstRun.DefaultBrowser",
         DefaultBrowserChoice::kClickSetAsDefault, 1);
   }
+  int expected_step_shown_duration_count = 6;
+  if (UsePreFirstRunRefreshedView()) {
+    ExpectStepHistograms(Step::kWelcome, /*shown=*/true);
+    ++expected_step_total_duration_count;
+    ++expected_step_shown_duration_count;
+  }
   ExpectStepHistograms(Step::kFinishFlow, /*shown=*/true, /*with_exit=*/true);
   histogram_tester().ExpectTotalCount("ProfilePicker.FREFlow.StepShownDuration",
-                                      6);
+                                      expected_step_shown_duration_count);
   histogram_tester().ExpectTotalCount("ProfilePicker.FREFlow.StepTotalDuration",
                                       expected_step_total_duration_count);
 
@@ -1860,12 +1932,8 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTestWithSyncService,
     GTEST_SKIP() << "Test is flaky on win64";
   }
 
-  if (SyncButtonsFeatureConfig() ==
-      SyncButtonsFeatureConfig::kButtonsStillLoading) {
-    GTEST_SKIP() << "Decline is not possible until buttons stop loading";
-  }
   auto iph_delay =
-      AvatarToolbarButton::SetScopedIPHMinDelayAfterCreationForTesting(
+      AvatarToolbarIphController::SetScopedIPHMinDelayAfterCreationForTesting(
           base::Seconds(0));
   base::test::TestFuture<bool> proceed_future;
 
@@ -1875,9 +1943,11 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTestWithSyncService,
   RunTestSequenceInContext(
       views::ElementTrackerViews::GetContextForView(view()),
 
-      // Wait for the profile picker to show the intro.
+      // Wait for the profile picker to show the intro or the welcome page.
       WaitForShow(kProfilePickerViewId),
       InstrumentNonTabWebView(kWebContentsId, web_view()),
+      If([this] { return UsePreFirstRunRefreshedView(); },
+         Then(CompleteWelcomeStep())),
       CompleteIntroStep(/*sign_in=*/true),
       // Wait for switch to the Gaia sign-in page to complete.
       // Note: kPickerWebContentsId now points to the new profile's WebContents.
@@ -1893,46 +1963,22 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTestWithSyncService,
   // Pulled out of the test sequence because it waits using `RunLoop`s.
   SimulateSignIn(kTestEmail, kTestGivenName);
 
-  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    GURL history_page_url = GetHistorySyncOptinURL();
-    RunTestSequenceInContext(
-        views::ElementTrackerViews::GetContextForView(view()),
-        // Web Contents already instrumented in the previous sequence.
-        WaitForStateChange(kWebContentsId,
-                           PageWithUrl(history_page_url.spec())),
-        // Button is visible once capabilities are loaded or defaulted.
-        WaitForButtonVisible(kWebContentsId, GetDontSyncHistoryButtonQuery()),
+  GURL history_page_url = GetHistorySyncOptinURL();
+  RunTestSequenceInContext(
+      views::ElementTrackerViews::GetContextForView(view()),
+      // Web Contents already instrumented in the previous sequence.
+      WaitForStateChange(kWebContentsId, PageWithUrl(history_page_url.spec())),
+      // Button is visible once capabilities are loaded or defaulted.
+      WaitForButtonVisible(kWebContentsId, GetDontSyncHistoryButtonQuery()),
 
-        EnsurePresent(kWebContentsId, GetDontSyncHistoryButtonQuery()),
-        PressJsButton(kWebContentsId, GetDontSyncHistoryButtonQuery()),
+      EnsurePresent(kWebContentsId, GetDontSyncHistoryButtonQuery()),
+      PressJsButton(kWebContentsId, GetDontSyncHistoryButtonQuery()),
 
-        CompleteSearchEngineChoiceStep(),
-        If([this]() { return !UseRevampedView(); },
-           Then(CompleteDefaultBrowserStep())),
-        If([this]() { return UseRevampedView(); },
-           Then(CompleteFinishOrContinueStep())));
-  } else {
-    RunTestSequenceInContext(
-        views::ElementTrackerViews::GetContextForView(view()),
-        // Web Contents already instrumented in the previous sequence.
-        WaitForStateChange(kWebContentsId,
-                           PageWithUrl(AppendSyncConfirmationQueryParams(
-                                           GURL("chrome://sync-confirmation/"),
-                                           SyncConfirmationStyle::kWindow,
-                                           /*is_sync_promo=*/true)
-                                           .spec())),
-        // Button is visible once capabilities are loaded or defaulted.
-        WaitForButtonVisible(kWebContentsId, GetDontSyncButtonQuery()),
-
-        EnsurePresent(kWebContentsId, GetDontSyncButtonQuery()),
-        PressJsButton(kWebContentsId, GetDontSyncButtonQuery()),
-
-        CompleteSearchEngineChoiceStep(),
-        If([this]() { return !UseRevampedView(); },
-           Then(CompleteDefaultBrowserStep())),
-        If([this]() { return UseRevampedView(); },
-           Then(CompleteFinishOrContinueStep())));
-  }
+      CompleteSearchEngineChoiceStep(),
+      If([this]() { return !UseRevampedView(); },
+         Then(CompleteDefaultBrowserStep())),
+      If([this]() { return UseRevampedView(); },
+         Then(CompleteFinishOrContinueStep())));
 
   // Wait for the picker to be closed and deleted.
   WaitForPickerClosed();
@@ -1948,19 +1994,13 @@ IN_PROC_BROWSER_TEST_P(FirstRunParameterizedInteractiveUiTestWithSyncService,
       "Signin.SignIn.Started", signin_metrics::AccessPoint::kForYouFre, 1);
   histogram_tester().ExpectUniqueSample(
       "Signin.SignIn.Completed", signin_metrics::AccessPoint::kForYouFre, 1);
-  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    histogram_tester().ExpectUniqueSample(
-        "Signin.HistorySyncOptIn.Started",
-        signin_metrics::AccessPoint::kForYouFre, 1);
-    histogram_tester().ExpectTotalCount("Signin.HistorySyncOptIn.Completed", 0);
-  } else {
-    histogram_tester().ExpectUniqueSample(
-        "Signin.SyncOptIn.Started", signin_metrics::AccessPoint::kForYouFre, 1);
-    histogram_tester().ExpectTotalCount("Signin.SyncOptIn.Completed", 0);
-  }
+  histogram_tester().ExpectUniqueSample("Signin.HistorySyncOptIn.Started",
+                                        signin_metrics::AccessPoint::kForYouFre,
+                                        1);
+  histogram_tester().ExpectTotalCount("Signin.HistorySyncOptIn.Completed", 0);
   histogram_tester().ExpectUniqueSample(
       "Signin.SyncButtons.Shown",
-      *ExpectedButtonShownMetric(SyncButtonsFeatureConfig()), 1);
+      ExpectedButtonShownMetric(SyncButtonsFeatureConfig()), 1);
   histogram_tester().ExpectUniqueSample(
       "ProfilePicker.FirstRun.ExitStatus",
       ProfilePicker::FirstRunExitStatus::kCompleted, 1);
@@ -2005,6 +2045,18 @@ const HatsTestParams kHatsTestParams[] = {
      .hats_trigger =
          kHatsSurveyTriggerFirstRunDesktopRevampNoFeatureShowcaseCompleted,
      .test_suffix = "RevampNoFeatureShowcaseSurvey",
+     .forced_showcase_steps = {}},
+    {.flow_version = FirstRunVersion::PreFirstRunRefreshed{},
+     .hats_feature = switches::kPreFirstRunDesktopRefreshSurvey,
+     .hats_trigger = kHatsSurveyTriggerPreFirstRunDesktopRefreshCompleted,
+     .test_suffix = "PreFirstRunRefreshSurvey",
+     .forced_showcase_steps = {"default-browser"}},
+    {.flow_version = FirstRunVersion::PreFirstRunRefreshed{},
+     .hats_feature =
+         switches::kPreFirstRunDesktopRefreshNoFeatureShowcaseSurvey,
+     .hats_trigger =
+         kHatsSurveyTriggerPreFirstRunDesktopRefreshNoFeatureShowcaseCompleted,
+     .test_suffix = "PreFirstRunRefreshNoFeatureShowcaseSurvey",
      .forced_showcase_steps = {}}};
 
 class FirstRunWithHatsInteractiveUiTest
@@ -2038,33 +2090,13 @@ class FirstRunWithHatsInteractiveUiTest
     return std::string(GetParam().hats_trigger);
   }
 
-  std::vector<std::string> GetForcedFeatureShowcaseSteps() const override {
+  std::optional<std::vector<std::string>> GetForcedFeatureShowcaseSteps()
+      const override {
     return GetParam().forced_showcase_steps;
   }
 
   bool IsFeatureShowcaseEligible() const {
     return !GetParam().forced_showcase_steps.empty();
-  }
-
-  InteractiveTestApi::MultiStep DeclineHistorySync() {
-    if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-      return Steps(
-          WaitForWebContentsNavigation(kWebContentsId,
-                                       GetHistorySyncOptinURL()),
-          WaitForButtonVisible(kWebContentsId, GetDontSyncHistoryButtonQuery()),
-          EnsurePresent(kWebContentsId, GetDontSyncHistoryButtonQuery()),
-          PressJsButton(kWebContentsId, GetDontSyncHistoryButtonQuery())
-              .SetMustRemainVisible(false));
-    }
-    GURL sync_page_url = AppendSyncConfirmationQueryParams(
-        GURL("chrome://sync-confirmation/"), SyncConfirmationStyle::kWindow,
-        /*is_sync_promo=*/true);
-    return Steps(
-        WaitForWebContentsNavigation(kWebContentsId, std::move(sync_page_url)),
-        WaitForButtonVisible(kWebContentsId, GetDontSyncButtonQuery()),
-        EnsurePresent(kWebContentsId, GetDontSyncButtonQuery()),
-        PressJsButton(kWebContentsId, GetDontSyncButtonQuery())
-            .SetMustRemainVisible(false));
   }
 
  private:
@@ -2093,6 +2125,8 @@ IN_PROC_BROWSER_TEST_P(FirstRunWithHatsInteractiveUiTest,
       views::ElementTrackerViews::GetContextForView(view()),
       WaitForShow(kProfilePickerViewId),
       InstrumentNonTabWebView(kWebContentsId, web_view()),
+      If([this] { return UsePreFirstRunRefreshedView(); },
+         Then(CompleteWelcomeStep())),
       CompleteIntroStep(/*sign_in=*/false),
       If([this]() { return UseRevampedView(); },
          Then(If(
@@ -2125,7 +2159,10 @@ IN_PROC_BROWSER_TEST_P(FirstRunWithHatsInteractiveUiTest,
       views::ElementTrackerViews::GetContextForView(view()),
       WaitForShow(kProfilePickerViewId),
       InstrumentNonTabWebView(kWebContentsId, web_view()),
-      WaitForWebContentsReady(kWebContentsId, GURL(chrome::kChromeUIIntroURL)),
+      If([this]() { return UsePreFirstRunRefreshedView(); },
+         Then(WaitForWebContentsReady(kWebContentsId, GetWelcomeURL())),
+         Else(WaitForWebContentsReady(kWebContentsId,
+                                      GURL(chrome::kChromeUIIntroURL)))),
       SendAccelerator(kProfilePickerViewId, GetAccelerator(IDC_CLOSE_WINDOW))
           .SetMustRemainVisible(false));
 
@@ -2133,7 +2170,6 @@ IN_PROC_BROWSER_TEST_P(FirstRunWithHatsInteractiveUiTest,
 
   EXPECT_TRUE(proceed_future.Get());
   EXPECT_TRUE(GetFirstRunFinishedPrefValue());
-  ExpectStepHistograms(Step::kIntro, /*shown=*/true, /*with_exit=*/true);
 }
 
 INSTANTIATE_TEST_SUITE_P(,
@@ -2173,6 +2209,8 @@ IN_PROC_BROWSER_TEST_P(FirstRunWithHatsInteractiveUiTestWithSyncService,
       views::ElementTrackerViews::GetContextForView(view()),
       WaitForShow(kProfilePickerViewId),
       InstrumentNonTabWebView(kWebContentsId, web_view()),
+      If([this] { return UsePreFirstRunRefreshedView(); },
+         Then(CompleteWelcomeStep())),
       CompleteIntroStep(/*sign_in=*/true),
       WaitForWebContentsNavigation(kWebContentsId,
                                    GetSigninChromeSyncDiceUrl()));
@@ -2231,6 +2269,8 @@ IN_PROC_BROWSER_TEST_P(FirstRunWithHatsInteractiveUiTestWithSyncService,
       views::ElementTrackerViews::GetContextForView(view()),
       WaitForShow(kProfilePickerViewId),
       InstrumentNonTabWebView(kWebContentsId, web_view()),
+      If([this] { return UsePreFirstRunRefreshedView(); },
+         Then(CompleteWelcomeStep())),
       CompleteIntroStep(/*sign_in=*/true),
       WaitForWebContentsNavigation(kWebContentsId,
                                    GetSigninChromeSyncDiceUrl()));
@@ -2244,10 +2284,8 @@ IN_PROC_BROWSER_TEST_P(FirstRunWithHatsInteractiveUiTestWithSyncService,
       views::ElementTrackerViews::GetContextForView(view()),
       WaitForWebContentsNavigation(
           kWebContentsId,
-          AppendSyncConfirmationQueryParams(
-              GURL(chrome::kChromeUISyncConfirmationURL)
-                  .Resolve(chrome::kChromeUISyncConfirmationLoadingPath),
-              SyncConfirmationStyle::kWindow, /*is_sync_promo=*/true)));
+          GURL(chrome::kChromeUIHistorySyncOptinURL)
+              .Resolve(chrome::kChromeUIHistorySyncOptinLoadingPath)));
 
   auto& identity_manager =
       CHECK_DEREF(IdentityManagerFactory::GetForProfile(profile()));
@@ -2321,6 +2359,8 @@ IN_PROC_BROWSER_TEST_P(FirstRunWithHatsAndUnrelatedFeatureSetInteractiveUiTest,
       views::ElementTrackerViews::GetContextForView(view()),
       WaitForShow(kProfilePickerViewId),
       InstrumentNonTabWebView(kWebContentsId, web_view()),
+      If([this] { return UsePreFirstRunRefreshedView(); },
+         Then(CompleteWelcomeStep())),
       CompleteIntroStep(/*sign_in=*/true),
       WaitForWebContentsNavigation(kWebContentsId,
                                    GetSigninChromeSyncDiceUrl()));
@@ -2376,67 +2416,21 @@ INSTANTIATE_TEST_SUITE_P(
             .flow_version = FirstRunVersion::Refreshed{},
             .hats_feature = switches::kFirstRunDesktopRevampSurvey,
             .hats_trigger = kHatsSurveyTriggerFirstRunDesktopRevampCompleted,
-            .test_suffix = "RevampSurveyWithRefreshedFlow"}),
+            .test_suffix = "RevampSurveyWithRefreshedFlow"},
+        HatsTestParams{
+            .flow_version = FirstRunVersion::Revamped{},
+            .hats_feature = switches::kPreFirstRunDesktopRefreshSurvey,
+            .hats_trigger =
+                kHatsSurveyTriggerPreFirstRunDesktopRefreshCompleted,
+            .test_suffix = "PreFirstRunRefreshSurveyWithRevampFlow"},
+        HatsTestParams{
+            .flow_version = FirstRunVersion::PreFirstRunRefreshed{},
+            .hats_feature = switches::kFirstRunDesktopRevampSurvey,
+            .hats_trigger = kHatsSurveyTriggerFirstRunDesktopRevampCompleted,
+            .test_suffix = "RevampSurveyWithPreFirstRunRefreshFlow"}),
     [](const TestParamInfo<HatsTestParams>& info) {
       return std::string(info.param.test_suffix);
     });
-
-class FirstRunDontSignInOnGaiaPageInteractiveUiTest
-    : public FirstRunInteractiveUiBaseTest {
- public:
-  FirstRunDontSignInOnGaiaPageInteractiveUiTest()
-      : FirstRunInteractiveUiBaseTest(TestParam{
-            .flow_version = FirstRunVersion::Refreshed{
-                .variant = switches::FirstRunDesktopSignInPromoVariation::
-                    kDontSignInOnGaiaPage}}) {}
-};
-
-// TODO(crbug.com/366119368): Re-enable this test
-#if BUILDFLAG(IS_WIN)
-#define MAYBE_DeclineSignInFromNativeToolbar \
-  DISABLED_DeclineSignInFromNativeToolbar
-#else
-#define MAYBE_DeclineSignInFromNativeToolbar DeclineSignInFromNativeToolbar
-#endif
-IN_PROC_BROWSER_TEST_F(FirstRunDontSignInOnGaiaPageInteractiveUiTest,
-                       MAYBE_DeclineSignInFromNativeToolbar) {
-  ASSERT_TRUE(fre_service()->ShouldOpenFirstRun());
-
-  base::test::TestFuture<bool> proceed_future;
-  OpenFirstRun(proceed_future.GetCallback());
-  RunTestSequenceInContext(
-      views::ElementTrackerViews::GetContextForView(view()),
-      WaitForShow(kProfilePickerViewId),
-      InstrumentNonTabWebView(kWebContentsId, web_view()),
-      CompleteIntroStep(/*sign_in=*/true),
-      WaitForWebContentsNavigation(kWebContentsId,
-                                   GetSigninChromeSyncDiceUrl()),
-      WaitForShow(kProfilePickerToolbarDontSignInButtonElementId),
-      PressButton(kProfilePickerToolbarDontSignInButtonElementId));
-
-  WaitForPickerClosed();
-  EXPECT_TRUE(proceed_future.Get());
-
-  histogram_tester().ExpectUniqueSample(
-      /*name=*/"Signin.SignIn.Offered",
-      /*sample=*/signin_metrics::AccessPoint::kForYouFre,
-      /*expected_bucket_count=*/1);
-  histogram_tester().ExpectUniqueSample(
-      /*name=*/"Signin.SignIn.Started",
-      /*sample=*/signin_metrics::AccessPoint::kForYouFre,
-      /*expected_bucket_count=*/1);
-  histogram_tester().ExpectUniqueSample(
-      /*name=*/"ProfilePicker.FirstRun.ExitStatus",
-      /*sample=*/ProfilePicker::FirstRunExitStatus::kCompleted,
-      /*expected_bucket_count=*/1);
-
-  ExpectStepHistograms(Step::kIntro, /*shown=*/true);
-  ExpectStepHistograms(Step::kAccountSelection, /*shown=*/true);
-  ExpectStepHistograms(Step::kFinishFlow, /*shown=*/true, /*with_exit=*/true);
-  // Sign-in was never completed - step hasn't been attempted.
-  ExpectStepHistograms(Step::kPostSignInFlow, /*shown=*/false,
-                       /*with_exit=*/false, /*count=*/0);
-}
 
 class FirstRunInSearchChoiceRegionInteractiveUiTest
     : public base::test::WithFeatureOverride,
@@ -2460,14 +2454,8 @@ class FirstRunInSearchChoiceRegionInteractiveUiTest
   std::unique_ptr<base::AutoReset<bool>> scoped_chrome_build_override_;
 };
 
-// TODO(crbug.com/366119368): Re-enable this test. (FRE does not open on Win)
-#if BUILDFLAG(IS_WIN)
-#define MAYBE_SkipChoiceScreenDynamically DISABLED_SkipChoiceScreenDynamically
-#else
-#define MAYBE_SkipChoiceScreenDynamically SkipChoiceScreenDynamically
-#endif
 IN_PROC_BROWSER_TEST_P(FirstRunInSearchChoiceRegionInteractiveUiTest,
-                       MAYBE_SkipChoiceScreenDynamically) {
+                       SkipChoiceScreenDynamically) {
   ASSERT_TRUE(IsProfileNameDefault());
   ASSERT_TRUE(fre_service()->ShouldOpenFirstRun());
 
@@ -2504,7 +2492,13 @@ IN_PROC_BROWSER_TEST_P(FirstRunInSearchChoiceRegionInteractiveUiTest,
       InstrumentNonTabWebView(kWebContentsId, web_view()),
       CompleteIntroStep(/*sign_in=*/false),
       If([this]() { return !IsParamFeatureEnabled(); },
-         Then(CompleteSearchEngineChoiceStep())));
+         Then(CompleteSearchEngineChoiceStep()))
+#if BUILDFLAG(IS_WIN)
+          ,
+      If([this]() { return !UseRevampedView(); },
+         Then(SkipDefaultBrowserStep()))
+#endif  // BUILDFLAG(IS_WIN)
+  );
 
   WaitForPickerClosed();
 
@@ -2522,35 +2516,25 @@ INSTANTIATE_TEST_SUITE_P(,
                          FirstRunInSearchChoiceRegionInteractiveUiTest,
                          testing::Values(false, true));
 
-// TODO(crbug.com/524526106): Extend this test suite to thoroughly cover the
-// feature showcase step.
 class FirstRunRevampInteractiveUiTest : public FirstRunInteractiveUiBaseTest {
  public:
-  explicit FirstRunRevampInteractiveUiTest(
-      const std::vector<base::test::FeatureRefAndParams>&
-          fixture_enabled_features = {},
-      const std::vector<base::test::FeatureRef>& fixture_disabled_features = {})
-      : FirstRunInteractiveUiBaseTest(
-            TestParam{.flow_version = FirstRunVersion::Revamped{}},
-            fixture_enabled_features,
-            fixture_disabled_features) {}
-
-  explicit FirstRunRevampInteractiveUiTest(bool sound_enabled)
+  explicit FirstRunRevampInteractiveUiTest(bool sound_enabled = true)
       : FirstRunInteractiveUiBaseTest(TestParam{
             .flow_version =
                 FirstRunVersion::Revamped{.sound_enabled = sound_enabled}}) {}
 
  protected:
-  GURL GetFeatureShowcaseUrl() const {
-    return net::AppendQueryParameter(
-        GURL(chrome::kChromeUIFeatureShowcaseURL), "steps",
-        base::JoinString(GetForcedFeatureShowcaseSteps(), ","));
-  }
-
   const DeepQuery& GetFeatureShowcaseDefaultBrowserSkipButtonQuery() const {
     static const base::NoDestructor<DeepQuery> kQuery(
         {"feature-showcase-app", "feature-showcase-default-browser-step",
          "#skip-button"});
+    return *kQuery;
+  }
+
+  const DeepQuery& GetFeatureShowcaseDefaultBrowserConfirmButtonQuery() const {
+    static const base::NoDestructor<DeepQuery> kQuery(
+        {"feature-showcase-app", "feature-showcase-default-browser-step",
+         "#confirm-button"});
     return *kQuery;
   }
 
@@ -2561,9 +2545,38 @@ class FirstRunRevampInteractiveUiTest : public FirstRunInteractiveUiBaseTest {
     return *kQuery;
   }
 
+  const DeepQuery& GetFeatureShowcaseGoogleLensConfirmButtonQuery() const {
+    static const base::NoDestructor<DeepQuery> kQuery(
+        {"feature-showcase-app", "feature-showcase-google-lens-step",
+         "#confirm-button"});
+    return *kQuery;
+  }
+
+  const DeepQuery& GetFeatureShowcaseGeminiConfirmButtonQuery() const {
+    static const base::NoDestructor<DeepQuery> kQuery(
+        {"feature-showcase-app", "feature-showcase-gemini-step",
+         "#confirm-button"});
+    return *kQuery;
+  }
+
+  const DeepQuery& GetFeatureShowcasePasswordManagerConfirmButtonQuery() const {
+    static const base::NoDestructor<DeepQuery> kQuery(
+        {"feature-showcase-app", "feature-showcase-password-manager-step",
+         "#confirm-button"});
+    return *kQuery;
+  }
+
+  const DeepQuery& GetFeatureShowcaseThemesConfirmButtonQuery() const {
+    static const base::NoDestructor<DeepQuery> kQuery(
+        {"feature-showcase-app",
+         "feature-showcase-themes-and-customization-step", "#confirm-button"});
+    return *kQuery;
+  }
+
   // FirstRunInteractiveUiBaseTest:
-  std::vector<std::string> GetForcedFeatureShowcaseSteps() const override {
-    return {"default-browser", "google-lens"};
+  std::optional<std::vector<std::string>> GetForcedFeatureShowcaseSteps()
+      const override {
+    return std::vector<std::string>{"default-browser", "google-lens"};
   }
 };
 
@@ -2708,12 +2721,6 @@ IN_PROC_BROWSER_TEST_F(FirstRunRevampInteractiveUiTest,
 class FirstRunRevampPostSignInInteractiveUiTest
     : public FirstRunRevampInteractiveUiTest,
       public testing::WithParamInterface<bool> {
- public:
-  FirstRunRevampPostSignInInteractiveUiTest()
-      : FirstRunRevampInteractiveUiTest(
-            /*fixture_enabled_features=*/{
-                {syncer::kReplaceSyncPromosWithSignInPromos, {}}}) {}
-
  protected:
   void SetUpOnMainThread() override {
     FirstRunRevampInteractiveUiTest::SetUpOnMainThread();
@@ -3195,9 +3202,9 @@ IN_PROC_BROWSER_TEST_F(FirstRunRevampInteractiveUiTest,
 
   // Verify that the browser was opened with only the archive page tab.
   ASSERT_TRUE(browser());
-  EXPECT_EQ(browser()->tab_strip_model()->count(), 1);
+  EXPECT_EQ(browser()->GetTabStripModel()->count(), 1);
   EXPECT_EQ(
-      browser()->tab_strip_model()->GetActiveWebContents()->GetVisibleURL(),
+      browser()->GetTabStripModel()->GetActiveWebContents()->GetVisibleURL(),
       GURL(whats_new::kChromeWhatsNewURL).Resolve("archive/"));
 }
 
@@ -3251,7 +3258,8 @@ IN_PROC_BROWSER_TEST_F(FirstRunRevampSoundDisabledInteractiveUiTest,
       PressJsButton(kWebContentsId,
                     GetFeatureShowcaseGoogleLensSkipButtonQuery()),
       // Now wait for navigation to finish or continue step.
-      WaitForWebContentsNavigation(kWebContentsId, GetFinishOrContinueURL()),
+      WaitForWebContentsNavigation(
+          kWebContentsId, GetFinishOrContinueURL(/*expected_showcase=*/true)),
       // Effects button should be present on the finish or continue step (to
       // disable animations).
       WaitForShow(kProfilePickerToolbarEffectsControlButtonElementId),
@@ -3264,29 +3272,21 @@ IN_PROC_BROWSER_TEST_F(FirstRunRevampSoundDisabledInteractiveUiTest,
   EXPECT_TRUE(proceed_future.Get());
 }
 
-class FirstRunRevampTurnOnSyncCelebrationInteractiveUiTest
+class FirstRunRevampSyncDisabledInteractiveUiTest
     : public FirstRunRevampInteractiveUiTest {
- public:
-  FirstRunRevampTurnOnSyncCelebrationInteractiveUiTest()
-      : FirstRunRevampInteractiveUiTest(
-            /*fixture_enabled_features=*/{},
-            /*fixture_disabled_features=*/
-            {syncer::kReplaceSyncPromosWithSignInPromos,
-             syncer::kReplaceSyncPromosWithSigninPromosNewSignin}) {}
-
  protected:
-  std::vector<std::string> GetForcedFeatureShowcaseSteps() const override {
-    return {"default-browser"};
+  std::optional<std::vector<std::string>> GetForcedFeatureShowcaseSteps()
+      const override {
+    return std::vector<std::string>{"default-browser"};
   }
 };
 
-using FirstRunRevampTurnOnSyncCelebrationInteractiveUiTestWithSyncService =
-    WithTestSyncServiceMixin<
-        FirstRunRevampTurnOnSyncCelebrationInteractiveUiTest>;
+using FirstRunRevampSyncDisabledInteractiveUiTestWithSyncService =
+    WithTestSyncServiceMixin<FirstRunRevampSyncDisabledInteractiveUiTest>;
 
 IN_PROC_BROWSER_TEST_F(
-    FirstRunRevampTurnOnSyncCelebrationInteractiveUiTestWithSyncService,
-    SignInSyncDisabledBypassesCelebrationShowsSyncDisabledNotice) {
+    FirstRunRevampSyncDisabledInteractiveUiTestWithSyncService,
+    SignInSyncDisabledShowsCelebrationAndSkipsHistorySyncOptin) {
   base::test::TestFuture<bool> proceed_future;
 
   ASSERT_TRUE(IsProfileNameDefault());
@@ -3314,18 +3314,12 @@ IN_PROC_BROWSER_TEST_F(
 
   RunTestSequenceInContext(
       views::ElementTrackerViews::GetContextForView(view()),
-      // Verify we navigate directly to the sync disabled notice screen,
-      // bypassing Sign-in Celebration.
+      // Sign-in celebration still plays since Chrome sign-in succeeded, and
+      // History Sync Opt-in is skipped directly to the feature showcase step.
       WaitForWebContentsNavigation(
           kWebContentsId,
-          GURL(chrome::kChromeUIManagedUserProfileNoticeRefreshURL)),
-      WaitForStateChange(
-          kWebContentsId,
-          IsVisible({"managed-user-profile-notice-app-refresh"})),
-      EnsurePresent(kWebContentsId, GetAcceptManagementButtonQuery()),
-      PressJsButton(kWebContentsId, GetAcceptManagementButtonQuery()),
-
-      // Complete the feature showcase step.
+          GURL(chrome::kChromeUIIntroURL)
+              .Resolve(chrome::kChromeUIIntroSignInCelebrationSubPage)),
       WaitForWebContentsNavigation(kWebContentsId, GetFeatureShowcaseUrl()),
       WaitForShow(kProfilePickerToolbarStartBrowsingButtonElementId),
       PressButton(kProfilePickerToolbarStartBrowsingButtonElementId));
@@ -3333,4 +3327,751 @@ IN_PROC_BROWSER_TEST_F(
   WaitForPickerClosed();
 
   EXPECT_TRUE(proceed_future.Get());
+  histogram_tester().ExpectTotalCount("Signin.HistorySyncOptIn.Started", 0);
+}
+
+class PreFirstRunRefreshInteractiveUiTest
+    : public FirstRunInteractiveUiBaseTest {
+ public:
+  PreFirstRunRefreshInteractiveUiTest()
+      : FirstRunInteractiveUiBaseTest(TestParam{
+            .flow_version = FirstRunVersion::PreFirstRunRefreshed{}}) {}
+
+  void SetUpOnMainThread() override {
+    FirstRunInteractiveUiBaseTest::SetUpOnMainThread();
+    shell_integration::DefaultBrowserWorker::DisableSetAsDefaultForTesting();
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(PreFirstRunRefreshInteractiveUiTest,
+                       InitSoundsOnFlowStart) {
+  ASSERT_TRUE(fre_service()->ShouldOpenFirstRun());
+
+  auto mock_sounds_manager = std::make_unique<StrictMock<MockSoundsManager>>();
+  MockSoundsManager* mock_sounds_manager_ptr = mock_sounds_manager.get();
+
+  // Set the factory to return the `MockSoundsManager`.
+  base::AutoReset<FirstRunFlowController::SoundsManagerFactory>
+      sounds_factory_reset =
+          FirstRunFlowController::SetSoundsManagerFactoryForTesting(
+              base::BindLambdaForTesting(
+                  [&mock_sounds_manager](
+                      audio::SoundsManager::StreamFactoryBinder)
+                      -> std::unique_ptr<audio::SoundsManager> {
+                    return std::move(mock_sounds_manager);
+                  }));
+
+  // Verify that the ambient, logo, welcome back and feature showcase sounds are
+  // initialized at the start.
+  EXPECT_CALL(*mock_sounds_manager_ptr,
+              Initialize(FirstRunFlowController::kAmbientSoundKey,
+                         IDR_INTRO_SOUND_AMBIENT_FLAC, media::AudioCodec::kFLAC,
+                         /*loop=*/true))
+      .WillOnce(Return(true));
+  EXPECT_CALL(*mock_sounds_manager_ptr,
+              Initialize(FirstRunFlowController::kLogoSoundKey,
+                         IDR_INTRO_SOUND_LOGO_FLAC, media::AudioCodec::kFLAC,
+                         /*loop=*/false))
+      .WillOnce(Return(true));
+  EXPECT_CALL(*mock_sounds_manager_ptr,
+              Initialize(FirstRunFlowController::kWelcomeBackSoundKey,
+                         IDR_INTRO_SOUND_WELCOME_BACK_FLAC,
+                         media::AudioCodec::kFLAC, /*loop=*/false))
+      .WillOnce(Return(true));
+  EXPECT_CALL(
+      *mock_sounds_manager_ptr,
+      Initialize(FirstRunFlowController::kFeatureShowcaseAmbientSoundKey,
+                 IDR_INTRO_SOUND_FEATURE_SHOWCASE_AMBIENT_FLAC,
+                 media::AudioCodec::kFLAC, /*loop=*/true))
+      .WillOnce(Return(true));
+  EXPECT_CALL(
+      *mock_sounds_manager_ptr,
+      Initialize(FirstRunFlowController::kFeatureShowcaseProgressSoundKey,
+                 IDR_INTRO_SOUND_FEATURE_SHOWCASE_PROGRESS_FLAC,
+                 media::AudioCodec::kFLAC,
+                 /*loop=*/false))
+      .WillOnce(Return(true));
+  EXPECT_CALL(*mock_sounds_manager_ptr,
+              Initialize(FirstRunFlowController::kAllSetSoundKey,
+                         IDR_INTRO_SOUND_ALL_SET_FLAC, media::AudioCodec::kFLAC,
+                         /*loop=*/false))
+      .WillOnce(Return(true));
+
+  // Only the ambient sound starts playing immediately.
+  EXPECT_CALL(*mock_sounds_manager_ptr,
+              Play(FirstRunFlowController::kAmbientSoundKey))
+      .WillOnce(Return(true));
+
+  OpenFirstRun();
+
+  Mock::VerifyAndClearExpectations(mock_sounds_manager_ptr);
+
+  base::RunLoop run_loop;
+
+  // The logo sound plays for the intro step.
+  EXPECT_CALL(*mock_sounds_manager_ptr,
+              Play(FirstRunFlowController::kLogoSoundKey))
+      .WillOnce([&run_loop](audio::SoundsManager::SoundKey key) {
+        run_loop.Quit();
+        return true;
+      });
+
+  RunTestSequenceInContext(
+      views::ElementTrackerViews::GetContextForView(view()),
+      WaitForShow(kProfilePickerViewId),
+      InstrumentNonTabWebView(kWebContentsId, web_view()),
+      CompleteWelcomeStep());
+
+  run_loop.Run();
+}
+
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+IN_PROC_BROWSER_TEST_F(PreFirstRunRefreshInteractiveUiTest,
+                       MetricsOptInDefaultAccepted) {
+  g_browser_process->local_state()->SetBoolean(
+      metrics::prefs::kMetricsReportingEnabled, false);
+  ASSERT_TRUE(fre_service()->ShouldOpenFirstRun());
+
+  OpenFirstRun();
+
+  RunTestSequenceInContext(
+      views::ElementTrackerViews::GetContextForView(view()),
+      WaitForShow(kProfilePickerViewId),
+      InstrumentNonTabWebView(kWebContentsId, web_view()),
+      WaitForWebContentsReady(kWebContentsId, GetWelcomeURL()),
+      EnsurePresent(kWebContentsId, GetWelcomeFooterQuery()),
+      EnsurePresent(kWebContentsId, GetWelcomeAcceptButtonQuery()),
+      PressJsButton(kWebContentsId, GetWelcomeAcceptButtonQuery()),
+      WaitForWebContentsNavigation(kWebContentsId,
+                                   GURL(chrome::kChromeUIIntroURL)),
+      PollUntil(
+          [] {
+            return g_browser_process->local_state()->GetBoolean(
+                metrics::prefs::kMetricsReportingEnabled);
+          },
+          "metrics reporting enabled"));
+}
+
+IN_PROC_BROWSER_TEST_F(PreFirstRunRefreshInteractiveUiTest,
+                       MetricsOptInTurnOff) {
+  g_browser_process->local_state()->SetBoolean(
+      metrics::prefs::kMetricsReportingEnabled, true);
+  ASSERT_TRUE(fre_service()->ShouldOpenFirstRun());
+
+  OpenFirstRun();
+
+  RunTestSequenceInContext(
+      views::ElementTrackerViews::GetContextForView(view()),
+      WaitForShow(kProfilePickerViewId),
+      InstrumentNonTabWebView(kWebContentsId, web_view()),
+      WaitForWebContentsReady(kWebContentsId, GetWelcomeURL()),
+      EnsurePresent(kWebContentsId, GetWelcomeMetricsManageLinkQuery()),
+      PressJsButton(kWebContentsId, GetWelcomeMetricsManageLinkQuery()),
+      WaitForDialogOpened(kWebContentsId, GetWelcomeMetricsDialogQuery()),
+      EnsurePresent(kWebContentsId, GetWelcomeMetricsDialogActionButtonQuery()),
+      PressJsButton(kWebContentsId, GetWelcomeMetricsDialogActionButtonQuery()),
+      WaitForDialogClosed(kWebContentsId, GetWelcomeMetricsDialogQuery()),
+      EnsurePresent(kWebContentsId, GetWelcomeAcceptButtonQuery()),
+      PressJsButton(kWebContentsId, GetWelcomeAcceptButtonQuery()),
+      WaitForWebContentsNavigation(kWebContentsId,
+                                   GURL(chrome::kChromeUIIntroURL)),
+      PollUntil(
+          [] {
+            return !g_browser_process->local_state()->GetBoolean(
+                metrics::prefs::kMetricsReportingEnabled);
+          },
+          "metrics reporting disabled"));
+}
+#else   // !BUILDFLAG(GOOGLE_CHROME_BRANDING)
+IN_PROC_BROWSER_TEST_F(PreFirstRunRefreshInteractiveUiTest,
+                       MetricsOptInHiddenWhenNotSupported) {
+  ASSERT_TRUE(fre_service()->ShouldOpenFirstRun());
+
+  OpenFirstRun();
+
+  RunTestSequenceInContext(
+      views::ElementTrackerViews::GetContextForView(view()),
+      WaitForShow(kProfilePickerViewId),
+      InstrumentNonTabWebView(kWebContentsId, web_view()),
+      WaitForWebContentsReady(kWebContentsId, GetWelcomeURL()),
+      EnsureNotPresent(kWebContentsId, GetWelcomeFooterQuery()),
+      EnsurePresent(kWebContentsId, GetWelcomeAcceptButtonQuery()),
+      PressJsButton(kWebContentsId, GetWelcomeAcceptButtonQuery()),
+      WaitForWebContentsNavigation(kWebContentsId,
+                                   GURL(chrome::kChromeUIIntroURL)));
+}
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
+
+IN_PROC_BROWSER_TEST_F(PreFirstRunRefreshInteractiveUiTest,
+                       DefaultBrowserToggleDefaultAccepted) {
+  ASSERT_TRUE(fre_service()->ShouldOpenFirstRun());
+
+  OpenFirstRun();
+
+  RunTestSequenceInContext(
+      views::ElementTrackerViews::GetContextForView(view()),
+      WaitForShow(kProfilePickerViewId),
+      InstrumentNonTabWebView(kWebContentsId, web_view()),
+      WaitForWebContentsReady(kWebContentsId, GetWelcomeURL()),
+      EnsurePresent(kWebContentsId, GetWelcomeDefaultBrowserToggleQuery()),
+      EnsurePresent(kWebContentsId, GetWelcomeAcceptButtonQuery()),
+      PressJsButton(kWebContentsId, GetWelcomeAcceptButtonQuery()),
+      WaitForWebContentsNavigation(kWebContentsId,
+                                   GURL(chrome::kChromeUIIntroURL)));
+}
+
+IN_PROC_BROWSER_TEST_F(PreFirstRunRefreshInteractiveUiTest,
+                       DefaultBrowserToggleOff) {
+  ASSERT_TRUE(fre_service()->ShouldOpenFirstRun());
+
+  OpenFirstRun();
+
+  RunTestSequenceInContext(
+      views::ElementTrackerViews::GetContextForView(view()),
+      WaitForShow(kProfilePickerViewId),
+      InstrumentNonTabWebView(kWebContentsId, web_view()),
+      WaitForWebContentsReady(kWebContentsId, GetWelcomeURL()),
+      EnsurePresent(kWebContentsId, GetWelcomeDefaultBrowserToggleQuery()),
+      PressJsButton(kWebContentsId, GetWelcomeDefaultBrowserToggleQuery()),
+      WaitForToggleUnchecked(kWebContentsId,
+                             GetWelcomeDefaultBrowserToggleQuery()),
+      EnsurePresent(kWebContentsId, GetWelcomeAcceptButtonQuery()),
+      PressJsButton(kWebContentsId, GetWelcomeAcceptButtonQuery()),
+      WaitForWebContentsNavigation(kWebContentsId,
+                                   GURL(chrome::kChromeUIIntroURL)));
+}
+#else   // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+IN_PROC_BROWSER_TEST_F(
+    PreFirstRunRefreshInteractiveUiTest,
+    MetricsOptInAndDefaultBrowserToggleHiddenWhenNotSupported) {
+  ASSERT_TRUE(fre_service()->ShouldOpenFirstRun());
+
+  OpenFirstRun();
+
+  RunTestSequenceInContext(
+      views::ElementTrackerViews::GetContextForView(view()),
+      WaitForShow(kProfilePickerViewId),
+      InstrumentNonTabWebView(kWebContentsId, web_view()),
+      WaitForWebContentsReady(kWebContentsId, GetWelcomeURL()),
+      EnsureNotPresent(kWebContentsId, GetWelcomeFooterQuery()),
+      EnsureNotPresent(kWebContentsId,
+                       GetWelcomeDefaultBrowserContainerQuery()),
+      EnsurePresent(kWebContentsId, GetWelcomeAcceptButtonQuery()),
+      PressJsButton(kWebContentsId, GetWelcomeAcceptButtonQuery()),
+      WaitForWebContentsNavigation(kWebContentsId,
+                                   GURL(chrome::kChromeUIIntroURL)));
+}
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+
+namespace {
+
+struct PolicyTestParam {
+  std::string_view key;
+  std::string_view value;
+};
+
+const PolicyTestParam kPreFirstRunPolicyTestParams[] = {
+    {.key = policy::key::kSyncDisabled, .value = "true"},
+    {.key = policy::key::kBrowserSignin, .value = "0"},
+#if !BUILDFLAG(IS_LINUX)
+    {.key = policy::key::kBrowserSignin, .value = "2"},
+#endif  // !BUILDFLAG(IS_LINUX)
+    {.key = policy::key::kPromotionalTabsEnabled, .value = "false"},
+};
+
+}  // namespace
+
+class PreFirstRunRefreshPolicyInteractiveUiTestBase
+    : public PreFirstRunRefreshInteractiveUiTest {
+ public:
+  void SetUpInProcessBrowserTestFixture() override {
+    PreFirstRunRefreshInteractiveUiTest::SetUpInProcessBrowserTestFixture();
+    policy_provider_.SetDefaultReturns(
+        /*is_initialization_complete_return=*/true,
+        /*is_first_policy_load_complete_return=*/true);
+    policy::BrowserPolicyConnector::SetPolicyProviderForTesting(
+        &policy_provider_);
+  }
+
+  void SetPolicy(std::string_view key, std::string_view value) {
+    policy_map_.Set(
+        std::string(key), policy::POLICY_LEVEL_MANDATORY,
+        policy::POLICY_SCOPE_USER, policy::POLICY_SOURCE_PLATFORM,
+        base::JSONReader::Read(value, base::JSON_PARSE_CHROMIUM_EXTENSIONS),
+        /*external_data_fetcher=*/nullptr);
+
+    base::RunLoop run_loop;
+    policy::MockPolicyServiceObserver observer;
+    EXPECT_CALL(observer, OnPolicyUpdated)
+        .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
+
+    policy::PolicyService& policy_service =
+        CHECK_DEREF(g_browser_process->policy_service());
+    policy_service.AddObserver(policy::POLICY_DOMAIN_CHROME, &observer);
+    policy_provider_.UpdateChromePolicy(policy_map_);
+    run_loop.Run();
+    policy_service.RemoveObserver(policy::POLICY_DOMAIN_CHROME, &observer);
+  }
+
+ private:
+  policy::PolicyMap policy_map_;
+  testing::NiceMock<policy::MockConfigurationPolicyProvider> policy_provider_;
+};
+
+class PreFirstRunRefreshPolicyInteractiveUiTest
+    : public WithParamInterface<PolicyTestParam>,
+      public PreFirstRunRefreshPolicyInteractiveUiTestBase {};
+
+IN_PROC_BROWSER_TEST_P(PreFirstRunRefreshPolicyInteractiveUiTest,
+                       SkipFlowEnforcedByPolicy) {
+  signin_util::ResetForceSigninForTesting();
+  SetPolicy(GetParam().key, GetParam().value);
+
+  base::test::TestFuture<bool> proceed_future;
+  ASSERT_TRUE(IsProfileNameDefault());
+  ASSERT_TRUE(fre_service()->ShouldOpenFirstRun());
+
+  OpenFirstRun(proceed_future.GetCallback());
+
+  RunTestSequenceInContext(
+      views::ElementTrackerViews::GetContextForView(view()),
+      WaitForShow(kProfilePickerViewId),
+      InstrumentNonTabWebView(kWebContentsId, web_view()),
+      CompleteWelcomeStep());
+
+  WaitForPickerClosed();
+
+  EXPECT_TRUE(proceed_future.Get());
+  ExpectStepHistograms(Step::kWelcome, /*shown=*/true, /*with_exit=*/true);
+  histogram_tester().ExpectTotalCount("ProfilePicker.FREFlow.StepShownDuration",
+                                      1);
+  histogram_tester().ExpectTotalCount("ProfilePicker.FREFlow.StepTotalDuration",
+                                      1);
+  histogram_tester().ExpectUniqueSample(
+      "ProfilePicker.FirstRun.ExitStatus",
+      ProfilePicker::FirstRunExitStatus::kCompleted, 1);
+
+  if (signin_util::IsForceSigninEnabled()) {
+    histogram_tester().ExpectUniqueSample(
+        "ProfilePicker.FirstRun.FinishReason",
+        ProfilePicker::FirstRunFinishReason::kForceSignin, 1);
+    EXPECT_TRUE(IsProfileNameDefault());
+  } else {
+    histogram_tester().ExpectUniqueSample(
+        "ProfilePicker.FirstRun.FinishReason",
+        ProfilePicker::FirstRunFinishReason::kSkippedByPolicies, 1);
+    EXPECT_EQ(l10n_util::GetStringUTF16(
+                  IDS_SIGNIN_DICE_WEB_INTERCEPT_ENTERPRISE_PROFILE_NAME),
+              GetProfileName());
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(,
+                         PreFirstRunRefreshPolicyInteractiveUiTest,
+                         ValuesIn(kPreFirstRunPolicyTestParams),
+                         [](const TestParamInfo<PolicyTestParam>& info) {
+                           return base::StrCat(
+                               {info.param.key, info.param.value});
+                         });
+
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+class PreFirstRunRefreshPolicyWelcomeInteractiveUiTest
+    : public PreFirstRunRefreshPolicyInteractiveUiTestBase {};
+
+IN_PROC_BROWSER_TEST_F(
+    PreFirstRunRefreshPolicyWelcomeInteractiveUiTest,
+    MetricsOptInAndDefaultBrowserToggleHiddenWhenPolicyManaged) {
+  SetPolicy(policy::key::kMetricsReportingEnabled, "false");
+  SetPolicy(policy::key::kDefaultBrowserSettingEnabled, "false");
+
+  ASSERT_TRUE(fre_service()->ShouldOpenFirstRun());
+
+  OpenFirstRun();
+
+  RunTestSequenceInContext(
+      views::ElementTrackerViews::GetContextForView(view()),
+      WaitForShow(kProfilePickerViewId),
+      InstrumentNonTabWebView(kWebContentsId, web_view()),
+      WaitForWebContentsReady(kWebContentsId, GetWelcomeURL()),
+      EnsureNotPresent(kWebContentsId, GetWelcomeFooterQuery()),
+      EnsureNotPresent(kWebContentsId,
+                       GetWelcomeDefaultBrowserContainerQuery()),
+      EnsurePresent(kWebContentsId, GetWelcomeAcceptButtonQuery()),
+      PressJsButton(kWebContentsId, GetWelcomeAcceptButtonQuery()),
+      WaitForWebContentsNavigation(kWebContentsId,
+                                   GURL(chrome::kChromeUIIntroURL)));
+}
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+
+class FirstRunFeatureShowcaseInteractiveUiTest
+    : public FirstRunRevampInteractiveUiTest {
+ public:
+  FirstRunFeatureShowcaseInteractiveUiTest() = default;
+
+ protected:
+  std::optional<std::vector<std::string>> GetForcedFeatureShowcaseSteps()
+      const override {
+    return std::nullopt;
+  }
+
+  void ExpectFeatureShowcaseStepHistograms(
+      FeatureShowcaseStep step,
+      std::string_view step_histogram_suffix,
+      bool eligible,
+      bool shown,
+      std::optional<FeatureShowcaseStepUserAction> action = std::nullopt) {
+    histogram_tester().ExpectBucketCount(
+        "ProfilePicker.FREFlow.FeatureShowcase.StepEligible", step,
+        eligible ? 1 : 0);
+    histogram_tester().ExpectBucketCount(
+        "ProfilePicker.FREFlow.FeatureShowcase.StepShown", step, shown ? 1 : 0);
+
+    if (action.has_value()) {
+      histogram_tester().ExpectUniqueSample(
+          base::StrCat({"ProfilePicker.FREFlow.FeatureShowcase.StepUserAction.",
+                        step_histogram_suffix}),
+          action.value(), 1);
+    } else {
+      histogram_tester().ExpectTotalCount(
+          base::StrCat({"ProfilePicker.FREFlow.FeatureShowcase.StepUserAction.",
+                        step_histogram_suffix}),
+          0);
+    }
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(FirstRunFeatureShowcaseInteractiveUiTest,
+                       FeatureShowcaseAcceptSteps) {
+  ASSERT_TRUE(fre_service()->ShouldOpenFirstRun());
+
+  base::test::TestFuture<bool> proceed_future;
+  OpenFirstRun(proceed_future.GetCallback());
+  RunTestSequenceInContext(
+      views::ElementTrackerViews::GetContextForView(view()),
+      WaitForShow(kProfilePickerViewId),
+      InstrumentNonTabWebView(kWebContentsId, web_view()),
+      // Do not sign in to proceed to the feature showcase.
+      CompleteIntroStep(/*sign_in=*/false),
+
+#if BUILDFLAG(IS_WIN)
+      WaitForWebContentsNavigation(
+          kWebContentsId, GetFeatureShowcaseUrl(
+                              {kFeatureShowcaseDefaultBrowserStepIdentifier,
+                               kFeatureShowcaseGoogleLensStepIdentifier,
+                               kFeatureShowcasePasswordManagerStepIdentifier})),
+#else
+      WaitForWebContentsNavigation(
+          kWebContentsId,
+          GetFeatureShowcaseUrl(
+              {kFeatureShowcaseGoogleLensStepIdentifier,
+               kFeatureShowcasePasswordManagerStepIdentifier,
+               kFeatureShowcaseThemesAndCustomizationStepIdentifier})),
+#endif
+
+#if BUILDFLAG(IS_WIN)
+      WaitForButtonEnabled(
+          kWebContentsId, GetFeatureShowcaseDefaultBrowserConfirmButtonQuery()),
+      EnsurePresent(kWebContentsId,
+                    GetFeatureShowcaseDefaultBrowserConfirmButtonQuery()),
+      PressJsButton(kWebContentsId,
+                    GetFeatureShowcaseDefaultBrowserConfirmButtonQuery()),
+#endif
+      WaitForButtonEnabled(kWebContentsId,
+                           GetFeatureShowcaseGoogleLensConfirmButtonQuery()),
+      EnsurePresent(kWebContentsId,
+                    GetFeatureShowcaseGoogleLensConfirmButtonQuery()),
+      PressJsButton(kWebContentsId,
+                    GetFeatureShowcaseGoogleLensConfirmButtonQuery()),
+
+      WaitForButtonEnabled(
+          kWebContentsId,
+          GetFeatureShowcasePasswordManagerConfirmButtonQuery()),
+      EnsurePresent(kWebContentsId,
+                    GetFeatureShowcasePasswordManagerConfirmButtonQuery()),
+      PressJsButton(kWebContentsId,
+                    GetFeatureShowcasePasswordManagerConfirmButtonQuery()),
+
+#if !BUILDFLAG(IS_WIN)
+      WaitForButtonEnabled(kWebContentsId,
+                           GetFeatureShowcaseThemesConfirmButtonQuery()),
+      EnsurePresent(kWebContentsId,
+                    GetFeatureShowcaseThemesConfirmButtonQuery()),
+      PressJsButton(kWebContentsId,
+                    GetFeatureShowcaseThemesConfirmButtonQuery()),
+#endif
+
+      CompleteFinishOrContinueStep(/*start_browsing=*/true,
+                                   /*expected_showcase=*/true));
+
+  WaitForPickerClosed();
+  EXPECT_TRUE(proceed_future.Get());
+  EXPECT_TRUE(GetFirstRunFinishedPrefValue());
+
+#if BUILDFLAG(IS_WIN)
+  ExpectFeatureShowcaseStepHistograms(FeatureShowcaseStep::kDefaultBrowser,
+                                      "DefaultBrowser",
+                                      /*eligible=*/true, /*shown=*/true,
+                                      FeatureShowcaseStepUserAction::kAccepted);
+  ExpectFeatureShowcaseStepHistograms(
+      FeatureShowcaseStep::kThemesAndCustomization, "ThemesAndCustomization",
+      /*eligible=*/false, /*shown=*/false);
+#else
+  ExpectFeatureShowcaseStepHistograms(FeatureShowcaseStep::kDefaultBrowser,
+                                      "DefaultBrowser",
+                                      /*eligible=*/false, /*shown=*/false);
+  ExpectFeatureShowcaseStepHistograms(
+      FeatureShowcaseStep::kThemesAndCustomization, "ThemesAndCustomization",
+      /*eligible=*/true, /*shown=*/true,
+      FeatureShowcaseStepUserAction::kAccepted);
+#endif
+
+  ExpectFeatureShowcaseStepHistograms(FeatureShowcaseStep::kGoogleLens,
+                                      "GoogleLens",
+                                      /*eligible=*/true, /*shown=*/true,
+                                      FeatureShowcaseStepUserAction::kAccepted);
+  ExpectFeatureShowcaseStepHistograms(FeatureShowcaseStep::kPasswordManager,
+                                      "PasswordManager",
+                                      /*eligible=*/true, /*shown=*/true,
+                                      FeatureShowcaseStepUserAction::kAccepted);
+  ExpectFeatureShowcaseStepHistograms(FeatureShowcaseStep::kGemini, "Gemini",
+                                      /*eligible=*/false, /*shown=*/false);
+}
+
+using FirstRunFeatureShowcaseWithSyncInteractiveUiTest =
+    WithTestSyncServiceMixin<FirstRunFeatureShowcaseInteractiveUiTest>;
+
+IN_PROC_BROWSER_TEST_F(FirstRunFeatureShowcaseWithSyncInteractiveUiTest,
+                       FeatureShowcaseSkipPasswordManagerIfPinned) {
+  ASSERT_TRUE(fre_service()->ShouldOpenFirstRun());
+
+  PinnedToolbarActionsModel* model = PinnedToolbarActionsModel::Get(profile());
+  model->UpdatePinnedState(kActionShowPasswordsBubbleOrPage, true);
+
+  base::test::TestFuture<bool> proceed_future;
+  OpenFirstRun(proceed_future.GetCallback());
+
+  RunTestSequenceInContext(
+      views::ElementTrackerViews::GetContextForView(view()),
+      WaitForShow(kProfilePickerViewId),
+      InstrumentNonTabWebView(kWebContentsId, web_view()),
+      // Do sign in to proceed to the feature showcase.
+      CompleteIntroStep(/*sign_in=*/true),
+      WaitForWebContentsNavigation(kWebContentsId,
+                                   GetSigninChromeSyncDiceUrl()));
+
+  ConfigureTestSyncService(SyncServiceFactory::GetForProfile(profile()),
+                           syncer::SyncService::TransportState::ACTIVE);
+  SimulateSignIn(kTestEmail, kTestGivenName);
+
+  RunTestSequenceInContext(
+      views::ElementTrackerViews::GetContextForView(view()),
+      // Wait for sign in celebration
+      If([this]() { return UseRevampedView(); },
+         Then(WaitForWebContentsNavigation(
+             kWebContentsId,
+             GURL(chrome::kChromeUIIntroURL)
+                 .Resolve(chrome::kChromeUIIntroSignInCelebrationSubPage)))),
+      DeclineHistorySync(),
+#if BUILDFLAG(IS_WIN)
+      WaitForWebContentsNavigation(
+          kWebContentsId,
+          GetFeatureShowcaseUrl(
+              {kFeatureShowcaseDefaultBrowserStepIdentifier,
+               kFeatureShowcaseGoogleLensStepIdentifier,
+               kFeatureShowcaseThemesAndCustomizationStepIdentifier})),
+#else
+      WaitForWebContentsNavigation(
+          kWebContentsId,
+          GetFeatureShowcaseUrl(
+              {kFeatureShowcaseGoogleLensStepIdentifier,
+               kFeatureShowcaseThemesAndCustomizationStepIdentifier})),
+#endif
+#if BUILDFLAG(IS_WIN)
+      WaitForButtonEnabled(
+          kWebContentsId, GetFeatureShowcaseDefaultBrowserConfirmButtonQuery()),
+      EnsurePresent(kWebContentsId,
+                    GetFeatureShowcaseDefaultBrowserConfirmButtonQuery()),
+      PressJsButton(kWebContentsId,
+                    GetFeatureShowcaseDefaultBrowserConfirmButtonQuery()),
+#endif
+      WaitForButtonEnabled(kWebContentsId,
+                           GetFeatureShowcaseGoogleLensConfirmButtonQuery()),
+      EnsurePresent(kWebContentsId,
+                    GetFeatureShowcaseGoogleLensConfirmButtonQuery()),
+      PressJsButton(kWebContentsId,
+                    GetFeatureShowcaseGoogleLensConfirmButtonQuery()),
+
+      WaitForButtonEnabled(kWebContentsId,
+                           GetFeatureShowcaseThemesConfirmButtonQuery()),
+      EnsurePresent(kWebContentsId,
+                    GetFeatureShowcaseThemesConfirmButtonQuery()),
+      PressJsButton(kWebContentsId,
+                    GetFeatureShowcaseThemesConfirmButtonQuery()),
+
+      CompleteFinishOrContinueStep(/*start_browsing=*/true,
+                                   /*expected_showcase=*/true));
+
+  WaitForPickerClosed();
+  EXPECT_TRUE(proceed_future.Get());
+  EXPECT_TRUE(GetFirstRunFinishedPrefValue());
+
+#if BUILDFLAG(IS_WIN)
+  ExpectFeatureShowcaseStepHistograms(FeatureShowcaseStep::kDefaultBrowser,
+                                      "DefaultBrowser",
+                                      /*eligible=*/true, /*shown=*/true,
+                                      FeatureShowcaseStepUserAction::kAccepted);
+#else
+  ExpectFeatureShowcaseStepHistograms(FeatureShowcaseStep::kDefaultBrowser,
+                                      "DefaultBrowser",
+                                      /*eligible=*/false, /*shown=*/false);
+#endif
+  ExpectFeatureShowcaseStepHistograms(
+      FeatureShowcaseStep::kThemesAndCustomization, "ThemesAndCustomization",
+      /*eligible=*/true, /*shown=*/true,
+      FeatureShowcaseStepUserAction::kAccepted);
+
+  ExpectFeatureShowcaseStepHistograms(FeatureShowcaseStep::kGoogleLens,
+                                      "GoogleLens",
+                                      /*eligible=*/true, /*shown=*/true,
+                                      FeatureShowcaseStepUserAction::kAccepted);
+  ExpectFeatureShowcaseStepHistograms(FeatureShowcaseStep::kPasswordManager,
+                                      "PasswordManager",
+                                      /*eligible=*/false, /*shown=*/false);
+  ExpectFeatureShowcaseStepHistograms(FeatureShowcaseStep::kGemini, "Gemini",
+                                      /*eligible=*/false, /*shown=*/false);
+}
+
+class FirstRunFeatureShowcaseWithGeminiInteractiveUiTest
+    : public FirstRunFeatureShowcaseWithSyncInteractiveUiTest {
+ public:
+  FirstRunFeatureShowcaseWithGeminiInteractiveUiTest() {
+    scoped_feature_list_gemini_.InitWithFeatures(
+        /*enabled_features=*/{features::kGlic,
+                              switches::kFirstRunFeatureShowcaseGeminiStep},
+        /*disabled_features=*/{features::kGlicCountryFiltering});
+  }
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    FirstRunFeatureShowcaseWithSyncInteractiveUiTest::SetUpCommandLine(
+        command_line);
+    command_line->AppendSwitchASCII(
+        variations::switches::kVariationsOverrideCountry, "US");
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_gemini_;
+};
+
+IN_PROC_BROWSER_TEST_F(FirstRunFeatureShowcaseWithGeminiInteractiveUiTest,
+                       FeatureShowcaseGeminiExcludesGoogleLens) {
+  ASSERT_TRUE(fre_service()->ShouldOpenFirstRun());
+
+  base::test::TestFuture<bool> proceed_future;
+  OpenFirstRun(proceed_future.GetCallback());
+
+  RunTestSequenceInContext(
+      views::ElementTrackerViews::GetContextForView(view()),
+      WaitForShow(kProfilePickerViewId),
+      InstrumentNonTabWebView(kWebContentsId, web_view()),
+      // Do sign in to proceed to the feature showcase.
+      CompleteIntroStep(/*sign_in=*/true),
+      WaitForWebContentsNavigation(kWebContentsId,
+                                   GetSigninChromeSyncDiceUrl()));
+
+  ConfigureTestSyncService(SyncServiceFactory::GetForProfile(profile()),
+                           syncer::SyncService::TransportState::ACTIVE);
+  SimulateSignIn(kTestEmail, kTestGivenName, /*with_extended_info=*/true,
+                 /*with_gemini_capabilities=*/true);
+
+  RunTestSequenceInContext(
+      views::ElementTrackerViews::GetContextForView(view()),
+      // Wait for sign in celebration
+      If([this]() { return UseRevampedView(); },
+         Then(WaitForWebContentsNavigation(
+             kWebContentsId,
+             GURL(chrome::kChromeUIIntroURL)
+                 .Resolve(chrome::kChromeUIIntroSignInCelebrationSubPage)))),
+      DeclineHistorySync(),
+#if BUILDFLAG(IS_WIN)
+      WaitForWebContentsNavigation(
+          kWebContentsId, GetFeatureShowcaseUrl(
+                              {kFeatureShowcaseDefaultBrowserStepIdentifier,
+                               kFeatureShowcaseGeminiStepIdentifier,
+                               kFeatureShowcasePasswordManagerStepIdentifier})),
+#else
+      WaitForWebContentsNavigation(
+          kWebContentsId,
+          GetFeatureShowcaseUrl(
+              {kFeatureShowcaseGeminiStepIdentifier,
+               kFeatureShowcasePasswordManagerStepIdentifier,
+               kFeatureShowcaseThemesAndCustomizationStepIdentifier})),
+#endif
+#if BUILDFLAG(IS_WIN)
+      WaitForButtonEnabled(
+          kWebContentsId, GetFeatureShowcaseDefaultBrowserConfirmButtonQuery()),
+      EnsurePresent(kWebContentsId,
+                    GetFeatureShowcaseDefaultBrowserConfirmButtonQuery()),
+      PressJsButton(kWebContentsId,
+                    GetFeatureShowcaseDefaultBrowserConfirmButtonQuery()),
+#endif
+      WaitForButtonEnabled(kWebContentsId,
+                           GetFeatureShowcaseGeminiConfirmButtonQuery()),
+      EnsurePresent(kWebContentsId,
+                    GetFeatureShowcaseGeminiConfirmButtonQuery()),
+      PressJsButton(kWebContentsId,
+                    GetFeatureShowcaseGeminiConfirmButtonQuery()),
+
+      WaitForButtonEnabled(
+          kWebContentsId,
+          GetFeatureShowcasePasswordManagerConfirmButtonQuery()),
+      EnsurePresent(kWebContentsId,
+                    GetFeatureShowcasePasswordManagerConfirmButtonQuery()),
+      PressJsButton(kWebContentsId,
+                    GetFeatureShowcasePasswordManagerConfirmButtonQuery()),
+
+#if !BUILDFLAG(IS_WIN)
+      WaitForButtonEnabled(kWebContentsId,
+                           GetFeatureShowcaseThemesConfirmButtonQuery()),
+      EnsurePresent(kWebContentsId,
+                    GetFeatureShowcaseThemesConfirmButtonQuery()),
+      PressJsButton(kWebContentsId,
+                    GetFeatureShowcaseThemesConfirmButtonQuery()),
+#endif
+
+      CompleteFinishOrContinueStep(/*start_browsing=*/true,
+                                   /*expected_showcase=*/true));
+
+  WaitForPickerClosed();
+  EXPECT_TRUE(proceed_future.Get());
+  EXPECT_TRUE(GetFirstRunFinishedPrefValue());
+
+#if BUILDFLAG(IS_WIN)
+  ExpectFeatureShowcaseStepHistograms(FeatureShowcaseStep::kDefaultBrowser,
+                                      "DefaultBrowser",
+                                      /*eligible=*/true, /*shown=*/true,
+                                      FeatureShowcaseStepUserAction::kAccepted);
+  ExpectFeatureShowcaseStepHistograms(
+      FeatureShowcaseStep::kThemesAndCustomization, "ThemesAndCustomization",
+      /*eligible=*/false, /*shown=*/false);
+#else
+  ExpectFeatureShowcaseStepHistograms(FeatureShowcaseStep::kDefaultBrowser,
+                                      "DefaultBrowser",
+                                      /*eligible=*/false, /*shown=*/false);
+  ExpectFeatureShowcaseStepHistograms(
+      FeatureShowcaseStep::kThemesAndCustomization, "ThemesAndCustomization",
+      /*eligible=*/true, /*shown=*/true,
+      FeatureShowcaseStepUserAction::kAccepted);
+#endif
+
+  ExpectFeatureShowcaseStepHistograms(FeatureShowcaseStep::kGemini, "Gemini",
+                                      /*eligible=*/true, /*shown=*/true,
+                                      FeatureShowcaseStepUserAction::kAccepted);
+  ExpectFeatureShowcaseStepHistograms(FeatureShowcaseStep::kPasswordManager,
+                                      "PasswordManager",
+                                      /*eligible=*/true, /*shown=*/true,
+                                      FeatureShowcaseStepUserAction::kAccepted);
+  ExpectFeatureShowcaseStepHistograms(FeatureShowcaseStep::kGoogleLens,
+                                      "GoogleLens",
+                                      /*eligible=*/false, /*shown=*/false);
 }

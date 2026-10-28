@@ -218,7 +218,7 @@ const int kEnforceMemoryPolicyDelayMs = 1000;
 
 constexpr base::MemoryConsumerTraits kMemoryConsumerTraits(
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kLarge,
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kFreesPagesWithoutTraversal,
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kNone,
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     base::MemoryConsumerTraits::ExecutionType::kSynchronous,
     base::MemoryConsumerTraits::IsStateful::kYes);
@@ -442,7 +442,7 @@ void DiscardableSharedMemoryManager::SetMaxBytes(size_t bytes) {
   base::AutoLock lock(lock_);
 
   max_bytes_ = bytes;
-  effective_max_bytes_ = base::ScaleByMemoryLimit(max_bytes_, memory_limit());
+  effective_max_bytes_ = memory_limit().Scale(max_bytes_);
   ReduceMemoryUsageUntilWithinMaxBytes();
 }
 
@@ -680,12 +680,11 @@ void DiscardableSharedMemoryManager::OnUpdateMemoryLimit() {
 }
 
 void DiscardableSharedMemoryManager::HandleUpdateMemoryLimitOnSequence(
-    int limit) {
+    base::MemoryLimit limit) {
   DCHECK(memory_pressure_task_runner_->RunsTasksInCurrentSequence());
 
   base::AutoLock lock(lock_);
-  effective_max_bytes_ =
-      std::max(bytes_allocated_, base::ScaleByMemoryLimit(max_bytes_, limit));
+  effective_max_bytes_ = std::max(bytes_allocated_, limit.Scale(max_bytes_));
 }
 
 void DiscardableSharedMemoryManager::OnReleaseMemory() {
@@ -696,11 +695,12 @@ void DiscardableSharedMemoryManager::OnReleaseMemory() {
           base::Unretained(this), memory_limit()));
 }
 
-void DiscardableSharedMemoryManager::HandleReleaseMemoryOnSequence(int limit) {
+void DiscardableSharedMemoryManager::HandleReleaseMemoryOnSequence(
+    base::MemoryLimit limit) {
   DCHECK(memory_pressure_task_runner_->RunsTasksInCurrentSequence());
 
   base::AutoLock lock(lock_);
-  effective_max_bytes_ = base::ScaleByMemoryLimit(max_bytes_, limit);
+  effective_max_bytes_ = limit.Scale(max_bytes_);
   ReduceMemoryUsageUntilWithinMaxBytes();
 }
 

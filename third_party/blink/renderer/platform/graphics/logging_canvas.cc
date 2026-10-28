@@ -33,11 +33,13 @@
 #include <unicode/unistr.h>
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "build/build_config.h"
 #include "third_party/blink/renderer/platform/graphics/skia/skia_utils.h"
 #include "third_party/blink/renderer/platform/image-encoders/image_encoder.h"
 #include "third_party/blink/renderer/platform/wtf/text/base64.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkImageInfo.h"
@@ -229,11 +231,12 @@ std::unique_ptr<JSONObject> ObjectForSkImage(const SkImage* image) {
   return image_item;
 }
 
-std::unique_ptr<JSONArray> ArrayForSkScalars(size_t count,
-                                             const SkScalar array[]) {
+std::unique_ptr<JSONArray> ArrayForSkScalars(
+    base::span<const SkScalar, 16> array) {
   auto points_array_item = std::make_unique<JSONArray>();
-  for (size_t i = 0; i < count; ++i)
-    points_array_item->PushDouble(UNSAFE_TODO(array[i]));
+  for (SkScalar value : array) {
+    points_array_item->PushDouble(value);
+  }
   return points_array_item;
 }
 
@@ -243,7 +246,7 @@ std::unique_ptr<JSONObject> ObjectForSkShader(const SkShader& shader) {
 
 String StringForSkColor(SkColor color) {
   // #AARRGGBB.
-  return String::Format("#%08X", color);
+  return Format("#{:08X}", color);
 }
 
 void AppendFlagToString(StringBuilder* flags_string,
@@ -573,7 +576,7 @@ void LoggingCanvas::didSetM44(const SkM44& matrix) {
   matrix.getColMajor(m);
   AutoLogger logger(this);
   JSONObject* params = logger.LogItemWithParams("setMatrix");
-  params->SetArray("matrix44", ArrayForSkScalars(16, m));
+  params->SetArray("matrix44", ArrayForSkScalars(m));
 }
 
 void LoggingCanvas::didConcat44(const SkM44& matrix) {
@@ -581,7 +584,7 @@ void LoggingCanvas::didConcat44(const SkM44& matrix) {
   matrix.getColMajor(m);
   AutoLogger logger(this);
   JSONObject* params = logger.LogItemWithParams("concat44");
-  params->SetArray("matrix44", ArrayForSkScalars(16, m));
+  params->SetArray("matrix44", ArrayForSkScalars(m));
 }
 
 void LoggingCanvas::didScale(SkScalar x, SkScalar y) {

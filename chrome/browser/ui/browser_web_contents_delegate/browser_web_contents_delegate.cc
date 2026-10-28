@@ -4,12 +4,16 @@
 
 #include "chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.h"
 
+#include "base/check_deref.h"
+#include "base/feature_list.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/notimplemented.h"
 #include "base/trace_event/trace_event.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/actor/actor_util.h"
 #include "chrome/browser/background/background_contents.h"
+#include "chrome/browser/background/background_contents_service.h"
+#include "chrome/browser/background/background_contents_service_factory.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/content_settings/page_specific_content_settings_delegate.h"
 #include "chrome/browser/custom_handlers/protocol_handler_registry_factory.h"
@@ -28,11 +32,14 @@
 #include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/browser_ui_controller/browser_ui_controller.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/desktop_browser_window_capabilities.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
+#include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
+#include "chrome/browser/ui/exclusive_access/fullscreen_tab_params.h"
 #include "chrome/browser/ui/exclusive_access/keyboard_lock_controller.h"
 #include "chrome/browser/ui/exclusive_access/pointer_lock_controller.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
@@ -40,6 +47,10 @@
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tab_dialogs.h"
 #include "chrome/browser/ui/tab_modal_confirm_dialog.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
+#include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/contents_web_view.h"
 #include "chrome/browser/ui/views/status_bubble_views.h"
@@ -49,7 +60,6 @@
 #include "chrome/browser/web_applications/web_app_tab_helper.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
 #include "chrome/common/webui_url_constants.h"
-#include "components/blocked_content/list_item_position.h"
 #include "components/blocked_content/popup_blocker.h"
 #include "components/blocked_content/popup_tracker.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
@@ -65,28 +75,41 @@
 #include "components/printing/browser/print_composite_client.h"
 #include "components/split_tabs/split_tab_id.h"
 #include "components/tabs/public/split_tab_data.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/keyboard_event_processing_result.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_widget_host_view.h"
+#include "content/public/browser/site_instance.h"
+#include "content/public/browser/weak_document_ptr.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/drop_data.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/common/window_container_type.mojom-shared.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/browser/extension_system.h"
 #include "extensions/browser/guest_view/mime_handler_view/mime_handler_view_guest.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/browser/process_map.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
+#include "extensions/common/extension_features.h"
+#include "extensions/common/manifest_handlers/background_info.h"
+#include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/blink/public/common/page/drag_operation.h"
 #include "third_party/blink/public/common/security/protocol_handler_security_level.h"
+#include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom.h"
 #include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom.h"
+#include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
 #include "ui/base/base_window.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
+#include "url/origin.h"
 
 #if defined(USE_AURA)
 #include "chrome/browser/ui/overscroll_pref_manager.h"
@@ -101,11 +124,6 @@
 #include "ui/display/screen.h"
 #include "ui/display/types/display_constants.h"
 #endif  // BUILDFLAG(IS_MAC)
-
-// Kill switch for merge safety for a fix for https://crbug.com/489205993
-// TODO(crbug.com/489205993): Remove in M150 or later.
-BASE_FEATURE(kBackgroundActorTaskPopupsOpenInBackground,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 DEFINE_USER_DATA(BrowserWebContentsDelegate);
 
@@ -122,11 +140,167 @@ const extensions::Extension* GetExtensionForOrigin(
   const extensions::Extension* extension =
       extensions::ExtensionRegistry::Get(profile)->enabled_extensions().GetByID(
           security_origin.GetHost());
+  // TODO(crbug.com/577309116): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(extension);
   return extension;
 #else
   return nullptr;
 #endif
+}
+
+bool ShouldCreateBackgroundContents(Profile* profile,
+                                    content::SiteInstance* source_site_instance,
+                                    const GURL& opener_url,
+                                    const std::string& frame_name) {
+  extensions::ExtensionSystem* extension_system =
+      extensions::ExtensionSystem::Get(profile);
+
+  if (!opener_url.is_valid() || frame_name.empty() ||
+      !extension_system->is_ready()) {
+    return false;
+  }
+
+  // Only hosted apps have web extents, so this ensures that only hosted apps
+  // can create BackgroundContents. We don't have to check for background
+  // permission as that is checked in RenderMessageFilter when the CreateWindow
+  // message is processed.
+  const extensions::Extension* extension =
+      extensions::ExtensionRegistry::Get(profile)
+          ->enabled_extensions()
+          .GetHostedAppByURL(opener_url);
+  if (!extension) {
+    return false;
+  }
+
+  // No BackgroundContents allowed if BackgroundContentsService doesn't exist.
+  BackgroundContentsService* service =
+      BackgroundContentsServiceFactory::GetForProfile(profile);
+  if (!service) {
+    return false;
+  }
+
+  // Ensure that we're trying to open this from the extension's process.
+  extensions::ProcessMap* process_map = extensions::ProcessMap::Get(profile);
+  if (!source_site_instance->HasProcess() ||
+      !process_map->Contains(extension->id(),
+                             source_site_instance->GetProcess()->GetID())) {
+    return false;
+  }
+
+  return true;
+}
+
+// Returns true if a window.open() split tab request (the "split" window
+// feature) from `source`, with renderer-chosen `disposition`, can be honored by
+// opening the new contents in a new split alongside `source`.
+bool CanOpenWindowOpenSplitTab(BrowserWindowInterface& browser,
+                               content::WebContents* source,
+                               WindowOpenDisposition disposition) {
+  CHECK(base::FeatureList::IsEnabled(blink::features::kWindowOpenSplitTab));
+  // The renderer's fallback disposition for a split request is NEW_POPUP if
+  // "popup" was also specified, or NEW_FOREGROUND_TAB otherwise. The renderer
+  // drops the request if the user's click modifiers chose the disposition, so
+  // any other disposition is unexpected, and is left alone.
+  if (disposition != WindowOpenDisposition::kNewForegroundTab &&
+      disposition != WindowOpenDisposition::kNewPopup) {
+    return false;
+  }
+  if (!source || browser.GetType() != BrowserWindowInterface::TYPE_NORMAL) {
+    return false;
+  }
+  // Don't interrupt the user for a backgrounded actor task.
+  if (actor::IsRunningBackgroundActorTask(*source)) {
+    return false;
+  }
+  // The opener must be the active tab in this window, and must not already be
+  // in a split. A request from an already-split tab falls back, rather than
+  // replacing content the user placed in the other side of the split.
+  TabStripModel* const tab_strip_model = browser.GetTabStripModel();
+  if (tab_strip_model->GetIndexOfWebContents(source) == TabStripModel::kNoTab) {
+    return false;
+  }
+  tabs::TabInterface* const source_tab =
+      tabs::TabInterface::MaybeGetFromContents(source);
+  return source_tab && source_tab == tab_strip_model->GetActiveTab() &&
+         !source_tab->IsSplit();
+}
+
+BackgroundContents* CreateBackgroundContents(
+    Profile* profile,
+    content::SiteInstance* source_site_instance,
+    content::RenderFrameHost* opener,
+    const GURL& opener_url,
+    bool is_new_browsing_instance,
+    const std::string& frame_name,
+    const GURL& target_url,
+    const content::StoragePartitionConfig& partition_config,
+    content::SessionStorageNamespaceHandle* session_storage_namespace) {
+  BackgroundContentsService* service =
+      BackgroundContentsServiceFactory::GetForProfile(profile);
+  const extensions::Extension* extension =
+      extensions::ExtensionRegistry::Get(profile)
+          ->enabled_extensions()
+          .GetHostedAppByURL(opener_url);
+
+  if (!extension) {
+    return nullptr;
+  }
+
+  // Background content URLs need to be part of the extension's web extent or be
+  // blank.
+  if (base::FeatureList::IsEnabled(
+          extensions_features::kBlockBackgroundContentsOffExtentNavigation) &&
+      !target_url.is_empty() && !target_url.SchemeIs(url::kAboutScheme) &&
+      !extension->web_extent().MatchesURL(target_url)) {
+    return nullptr;
+  }
+  bool allow_js_access = extensions::BackgroundInfo::AllowJSAccess(extension);
+  // Only allow a single background contents per app.
+  BackgroundContents* existing =
+      service->GetAppBackgroundContents(extension->id());
+  if (existing) {
+    // For non-scriptable background contents, ignore the request altogether,
+    // Note that ShouldCreateBackgroundContents() returning true will also
+    // suppress creation of the normal WebContents.
+    if (!allow_js_access) {
+      return nullptr;
+    }
+    // For scriptable background pages, if one already exists, close it (even
+    // if it was specified in the manifest).
+    service->DeleteBackgroundContents(existing);
+  }
+
+  // Passed all the checks, so this should be created as a BackgroundContents.
+  if (allow_js_access) {
+    return service->CreateBackgroundContents(
+        source_site_instance, opener, is_new_browsing_instance, frame_name,
+        extension->id(), partition_config, session_storage_namespace);
+  }
+
+  // If script access is not allowed, create the the background contents in a
+  // new SiteInstance, so that a separate process is used. We must not use any
+  // of the passed-in routing IDs, as they are objects in the opener's
+  // process.
+  BackgroundContents* contents = service->CreateBackgroundContents(
+      content::SiteInstance::Create(source_site_instance->GetBrowserContext()),
+      nullptr, is_new_browsing_instance, frame_name, extension->id(),
+      partition_config, session_storage_namespace);
+
+  // When a separate process is used, the original renderer cannot access the
+  // new window later, thus we need to navigate the window now.
+  content::NavigationController::LoadURLParams params(target_url);
+  params.is_renderer_initiated = true;
+  if (opener) {
+    params.initiator_origin = opener->GetLastCommittedOrigin();
+    params.initiator_process_id = opener->GetProcess()->GetID();
+  } else {
+    params.initiator_origin = url::Origin::Create(opener_url);
+  }
+  params.source_site_instance = source_site_instance;
+  contents->web_contents()->GetController().LoadURLWithParams(params);
+
+  return contents;
 }
 
 }  // namespace
@@ -138,13 +312,15 @@ BrowserWebContentsDelegate::BrowserWebContentsDelegate(
     UnloadController& unload_controller,
     web_app::AppBrowserController* app_browser_controller,
     BrowserWindow& window,
-    DesktopBrowserWindowCapabilities& capabilities)
+    DesktopBrowserWindowCapabilities& capabilities,
+    BrowserUiController& browser_ui_controller)
     : exclusive_access_manager_(exclusive_access_manager),
       command_controller_(command_controller),
       unload_controller_(unload_controller),
       app_browser_controller_(app_browser_controller),
       window_(window),
       capabilities_(capabilities),
+      browser_ui_controller_(browser_ui_controller),
       browser_(*browser),
       scoped_data_holder_(browser->GetUnownedUserDataHost(), *this) {}
 
@@ -207,12 +383,6 @@ void BrowserWebContentsDelegate::LostPointerLock() {
       ->ExitExclusiveAccessToPreviousState();
 }
 
-bool BrowserWebContentsDelegate::IsWaitingForPointerLockPrompt(
-    content::WebContents* web_contents) {
-  return exclusive_access_manager_->pointer_lock_controller()
-      ->IsWaitingForPointerLockPrompt(web_contents);
-}
-
 bool BrowserWebContentsDelegate::AllowKeyboardLockForInnerContents(
     content::WebContents* web_contents) {
   return capabilities_->AllowKeyboardLockForInnerContents(web_contents);
@@ -262,9 +432,7 @@ void BrowserWebContentsDelegate::SetTopControlsGestureScrollInProgress(
 
 bool BrowserWebContentsDelegate::CanOverscrollContent() {
 #if defined(USE_AURA)
-  return browser_->GetFeatures()
-      .overscroll_pref_manager()
-      ->CanOverscrollContent();
+  return OverscrollPrefManager::From(&browser_.get())->CanOverscrollContent();
 #else
   return false;
 #endif
@@ -315,7 +483,7 @@ bool BrowserWebContentsDelegate::CanDragEnter(
   // external navigation.
   if ((operations_allowed & blink::kDragOperationLink) &&
       chrome::SettingsWindowManager::GetInstance()->IsSettingsBrowser(
-          browser_->GetBrowserForMigrationOnly())) {
+          &browser_.get())) {
     return false;
   }
 #endif
@@ -357,19 +525,17 @@ void BrowserWebContentsDelegate::OnDidBlockNavigation(
     const GURL& blocked_url,
     const GURL& initiator_url,
     const url::Origin& initiator_origin,
+    scoped_refptr<content::InitiatorNavigationState> initiator_navigation_state,
     blink::mojom::NavigationBlockedReason reason) {
   if (reason ==
       blink::mojom::NavigationBlockedReason::kRedirectWithNoUserGesture) {
+    tabs::TabInterface* tab =
+        tabs::TabInterface::MaybeGetFromContents(web_contents);
     if (auto* framebust_helper =
-            FramebustBlockTabHelper::FromWebContents(web_contents)) {
-      auto on_click = [](const GURL& url, size_t index, size_t total_elements) {
-        UMA_HISTOGRAM_ENUMERATION(
-            "WebCore.Framebust.ClickThroughPosition",
-            blocked_content::GetListItemPositionFromDistance(index,
-                                                             total_elements));
-      };
+            tab ? FramebustBlockTabHelper::From(tab) : nullptr) {
       framebust_helper->AddBlockedUrl(blocked_url, initiator_origin,
-                                      base::BindOnce(on_click));
+                                      initiator_navigation_state,
+                                      base::NullCallback());
     }
   }
 }
@@ -405,12 +571,12 @@ content::WebContents* BrowserWebContentsDelegate::OpenURLFromTab(
   TRACE_EVENT1("navigation", "BrowserWebContentsDelegate::OpenURLFromTab",
                "source", source);
 #if DCHECK_IS_ON()
-  DCHECK(params.Valid());
+  CHECK(params.Valid(), base::NotFatalUntil::M162);
 #endif
 
   if ((browser_->GetType() == BrowserWindowInterface::Type::TYPE_DEVTOOLS)) {
     DevToolsWindow* window = DevToolsWindow::AsDevToolsWindow(source);
-    DCHECK(window);
+    CHECK(window, base::NotFatalUntil::M162);
     return window->OpenURLFromTab(source, params,
                                   std::move(navigation_handle_callback));
   }
@@ -419,7 +585,7 @@ content::WebContents* BrowserWebContentsDelegate::OpenURLFromTab(
   // creating a new tab. Return |source| so that WebContentsImpl::OpenURL()
   // sees new_contents == this and skips the DidOpenRequestedURL notification,
   // which is only meant for newly created WebContents.
-  if (params.disposition == WindowOpenDisposition::NEW_SPLIT_VIEW && source) {
+  if (params.disposition == WindowOpenDisposition::kNewSplitView && source) {
     tabs::TabInterface* const source_tab =
         tabs::TabInterface::MaybeGetFromContents(source);
     if (source_tab && source_tab->IsSplit()) {
@@ -499,8 +665,7 @@ void BrowserWebContentsDelegate::NavigationStateChanged(
 
   // Only update the UI when something visible has changed.
   if (changed_flags) {
-    browser_->GetBrowserForMigrationOnly()->ScheduleUIUpdate(source,
-                                                             changed_flags);
+    browser_ui_controller_->ScheduleUIUpdate(source, changed_flags);
   }
 
   // We can synchronously update commands since they will only change once per
@@ -522,7 +687,7 @@ void BrowserWebContentsDelegate::VisibleSecurityStateChanged(
     content::WebContents* source) {
   // When the current tab's security state changes, we need to update the URL
   // bar to reflect the new state.
-  DCHECK(source);
+  CHECK(source, base::NotFatalUntil::M162);
   if (browser_->GetTabStripModel()->GetActiveWebContents() == source) {
     window_->UpdateToolbarSecurityState();
 
@@ -540,6 +705,22 @@ content::WebContents* BrowserWebContentsDelegate::AddNewContents(
     const blink::mojom::WindowFeatures& window_features,
     bool user_gesture,
     bool* was_blocked) {
+  // Handle a window.open() split tab request. The renderer chooses a tab or
+  // popup disposition as the fallback, and the browser decides whether to
+  // create the split. The renderer doesn't send the request if the user's
+  // click modifiers chose the disposition (e.g. ctrl-click for a background
+  // tab), so those are handled as usual.
+  if (window_features.is_split) {
+    // Only the renderer sets `is_split`, and content rejects it as a bad
+    // message if the feature is disabled. Other callers either forward the
+    // features of such a request (e.g. DevTools or guest views), or pass
+    // default features.
+    CHECK(base::FeatureList::IsEnabled(blink::features::kWindowOpenSplitTab));
+    if (CanOpenWindowOpenSplitTab(*browser_, source, disposition)) {
+      disposition = WindowOpenDisposition::kNewSplitView;
+    }
+  }
+
   FullscreenController* fullscreen_controller =
       exclusive_access_manager_->fullscreen_controller();
 #if BUILDFLAG(IS_MAC)
@@ -555,10 +736,10 @@ content::WebContents* BrowserWebContentsDelegate::AddNewContents(
       screen->GetDisplayNearestView(source->GetContentNativeView()) !=
           screen->GetDisplayMatching(window_features.bounds);
   if (!app_browser_controller_ &&
-      disposition == WindowOpenDisposition::NEW_POPUP &&
+      disposition == WindowOpenDisposition::kNewPopup &&
       fullscreen_controller->IsFullscreenForBrowser() &&
       !targeting_different_display) {
-    disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    disposition = WindowOpenDisposition::kNewForegroundTab;
   }
 #endif
 
@@ -576,7 +757,7 @@ content::WebContents* BrowserWebContentsDelegate::AddNewContents(
   // Allow fullscreen-within-tab openers to open popups normally.
   NavigateParams::WindowAction window_action =
       NavigateParams::WindowAction::kShowWindow;
-  if (disposition == WindowOpenDisposition::NEW_POPUP &&
+  if (disposition == WindowOpenDisposition::kNewPopup &&
       fullscreen_controller->GetFullscreenState(source).target_mode ==
           content::FullscreenMode::kContent) {
     window_action = NavigateParams::WindowAction::kShowWindowInactive;
@@ -596,13 +777,11 @@ content::WebContents* BrowserWebContentsDelegate::AddNewContents(
 
   // If a backgrounded actor task triggered a new tab/popup, don't interrupt the
   // user.
-  if (base::FeatureList::IsEnabled(
-          kBackgroundActorTaskPopupsOpenInBackground) &&
-      source && actor::IsRunningBackgroundActorTask(*source)) {
-    if (disposition == WindowOpenDisposition::NEW_POPUP) {
+  if (source && actor::IsRunningBackgroundActorTask(*source)) {
+    if (disposition == WindowOpenDisposition::kNewPopup) {
       window_action = NavigateParams::WindowAction::kShowWindowInactive;
-    } else if (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB) {
-      disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+    } else if (disposition == WindowOpenDisposition::kNewForegroundTab) {
+      disposition = WindowOpenDisposition::kNewBackgroundTab;
     }
   }
 
@@ -631,17 +810,14 @@ bool BrowserWebContentsDelegate::IsContentsActive(
 void BrowserWebContentsDelegate::LoadingStateChanged(
     content::WebContents* source,
     bool should_show_loading_ui) {
-  browser_->GetBrowserForMigrationOnly()->ScheduleUIUpdate(
-      source, content::INVALIDATE_TYPE_LOAD);
-  browser_->GetBrowserForMigrationOnly()->UpdateWindowForLoadingStateChanged(
+  browser_ui_controller_->ScheduleUIUpdate(source,
+                                           content::INVALIDATE_TYPE_LOAD);
+  browser_ui_controller_->UpdateWindowForLoadingStateChanged(
       source, should_show_loading_ui);
 }
 
 void BrowserWebContentsDelegate::CloseContents(content::WebContents* source) {
-  if (unload_controller_->CanCloseContents(source)) {
-    chrome::CloseWebContents(browser_->GetBrowserForMigrationOnly(), source,
-                             true);
-  }
+  unload_controller_->CloseContents(source);
 }
 
 void BrowserWebContentsDelegate::SetContentsBounds(content::WebContents* source,
@@ -668,7 +844,7 @@ void BrowserWebContentsDelegate::SetContentsBounds(content::WebContents* source,
 void BrowserWebContentsDelegate::UpdateTargetURL(content::WebContents* source,
                                                  const GURL& url) {
   std::vector<StatusBubble*> status_bubbles =
-      browser_->GetBrowserForMigrationOnly()->GetStatusBubbles();
+      browser_ui_controller_->GetStatusBubbles();
   for (StatusBubble* status_bubble : status_bubbles) {
     StatusBubbleViews* status_bubble_views =
         static_cast<StatusBubbleViews*>(status_bubble);
@@ -695,7 +871,7 @@ void BrowserWebContentsDelegate::ContentsMouseEvent(
 
   // Mouse motion events update the status bubble, if it exists.
   std::vector<StatusBubble*> status_bubbles =
-      browser_->GetBrowserForMigrationOnly()->GetStatusBubbles();
+      browser_ui_controller_->GetStatusBubbles();
   for (StatusBubble* status_bubble : status_bubbles) {
     StatusBubbleViews* status_bubble_views =
         static_cast<StatusBubbleViews*>(status_bubble);
@@ -888,11 +1064,11 @@ bool BrowserWebContentsDelegate::IsWebContentsCreationOverridden(
     return true;
   }
 
-  return (
-      window_container_type ==
-          content::mojom::WindowContainerType::BACKGROUND &&
-      browser_->GetBrowserForMigrationOnly()->ShouldCreateBackgroundContents(
-          source_site_instance, opener_url, frame_name));
+  return (window_container_type ==
+              content::mojom::WindowContainerType::BACKGROUND &&
+          ShouldCreateBackgroundContents(browser_->GetProfile(),
+                                         source_site_instance, opener_url,
+                                         frame_name));
 }
 
 content::WebContents* BrowserWebContentsDelegate::CreateCustomWebContents(
@@ -905,7 +1081,7 @@ content::WebContents* BrowserWebContentsDelegate::CreateCustomWebContents(
     WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     const content::StoragePartitionConfig& partition_config,
-    content::SessionStorageNamespace* session_storage_namespace) {
+    content::SessionStorageNamespaceHandle* session_storage_namespace) {
   if (auto* opener_contents = content::WebContents::FromRenderFrameHost(opener);
       actor::HasActorTaskPreventingNewWebContents(opener)) {
     // If an ExecutionEngine is acting on the opener, we force the navigation
@@ -923,10 +1099,10 @@ content::WebContents* BrowserWebContentsDelegate::CreateCustomWebContents(
     return nullptr;
   }
 
-  BackgroundContents* background_contents =
-      browser_->GetBrowserForMigrationOnly()->CreateBackgroundContents(
-          source_site_instance, opener, opener_url, is_new_browsing_instance,
-          frame_name, target_url, partition_config, session_storage_namespace);
+  BackgroundContents* background_contents = CreateBackgroundContents(
+      browser_->GetProfile(), source_site_instance, opener, opener_url,
+      is_new_browsing_instance, frame_name, target_url, partition_config,
+      session_storage_namespace);
   if (background_contents) {
     return background_contents->web_contents();
   }
@@ -1013,6 +1189,12 @@ bool BrowserWebContentsDelegate::GetCanResize() {
   return window_->GetCanResize();
 }
 
+bool BrowserWebContentsDelegate::GetIsAlwaysOnTopPopup() {
+  return browser_->GetType() == BrowserWindowInterface::Type::TYPE_FLOATING &&
+         !DesktopBrowserWindowCapabilities::IsDocumentPictureInPicture(
+             &*browser_);
+}
+
 bool BrowserWebContentsDelegate::CanUseWindowingControls(
     content::RenderFrameHost* requesting_frame) {
   if (!app_browser_controller_) {
@@ -1093,7 +1275,7 @@ blink::mojom::DisplayMode BrowserWebContentsDelegate::GetDisplayMode(
   }
 
   const BrowserWindowInterface::Type type = browser_->GetType();
-  if ((type == BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE)) {
+  if ((type == BrowserWindowInterface::Type::TYPE_FLOATING)) {
     return blink::mojom::DisplayMode::kPictureInPicture;
   }
 
@@ -1127,8 +1309,11 @@ blink::mojom::DisplayMode BrowserWebContentsDelegate::GetDisplayMode(
   return blink::mojom::DisplayMode::kBrowser;
 }
 
-blink::ProtocolHandlerSecurityLevel
-BrowserWebContentsDelegate::GetProtocolHandlerSecurityLevel(
+namespace {
+
+// Returns the extension that owns `requesting_frame` when the frame is hosted
+// in a privileged extension process, or null otherwise.
+const extensions::Extension* GetExtensionForProtocolHandler(
     content::RenderFrameHost* requesting_frame) {
   content::BrowserContext* context = requesting_frame->GetBrowserContext();
   extensions::ProcessMap* process_map = extensions::ProcessMap::Get(context);
@@ -1138,9 +1323,41 @@ BrowserWebContentsDelegate::GetProtocolHandlerSecurityLevel(
   if (owner_extension &&
       process_map->IsPrivilegedExtensionProcess(
           *owner_extension, requesting_frame->GetProcess()->GetID())) {
-    return blink::ProtocolHandlerSecurityLevel::kExtensionFeatures;
+    return owner_extension;
   }
-  return blink::ProtocolHandlerSecurityLevel::kStrict;
+  return nullptr;
+}
+
+// Creates a ProtocolHandler for a navigator.registerProtocolHandler request.
+// Handlers registered from a privileged extension page are tagged with the
+// owning extension's id so that they are removed when the extension is
+// disabled or uninstalled.
+custom_handlers::ProtocolHandler CreateProtocolHandlerForFrame(
+    content::RenderFrameHost* requesting_frame,
+    const std::string& protocol,
+    const GURL& url) {
+  if (const extensions::Extension* extension =
+          GetExtensionForProtocolHandler(requesting_frame)) {
+    custom_handlers::ProtocolHandler handler =
+        custom_handlers::ProtocolHandler::CreateExtensionProtocolHandler(
+            protocol, url, extension->id());
+    // Handlers registered via the JS API go through the permission prompt and
+    // so are confirmed at registration time, unlike manifest handlers.
+    handler.Confirm();
+    return handler;
+  }
+  return custom_handlers::ProtocolHandler::CreateProtocolHandler(
+      protocol, url, blink::ProtocolHandlerSecurityLevel::kStrict);
+}
+
+}  // namespace
+
+blink::ProtocolHandlerSecurityLevel
+BrowserWebContentsDelegate::GetProtocolHandlerSecurityLevel(
+    content::RenderFrameHost* requesting_frame) {
+  return GetExtensionForProtocolHandler(requesting_frame)
+             ? blink::ProtocolHandlerSecurityLevel::kExtensionFeatures
+             : blink::ProtocolHandlerSecurityLevel::kStrict;
 }
 
 void BrowserWebContentsDelegate::RegisterProtocolHandler(
@@ -1157,14 +1374,13 @@ void BrowserWebContentsDelegate::RegisterProtocolHandler(
       content::WebContents::FromRenderFrameHost(requesting_frame);
 
   custom_handlers::ProtocolHandler handler =
-      custom_handlers::ProtocolHandler::CreateProtocolHandler(
-          protocol, url, GetProtocolHandlerSecurityLevel(requesting_frame));
+      CreateProtocolHandlerForFrame(requesting_frame, protocol, url);
 
   // The parameters's normalization process defined in the spec has been already
   // applied in the WebContentImpl class, so at this point it shouldn't be
   // possible to create an invalid handler.
   // https://html.spec.whatwg.org/multipage/system-state.html#normalize-protocol-handler-parameters
-  DCHECK(handler.IsValid());
+  CHECK(handler.IsValid(), base::NotFatalUntil::M162);
 
   custom_handlers::ProtocolHandlerRegistry* registry =
       ProtocolHandlerRegistryFactory::GetForBrowserContext(context);
@@ -1198,17 +1414,31 @@ void BrowserWebContentsDelegate::RegisterProtocolHandler(
   permissions::PermissionRequestManager* permission_request_manager =
       permissions::PermissionRequestManager::FromWebContents(web_contents);
   if (permission_request_manager) {
+    // ForSecurityDropFullscreen() can exit fullscreen across related
+    // WebContents, which can execute observers or spin a nested event pump that
+    // synchronously destroys the requesting frame (e.g. if an iframe is
+    // detached). Track the frame weakly and ensure it is still alive and active
+    // before adding the request.
+    content::WeakDocumentPtr weak_document =
+        requesting_frame->GetWeakDocumentPtr();
     auto blocker = web_contents->ForSecurityDropFullscreen(
         /*display_id=*/display::kInvalidDisplayId);
-    if (!blocker) {
+    content::RenderFrameHost* rfh = weak_document.AsRenderFrameHostIfValid();
+    if (!blocker || !rfh || !rfh->IsActive()) {
       return;
     }
 
+    // The permission prompt must attribute the request to the initiator frame
+    // that called navigator.registerProtocolHandler, rather than the target
+    // handler URL. For web pages these are always same-origin, but extensions
+    // can register cross-origin HTTPS endpoints; attributing the prompt to the
+    // target URL would allow an extension to spoof the prompt as coming from
+    // the target origin.
     permission_request_manager->AddRequest(
-        requesting_frame,
-        std::make_unique<
-            custom_handlers::RegisterProtocolHandlerPermissionRequest>(
-            registry, handler, url, std::move(*blocker)));
+        rfh, std::make_unique<
+                 custom_handlers::RegisterProtocolHandlerPermissionRequest>(
+                 registry, handler, rfh->GetLastCommittedOrigin(),
+                 std::move(*blocker)));
   }
 }
 
@@ -1225,29 +1455,11 @@ void BrowserWebContentsDelegate::UnregisterProtocolHandler(
   }
 
   custom_handlers::ProtocolHandler handler =
-      custom_handlers::ProtocolHandler::CreateProtocolHandler(
-          protocol, url, GetProtocolHandlerSecurityLevel(requesting_frame));
+      CreateProtocolHandlerForFrame(requesting_frame, protocol, url);
 
   custom_handlers::ProtocolHandlerRegistry* registry =
       ProtocolHandlerRegistryFactory::GetForBrowserContext(context);
   registry->RemoveHandler(handler);
-}
-
-void BrowserWebContentsDelegate::FindReply(content::WebContents* web_contents,
-                                           int request_id,
-                                           int number_of_matches,
-                                           const gfx::Rect& selection_rect,
-                                           int active_match_ordinal,
-                                           bool final_update) {
-  find_in_page::FindTabHelper* find_tab_helper =
-      find_in_page::FindTabHelper::FromWebContents(web_contents);
-  if (!find_tab_helper) {
-    return;
-  }
-
-  find_tab_helper->HandleFindReply(request_id, number_of_matches,
-                                   selection_rect, active_match_ordinal,
-                                   final_update);
 }
 
 void BrowserWebContentsDelegate::RequestMediaAccessPermission(

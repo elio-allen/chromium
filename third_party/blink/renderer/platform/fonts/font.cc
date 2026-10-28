@@ -24,6 +24,9 @@
 
 #include "third_party/blink/renderer/platform/fonts/font.h"
 
+#include <array>
+
+#include "base/containers/span.h"
 #include "cc/paint/paint_flags.h"
 #include "third_party/blink/renderer/platform/fonts/character_range.h"
 #include "third_party/blink/renderer/platform/fonts/font_cache.h"
@@ -35,6 +38,7 @@
 #include "third_party/blink/renderer/platform/fonts/simple_font_data.h"
 #include "third_party/blink/renderer/platform/fonts/text_fragment_paint_info.h"
 #include "third_party/blink/renderer/platform/geometry/layout_unit.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/character.h"
 #include "third_party/blink/renderer/platform/text/text_run.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
@@ -100,12 +104,13 @@ void Font::DrawText(cc::PaintCanvas* canvas,
     return;
 
   // For performance avoid stack initialization on this large object.
-  STACK_UNINITIALIZED ShapeResultBloberizer::FillGlyphsNG bloberizer(
-      GetFontDescription(), text_info.text, text_info.from, text_info.to,
-      text_info.shape_result,
-      draw_type == Font::DrawType::kGlyphsOnly
-          ? ShapeResultBloberizer::Type::kNormal
-          : ShapeResultBloberizer::Type::kEmitText);
+  STACK_UNINITIALIZED ShapeResultBloberizer bloberizer =
+      ShapeResultBloberizer::FillGlyphs(
+          GetFontDescription(), text_info.text, text_info.from, text_info.to,
+          text_info.shape_result,
+          draw_type == Font::DrawType::kGlyphsOnly
+              ? ShapeResultBloberizer::Type::kNormal
+              : ShapeResultBloberizer::Type::kEmitText);
   DrawTextBlobs(bloberizer.Blobs(), *canvas, point, flags, node_id);
 }
 
@@ -121,9 +126,10 @@ void Font::DrawEmphasisMarks(cc::PaintCanvas* canvas,
   if (!emphasis_glyph_data.font_data)
     return;
 
-  ShapeResultBloberizer::FillTextEmphasisGlyphsNG bloberizer(
-      GetFontDescription(), text_info.text, text_info.from, text_info.to,
-      text_info.shape_result, emphasis_glyph_data);
+  ShapeResultBloberizer bloberizer =
+      ShapeResultBloberizer::FillTextEmphasisGlyphs(
+          GetFontDescription(), text_info.text, text_info.from, text_info.to,
+          text_info.shape_result, emphasis_glyph_data);
   DrawTextBlobs(bloberizer.Blobs(), *canvas, point, flags);
 }
 
@@ -144,13 +150,14 @@ gfx::RectF Font::TextInkBounds(const TextFragmentPaintInfo& text_info) const {
 
 namespace {  // anonymous namespace
 
-unsigned InterceptsFromBlobs(const ShapeResultBloberizer::BlobBuffer& blobs,
-                             const SkPaint& paint,
-                             const std::tuple<float, float>& bounds,
-                             SkScalar* intercepts_buffer) {
-  SkScalar bounds_array[2] = {std::get<0>(bounds), std::get<1>(bounds)};
+wtf_size_t InterceptsFromBlobs(const ShapeResultBloberizer::BlobBuffer& blobs,
+                               const SkPaint& paint,
+                               const std::tuple<float, float>& bounds,
+                               base::span<SkScalar> intercepts_buffer) {
+  std::array<SkScalar, 2> bounds_array = {std::get<0>(bounds),
+                                          std::get<1>(bounds)};
 
-  unsigned num_intervals = 0;
+  wtf_size_t num_intervals = 0;
   for (const auto& blob_info : blobs) {
     DCHECK(blob_info.blob);
 
@@ -162,10 +169,13 @@ unsigned InterceptsFromBlobs(const ShapeResultBloberizer::BlobBuffer& blobs,
       continue;
 
     SkScalar* offset_intercepts_buffer = nullptr;
-    if (intercepts_buffer)
-      offset_intercepts_buffer = UNSAFE_TODO(&intercepts_buffer[num_intervals]);
+    if (!intercepts_buffer.empty()) {
+      DCHECK_LE(num_intervals, intercepts_buffer.size());
+      offset_intercepts_buffer =
+          intercepts_buffer.subspan(num_intervals).data();
+    }
     num_intervals += blob_info.blob->getIntercepts(
-        bounds_array, offset_intercepts_buffer, &paint);
+        bounds_array.data(), offset_intercepts_buffer, &paint);
   }
   return num_intervals;
 }
@@ -178,20 +188,24 @@ void GetTextInterceptsInternal(const ShapeResultBloberizer::BlobBuffer& blobs,
   // specifying nullptr for the buffer, following the Skia allocation model for
   // retrieving text intercepts.
   SkPaint paint = flags.ToSkPaint();
-  unsigned num_intervals = InterceptsFromBlobs(blobs, paint, bounds, nullptr);
+  wtf_size_t num_intervals = InterceptsFromBlobs(blobs, paint, bounds, {});
   if (!num_intervals)
     return;
   DCHECK_EQ(num_intervals % 2, 0u);
-  intercepts.resize(num_intervals / 2u);
 
-  InterceptsFromBlobs(blobs, paint, bounds,
-                      reinterpret_cast<SkScalar*>(intercepts.data()));
+  Vector<SkScalar> scalar_buffer(num_intervals);
+  InterceptsFromBlobs(blobs, paint, bounds, scalar_buffer);
+
+  intercepts.resize(num_intervals / 2u);
+  for (wtf_size_t i = 0; i < num_intervals / 2; ++i) {
+    intercepts[i] = {scalar_buffer[i * 2], scalar_buffer[i * 2 + 1]};
+  }
 }
 
 }  // anonymous namespace
 
 void Font::GetTextIntercepts(const TextFragmentPaintInfo& text_info,
-                             InkSkipCJKHandling ink_skip_cjk_handling,
+                             InkSkipCjkHandling ink_skip_cjk_handling,
                              const cc::PaintFlags& flags,
                              const std::tuple<float, float>& bounds,
                              Vector<TextIntercept>& intercepts) const {
@@ -199,10 +213,10 @@ void Font::GetTextIntercepts(const TextFragmentPaintInfo& text_info,
     return;
 
   ShapeResultBloberizer::Type intercept_type =
-      ink_skip_cjk_handling == InkSkipCJKHandling::kIncludeCJK
+      ink_skip_cjk_handling == InkSkipCjkHandling::kIncludeCjk
           ? ShapeResultBloberizer::Type::kTextInterceptsAll
           : ShapeResultBloberizer::Type::kTextIntercepts;
-  ShapeResultBloberizer::FillGlyphsNG bloberizer(
+  ShapeResultBloberizer bloberizer = ShapeResultBloberizer::FillGlyphs(
       GetFontDescription(), text_info.text, text_info.from, text_info.to,
       text_info.shape_result, intercept_type);
 
@@ -222,13 +236,14 @@ bool Font::CanShapeWordByWord() const {
 }
 
 void Font::ReportNotDefGlyph() const {
-  FontSelector* fontSelector = EnsureFontFallbackList()->GetFontSelector();
+  FontSelector* font_selector = EnsureFontFallbackList()->GetFontSelector();
   // We have a few non-DOM usages of Font code, for example in DragImage::Create
   // and in EmbeddedObjectPainter::paintReplaced. In those cases, we can't
   // retrieve a font selector as our connection to a Document object to report
   // UseCounter metrics, and thus we cannot report notdef glyphs.
-  if (fontSelector)
-    fontSelector->ReportNotDefGlyph();
+  if (font_selector) {
+    font_selector->ReportNotDefGlyph();
+  }
 }
 
 void Font::WillUseFontData(const String& text) const {
@@ -261,11 +276,7 @@ LayoutUnit Font::EmphasisMarkAscent(const AtomicString& mark) const {
   const SimpleFontData* mark_font_data = mark_glyph_data.font_data;
   if (!mark_font_data)
     return LayoutUnit();
-
-  if (RuntimeEnabledFeatures::TextEmphasisAsRubyEnabled()) {
-    return mark_font_data->NormalizedTypoAscent();
-  }
-  return mark_font_data->GetFontMetrics().FixedAscent();
+  return mark_font_data->NormalizedTypoAscent();
 }
 
 LayoutUnit Font::EmphasisMarkDescent(const AtomicString& mark) const {
@@ -273,11 +284,7 @@ LayoutUnit Font::EmphasisMarkDescent(const AtomicString& mark) const {
   const SimpleFontData* mark_font_data = mark_glyph_data.font_data;
   if (!mark_font_data)
     return LayoutUnit();
-
-  if (RuntimeEnabledFeatures::TextEmphasisAsRubyEnabled()) {
-    return mark_font_data->NormalizedTypoDescent();
-  }
-  return mark_font_data->GetFontMetrics().FixedDescent();
+  return mark_font_data->NormalizedTypoDescent();
 }
 
 LayoutUnit Font::EmphasisMarkHeight(const AtomicString& mark) const {
@@ -285,12 +292,7 @@ LayoutUnit Font::EmphasisMarkHeight(const AtomicString& mark) const {
   const SimpleFontData* mark_font_data = mark_glyph_data.font_data;
   if (!mark_font_data)
     return LayoutUnit();
-
-  if (RuntimeEnabledFeatures::TextEmphasisAsRubyEnabled()) {
-    return mark_font_data->NormalizedTypoAscentAndDescent().LineHeight();
-  }
-  return LayoutUnit::FromFloatRound(
-      mark_font_data->GetFontMetrics().FloatHeight());
+  return mark_font_data->NormalizedTypoAscentAndDescent().LineHeight();
 }
 
 float Font::TextAutoSpaceInlineSize() const {

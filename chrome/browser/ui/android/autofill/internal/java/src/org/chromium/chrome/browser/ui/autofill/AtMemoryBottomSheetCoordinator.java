@@ -7,11 +7,11 @@ package org.chromium.chrome.browser.ui.autofill;
 import android.content.Context;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.autofill.AutofillSuggestion;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
-import org.chromium.components.browser_ui.bottomsheet.EmptyBottomSheetObserver;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 
 import java.util.List;
@@ -23,15 +23,18 @@ public class AtMemoryBottomSheetCoordinator {
     private final AtMemoryBottomSheetMediator mMediator;
     private final BottomSheetController mBottomSheetController;
 
-    public static final int ITEM_TYPE_SUGGESTION = 1;
-    public static final int ITEM_TYPE_SEARCH_TILE = 2;
-    public static final int ITEM_TYPE_ILLUSTRATION_CARD = 3;
-
     private final BottomSheetObserver mBottomSheetObserver =
-            new EmptyBottomSheetObserver() {
+            new BottomSheetObserver() {
+                @Override
+                public void onSheetOpened(@BottomSheetController.StateChangeReason int reason) {
+                    if (mBottomSheetController.getCurrentSheetContent() != null
+                            && mBottomSheetController.getCurrentSheetContent() == mContent) {
+                        mMediator.onSheetOpened();
+                    }
+                }
+
                 @Override
                 public void onSheetClosed(@BottomSheetController.StateChangeReason int reason) {
-                    super.onSheetClosed(reason);
                     if (mBottomSheetController.getCurrentSheetContent() != null
                             && mBottomSheetController.getCurrentSheetContent() == mContent) {
                         onDismissed();
@@ -49,13 +52,13 @@ public class AtMemoryBottomSheetCoordinator {
 
         void requestExpandSheet(boolean expandInFullHeight);
 
-        void onSuggestionClicked(int position);
+        void onSuggestionAccepted(int position);
 
         void onSuggestionDismissed(int position);
 
         void onChildSuggestionsShown(int parentPosition);
 
-        void onChildSuggestionClicked(int parentPosition, int childPosition);
+        void onChildSuggestionAccepted(int parentPosition, int childPosition);
 
         boolean isSearching();
     }
@@ -76,9 +79,9 @@ public class AtMemoryBottomSheetCoordinator {
         setUpModelChangeProcessors(view);
     }
 
-    public void show(List<AutofillSuggestion> suggestions) {
+    public void show(List<AutofillSuggestion> suggestions, @Nullable String searchBarInitialValue) {
         mBottomSheetController.addObserver(mBottomSheetObserver);
-        mMediator.show(suggestions);
+        mMediator.show(suggestions, searchBarInitialValue);
         if (mBottomSheetController.requestShowContent(mContent, /* animate= */ true)) {
             expand(/* expandInFullHeight= */ true);
         } else {

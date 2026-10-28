@@ -16,10 +16,12 @@
 #include "components/user_prefs/user_prefs.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/child_process_security_policy.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/security_principal.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/storage_partition_config.h"
+#include "content/public/browser/web_contents.h"
 #include "extensions/browser/extension_host.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
@@ -38,6 +40,7 @@
 #include "extensions/common/manifest.h"
 #include "extensions/common/manifest_handlers/incognito_info.h"
 #include "extensions/common/manifest_handlers/shared_module_info.h"
+#include "extensions/common/mojom/api_permission_id.mojom.h"
 #include "extensions/common/mojom/manifest.mojom.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "extensions/common/switches.h"
@@ -99,7 +102,11 @@ bool IsIncognitoEnabledForIdAndContext(const ExtensionId& extension_id,
 #endif
 
   // The ultimate fallback database check.
-  return ExtensionPrefs::Get(context)->IsIncognitoEnabled(extension_id);
+  ExtensionPrefs* extension_prefs = ExtensionPrefs::Get(context);
+  if (ExtensionsBrowserClient::Get()->IsolatedModeReplacesIncognito(context)) {
+    return extension_prefs->IsIsolatedModeEnabled(extension_id);
+  }
+  return extension_prefs->IsIncognitoEnabled(extension_id);
 }
 
 }  // namespace
@@ -156,6 +163,23 @@ bool CanCrossIncognito(const Extension* extension,
   CHECK(extension);
   return IsIncognitoEnabled(extension->id(), context) &&
          !IncognitoInfo::IsSplitMode(extension);
+}
+
+bool IsWebContentsInContext(content::WebContents& web_contents,
+                            content::BrowserContext& browser_context,
+                            bool include_incognito) {
+  content::BrowserContext* web_contents_browser_context =
+      web_contents.GetBrowserContext();
+  if (web_contents_browser_context == &browser_context) {
+    return true;
+  }
+
+  if (!include_incognito) {
+    return false;
+  }
+
+  return ExtensionsBrowserClient::Get()->IsSameContext(
+      web_contents_browser_context, &browser_context);
 }
 
 bool IsExtensionIdle(const std::string& extension_id,
@@ -551,6 +575,15 @@ bool IsChromeApp(const ExtensionId& extension_id,
   return extension->is_platform_app();
 }
 
+bool HasClipboardWritePermission(const ExtensionId& extension_id,
+                                 content::BrowserContext* context) {
+  const Extension* extension =
+      ExtensionRegistry::Get(context)->enabled_extensions().GetByID(
+          extension_id);
+  return extension && extension->permissions_data()->HasAPIPermission(
+                          mojom::APIPermissionID::kClipboardWrite);
+}
+
 bool IsAppLaunchable(const ExtensionId& extension_id,
                      content::BrowserContext* context) {
   DisableReasonSet reason =
@@ -585,6 +618,19 @@ bool IsExtensionDownload(const download::DownloadItem& download_item) {
     return true;
   }
   return false;
+}
+
+const GURL& GetURLForExtensionPermissionCheck(content::RenderFrameHost* rfh) {
+  // Avoid `CHECK_NE(lifecycle_state(), LifecycleStateImpl::kSpeculative)` in
+  // `content::RenderFrameHost::IsErrorDocument()` by checking for an empty
+  // `GURL` first.
+  if (!rfh || rfh->GetLastCommittedURL().is_empty()) {
+    return GURL::EmptyGURL();
+  }
+  if (rfh->IsErrorDocument()) {
+    return GURL::EmptyGURL();
+  }
+  return rfh->GetLastCommittedURL();
 }
 
 }  // namespace extensions::util

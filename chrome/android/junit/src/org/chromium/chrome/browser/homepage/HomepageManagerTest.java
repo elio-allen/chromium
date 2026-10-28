@@ -21,7 +21,6 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
 import org.chromium.base.DeviceInfo;
@@ -33,7 +32,6 @@ import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.actor.ui.ActorUiTabController;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.glic.GlicEnabling;
-import org.chromium.chrome.browser.new_tab_url.DseNewTabUrlManager;
 import org.chromium.chrome.browser.partnercustomizations.PartnerBrowserCustomizations;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
@@ -52,7 +50,6 @@ import java.util.Locale;
 
 /** Unit tests for {@link HomepageManager}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @EnableFeatures(ChromeFeatureList.CHROME_NATIVE_URL_OVERRIDING)
 @DisableFeatures(ChromeFeatureList.GLIC)
 public class HomepageManagerTest {
@@ -65,7 +62,6 @@ public class HomepageManagerTest {
     @Before
     public void setUp() {
         PartnerBrowserCustomizations.setInstanceForTesting(mPartnerBrowserCustomizations);
-        DseNewTabUrlManager.resetIsEeaChoiceCountryForTesting();
         ExtensionsUrlOverrideRegistry.resetRegistry();
         UrlConstantResolverFactory.resetResolvers();
     }

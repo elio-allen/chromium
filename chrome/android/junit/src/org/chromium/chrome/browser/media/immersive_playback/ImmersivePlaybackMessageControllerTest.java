@@ -25,9 +25,9 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.robolectric.Robolectric;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.fullscreen.FullscreenManager;
@@ -52,7 +52,6 @@ import java.util.function.Supplier;
 
 /** Tests for {@link ImmersivePlaybackMessageController}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class ImmersivePlaybackMessageControllerTest {
     @Mock private MessageDispatcher mMessageDispatcher;
     @Mock private ModalDialogManager mModalDialogManager;
@@ -90,6 +89,19 @@ public class ImmersivePlaybackMessageControllerTest {
                         eq(false));
         verify(mTab).addObserver(any());
         verify(mFullscreenManager).addObserver(any());
+    }
+
+    @Test
+    public void testShow_EnqueuesMessageWithIcon() {
+        mController.show(mCallback, ImmersiveStereoMode.MONO, ImmersiveProjectionType.QUAD);
+        ArgumentCaptor<PropertyModel> messageCaptor = ArgumentCaptor.forClass(PropertyModel.class);
+        verify(mMessageDispatcher)
+                .enqueueMessage(
+                        messageCaptor.capture(), any(), eq(MessageScopeType.NAVIGATION), eq(false));
+        PropertyModel messageModel = messageCaptor.getValue();
+        Assert.assertEquals(
+                R.drawable.ic_panorama_horizontal_24dp,
+                messageModel.get(MessageBannerProperties.ICON_RESOURCE_ID));
     }
 
     @Test
@@ -235,7 +247,11 @@ public class ImmersivePlaybackMessageControllerTest {
     public void testShow_NullModalDialogManager_FailsImmediately() {
         mController =
                 new ImmersivePlaybackMessageController(
-                        mContext, () -> mMessageDispatcher, () -> null, mTab, mFullscreenManager);
+                        mContext,
+                        () -> mMessageDispatcher,
+                        SupplierUtils.ofNull(),
+                        mTab,
+                        mFullscreenManager);
 
         mController.show(mCallback, ImmersiveStereoMode.MONO, ImmersiveProjectionType.QUAD);
 

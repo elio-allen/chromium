@@ -31,9 +31,7 @@ import org.chromium.chrome.browser.customtabs.content.TabCreationMode;
 import org.chromium.chrome.browser.flags.ActivityType;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.lifecycle.InflationObserver;
-import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorBase;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
@@ -53,7 +51,7 @@ import java.util.List;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 public class CustomTabDeferredStartupTest {
-    static class PageLoadFinishedTabObserver extends EmptyTabObserver {
+    static class PageLoadFinishedTabObserver implements TabObserver {
         private boolean mIsPageLoadFinished;
 
         @Override
@@ -91,7 +89,7 @@ public class CustomTabDeferredStartupTest {
         }
 
         @Override
-        public void onNewTabCreated(Tab tab, @TabCreationState int creationState) {
+        public void onNewTabCreated(Tab tab) {
             tab.addObserver(mObserver);
         }
 

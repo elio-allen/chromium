@@ -7,14 +7,23 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
+#include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
+#include "components/prefs/pref_change_registrar.h"
 #include "components/tabs/public/tab_interface.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget_observer.h"
 
+class PrefService;
 class TabCollectionNode;
 class PinnedTabContainerView;
 class UnpinnedTabContainerView;
+class TabScrollButtonContainer;
+
+namespace tabs {
+class UnpinnedTabScrollTypeRecorder;
+class UnpinnedTabScrollableStateRecorder;
+}  // namespace tabs
 
 namespace views {
 class ScrollView;
@@ -39,6 +48,11 @@ class TabStripView final : public views::View,
 
   PinnedTabContainerView* GetPinnedTabsContainer() const;
   UnpinnedTabContainerView* GetUnpinnedTabsContainer() const;
+  TabScrollButtonContainer* GetScrollButtonContainer() const;
+  bool IsTabScrollButtonsPinned() const;
+
+  int leading_overlap() const { return leading_overlap_; }
+  void SetLeadingOverlap(int leading_overlap);
 
   views::ScrollView* pinned_tabs_scroll_view() const {
     return pinned_tabs_scroll_view_;
@@ -92,6 +106,10 @@ class TabStripView final : public views::View,
   }
   views::View* GetPrimaryScrollTargetForTesting() const;
   views::View* GetSecondaryScrollTargetForTesting() const;
+  tabs::UnpinnedTabScrollableStateRecorder*
+  unpinned_tab_scrollable_state_recorder_for_testing() {
+    return unpinned_tab_scrollable_state_recorder_.get();
+  }
 
  private:
   class TargetViewsTracker;
@@ -115,21 +133,24 @@ class TabStripView final : public views::View,
   gfx::Rect GetBoundsInScrollViewContents(views::View* view,
                                           views::ScrollView* scroll_view);
 
-  void UpdateColors();
-
-  bool IsFrameActive() const;
-
   void HideHoverCardOnScroll();
+  void OnScrollButtonsVisibilityChanged();
+
+  PrefService* GetPrefs() const;
 
   friend class TabStripViewLayout;
 
+  PrefChangeRegistrar pref_change_registrar_;
+  const TabStripOrientation orientation_;
   raw_ptr<TabCollectionNode> collection_node_ = nullptr;
   raw_ptr<views::ScrollView> pinned_tabs_scroll_view_ = nullptr;
   raw_ptr<PinnedTabContainerView> pinned_tabs_container_view_ = nullptr;
   raw_ptr<views::Separator> tabs_separator_ = nullptr;
   raw_ptr<views::ScrollView> unpinned_tabs_scroll_view_ = nullptr;
   raw_ptr<UnpinnedTabContainerView> unpinned_tabs_container_view_ = nullptr;
+  raw_ptr<TabScrollButtonContainer> tab_scroll_button_container_ = nullptr;
   bool is_collapsed_ = false;
+  int leading_overlap_ = 0;
 
   // Used for seek time metrics from the time the mouse enters the tabstrip.
   std::optional<base::TimeTicks> mouse_entered_tabstrip_time_;
@@ -137,9 +158,15 @@ class TabStripView final : public views::View,
   bool has_reported_time_mouse_entered_to_switch_ = false;
 
   std::unique_ptr<TargetViewsTracker> target_views_tracker_;
+  // Records the type of scroll that the user does on the unpinned tabs.
+  std::unique_ptr<tabs::UnpinnedTabScrollTypeRecorder>
+      unpinned_tab_scroll_type_recorder_;
+  // Records, every five minutes, whether the unpinned tabs are scrollable
+  // or not.
+  std::unique_ptr<tabs::UnpinnedTabScrollableStateRecorder>
+      unpinned_tab_scrollable_state_recorder_;
 
   base::CallbackListSubscription node_destroyed_subscription_;
-  base::CallbackListSubscription paint_as_active_subscription_;
   std::vector<base::CallbackListSubscription> callback_subscriptions_;
 
   base::ScopedObservation<views::Widget, views::WidgetObserver>

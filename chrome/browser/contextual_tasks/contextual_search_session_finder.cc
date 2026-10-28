@@ -5,8 +5,10 @@
 #include "chrome/browser/contextual_tasks/contextual_search_session_finder.h"
 
 #include "chrome/browser/contextual_search/contextual_search_web_contents_helper.h"
+#include "chrome/browser/contextual_tasks/active_task_context_provider.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_panel_controller.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_utils.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_web_contents_user_data.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -98,17 +100,21 @@ void UpdateContextualSearchWebContentsHelperForTask(
   if (existing_session) {
     session_handle = contextual_search_service->GetSession(
         existing_session->session_id(), existing_session->invocation_source());
-    session_handle->set_submitted_context_tokens(
-        existing_session->GetSubmittedContextTokens());
-    session_handle->set_persisted_tabs(existing_session->persisted_tabs());
-    session_handle->set_deselected_tabs_urls(
-        existing_session->deselected_tabs_urls());
+  }
+  if (session_handle) {
     session_handle->set_smart_tab_sharing_active(
         existing_session->smart_tab_sharing_active());
     session_handle->set_smart_tab_sharing_toggled_since_last_turn(
         existing_session->smart_tab_sharing_toggled_since_last_turn());
     session_handle->set_sts_toggled_removed_contexts(
         existing_session->sts_toggled_removed_contexts());
+    session_handle->SetSubmittedContextTokens(
+        existing_session->GetSubmittedContextTokens());
+    session_handle->SetPersistedTabs(existing_session->GetPersistedTabs());
+    session_handle->SetRestoredTabs(
+        existing_session->GetTabContextState().restored);
+    session_handle->set_deselected_tabs_urls(
+        existing_session->deselected_tabs_urls());
   } else {
     session_handle = contextual_search_service->CreateSession(
         CreateQueryControllerConfigParams(),
@@ -119,10 +125,19 @@ void UpdateContextualSearchWebContentsHelperForTask(
 
   // Update the session handle with the new task ID.
   if (session_handle) {
+    if (helper->task_id().has_value() && helper->task_id() != task_id) {
+      if (auto* user_data = ContextualTasksWebContentsUserData::FromWebContents(
+              web_contents)) {
+        user_data->OnTaskChanged();
+      }
+    }
     session_handle->CheckSearchContentSharingSettings(
         browser_window->GetProfile()->GetPrefs());
     helper->SetTaskSession(task_id, std::move(session_handle),
                            /*input_state_model=*/nullptr);
+    if (auto* provider = ActiveTaskContextProvider::From(browser_window)) {
+      provider->RefreshContext();
+    }
   }
 }
 

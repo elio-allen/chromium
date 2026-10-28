@@ -205,7 +205,7 @@ struct NavigateParams {
   //                        & no matching tab
   // CURRENT_TAB          no params.browser                 DCHECK FAILURE
   //                        & no params.source_contents
-  WindowOpenDisposition disposition = WindowOpenDisposition::CURRENT_TAB;
+  WindowOpenDisposition disposition = WindowOpenDisposition::kCurrentTab;
 
   // Allows setting the opener for the case when new WebContents are created
   // (i.e. when |disposition| asks for a new tab or window).
@@ -306,6 +306,11 @@ struct NavigateParams {
   // navigation.
   bool navigation_initiated_from_sync = false;
 #endif
+
+  // If true, opening a new window for this navigation can trigger session
+  // restore (if no browser windows were open and session restore is enabled).
+  // If false, the new window will not trigger session restore.
+  bool should_trigger_session_restore = true;
 
   // The profile that is initiating the navigation. If there is a non-NULL
   // browser passed in via |browser|, it's profile will be used instead.

@@ -14,13 +14,13 @@
 #include "base/memory/raw_ref.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/scoped_observation.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
 #include "chrome/browser/ash/login/oobe_quick_start/target_device_bootstrap_controller.h"
 #include "chrome/browser/ash/tpm/tpm_firmware_update.h"
 #include "chrome/browser/ui/ash/login/kiosk_app_menu_controller.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/login/login_ui_pref_controller.h"
 #include "chrome/browser/ui/ash/login/signin_ui.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "chromeos/ash/components/login/session/session_termination_manager.h"
 #include "components/keep_alive_registry/scoped_keep_alive.h"
 #include "components/user_manager/user_type.h"
@@ -28,6 +28,10 @@
 class AccountId;
 class ApplicationLocaleStorage;
 class PrefService;
+
+namespace metrics {
+class MetricsService;
+}  // namespace metrics
 
 namespace network {
 class SharedURLLoaderFactory;
@@ -51,11 +55,12 @@ class LoginDisplayHostCommon : public LoginDisplayHost,
                                public SigninUI,
                                public ash::SessionTerminationManager::Observer {
  public:
-  // `local_state`, `application_locale_storage` and
+  // `local_state`, `metrics_service`, `application_locale_storage` and
   // `browser_policy_connector_ash` must be non-null and must outlive `this`.
   // `shared_url_loader_factory` must be non-null.
   LoginDisplayHostCommon(
       PrefService* local_state,
+      ::metrics::MetricsService* metrics_service,
       ApplicationLocaleStorage* application_locale_storage,
       scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
       policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
@@ -149,6 +154,7 @@ class LoginDisplayHostCommon : public LoginDisplayHost,
   void NotifyWizardCreated();
 
   const raw_ref<PrefService> local_state_;
+  const raw_ref<::metrics::MetricsService> metrics_service_;
   const raw_ref<ApplicationLocaleStorage> application_locale_storage_;
   const scoped_refptr<network::SharedURLLoaderFactory>
       shared_url_loader_factory_;

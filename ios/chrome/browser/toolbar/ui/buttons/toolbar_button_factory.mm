@@ -11,6 +11,8 @@
 #import "ios/chrome/browser/toolbar/ui/buttons/toolbar_button.h"
 #import "ios/chrome/browser/toolbar/ui/buttons/toolbar_button_visibility.h"
 #import "ios/chrome/browser/toolbar/ui/buttons/toolbar_buttons_utils.h"
+#import "ios/chrome/browser/toolbar/ui/buttons/toolbar_element_with_background.h"
+#import "ios/chrome/browser/toolbar/ui/buttons/toolbar_navigation_buttons_container.h"
 #import "ios/chrome/browser/toolbar/ui/buttons/toolbar_tab_grid_badge_button.h"
 #import "ios/chrome/browser/toolbar/ui/toolbar_constants.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
@@ -18,6 +20,8 @@
 #import "ui/base/l10n/l10n_util.h"
 
 namespace {
+// Default point size for toolbar buttons.
+constexpr CGFloat kFiveButtonLayoutSymbolPointSize = 23.0;
 // Default point size for toolbar buttons.
 constexpr CGFloat kDefaultSymbolPointSize = 19;
 // Symbol point size for the legacy toolbar button design.
@@ -37,7 +41,9 @@ constexpr CGFloat kLegacySymbolPointSize = 24;
 
 - (ToolbarButton*)makeBackButton {
   ToolbarButton* button = [self toolbarButtonForSymbol:SymbolBack];
-  button.visibilityMask = ToolbarButtonVisibility::kAlways;
+  button.visibilityMask = IsFiveButtonAppBarLayoutEnabled()
+                              ? ToolbarButtonVisibility::kRegularRegular
+                              : ToolbarButtonVisibility::kAlways;
   button.accessibilityIdentifier = kToolbarBackButtonIdentifier;
   button.accessibilityLabel = l10n_util::GetNSString(IDS_ACCNAME_BACK);
   button.accessibilityHint =
@@ -47,9 +53,13 @@ constexpr CGFloat kLegacySymbolPointSize = 24;
 
 - (ToolbarButton*)makeForwardButton {
   ToolbarButton* button = [self toolbarButtonForSymbol:SymbolForward];
-  button.visibilityMask = IsNextOldDesignEnabled()
-                              ? ToolbarButtonVisibility::kAlways
-                              : ToolbarButtonVisibility::kWhenEnabled;
+  if (IsFiveButtonAppBarLayoutEnabled()) {
+    button.visibilityMask = ToolbarButtonVisibility::kRegularRegular;
+  } else {
+    button.visibilityMask = IsNextOldDesignEnabled()
+                                ? ToolbarButtonVisibility::kAlways
+                                : ToolbarButtonVisibility::kWhenEnabled;
+  }
   button.accessibilityIdentifier = kToolbarForwardButtonIdentifier;
   button.accessibilityLabel = l10n_util::GetNSString(IDS_ACCNAME_FORWARD);
   button.accessibilityHint =
@@ -57,65 +67,13 @@ constexpr CGFloat kLegacySymbolPointSize = 24;
   return button;
 }
 
-- (UIView*)makeConjoinedBackButton:(ToolbarButton*)backButton
-                     forwardButton:(ToolbarButton*)forwardButton {
-  CHECK(backButton);
-  CHECK(forwardButton);
-  UIView* buttonsContainer = [[UIView alloc] init];
-  buttonsContainer.translatesAutoresizingMaskIntoConstraints = NO;
-  [buttonsContainer
-      setContentCompressionResistancePriority:UILayoutPriorityRequired
-                                      forAxis:UILayoutConstraintAxisHorizontal];
-  [buttonsContainer setContentHuggingPriority:UILayoutPriorityRequired
-                                      forAxis:UILayoutConstraintAxisHorizontal];
-
-  UIView* backgroundView = [[UIView alloc] init];
-  backgroundView.translatesAutoresizingMaskIntoConstraints = NO;
-  backgroundView.backgroundColor = ToolbarElementBackgroundColor(_incognito);
-  [buttonsContainer addSubview:backgroundView];
-  AddSameConstraints(backgroundView, buttonsContainer);
-
-  // Internal stack view to handle dynamic resizing when the forward button
-  // visibility changes.
-  UIStackView* buttonsStack = [[UIStackView alloc]
-      initWithArrangedSubviews:@[ backButton, forwardButton ]];
-  buttonsStack.translatesAutoresizingMaskIntoConstraints = NO;
-  buttonsStack.axis = UILayoutConstraintAxisHorizontal;
-  buttonsStack.distribution = UIStackViewDistributionFill;
-  buttonsStack.alignment = UIStackViewAlignmentFill;
-
-  [backgroundView addSubview:buttonsStack];
-  AddSameConstraints(buttonsStack, backgroundView);
-
-  [NSLayoutConstraint activateConstraints:@[
-    [buttonsContainer.heightAnchor
-        constraintEqualToAnchor:backButton.heightAnchor]
-  ]];
-
-  ConfigureCornerRadiusForToolbarButtonContainer(
-      backgroundView, buttonsContainer.traitCollection);
-  backgroundView.clipsToBounds = YES;
-  ConfigureShadowForToolbarElement(buttonsContainer);
-
-  // Remove effects from the standalone buttons in the container
-  backButton.shadowAndBackgroundRemoved = YES;
-  forwardButton.shadowAndBackgroundRemoved = YES;
-
-  [buttonsContainer
-      registerForTraitChanges:
-          @[ UITraitVerticalSizeClass.class, UITraitHorizontalSizeClass.class ]
-                  withHandler:^(id<UITraitEnvironment> environment,
-                                UITraitCollection* previousTraitCollection) {
-                    ConfigureCornerRadiusForToolbarButtonContainer(
-                        backgroundView, buttonsContainer.traitCollection);
-                  }];
-  [buttonsContainer
-      registerForTraitChanges:@[ UITraitUserInterfaceStyle.class ]
-                  withHandler:^(id<UITraitEnvironment> environment,
-                                UITraitCollection* previousTraitCollection) {
-                    ConfigureShadowForToolbarElement(buttonsContainer);
-                  }];
-  return buttonsContainer;
+- (UIView<ToolbarElementWithBackground>*)
+    makeConjoinedBackButton:(ToolbarButton*)backButton
+              forwardButton:(ToolbarButton*)forwardButton {
+  return [[ToolbarNavigationButtonsContainer alloc]
+      initWithBackButton:backButton
+           forwardButton:forwardButton
+               incognito:_incognito];
 }
 
 - (ToolbarButton*)makeReloadButton {
@@ -137,8 +95,14 @@ constexpr CGFloat kLegacySymbolPointSize = 24;
 - (ToolbarButton*)makeShareButton {
   // Shift the button up 2px by adding 4px of padding at the bottom.
   UIImage* (^imageLoader)(void) = ^UIImage* {
-    CGFloat pointSize = IsNextOldDesignEnabled() ? kLegacySymbolPointSize
-                                                 : kDefaultSymbolPointSize;
+    CGFloat pointSize;
+    if (IsFiveButtonAppBarLayoutEnabled()) {
+      pointSize = kFiveButtonLayoutSymbolPointSize;
+    } else if (IsNextOldDesignEnabled()) {
+      pointSize = kLegacySymbolPointSize;
+    } else {
+      pointSize = kDefaultSymbolPointSize;
+    }
     UIImage* image = SymbolWithPointSize(SymbolShare, pointSize);
     CGSize newSize = CGSizeMake(image.size.width, image.size.height + 4);
 
@@ -162,7 +126,9 @@ constexpr CGFloat kLegacySymbolPointSize = 24;
       [[ToolbarButton alloc] initWithImageLoader:imageLoader
                                        incognito:_incognito];
   button.geminiHandler = self.geminiHandler;
-  button.visibilityMask = ToolbarButtonVisibility::kCompactHeight;
+  button.visibilityMask = IsNextOldDesignEnabled()
+                              ? ToolbarButtonVisibility::kWideLayout
+                              : ToolbarButtonVisibility::kCompactHeight;
   button.accessibilityIdentifier = kToolbarShareButtonIdentifier;
   button.accessibilityLabel = l10n_util::GetNSString(IDS_IOS_TOOLS_MENU_SHARE);
   return button;
@@ -189,8 +155,6 @@ constexpr CGFloat kLegacySymbolPointSize = 24;
 }
 
 - (ToolbarButton*)makeAssistantButton {
-  /// TODO(crbug.com/493956100): Update the icon for the Assistant button in the
-  /// toolbar.
 #if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
   Symbol symbol = SymbolGeminiBrandedLogo;
 #else
@@ -208,8 +172,14 @@ constexpr CGFloat kLegacySymbolPointSize = 24;
 
 // Returns a toolbar button with the given symbol.
 - (ToolbarButton*)toolbarButtonForSymbol:(Symbol)symbol {
-  CGFloat pointSize = IsNextOldDesignEnabled() ? kLegacySymbolPointSize
-                                               : kDefaultSymbolPointSize;
+  CGFloat pointSize;
+  if (IsFiveButtonAppBarLayoutEnabled()) {
+    pointSize = kFiveButtonLayoutSymbolPointSize;
+  } else if (IsNextOldDesignEnabled()) {
+    pointSize = kLegacySymbolPointSize;
+  } else {
+    pointSize = kDefaultSymbolPointSize;
+  }
   ToolbarButton* button = [[ToolbarButton alloc]
       initWithImageLoader:^UIImage* {
         return SymbolWithPointSize(symbol, pointSize);

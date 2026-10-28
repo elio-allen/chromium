@@ -20,15 +20,40 @@ public interface SettingsActivityInterface {
     @Nullable Fragment getMainFragment();
 
     /**
-     * Returns the MultiColumnSettings fragment if it is running in SettingsMultiColumn mode.
-     * Returns it as a generic Fragment to avoid circular dependencies. Callers may safely cast the
-     * return value to a MultiColumnSettings object.
+     * Returns the MultiColumnSettings fragment if not in standalone mode. Returns it as a generic
+     * Fragment to avoid circular dependencies. Callers may safely cast the return value to a
+     * MultiColumnSettings object.
      */
     @Nullable Fragment getMultiColumnSettings();
+
+    /**
+     * Returns the SettingsSearchCoordinator if available. Returns it as a generic Object to avoid
+     * circular dependencies. Callers may safely cast the return value to a
+     * SettingsSearchCoordinator object.
+     */
+    @Nullable Object getSearchCoordinator();
 
     /** Changes the desired orientation of this activity. */
     void setRequestedOrientation(int requestedOrientation);
 
     /** Finishes the specified settings fragment. */
     void finishCurrentSettings(Fragment fragment);
+
+    /**
+     * Returns the title of the activity. The implementation is usually fulfilled by the Activity
+     * implementing this interface.
+     */
+    CharSequence getTitle();
+
+    /**
+     * Returns a localized string from the activity's resources. The implementation is usually
+     * fulfilled by the Activity implementing this interface.
+     */
+    String getString(int resId);
+
+    /**
+     * Returns a localized formatted string from the activity's resources. The implementation is
+     * usually fulfilled by the Activity implementing this interface.
+     */
+    String getString(int resId, Object... formatArgs);
 }

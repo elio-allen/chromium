@@ -87,6 +87,9 @@ class BASE_EXPORT ThreadGroup {
   // `synchronous_thread_start_for_testing` is true if this ThreadGroup should
   // synchronously wait for OnMainEntry() after starting each worker. Can only
   // be called once. CHECKs on failure.
+  // Note: Under kAsyncThreadPoolInit, the initial threads are created
+  // asynchronously on `service_thread_task_runner` rather than on the calling
+  // thread.
   virtual void Start(
       size_t max_tasks,
       size_t max_best_effort_tasks,
@@ -259,7 +262,7 @@ class BASE_EXPORT ThreadGroup {
     // class' destructor.
     void Flush();
 
-    std::vector<RegisteredTaskSource> task_sources_to_release_;
+    absl::InlinedVector<RegisteredTaskSource, 2> task_sources_to_release_;
     absl::InlinedVector<scoped_refptr<WorkerThread>, 2> workers_to_start_;
     bool must_schedule_adjust_max_tasks_ = false;
   };
@@ -316,6 +319,9 @@ class BASE_EXPORT ThreadGroup {
   // PushTaskSourceAndWakeUpWorkersImpl()
   virtual void EnsureEnoughWorkersLockRequired(
       BaseScopedCommandsExecutor* executor) EXCLUSIVE_LOCKS_REQUIRED(lock_) = 0;
+
+  // Clean up a worker that failed to start.
+  virtual void CleanUpFailedWorker(const WorkerThread* worker) = 0;
 
   // Reenqueues a |transaction_with_task_source| from which a Task just ran in
   // the current ThreadGroup into the appropriate ThreadGroup.

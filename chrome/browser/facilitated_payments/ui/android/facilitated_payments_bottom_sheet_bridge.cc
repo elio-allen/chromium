@@ -87,14 +87,14 @@ void FacilitatedPaymentsBottomSheetBridge::RequestShowContentForPaymentLink(
       env, GetJavaBridge(), std::move(ewallet_vector), j_app_array);
 }
 
-void FacilitatedPaymentsBottomSheetBridge::ShowProgressScreen() {
+void FacilitatedPaymentsBottomSheetBridge::ShowProgressScreen(
+    ProgressScreenType type) {
   if (!GetJavaBridge()) {
     return;
   }
-
   JNIEnv* env = base::android::AttachCurrentThread();
   Java_FacilitatedPaymentsPaymentMethodsViewBridge_showProgressScreen(
-      env, GetJavaBridge());
+      env, GetJavaBridge(), static_cast<int>(type));
 }
 
 void FacilitatedPaymentsBottomSheetBridge::ShowErrorScreen() {
@@ -118,14 +118,15 @@ void FacilitatedPaymentsBottomSheetBridge::Dismiss() {
 }
 
 void FacilitatedPaymentsBottomSheetBridge::ShowPixAccountLinkingPrompt(
-    int strike_count) {
+    int strike_count,
+    const std::string& account_email) {
   if (!GetJavaBridge()) {
     return;
   }
 
-  JNIEnv* env = base::android::AttachCurrentThread();
   Java_FacilitatedPaymentsPaymentMethodsViewBridge_showPixAccountLinkingPrompt(
-      env, GetJavaBridge(), strike_count);
+      base::android::AttachCurrentThread(), GetJavaBridge(), strike_count,
+      account_email);
 }
 
 void FacilitatedPaymentsBottomSheetBridge::

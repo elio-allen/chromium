@@ -66,7 +66,6 @@
 #include "components/webapps/browser/web_app_url_config.h"
 #include "components/webapps/common/web_app_id.h"
 #include "content/public/browser/browser_thread.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "url/origin.h"
 
@@ -237,8 +236,6 @@ void ApplyUserDisplayModeSyncMitigations(const FinalizeJobOptions& options,
     return;
   }
 
-  sync_pb::WebAppSpecifics sync_proto = web_app.sync_proto();
-
   switch (web_app.sync_proto().user_display_mode_cros()) {
     case sync_pb::WebAppSpecifics_UserDisplayMode_BROWSER:
       // Pre-M122 CrOS devices use the user_display_mode_default sync field
@@ -303,7 +300,12 @@ FinalizeInstallOrUpdateJob::FinalizeInstallOrUpdateJob(
       web_app_info_(web_app_info.Clone()),
       app_id_(GenerateAppIdFromManifestId(web_app_info_.manifest_id())),
       options_(options),
-      finalizer_delegate_(std::move(finalizer_delegate)) {}
+      finalizer_delegate_(std::move(finalizer_delegate)) {
+  // Silent updates should always overwrite existing manifest fields.
+  if (options_.is_silent_update) {
+    CHECK(options_.overwrite_existing_manifest_fields);
+  }
+}
 
 FinalizeInstallOrUpdateJob::~FinalizeInstallOrUpdateJob() = default;
 
@@ -317,7 +319,7 @@ void FinalizeInstallOrUpdateJob::Start(InstallFinalizedCallback callback) {
   callback_ = std::move(callback);
   webapps::ManifestId manifest_id = web_app_info_.manifest_id();
 
-  if (options_.is_update) {
+  if (options_.is_silent_update) {
     const WebApp* existing_web_app = registrar().GetAppById(app_id_);
     if (!existing_web_app ||
         existing_web_app->is_from_sync_and_pending_installation()) {
@@ -347,7 +349,6 @@ void FinalizeInstallOrUpdateJob::Start(InstallFinalizedCallback callback) {
       !web_app_info_.scope_extensions.empty() &&
       !web_app_info_.validated_scope_extensions.has_value();
   bool needs_migration_validation =
-      base::FeatureList::IsEnabled(blink::features::kWebAppMigrationApi) &&
       !web_app_info_.migration_sources.empty();
 
   if (options_.skip_origin_association_validation ||
@@ -372,7 +373,7 @@ void FinalizeInstallOrUpdateJob::OnOriginAssociationValidated(
     OriginAssociations validated_origin_associations) {
   const WebApp* existing_web_app = registrar().GetAppById(app_id_);
 
-  if (options_.is_update) {
+  if (options_.is_silent_update) {
     if (!existing_web_app ||
         existing_web_app->is_from_sync_and_pending_installation()) {
       CHECK_EQ(app_id_, existing_web_app->app_id());
@@ -389,7 +390,7 @@ void FinalizeInstallOrUpdateJob::OnOriginAssociationValidated(
   if (existing_web_app) {
     web_app = std::make_unique<WebApp>(*existing_web_app);
   } else {
-    CHECK(!options_.is_update);
+    CHECK(!options_.is_silent_update);
     // TODO(crbug.com/344718166): Ensure that manifest_id corresponds to app_id
     // here.
     web_app = std::make_unique<WebApp>(
@@ -437,13 +438,13 @@ void FinalizeInstallOrUpdateJob::OnOriginAssociationValidated(
     finalizer_delegate_->ConfigureCustomFields(web_app.get(), web_app_info_);
   }
 
-  if (!options_.is_update) {
+  if (!options_.is_silent_update) {
     SetWebAppFieldsForInstall(web_app.get(), existing_web_app, now_time);
   }
 
   if (options_.install_state !=
           proto::InstallState::INSTALLED_WITH_OS_INTEGRATION &&
-      !options_.is_update) {
+      !options_.is_silent_update) {
     DCHECK(!(options_.add_to_applications_menu || options_.add_to_desktop ||
              options_.add_to_quick_launch_bar))
         << "Cannot create os hooks for a non-fully installed app";
@@ -460,8 +461,11 @@ void FinalizeInstallOrUpdateJob::OnOriginAssociationValidated(
 
   // Ensure that the pending update info is always reset whenever Finalize*() is
   // called, to ensure that the state of icons on disk or new installs do not
-  // have left over pending updates.
-  if (options_.overwrite_existing_manifest_fields) {
+  // have left over pending updates. This should not be reset during silent
+  // updates, as ManifestUpdateJob manages pending_update_info itself after
+  // finalize finishes.
+  if (options_.overwrite_existing_manifest_fields &&
+      !options_.is_silent_update) {
     web_app->SetPendingUpdateInfo(std::nullopt);
   }
 
@@ -487,8 +491,8 @@ void FinalizeInstallOrUpdateJob::OnOriginAssociationValidated(
   CHECK_EQ(web_app_info_.shortcuts_menu_item_infos.size(),
            web_app_info_.shortcuts_menu_icon_bitmaps.size());
 
-  if (options_.overwrite_existing_manifest_fields || options_.is_update ||
-      !existing_web_app) {
+  if (options_.overwrite_existing_manifest_fields ||
+      options_.is_silent_update || !existing_web_app) {
     SetWebAppManifestFieldsAndWriteData(std::move(web_app),
                                         std::move(commit_callback));
   } else {
@@ -502,7 +506,7 @@ void FinalizeInstallOrUpdateJob::SetWebAppFieldsForInstall(
     WebApp* web_app,
     const WebApp* existing_web_app,
     const base::Time now_time) {
-  CHECK(!options_.is_update);
+  CHECK(!options_.is_silent_update);
 
   // The UI may initiate a full install to overwrite the existing
   // non-locally-installed app. Therefore, `install_state` can be
@@ -544,7 +548,8 @@ void FinalizeInstallOrUpdateJob::SetWebAppFieldsForInstall(
   // install is user initiated or it's a new app.
   if (ShouldInstallOverwriteUserDisplayMode(options_.install_surface) ||
       !existing_web_app) {
-    DCHECK(web_app_info_.user_display_mode.has_value());
+    CHECK(web_app_info_.user_display_mode.has_value(),
+          base::NotFatalUntil::M162);
     web_app->SetUserDisplayMode(*web_app_info_.user_display_mode);
   }
   if (options_.run_on_os_login_mode.has_value()) {
@@ -663,7 +668,7 @@ void FinalizeInstallOrUpdateJob::WriteTranslations(
         translations,
     CommitCallback commit_callback,
     bool success) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!success) {
     std::move(commit_callback).Run(success);
     return;
@@ -675,7 +680,7 @@ void FinalizeInstallOrUpdateJob::CommitToSyncBridge(
     std::unique_ptr<WebApp> web_app,
     CommitCallback commit_callback,
     bool success) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!success) {
     std::move(commit_callback).Run(success);
     return;
@@ -698,8 +703,10 @@ void FinalizeInstallOrUpdateJob::WriteExternalConfigMapInfo(
     bool is_placeholder,
     GURL install_url,
     std::vector<std::string> additional_policy_ids) {
-  DCHECK(!(source == WebAppManagement::Type::kSync && is_placeholder));
-  DCHECK(!(source == WebAppManagement::Type::kUserInstalled && is_placeholder));
+  CHECK(!(source == WebAppManagement::Type::kSync && is_placeholder),
+        base::NotFatalUntil::M162);
+  CHECK(!(source == WebAppManagement::Type::kUserInstalled && is_placeholder),
+        base::NotFatalUntil::M162);
   if (source != WebAppManagement::Type::kSync &&
       source != WebAppManagement::Type::kUserInstalled &&
       !WebAppManagement::IsIwaType(source)) {
@@ -731,16 +738,14 @@ void FinalizeInstallOrUpdateJob::AdjustAppStateBeforeCommit(
   // changed. If we already have a app installed that wants to be a migration
   // target for the newly installed app, this makes sure that this is reflected
   // correctly.
-  if (base::FeatureList::IsEnabled(blink::features::kWebAppMigrationApi)) {
-    provider.scheduler().ScheduleResolveWebAppPendingMigrationInfo(
-        base::DoNothing());
-  }
+  provider.scheduler().ScheduleResolveWebAppPendingMigrationInfo(
+      base::DoNothing());
 }
 
 void FinalizeInstallOrUpdateJob::OnDatabaseCommitCompleted(
     std::optional<WebAppScope> old_scope,
     bool success) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!success) {
     RunCallbackAndResetLock(webapps::AppId(),
                             webapps::InstallResultCode::kWriteDataFailed);
@@ -761,7 +766,7 @@ void FinalizeInstallOrUpdateJob::OnDatabaseCommitCompleted(
   }
 
   std::optional<SynchronizeOsOptions> synchronize_options;
-  if (!options_.is_update) {
+  if (!options_.is_silent_update) {
     install_manager().NotifyWebAppInstalled(app_id_);
 
     synchronize_options.emplace();
@@ -786,7 +791,19 @@ void FinalizeInstallOrUpdateJob::OnDatabaseCommitCompleted(
       case WebAppManagement::kSync:
       case WebAppManagement::kUserInstalled:
       case WebAppManagement::kIwaUserInstalled:
+#if BUILDFLAG(IS_MAC)
+        // When `kWebAppInstallDialog` is enabled, the dialog's Success step
+        // provides an explicit "Show in Finder" button on macOS, so do not
+        // automatically reveal the app shim in Finder during install
+        // finalization. Explicit post-install shortcut creation (e.g. from
+        // chrome://apps) still passes `SHORTCUT_CREATION_BY_USER`.
+        synchronize_options->reason =
+            base::FeatureList::IsEnabled(features::kWebAppInstallDialog)
+                ? SHORTCUT_CREATION_AUTOMATED
+                : SHORTCUT_CREATION_BY_USER;
+#else
         synchronize_options->reason = SHORTCUT_CREATION_BY_USER;
+#endif
         break;
     }
   }
@@ -797,7 +814,7 @@ void FinalizeInstallOrUpdateJob::OnDatabaseCommitCompleted(
   // If the app being updated was installed by default and not also manually
   // installed by the user or an enterprise policy, disable os integration.
   should_skip_os_integration_on_manifest_update =
-      options_.is_update &&
+      options_.is_silent_update &&
       registrar().GetInstallState(app_id_) ==
           proto::InstallState::INSTALLED_WITHOUT_OS_INTEGRATION;
 #endif  // !BUILDFLAG(IS_CHROMEOS)
@@ -826,18 +843,18 @@ void FinalizeInstallOrUpdateJob::OnHooksFinished() {
   // installation.
   if (registrar().GetInstallState(app_id_) ==
           proto::InstallState::INSTALLED_WITH_OS_INTEGRATION &&
-      !options_.is_update) {
+      !options_.is_silent_update) {
     callback_ = std::move(callback_).Then(base::BindOnce(
         &FinalizeInstallOrUpdateJob::NotifyWebAppInstalledWithOsHooks,
         provider_, app_id_));
   }
 
-  if (options_.is_update) {
+  if (options_.is_silent_update) {
     install_manager().NotifyWebAppManifestUpdated(app_id_);
   }
 
   RunCallbackAndResetLock(
-      app_id_, options_.is_update
+      app_id_, options_.is_silent_update
                    ? webapps::InstallResultCode::kSuccessAlreadyInstalled
                    : webapps::InstallResultCode::kSuccessNewInstall);
 }

@@ -11,6 +11,7 @@ import android.os.Bundle;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.fragment.app.Fragment;
 
 import org.chromium.base.ObserverList;
@@ -27,6 +28,9 @@ import org.chromium.chrome.browser.lifecycle.SaveInstanceStateObserver;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.tab.MockTab;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.Tab.LoadUrlResult;
+import org.chromium.chrome.browser.tab.Tab.TabLoadStatus;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager.SnackbarManageable;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
@@ -34,13 +38,16 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerFacto
 import org.chromium.components.browser_ui.bottomsheet.ManagedBottomSheetController;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager;
 import org.chromium.components.browser_ui.modaldialog.AppModalPresenter;
+import org.chromium.components.browser_ui.widget.gesture.BackPressHandler.BackPressResult;
 import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
 import org.chromium.components.browser_ui.widget.scrim.ScrimManager.ScrimClient;
+import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.ui.KeyboardVisibilityDelegate;
 import org.chromium.ui.base.ActivityWindowAndroid;
 import org.chromium.ui.base.IntentRequestTracker;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.ModalDialogManager;
+import org.chromium.url.GURL;
 
 /**
  * Lightweight Activity used to host {@link SettingsHostFragment} in tests when {@link
@@ -52,6 +59,7 @@ import org.chromium.ui.modaldialog.ModalDialogManager;
 public class SettingsInTabTestActivity extends ChromeBaseAppCompatActivity
         implements SnackbarManageable,
                 SettingsActivityInterface,
+                SettingsHost,
                 ActivityLifecycleDispatcherProvider {
     private static final int TAB_ID = 123;
     private Profile mProfile;
@@ -70,8 +78,14 @@ public class SettingsInTabTestActivity extends ChromeBaseAppCompatActivity
             new OneshotSupplierImpl<>();
 
     @Override
+    public boolean isShownInTab() {
+        // This activity simulates hosting settings in a tab.
+        return true;
+    }
+
+    @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
-        assert SettingsInTab.isEnabled();
+        assert SettingsInTab.shouldOpenSettingsInTab();
 
         ChromeBrowserInitializer.getInstance().handleSynchronousStartup();
         mProfile = ProfileManager.getLastUsedRegularProfile();
@@ -111,8 +125,28 @@ public class SettingsInTabTestActivity extends ChromeBaseAppCompatActivity
                         assumeNonNull(mSnackbarManagerSupplier.get()),
                         assumeNonNull(mBottomSheetControllerSupplier.get()),
                         assumeNonNull(getModalDialogManager()),
-                        new MockTab(TAB_ID, mProfile));
-        mFragmentDelegate.initSettings(contentView, "");
+                        new SettingsTestTab());
+        mFragmentDelegate.initSettingsForTesting(contentView, "");
+
+        // Delegate back presses to the settings fragment delegate so detail fragments or
+        // child pages popped from the multi-column backstack are handled properly before
+        // falling back to default activity back press behavior.
+        var onBackPressedCallback =
+                new OnBackPressedCallback(/* enabled= */ true) {
+                    @Override
+                    public void handleOnBackPressed() {
+                        if (mFragmentDelegate != null
+                                && mFragmentDelegate.handleBackPress() == BackPressResult.SUCCESS) {
+                            return;
+                        }
+                        // Temporarily disable this callback so calling onBackPressed() passes
+                        // through to the next callback without causing recursion.
+                        setEnabled(false);
+                        getOnBackPressedDispatcher().onBackPressed();
+                        setEnabled(true);
+                    }
+                };
+        getOnBackPressedDispatcher().addCallback(this, onBackPressedCallback);
 
         // Ensure bottom sheets are above the settings views.
         contentView.bringChildToFront(sheetContainer);
@@ -153,22 +187,26 @@ public class SettingsInTabTestActivity extends ChromeBaseAppCompatActivity
 
     @Override
     public @Nullable Fragment getMainFragment() {
-        SettingsHostFragment host = SettingsHostFragment.get(this);
-        return host != null ? host.getMainFragment() : null;
+        // Delegate to mFragmentDelegate rather than SettingsHostFragment.get(this), because get()
+        // requires the host fragment view to be isShown(), which may be false in test setups.
+        return mFragmentDelegate != null ? mFragmentDelegate.getMainFragment() : null;
     }
 
     @Override
     public void finishCurrentSettings(Fragment fragment) {
-        SettingsHostFragment host = SettingsHostFragment.get(this);
-        if (host != null) {
-            host.finishCurrentSettings(fragment);
+        if (mFragmentDelegate != null) {
+            mFragmentDelegate.finishCurrentSettings(fragment);
         }
     }
 
     @Override
     public @Nullable MultiColumnSettings getMultiColumnSettings() {
-        SettingsHostFragment host = SettingsHostFragment.get(this);
-        return host != null ? host.getMultiColumnSettings() : null;
+        return mFragmentDelegate != null ? mFragmentDelegate.getMultiColumnSettings() : null;
+    }
+
+    @Override
+    public @Nullable Object getSearchCoordinator() {
+        return mFragmentDelegate.getSearchCoordinator();
     }
 
     @Override
@@ -189,6 +227,37 @@ public class SettingsInTabTestActivity extends ChromeBaseAppCompatActivity
         assumeNonNull(mSnackbarManagerSupplier.get()).destroy();
         assumeNonNull(mWindowAndroidSupplier.get()).destroy();
         super.onDestroy();
+    }
+
+    /**
+     * {@link MockTab} that stands in for the tab hosting settings, which has no {@link
+     * org.chromium.content_public.browser.WebContents} in this activity.
+     *
+     * <p>Under SettingsInTabUrlNav, settings navigates by calling {@link Tab#loadUrl} on its tab.
+     * In production that reaches {@link SettingsPage#updateForUrl} through the native page factory,
+     * but {@link MockTab} would instead fail trying to show a native page without a WebContents.
+     * Forward the URL straight to the fragment delegate, which is what the settings native page
+     * does with it, so tests see the page they navigated to.
+     */
+    private class SettingsTestTab extends MockTab {
+        SettingsTestTab() {
+            super(TAB_ID, mProfile);
+            // Lets SettingsInTabNavigationDelegate redirect URLs that do not resolve to a page.
+            setIsInitialized(true);
+        }
+
+        @Override
+        public LoadUrlResult loadUrl(LoadUrlParams params) {
+            setUrl(new GURL(params.getUrl()));
+            mFragmentDelegate.updateForUrl(params.getUrl());
+            return new LoadUrlResult(TabLoadStatus.DEFAULT_PAGE_LOAD, /* navigationHandle= */ null);
+        }
+
+        @Override
+        public @Nullable WindowAndroid getWindowAndroid() {
+            // Lets SettingsInTabNavigationDelegate find the SettingsHostFragment in this activity.
+            return mWindowAndroidSupplier.get();
+        }
     }
 
     /**

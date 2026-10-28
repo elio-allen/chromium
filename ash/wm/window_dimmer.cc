@@ -10,7 +10,7 @@
 #include "base/time/time.h"
 #include "ui/aura/window.h"
 #include "ui/color/color_provider.h"
-#include "ui/compositor/layer.h"
+#include "ui/compositor/layer_solid_color.h"
 #include "ui/wm/core/visibility_controller.h"
 #include "ui/wm/core/window_animations.h"
 #include "ui/wm/public/activation_delegate.h"
@@ -72,7 +72,7 @@ WindowDimmer::~WindowDimmer() {
   if (window_) {
     window_->RemoveObserver(this);
     // See class description for details on ownership.
-    delete window_;
+    delete window_.ExtractAsDangling();
   }
 }
 

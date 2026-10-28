@@ -18,17 +18,21 @@
 #include "chrome/browser/actor/ui/actor_ui_state_manager_prefs.h"
 #include "chrome/browser/devtools/devtools_window_testing.h"
 #include "chrome/browser/glic/host/glic_actor_interactive_uitest_common.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_side_panel_coordinator.h"
 #include "chrome/browser/search/search.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/actor/core/actor_features.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "components/optimization_guide/content/browser/page_content_proto_util.h"
 #include "components/optimization_guide/proto/features/actions_data.pb.h"
+#include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/views/test/widget_test.h"
 #include "url/origin.h"
@@ -140,6 +144,7 @@ void ExpectApcHitTestResolvesDifferently(const apc::AnnotatedPageContent& apc,
   }
 }
 
+// TODO(b/552097523): Migrate to GlicApiBrowserTest.
 class GlicActorGeneralUiTest : public GlicActorUiTest {
  public:
   MultiStep CheckActorTabDataHasAnnotatedPageContentCache();
@@ -198,8 +203,11 @@ GlicActorGeneralUiTest::CheckActorTabDataHasAnnotatedPageContentCache() {
   return Steps(Do([&]() {
     // TODO(crbug.com/420669167): Needs to be reconsidered for multi-tab.
     const AnnotatedPageContent* cached_apc =
-        actor::ActorTabData::From(
-            GetActorTask()->GetLastActedTabs().begin()->Get())
+        actor::ActorTabData::From(GetActorTask()
+                                      ->GetLastActedActorSurfaces()
+                                      .begin()
+                                      ->GetTabHandle()
+                                      .Get())
             ->GetLastObservedPageContent();
     EXPECT_TRUE(cached_apc);
     EXPECT_THAT(*annotated_page_content_, EqualsProto(*cached_apc));
@@ -208,9 +216,14 @@ GlicActorGeneralUiTest::CheckActorTabDataHasAnnotatedPageContentCache() {
 
 MultiStep GlicActorGeneralUiTest::OpenDevToolsWindow() {
   return Steps(Do([this]() {
-    content::WebContents* contents = GetGlicContents();
-    DevToolsWindowTesting::OpenDevToolsWindowSync(contents,
-                                                  /*is_docked=*/false);
+    content::WebContents* contents =
+        browser()->tab_strip_model()->GetActiveWebContents();
+    DevToolsWindow* devtools = DevToolsWindowTesting::OpenDevToolsWindowSync(
+        contents, /*is_docked=*/false);
+    BrowserWindowInterface* devtools_browser =
+        DevToolsWindowTesting::Get(devtools)->browser();
+    ASSERT_TRUE(devtools_browser);
+    ui_test_utils::WaitUntilBrowserBecomeActive(devtools_browser);
   }));
 }
 
@@ -257,8 +270,11 @@ MultiStep GlicActorGeneralUiTest::ReadTinyTargetBoundsAndAssertApcHitTest(
         EXPECT_EQ(button_bounds.size(), gfx::Size(20, 20));
 
         const apc::AnnotatedPageContent* cached_apc =
-            actor::ActorTabData::From(
-                GetActorTask()->GetLastActedTabs().begin()->Get())
+            actor::ActorTabData::From(GetActorTask()
+                                          ->GetLastActedActorSurfaces()
+                                          .begin()
+                                          ->GetTabHandle()
+                                          .Get())
                 ->GetLastObservedPageContent();
         ASSERT_TRUE(cached_apc);
 
@@ -291,8 +307,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest, CreateTaskAndNavigate) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewActorTabId);
 
   base::HistogramTester histogram_tester;
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   RunTestSequence(InitializeWithOpenGlicWindow(),
                   StartActorTaskInNewTab(task_url, kNewActorTabId),
@@ -308,8 +324,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest,
                        CachesLastObservedPageContentAfterActionFinish) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewActorTabId);
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   RunTestSequence(InitializeWithOpenGlicWindow(),
                   StartActorTaskInNewTab(task_url, kNewActorTabId),
@@ -327,8 +343,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest, ActionProtoInvalid) {
 
 IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest, ActionTargetNotFound) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewActorTabId);
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   auto click_provider = base::BindLambdaForTesting([this]() {
     content::RenderFrameHost* frame =
@@ -352,8 +368,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest, GetPageContextWithoutFocus) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewActorTabId);
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kOtherTabId);
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   RunTestSequence(
       InitializeWithOpenGlicWindow(),
@@ -372,8 +388,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest, GetPageContextWithoutFocus) {
 IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest, StartTaskWithDevtoolsOpen) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewActorTabId);
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   // Ensure a new tab can be created without crashing when the most recently
   // focused browser window is not a normal tabbed browser (e.g. a DevTools
@@ -447,8 +463,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest,
 
   constexpr std::string_view kClickableButtonLabel = "clickable";
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   RunTestSequence(
       // clang-format off
@@ -479,8 +495,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest,
 
   constexpr std::string_view kClickableButtonLabel = "clickable";
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   // clang-format off
   RunTestSequence(
@@ -540,8 +556,10 @@ IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest, WaitObserveTabFirstAction) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTab1Id);
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTab2Id);
 
-  const GURL url1 = embedded_test_server()->GetURL("/actor/simple.html?tab1");
-  const GURL url2 = embedded_test_server()->GetURL("/actor/simple.html?tab2");
+  const GURL url1 = embedded_https_test_server().GetURL(
+      "example.com", "/actor/simple.html?tab1");
+  const GURL url2 = embedded_https_test_server().GetURL(
+      "example.com", "/actor/simple.html?tab2");
 
   tabs::TabHandle tab1;
   tabs::TabHandle tab2;
@@ -649,12 +667,9 @@ class GlicActorGeneralUiTestWithoutPolicyExemption
     : public GlicActorGeneralUiTest {
  public:
   GlicActorGeneralUiTestWithoutPolicyExemption() {
-    scoped_feature_list_.InitWithFeaturesAndParameters(
-        /*enabled_features=*/{{features::kGlicActor,
-                               {{features::kGlicActorPolicyControlExemption
-                                     .name,
-                                 "false"}}}},
-        /*disabled_features=*/{});
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kGlicActor},
+        /*disabled_features=*/{features::kGlicActorPolicyControlExemption});
   }
   ~GlicActorGeneralUiTestWithoutPolicyExemption() override = default;
 
@@ -677,8 +692,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTestWithoutPolicyExemption,
 }
 
 IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest, CreateActorTabForeground) {
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
   int created_tab_id = -1;
 
   TabStripModel* tab_strip = browser()->tab_strip_model();
@@ -709,8 +724,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest, CreateActorTabForeground) {
 }
 
 IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest, CreateActorTabBackground) {
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
   int existing_tab_id = -1;
   int created_tab_id = -1;
 
@@ -770,7 +785,7 @@ IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest, CreateActorTabOnNewTabPage) {
         // Create another tab to ensure we're using the initiator tab.
         ui_test_utils::NavigateToURLWithDisposition(
             browser(), GURL(url::kAboutBlankURL),
-            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+            WindowOpenDisposition::kNewForegroundTab,
             ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
 
         // Sanity check - we'll ensure these won't change after binding to the
@@ -828,7 +843,7 @@ IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest,
         // Create another tab to ensure we're using the initiator tab.
         ui_test_utils::NavigateToURLWithDisposition(
             browser(), GURL(url::kAboutBlankURL),
-            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+            WindowOpenDisposition::kNewForegroundTab,
             ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
 
         // Sanity check - we'll ensure these won't change after binding to the
@@ -867,9 +882,10 @@ class GlicActorCallbackOrderGeneralUiTest : public GlicActorGeneralUiTest {
   GlicActorCallbackOrderGeneralUiTest() {
     feature_list_.InitWithFeaturesAndParameters(
         {
-            {features::kGlicActor,
-             {{features::kGlicActorClickDelay.name, "60000ms"},
-              {features::kGlicActorPolicyControlExemption.name, "true"}}},
+            {features::kGlicActor, {}},
+            {features::kGlicActorPolicyControlExemption, {}},
+            {actor::kActorClickDelay,
+             {{actor::kActorClickDelayParam.name, "60000ms"}}},
             {actor::kGlicPerformActionsReturnsBeforeStateChange, {}},
         },
         /*disabled_features=*/{});
@@ -880,24 +896,30 @@ class GlicActorCallbackOrderGeneralUiTest : public GlicActorGeneralUiTest {
   MultiStep RecordActorTaskStateChanges() {
     return Steps(ExecuteInGlic(base::BindLambdaForTesting(
         [&task_id = task_id_](content::WebContents* glic_contents) {
-          std::string script = content::JsReplace(R"JS(
+          std::string script = content::JsReplace(
+              R"JS(
               window.event_log= [];
               window.taskStateObs = client.browser.getActorTaskState($1);
               window.taskStateObs.subscribe((new_state) => {
                 const state_name = (() => {
                   switch(new_state) {
-                    case ActorTaskState.UNKNOWN: return 'UNKNOWN';
-                    case ActorTaskState.IDLE: return 'IDLE';
-                    case ActorTaskState.ACTING: return 'ACTING';
-                    case ActorTaskState.PAUSED: return 'PAUSED';
-                    case ActorTaskState.STOPPED: return 'STOPPED';
+                    case $2: return 'UNKNOWN';
+                    case $3: return 'IDLE';
+                    case $4: return 'ACTING';
+                    case $5: return 'PAUSED';
+                    case $6: return 'STOPPED';
                     default: return 'UNEXPECTED';
                   }
                 })();
                 window.event_log.push(state_name);
               });
             )JS",
-                                                  task_id.value());
+              task_id.value(),
+              std::to_underlying(mojom::ActorTaskState::kUnknown),
+              std::to_underlying(mojom::ActorTaskState::kIdle),
+              std::to_underlying(mojom::ActorTaskState::kActing),
+              std::to_underlying(mojom::ActorTaskState::kPaused),
+              std::to_underlying(mojom::ActorTaskState::kStopped));
           ASSERT_TRUE(content::ExecJs(glic_contents, script));
         })));
   }
@@ -1168,8 +1190,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTestHighDPI,
 
   constexpr std::string_view kOffscreenButton = "offscreen";
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   gfx::Rect button_bounds;
 
@@ -1204,8 +1226,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTestHighDPI,
                        CoordinatesApplyDeviceScaleFactor_TinyTarget) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewActorTabId);
 
-  const GURL task_url = embedded_test_server()->GetURL(
-      "/actor/page_with_tiny_iframe_target.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_tiny_iframe_target.html");
 
   gfx::Rect button_bounds;
   gfx::Point target_blink_pixels;
@@ -1264,8 +1286,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest, CloseFloatyShowsToast) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewActorTabId);
   DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(ui::test::PollingStateObserver<int>,
                                       kToastState);
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   TrackFloatingGlicInstance();
   RunTestSequence(
@@ -1283,8 +1305,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest, CloseSidePanelShowsToast) {
   DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(ui::test::PollingStateObserver<int>,
                                       kToastState);
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   RunTestSequence(
       InitializeWithOpenGlicWindow(),
@@ -1344,7 +1366,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorUiTest, ScreenshotInMinimizedWindow) {
   DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(ui::test::PollingStateObserver<bool>,
                                       kIsMinimizedState);
 
-  const GURL task_url = embedded_test_server()->GetURL("/actor/blank.html");
+  const GURL task_url =
+      embedded_https_test_server().GetURL("example.com", "/actor/blank.html");
   RunTestSequence(
       // clang-format off
     InitializeWithOpenGlicWindow(),
@@ -1389,7 +1412,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorUiTest, ScreenshotInInitiallyMinimizedWindow) {
   DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(ui::test::PollingStateObserver<bool>,
                                       kIsMinimizedState);
 
-  const GURL task_url = embedded_test_server()->GetURL("/actor/blank.html");
+  const GURL task_url =
+      embedded_https_test_server().GetURL("example.com", "/actor/blank.html");
   RunTestSequence(
       // clang-format off
     SetOnIncompatibleAction(OnIncompatibleAction::kSkipTest,
@@ -1433,8 +1457,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorUiTest, ScreenshotInMinimizedWindowWithFloaty) {
   DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(ui::test::PollingStateObserver<bool>,
                                       kIsMinimizedState);
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   // Ensure a new tab can be created without crashing when the most recently
   // focused browser window is not a normal tabbed browser (e.g. a DevTools

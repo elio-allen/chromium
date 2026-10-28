@@ -5,6 +5,7 @@
 import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import './composebox_submit.js';
 
+import {AudioProcessor} from '//resources/cr_components/search/audio_processor.service.js';
 import {I18nMixinLit} from '//resources/cr_elements/i18n_mixin_lit.js';
 import {assert} from '//resources/js/assert.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
@@ -13,8 +14,8 @@ import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import type {Size} from '//resources/mojo/ui/gfx/geometry/mojom/geometry.mojom-webui.js';
 
+import {getLoadTimeBoolean, recordEnumerationValue, SubmitButtonIconType} from './common.js';
 import type {PageHandlerRemote} from './composebox.mojom-webui.js';
-import {SubmitButtonIconType} from './composebox_mixin.js';
 import {ComposeboxProxyImpl} from './composebox_proxy.js';
 import {getCss} from './composebox_voice_search.css.js';
 import {getHtml} from './composebox_voice_search.html.js';
@@ -140,11 +141,46 @@ function toError(webkitError: string): VoiceSearchError {
   }
 }
 
-export interface ComposeboxVoiceSearchElement {
-  $: {
-    input: HTMLInputElement,
-    closeButton: HTMLElement,
-  };
+// Recognitions that this component aborted itself (to submit, cancel, time
+// out, disconnect, or hand the microphone to another instance). This is used
+// to ignore Chrome's duplicate echo of the component's abort calls, as Chrome
+// answers abort() on a live session with an 'aborted' error event. Keyed by
+// recognition because the echo goes to the recognition's owner, which is not
+// always the caller (see start()).
+const selfAbortedRecognitions = new WeakSet<SpeechRecognition>();
+
+function abortRecognition(recognition: SpeechRecognition) {
+  selfAbortedRecognitions.add(recognition);
+  recognition.abort();
+}
+
+/**
+ * Maximum number of times in a row that Android speech recognition is
+ * restarted without receiving any result in between (see
+ * `androidContinuousRecognitionEnabled`). Needed to avoid restarting
+ * constantly (an infinite loop) if the recognizer keeps ending right away.
+ */
+const MAX_ANDROID_RESTARTS_WITHOUT_RESULT: number = 5;
+
+// Scripts that are written without spaces between words.
+const NO_SPACE_SCRIPTS =
+    ['Han', 'Hiragana', 'Katakana', 'Thai', 'Lao', 'Khmer', 'Myanmar']
+        .map(script => `\\p{Script=${script}}`)
+        .join('');
+const NO_SPACE_SCRIPT_END = new RegExp(`[${NO_SPACE_SCRIPTS}]$`, 'u');
+const NO_SPACE_SCRIPT_START = new RegExp(`^[${NO_SPACE_SCRIPTS}]`, 'u');
+
+/**
+ * Joins the transcripts of two consecutive speech recognition sessions. Adds a
+ * space in between, unless there already is whitespace at the boundary or the
+ * boundary is in a script that is written without spaces (e.g. Chinese).
+ */
+function joinTranscripts(previous: string, next: string): string {
+  if (!previous || !next || /\s$/.test(previous) || /^\s/.test(next) ||
+      NO_SPACE_SCRIPT_END.test(previous) || NO_SPACE_SCRIPT_START.test(next)) {
+    return previous + next;
+  }
+  return `${previous} ${next}`;
 }
 
 const ComposeboxVoiceSearchElementBase = I18nMixinLit(CrLitElement);
@@ -165,6 +201,11 @@ export class ComposeboxVoiceSearchElement extends
 
   static override get properties() {
     return {
+      audioWaveEnabled: {
+        type: Boolean,
+        reflect: true,
+      },
+      helperTextEnabled: {type: Boolean},
       submitStopButtonsEnabled: {type: Boolean},
       liveTranscriptEnabled: {
         type: Boolean,
@@ -182,6 +223,16 @@ export class ComposeboxVoiceSearchElement extends
       detailsUrl_: {type: String},
       detailedError: {type: Number},
       hasErrorTimer: {type: Boolean},
+      hasMultilineTranscript: {
+        type: Boolean,
+        reflect: true,
+        attribute: 'has-multiline-transcript',
+      },
+      transcriptLines: {
+        type: Number,
+        reflect: true,
+        attribute: 'transcript-lines',
+      },
       isPermissionPromptOpen: {
         type: Boolean,
         reflect: true,
@@ -212,6 +263,18 @@ export class ComposeboxVoiceSearchElement extends
        */
       idleTimeout: {type: Number},
       /**
+       * Time in milliseconds to wait before closing the UI if no speech
+       * has been detected at all since start, or trailing silence for
+       * manual submit mode. If undefined, falls back to `idleTimeout`.
+       */
+      manualSubmitIdleTimeout: {type: Number},
+      /**
+       * When enabled, recognition is restarted, so that like on desktop the
+       * idle timeout or the user decides when voice search ends. Ignored if
+       * `dynamicTimeoutEnabled` is set.
+       */
+      androidContinuousRecognitionEnabled: {type: Boolean},
+      /**
        * Whether voice search was activated by a keyboard shortcut.
        */
       activatedByKeyboard: {type: Boolean},
@@ -226,14 +289,20 @@ export class ComposeboxVoiceSearchElement extends
       null;
 
   accessor activatedByKeyboard: boolean = false;
+  accessor androidContinuousRecognitionEnabled: boolean = false;
+  accessor audioWaveEnabled: boolean = false;
   accessor autosubmitEnabled: boolean = false;
   accessor detailedError: VoiceSearchError|null = null;
   accessor dynamicTimeoutEnabled: boolean = false;
   accessor hasErrorTimer: boolean = false;
+  accessor hasMultilineTranscript: boolean = false;
+  accessor helperTextEnabled: boolean = false;
   accessor idleTimeout: number = 3000;
   accessor isPermissionPromptOpen: boolean = false;
   accessor liveTranscriptEnabled: boolean = true;
+  accessor manualSubmitIdleTimeout: number|undefined = undefined;
   accessor metricSource: string = '';
+  accessor transcriptLines: number = 1;
   // Accept page callback router attribute asynchronously, so that the parent
   // and voice search component can share the same mojo connection and source of
   // truth (to avoid race conditions).
@@ -256,6 +325,18 @@ export class ComposeboxVoiceSearchElement extends
 
   private accessor state_: State = State.UNINITIALIZED;
 
+  // True when `webkitSpeechRecognition` is backed by Android's
+  // `SpeechRecognitionImpl`, which owns the microphone itself and reports
+  // cumulative result snapshots.
+  private readonly androidSpeechRecognition_: boolean =
+      getLoadTimeBoolean('androidSpeechRecognition', false);
+  // The transcript recognized before the latest Android recognition restart
+  // (see `androidContinuousRecognitionEnabled`).
+  private androidPreviousTranscript_: string = '';
+  // How many times in a row Android recognition was restarted without any
+  // result. Needed to avoid restarting constantly (an infinite loop) if the
+  // recognizer keeps ending right away.
+  private androidRestartsWithoutResult_: number = 0;
   private blurTimeoutId_: number|null = null;
   private listenerIds_: number[] = [];
   private pageHandler_: PageHandlerRemote =
@@ -276,15 +357,28 @@ export class ComposeboxVoiceSearchElement extends
     this.voiceRecognition_.onaudiostart = this.onAudioStart_.bind(this);
     this.voiceRecognition_.onspeechstart = this.onSpeechStart_.bind(this);
     this.voiceRecognition_.onerror = (e) => {
-      this.onError_(toError(e.error));
+      const error = toError(e.error);
+      if (error === VoiceSearchError.NO_SPEECH &&
+          this.isAndroidContinuousRecognition_()) {
+        // Android ends its session with this error when it hears no speech for
+        // a while. Like for any other session end, `onEnd_()` then decides
+        // whether voice search keeps listening.
+        return;
+      }
+      this.onError_(error);
     };
     this.voiceRecognition_.onnomatch = () => {
+      if (this.isAndroidContinuousRecognition_()) {
+        // Same as for no-speech, when Android hears no recognizable speech.
+        return;
+      }
       this.onError_(VoiceSearchError.NO_MATCH);
     };
   }
 
   override connectedCallback() {
     super.connectedCallback();
+    AudioProcessor.setSimulate(this.androidSpeechRecognition_);
     if (!this.metricSource) {
       this.searchboxHandler_.getPageClassification().then(({metricSource}) => {
         this.metricSource = metricSource || '';
@@ -300,12 +394,12 @@ export class ComposeboxVoiceSearchElement extends
     if (ComposeboxVoiceSearchElement.pendingStartInstance_ === this) {
       ComposeboxVoiceSearchElement.pendingStartInstance_ = null;
     }
-    this.voiceRecognition_.abort();
+    abortRecognition(this.voiceRecognition_);
     super.disconnectedCallback();
   }
 
-  override updated(changedProperties: PropertyValues<this>) {
-    super.updated(changedProperties);
+  override updated(changedProperties: PropertyValues) {
+    super.updated(changedProperties as PropertyValues<this>);
     // When `pageCallbackRouter` is set by the parent,
     // add all listeners for the callback router if not already added.
     if (changedProperties.has('pageCallbackRouter') &&
@@ -315,9 +409,26 @@ export class ComposeboxVoiceSearchElement extends
               this.onVoicePermissionPromptChanged.bind(this)),
       );
     }
+    if (changedProperties.has('transcript_') ||
+        changedProperties.has('audioWaveEnabled') ||
+        changedProperties.has('liveTranscriptEnabled')) {
+      const input = this.shadowRoot?.querySelector<HTMLElement>('#input');
+      if (input && this.audioWaveEnabled && this.liveTranscriptEnabled) {
+        input.scrollTop = input.scrollHeight;
+        const lines = !this.transcript_ ?
+            1 :
+            Math.min(
+                7, Math.max(1, Math.round((input.scrollHeight - 20) / 24)));
+        this.transcriptLines = lines;
+        this.hasMultilineTranscript = lines > 1;
+      } else {
+        this.transcriptLines = 1;
+        this.hasMultilineTranscript = false;
+      }
+    }
   }
 
-  protected shouldShowErrorScrim_(): boolean {
+  protected isInError_(): boolean {
     return !!this.errorMessage_;
   }
 
@@ -328,13 +439,17 @@ export class ComposeboxVoiceSearchElement extends
     }
     if (ComposeboxVoiceSearchElement.activeRecognition_ !== null) {
       ComposeboxVoiceSearchElement.pendingStartInstance_ = this;
-      ComposeboxVoiceSearchElement.activeRecognition_.abort();
+      abortRecognition(ComposeboxVoiceSearchElement.activeRecognition_);
       return;
     }
-    this.errorMessage_ = '';
+    this.resetState_();
     // If continuous is false, then speech webkit determines when to end, and
     // there is no manual set timeout.
     this.voiceRecognition_.continuous = !this.dynamicTimeoutEnabled;
+    // Any earlier session of this recognition has ended by now (onEnd_ clears
+    // activeRecognition_, and Chrome sends 'end' after the 'aborted' echo), so
+    // aborts from here on are not ours.
+    selfAbortedRecognitions.delete(this.voiceRecognition_);
     this.voiceRecognition_.start();
     ComposeboxVoiceSearchElement.activeRecognition_ = this.voiceRecognition_;
     this.state_ = State.STARTED;
@@ -380,13 +495,30 @@ export class ComposeboxVoiceSearchElement extends
     }
   };
 
+  private onKeyDown_ = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      if (this.isPermissionPromptOpen) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      if (this.isInError_()) {
+        this.onCloseClick_();
+      } else {
+        this.onStopClick_();
+      }
+    }
+  };
+
   /**
    * Adds global listeners to close voice search on outside interactions.
    * `pointerdown` captures clicks on flat DOMs (e.g., NTP).
    * `blur` captures clicks inside isolated webviews (e.g., Contextual Tasks
    * `#threadFrame`) which steal focus but do not bubble click events.
+   * `keydown` captures Escape key to stop voice search.
    */
   private addOutsideListeners_() {
+    document.addEventListener('keydown', this.onKeyDown_, true);
     WindowProxy.getInstance().setTimeout(() => {
       document.addEventListener('pointerdown', this.onOutsideInteraction_);
       window.addEventListener('blur', this.onOutsideInteraction_);
@@ -395,6 +527,7 @@ export class ComposeboxVoiceSearchElement extends
 
   private removeOutsideListeners_() {
     document.removeEventListener('pointerdown', this.onOutsideInteraction_);
+    document.removeEventListener('keydown', this.onKeyDown_, true);
     window.removeEventListener('blur', this.onOutsideInteraction_);
   }
 
@@ -404,6 +537,7 @@ export class ComposeboxVoiceSearchElement extends
       e.preventDefault();
       e.stopPropagation();
     }
+    this.state_ = State.RESULT_FINAL;
     this.fire('recording-stopped', this.transcript_);
     this.recordMetric_(
         VoiceSearchMetricType.ACTION, VoiceSearchAction.STOP_BUTTON_CLICKED,
@@ -425,9 +559,9 @@ export class ComposeboxVoiceSearchElement extends
     }
     // Fire event so `composebox_mixin.ts` knows to hide voice animation when
     // `isOpened`=`true`. `composebox_mixin.ts` will fire another event if
-    // conditions are met so `aim_app.ts` (omnibox popup) can resize to be at
-    // least as big as the permission prompt if needed. This voice component
-    // does not control any resizing or hiding:
+    // conditions are met so `omnibox_composebox.ts` (omnibox popup) can resize
+    // to be at least as big as the permission prompt if needed. This voice
+    // component does not control any resizing or hiding:
     this.fire('voice-permission-changed', {
       'isOpened': isOpened,
       'height': promptSize.height,
@@ -447,16 +581,35 @@ export class ComposeboxVoiceSearchElement extends
     }
   }
 
+  private getIdleTimeout_(): number {
+    // State enum values < SPEECH_RECEIVED (UNINITIALIZED, STARTED,
+    // AUDIO_RECEIVED) indicate that speech has not yet been detected. In this
+    // case, wait for manualSubmitIdleTimeout (initial silence timeout) before
+    // timing out.
+    if (!this.transcript_ && this.state_ < State.SPEECH_RECEIVED) {
+      return this.manualSubmitIdleTimeout ?? this.idleTimeout;
+    }
+    return this.autosubmitEnabled ?
+        this.idleTimeout :
+        (this.manualSubmitIdleTimeout ?? this.idleTimeout);
+  }
+
   private resetIdleTimer_() {
     WindowProxy.getInstance().clearTimeout(this.timerId_);
     this.timerId_ = WindowProxy.getInstance().setTimeout(
-        this.onIdleTimeout_.bind(this), this.idleTimeout);
+        this.onIdleTimeout_.bind(this), this.getIdleTimeout_());
   }
 
   protected onSubmitClick_(e: Event) {
     e.preventDefault();
     e.stopPropagation();
 
+    if (!this.transcript_) {
+      // Nothing has been recognized yet, so there is nothing to submit. Exit
+      // voice search and return to the searchbox, the same as closing it.
+      this.onCloseClick_();
+      return;
+    }
     this.onFinalResult_(this.transcript_, /*forceSubmit=*/ true);
   }
 
@@ -467,19 +620,31 @@ export class ComposeboxVoiceSearchElement extends
     }
     // If there is text transcribed, process it as final.
     if (this.transcript_) {
-      this.onFinalResult_(this.transcript_, /* force_submit=*/ true);
+      const forceSubmit =
+          this.manualSubmitIdleTimeout === undefined || this.autosubmitEnabled;
+      this.onFinalResult_(this.transcript_, forceSubmit);
       return;
     }
     this.onError_(VoiceSearchError.NO_SPEECH);
-    this.voiceRecognition_.abort();
+    abortRecognition(this.voiceRecognition_);
   }
 
   private onAudioStart_() {
+    if (this.state_ >= State.AUDIO_RECEIVED) {
+      // Audio capture already started, e.g. before Android recognition got
+      // restarted, so this is not user activity.
+      return;
+    }
     this.resetIdleTimer_();
     this.state_ = State.AUDIO_RECEIVED;
   }
 
   private onSpeechStart_() {
+    if (this.state_ >= State.SPEECH_RECEIVED) {
+      // Speech was already received, e.g. before Android recognition got
+      // restarted. Only results reset the idle timer from here on.
+      return;
+    }
     this.resetIdleTimer_();
     this.state_ = State.SPEECH_RECEIVED;
     this.fire('speech-received');
@@ -521,18 +686,35 @@ export class ComposeboxVoiceSearchElement extends
     const speechResult = results[e.resultIndex];
     assert(speechResult);
 
-    // Process interim results based on confidence.
-    for (let j = 0; j < results.length; j++) {
-      const resultList = results[j]!;
-      const result = resultList[0];  // best guess
-      assert(result);
+    if (this.androidSpeechRecognition_) {
+      // On Android, `SpeechRecognitionImpl` sends cumulative snapshots of the
+      // entire utterance. The last item in `results` represents the current
+      // full transcript.
+      const latestResultList = results[results.length - 1]!;
+      const latestResult = latestResultList[0];
+      assert(latestResult);
+      // After a restart, the session only reports what was said since then.
+      this.transcript_ = joinTranscripts(
+          this.androidPreviousTranscript_, latestResult.transcript);
+      this.androidRestartsWithoutResult_ = 0;
+      this.processSpeechTranscript_(
+          latestResult.transcript, latestResult.confidence, /*append=*/ false);
+      // `processSpeechTranscript_()` only puts the current session's transcript
+      // in `finalResult_` if it's confident (partial results go in
+      // `interimResult_`). Like earlier phrases on desktop, what previous
+      // sessions recognized counts as final either way.
+      this.finalResult_ =
+          joinTranscripts(this.androidPreviousTranscript_, this.finalResult_);
+    } else {
+      // Process interim results based on confidence.
+      for (let j = 0; j < results.length; j++) {
+        const resultList = results[j]!;
+        const result = resultList[0];  // best guess
+        assert(result);
 
-      this.transcript_ += result.transcript;
-      if (result.confidence > RECOGNITION_CONFIDENCE_THRESHOLD) {
-        this.finalResult_ += result.transcript;  // Displayed
-      } else {
-        // TODO(crbug.com/511795841) Delete this deprecated feature.
-        this.interimResult_ += result.transcript;
+        this.transcript_ += result.transcript;
+        this.processSpeechTranscript_(
+            result.transcript, result.confidence, /*append=*/ true);
       }
     }
     this.fire('transcript-update', this.transcript_);
@@ -543,9 +725,14 @@ export class ComposeboxVoiceSearchElement extends
     // timespan has passed, the timeout callback will submit the query.
     this.resetIdleTimer_();
 
-    // Force-stop long queries if queryLengthLimit is not undefined.
+    // Force-stop long queries if queryLengthLimit is not undefined. When
+    // Android recognition gets restarted, everything recognized since voice
+    // search started counts, including what earlier sessions recognized.
+    const queryLength = this.isAndroidContinuousRecognition_() ?
+        this.transcript_.length :
+        this.interimResult_.length;
     if (this.queryLengthLimit !== undefined &&
-        this.interimResult_.length > this.queryLengthLimit) {
+        queryLength > this.queryLengthLimit) {
       this.onFinalResult_(this.transcript_);
     }
   }
@@ -559,6 +746,17 @@ export class ComposeboxVoiceSearchElement extends
       const pending = ComposeboxVoiceSearchElement.pendingStartInstance_;
       ComposeboxVoiceSearchElement.pendingStartInstance_ = null;
       pending.start();
+      return;
+    }
+
+    // The Android recognizer session ended on its own while voice search is
+    // still listening (see `androidContinuousRecognitionEnabled`), so start a
+    // new one. Not once voice search is removed or while the page is hidden,
+    // as Blink aborts recognition on Android then.
+    if (this.isAndroidContinuousRecognition_() && this.isConnected &&
+        !document.hidden && this.state_ >= State.AUDIO_RECEIVED &&
+        this.state_ <= State.RESULT_RECEIVED) {
+      this.restartAndroidRecognition_();
       return;
     }
 
@@ -579,12 +777,16 @@ export class ComposeboxVoiceSearchElement extends
         return;
       case State.SPEECH_RECEIVED:
       case State.RESULT_RECEIVED:
-        // If `continuous` is disabled, that means that speech
-        // webkit is the source of truth for timing out and has
-        // decided to time out.
-        if (!this.dynamicTimeoutEnabled) {
-          this.onError_(VoiceSearchError.NO_MATCH);
-        } else if (this.transcript_) {
+        // On Android, 'SpeechRecognitionImpl' always fires 'onEnd' when the
+        // utterance finishes. Submit immediately if a transcript is present,
+        // unless recognition is meant to continue like on desktop (see
+        // `androidContinuousRecognitionEnabled`).
+        if (this.androidSpeechRecognition_ &&
+            !this.isAndroidContinuousRecognition_() && this.transcript_) {
+          this.onFinalResult_(this.transcript_, /*forceSubmit=*/ true);
+          return;
+        }
+        if (this.transcript_) {
           this.onFinalResult_(this.transcript_);
         } else {
           this.onError_(VoiceSearchError.NO_MATCH);
@@ -600,23 +802,47 @@ export class ComposeboxVoiceSearchElement extends
     }
   }
 
-  private recordMetric_(
-      type: VoiceSearchMetricType, metricEnumValue: number, max: number) {
-    // Safety return statement in rare case chrome metrics is not available.
-    if (!chrome.metricsPrivate) {
+  // Whether Android speech recognition is restarted when its session ends on
+  // its own (see `androidContinuousRecognitionEnabled`).
+  private isAndroidContinuousRecognition_(): boolean {
+    return this.androidSpeechRecognition_ &&
+        this.androidContinuousRecognitionEnabled && !this.dynamicTimeoutEnabled;
+  }
+
+  // Starts a new Android recognizer session that continues the current voice
+  // search. Keeps the state and the idle timer as is, so that like on desktop,
+  // the idle timeout or the user decides when voice search ends.
+  private restartAndroidRecognition_() {
+    if (this.androidRestartsWithoutResult_ >=
+        MAX_ANDROID_RESTARTS_WITHOUT_RESULT) {
+      // The recognizer keeps ending without recognizing anything. Stop
+      // restarting it and end voice search with an error, without submitting.
+      this.onError_(VoiceSearchError.NO_SPEECH);
       return;
     }
+    this.androidRestartsWithoutResult_++;
+    this.androidPreviousTranscript_ = this.transcript_;
+    try {
+      this.voiceRecognition_.start();
+    } catch {
+      // Voice search can't keep listening without a recognizer session.
+      this.onError_(VoiceSearchError.OTHER);
+      return;
+    }
+    ComposeboxVoiceSearchElement.activeRecognition_ = this.voiceRecognition_;
+  }
+
+  private recordMetric_(
+      type: VoiceSearchMetricType, metricEnumValue: number, max: number) {
     if (!this.metricSource) {
       return;
     }
 
     const metricName = `VoiceSearch.${type}.${this.metricSource}`;
-    chrome.metricsPrivate.recordEnumerationValue(
-        metricName, metricEnumValue, max);
+    recordEnumerationValue(metricName, metricEnumValue, max);
 
     const aggregateMetricName = `VoiceSearch.${type}`;
-    chrome.metricsPrivate.recordEnumerationValue(
-        aggregateMetricName, metricEnumValue, max);
+    recordEnumerationValue(aggregateMetricName, metricEnumValue, max);
 
     // Record query submission source.
     if (type === VoiceSearchMetricType.ACTION &&
@@ -635,7 +861,7 @@ export class ComposeboxVoiceSearchElement extends
         sourceEnum = VoiceSearchQuerySource.NEXTBOX_COMPOSEBOX;
       }
       if (sourceEnum !== null) {
-        chrome.metricsPrivate.recordEnumerationValue(
+        recordEnumerationValue(
             'VoiceSearch.QuerySubmission.Source', sourceEnum,
             VoiceSearchQuerySource.MAX_VALUE + 1);
       }
@@ -658,16 +884,23 @@ export class ComposeboxVoiceSearchElement extends
         if (legacyMetricEnumValue > 6) {
           return;
         }
-        chrome.metricsPrivate.recordEnumerationValue(
+        recordEnumerationValue(
             'NewTabPage.VoiceActions', legacyMetricEnumValue, max);
       } else if (type === VoiceSearchMetricType.ERROR) {
-        chrome.metricsPrivate.recordEnumerationValue(
-            'NewTabPage.VoiceErrors', metricEnumValue, max);
+        recordEnumerationValue('NewTabPage.VoiceErrors', metricEnumValue, max);
       }
     }
   }
 
   private onError_(error: VoiceSearchError) {
+    // Not a real abort: this component aborted the recognition itself while
+    // ending the session normally, e.g. after a query submission or a user
+    // cancellation (see `selfAbortedRecognitions`). An idle timeout with no
+    // transcript has already been recorded as NO_SPEECH by onIdleTimeout_().
+    if (error === VoiceSearchError.ABORTED &&
+        selfAbortedRecognitions.has(this.voiceRecognition_)) {
+      return;
+    }
     if (this.state_ === State.ERROR_RECEIVED && this.error_ === error) {
       return;
     }
@@ -684,9 +917,11 @@ export class ComposeboxVoiceSearchElement extends
     this.detailedError = error;
 
     // Handle error display and dismissal behavior based on the embedder.
-    if (!this.hasErrorTimer) {
-      if (error === VoiceSearchError.NO_MATCH || error === VoiceSearchError.NO_SPEECH) {
-        // Without a timer, NO_MATCH and NO_SPEECH errors close immediately with no message.
+    if (!this.hasErrorTimer || error === VoiceSearchError.NO_SPEECH) {
+      if (error === VoiceSearchError.NO_MATCH ||
+          error === VoiceSearchError.NO_SPEECH) {
+        // Without a timer (or for NO_SPEECH), errors close immediately with no
+        // message.
         this.errorMessage_ = '';
         this.resetState_();
         this.recordMetric_(
@@ -713,8 +948,8 @@ export class ComposeboxVoiceSearchElement extends
       this.errorMessage_ = this.getErrorText_(error);
       this.fire('voice-search-error', /*canceled-by-error=*/ false);
 
-      if (error === VoiceSearchError.NO_MATCH || error === VoiceSearchError.NO_SPEECH) {
-        // NO_MATCH and NO_SPEECH errors auto-close after a longer delay.
+      if (error === VoiceSearchError.NO_MATCH) {
+        // NO_MATCH errors auto-close after a longer delay.
         this.timerId_ = WindowProxy.getInstance().setTimeout(() => {
           this.recordMetric_(
               VoiceSearchMetricType.ACTION, VoiceSearchAction.ERROR_CANCELING,
@@ -761,7 +996,7 @@ export class ComposeboxVoiceSearchElement extends
 
   protected voiceModeEndCleanup_() {
     this.removeOutsideListeners_();
-    this.voiceRecognition_.abort();
+    abortRecognition(this.voiceRecognition_);
     this.resetState_();
   }
 
@@ -769,12 +1004,15 @@ export class ComposeboxVoiceSearchElement extends
     if (!result) {
       return;
     }
+    // Set state to RESULT_FINAL before voiceModeEndCleanup_() so that when
+    // voiceRecognition_.abort() fires onRecognitionEnd_, it is treated as a
+    // no-op and does not re-enter onFinalResult_().
+    this.state_ = State.RESULT_FINAL;
     if (!this.autosubmitEnabled && !forceSubmit) {
-      this.fire('recording-stopped', this.transcript_);
+      this.fire('recording-stopped', result);
       this.voiceModeEndCleanup_();
       return;
     }
-    this.state_ = State.RESULT_FINAL;
     // Metric recorded through this event firing:
     this.fire('voice-search-final-result', result);
     this.recordMetric_(
@@ -786,7 +1024,7 @@ export class ComposeboxVoiceSearchElement extends
   protected onCloseClick_() {
     // If closing while an error is showing, the close action is to dismiss
     // the error state, so it should not log as a user-canceled voice session.
-    if (this.shouldShowErrorScrim_()) {
+    if (this.isInError_()) {
       this.fire('voice-search-cancel', /*canceled-by-user=*/ false);
       this.voiceModeEndCleanup_();
       return;
@@ -809,6 +1047,10 @@ export class ComposeboxVoiceSearchElement extends
     this.error_ = null;
     this.errorMessage_ = '';
     this.detailedError = null;
+    this.hasMultilineTranscript = false;
+    this.transcriptLines = 1;
+    this.androidPreviousTranscript_ = '';
+    this.androidRestartsWithoutResult_ = 0;
     WindowProxy.getInstance().clearTimeout(this.timerId_);
     this.timerId_ = null;
   }
@@ -842,6 +1084,39 @@ export class ComposeboxVoiceSearchElement extends
     this.detailedError = null;
     this.start();
     this.fire('voice-search-restart');
+  }
+
+  getErrorForTesting(): VoiceSearchError|null {
+    return this.error_;
+  }
+
+  getErrorMessageForTesting(): string {
+    return this.errorMessage_;
+  }
+
+  setErrorMessageForTesting(errorMessage: string) {
+    this.errorMessage_ = errorMessage;
+  }
+
+  voiceModeEndCleanupForTesting() {
+    this.voiceModeEndCleanup_();
+  }
+
+  private processSpeechTranscript_(
+      transcript: string, confidence: number, append: boolean = false) {
+    if (confidence > RECOGNITION_CONFIDENCE_THRESHOLD) {
+      if (append) {
+        this.finalResult_ += transcript;
+      } else {
+        this.finalResult_ = transcript;
+      }
+    } else {
+      if (append) {
+        this.interimResult_ += transcript;
+      } else {
+        this.interimResult_ = transcript;
+      }
+    }
   }
 }
 

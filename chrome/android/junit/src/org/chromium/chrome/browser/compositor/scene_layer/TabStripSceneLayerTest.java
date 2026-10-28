@@ -54,12 +54,12 @@ import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutView.Str
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutView.StripLayoutViewOnLongClickHandler;
 import org.chromium.chrome.browser.compositor.overlays.strip.TabLoadTracker.TabLoadTrackerCallback;
 import org.chromium.chrome.browser.layouts.scene_layer.SceneLayer;
-import org.chromium.chrome.browser.tab.MediaState;
+import org.chromium.components.tabs.TabAlert;
 import org.chromium.ui.resources.ResourceManager;
 
 /** Tests for {@link TabStripSceneLayer}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE, qualifiers = "sw600dp")
+@Config(qualifiers = "sw600dp")
 public class TabStripSceneLayerTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -111,7 +111,7 @@ public class TabStripSceneLayerTest {
     }
 
     private void initializeTest() {
-        mTabStripSceneLayer = new TabStripSceneLayer(DP_TO_PX);
+        mTabStripSceneLayer = new TabStripSceneLayer(DP_TO_PX, /* activityCreationUptimeMs= */ 0L);
         when(mTabStripSceneMock.init(mTabStripSceneLayer)).thenReturn(1L);
         mGlicDismissButton =
                 new TintedCompositorButton(
@@ -183,7 +183,7 @@ public class TabStripSceneLayerTest {
                                 mLayoutUpdateHost,
                                 false,
                                 false,
-                                MediaState.NONE));
+                                /* alertState= */ TabAlert.NONE));
         mTabStripSceneLayer.initializeNativeForTesting();
         mStripLayoutTabs = new StripLayoutTab[] {mStripLayoutTab};
         mStripGroupTitles = new StripLayoutGroupTitle[] {mStripGroupTitle};
@@ -303,11 +303,7 @@ public class TabStripSceneLayerTest {
                         /* scrimOpacity= */ eq(0.3f),
                         eq(leftPadding),
                         eq(rightPadding),
-                        eq(topPadding),
-                        anyFloat(),
-                        anyBoolean(),
-                        anyInt(),
-                        anyInt());
+                        eq(topPadding));
         verify(mTabStripSceneMock).finishBuildingFrame(1L);
     }
 
@@ -347,6 +343,7 @@ public class TabStripSceneLayerTest {
                         anyFloat(),
                         anyFloat(),
                         anyInt(),
+                        anyFloat(),
                         anyFloat(),
                         anyFloat(),
                         anyFloat(),
@@ -441,6 +438,7 @@ public class TabStripSceneLayerTest {
                         anyFloat(),
                         anyFloat(),
                         anyFloat(),
+                        anyFloat(),
                         anyBoolean(),
                         anyBoolean(),
                         anyBoolean(),
@@ -503,6 +501,7 @@ public class TabStripSceneLayerTest {
                         anyFloat(),
                         anyFloat(),
                         anyInt(),
+                        anyFloat(),
                         anyFloat(),
                         anyFloat(),
                         anyFloat(),
@@ -581,6 +580,7 @@ public class TabStripSceneLayerTest {
                         anyFloat(),
                         anyFloat(),
                         anyInt(),
+                        anyFloat(),
                         anyFloat(),
                         anyFloat(),
                         anyFloat(),

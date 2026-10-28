@@ -25,7 +25,7 @@ namespace autofill {
 class AtMemoryBottomSheetBridge;
 class AutofillSuggestionDelegate;
 
-// Controller for the @memory suggestion flow on Android.
+// Controller for the AtMemory suggestion flow on Android.
 class AtMemorySuggestionController : public AutofillSuggestionController {
  public:
   AtMemorySuggestionController(const AtMemorySuggestionController&) = delete;
@@ -50,12 +50,12 @@ class AtMemorySuggestionController : public AutofillSuggestionController {
 
   // AutofillSuggestionController:
   void OnSuggestionsChanged() override;
-  void AcceptSuggestion(
-      int index,
-      AutofillMetrics::SuggestionAcceptedMethod accept_method) override;
-  bool RemoveSuggestion(
-      int index,
-      AutofillMetrics::SingleEntryRemovalMethod removal_method) override;
+  void AcceptSuggestion(int index,
+                        AutofillMetrics::SuggestionAcceptedMethod accept_method,
+                        bool was_obscured) override;
+  void SelectSuggestion(int index) override;
+  void UnselectSuggestion() override;
+  bool RemoveSuggestion(int index) override;
   int GetLineCount() const override;
   const std::vector<Suggestion>& GetSuggestions() const override;
   const Suggestion& GetSuggestionAt(int row) const override;
@@ -64,13 +64,16 @@ class AtMemorySuggestionController : public AutofillSuggestionController {
             std::vector<Suggestion> suggestions,
             AutofillSuggestionTriggerSource trigger_source,
             AutoselectFirstSuggestion autoselect_first_suggestion,
-            AutofillSuggestionsIgnoreFocusLoss ignore_focus_loss) override;
+            AutofillSuggestionsIgnoreFocusLoss ignore_focus_loss,
+            std::u16string search_bar_initial_value) override;
   std::optional<UiSessionId> GetUiSessionId() const override;
   void SetKeepPopupOpenForTesting(bool keep_popup_open_for_testing) override;
   void UpdateDataListValues(base::span<const SelectOption> options) override;
+  const LocalFrameToken& GetAnchorFrameToken() const override;
   bool MayRecycle(
       base::WeakPtr<AutofillSuggestionDelegate> delegate,
       content::WebContents* web_contents,
+      const LocalFrameToken& anchor_frame_token,
       AutofillSuggestionTriggerSource trigger_source) const override;
   void Recycle(PopupControllerCommon controller_common,
                int32_t form_control_ax_id) override;
@@ -78,10 +81,10 @@ class AtMemorySuggestionController : public AutofillSuggestionController {
   virtual void OnDismissed();
   void OnQuerySubmitted(const std::u16string& query);
   void OnQueryTextChanged(const std::u16string& query);
-  void OnSuggestionSelected(int position);
+  void OnSuggestionAccepted(int position);
   void OnSuggestionDismissed(int position);
   void OnChildSuggestionsShown(int parent_position);
-  void OnChildSuggestionSelected(int parent_position, int child_position);
+  void OnChildSuggestionAccepted(int parent_position, int child_position);
   bool IsSearching() const;
 
   void SetBridgeForTesting(std::unique_ptr<AtMemoryBottomSheetBridge> bridge);
@@ -98,8 +101,6 @@ class AtMemorySuggestionController : public AutofillSuggestionController {
   PopupControllerCommon controller_common_;
   std::optional<UiSessionId> ui_session_id_;
   std::vector<Suggestion> suggestions_;
-  AutofillSuggestionTriggerSource trigger_source_ =
-      AutofillSuggestionTriggerSource::kUnspecified;
   std::unique_ptr<AtMemoryBottomSheetBridge> bridge_;
 
   base::WeakPtrFactory<AtMemorySuggestionController>

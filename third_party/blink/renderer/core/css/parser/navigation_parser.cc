@@ -27,7 +27,8 @@ NavigationTestExpression* NavigationParser::ParseNavigationTest(
     return nullptr;
   }
   stream.ConsumeIncludingWhitespace();
-  if (EqualIgnoringAsciiCase(token.Value(), "history")) {
+  if (EqualIgnoringAsciiCase(token.Value(), "history") &&
+      RuntimeEnabledFeatures::NavigationTypeAndPhaseEnabled()) {
     // <navigation-type-test> = history : <navigation-type-keyword>
     // <navigation-type-keyword> = traverse | back | forward | reload
     if (stream.Peek().GetType() != kIdentToken) {
@@ -42,15 +43,15 @@ NavigationTestExpression* NavigationParser::ParseNavigationTest(
     } else if (EqualIgnoringAsciiCase(type_token.Value(), "forward")) {
       type = NavigationTypeTestExpression::kForward;
     } else if (EqualIgnoringAsciiCase(type_token.Value(), "reload")) {
-      // TODO(crbug.com/436805487): Support "reload".
-      return nullptr;
+      type = NavigationTypeTestExpression::kReload;
     } else {
       return nullptr;
     }
     return MakeGarbageCollected<NavigationTypeTestExpression>(type);
   }
 
-  if (EqualIgnoringAsciiCase(token.Value(), "phase")) {
+  if (EqualIgnoringAsciiCase(token.Value(), "phase") &&
+      RuntimeEnabledFeatures::NavigationTypeAndPhaseEnabled()) {
     // <navigation-phase-test> = phase : <navigation-phase-keyword>
     // <navigation-phase-keyword> = loading | ready | committed
     if (stream.Peek().GetType() != kIdentToken) {
@@ -156,16 +157,20 @@ NavigationLocation* NavigationParser::ParseLocation(
       return nullptr;
     }
 
-    CSSParserTokenStream::BlockGuard guard(stream);
+    {
+      CSSParserTokenStream::BlockGuard guard(stream);
+      stream.ConsumeWhitespace();
+      if (stream.Peek().GetType() != kStringToken) {
+        return nullptr;
+      }
+      const CSSParserToken& token = stream.ConsumeIncludingWhitespace();
+      if (token.GetType() == kBadStringToken || !stream.UncheckedAtEnd()) {
+        return nullptr;
+      }
+      value = token.Value().ToAtomicString();
+    }
+    // Consume any whitespace after the function.
     stream.ConsumeWhitespace();
-    if (stream.Peek().GetType() != kStringToken) {
-      return nullptr;
-    }
-    const CSSParserToken& token = stream.ConsumeIncludingWhitespace();
-    if (token.GetType() == kBadStringToken || !stream.UncheckedAtEnd()) {
-      return nullptr;
-    }
-    value = token.Value().ToAtomicString();
   }
 
   return MakeGarbageCollected<NavigationLocation>(type, value);

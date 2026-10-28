@@ -26,10 +26,10 @@
 #include "base/time/time.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/autofill_trigger_source.h"
-#include "components/autofill/core/browser/data_model/data_model_utils.h"
+#include "components/autofill/core/browser/data_model/data_model_util.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/data_quality/autofill_data_util.h"
-#include "components/autofill/core/browser/field_type_utils.h"
+#include "components/autofill/core/browser/field_type_util.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/filling/field_filling_util.h"
 #include "components/autofill/core/browser/filling/filling_product.h"
@@ -362,8 +362,9 @@ std::u16string GetExpirationDateForInput(const CreditCard& credit_card,
     // happened at field filling time like in this else-branch.
     const FieldType server_hint = field.server_type();
     const FieldType forced_field_type =
-        field.server_type_prediction_is_override() ? server_hint
-                                                   : NO_SERVER_DATA;
+        field.PredictionSource() == AutofillPredictionSource::kServerOverride
+            ? server_hint
+            : NO_SERVER_DATA;
     const FieldType fallback_type = field.Type().GetCreditCardType();
     format = CreditCardFieldParser::DetermineExpirationDateFormat(
         field, fallback_type, server_hint, forced_field_type);
@@ -560,8 +561,8 @@ bool WillFillCreditCardNumberOrCvc(
                FormFiller::GetFillingSkipReasonsForField(
                    *field, trigger_field,
                    FormFiller::RefillOptions::NotRefill(), type_count,
-                   /*blocked_fields=*/{}, trigger_source,
-                   ac_unrecognized_behavior)
+                   /*blocked_fields=*/{}, FillingProduct::kCreditCard,
+                   trigger_source, ac_unrecognized_behavior)
                    .empty();
       };
 

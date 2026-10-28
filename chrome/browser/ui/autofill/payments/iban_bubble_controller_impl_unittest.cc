@@ -14,7 +14,7 @@
 #include "components/autofill/core/browser/data_model/payments/iban.h"
 #include "components/autofill/core/browser/metrics/payments/iban_metrics.h"
 #include "components/autofill/core/browser/payments/test_legal_message_line.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/tabs/public/mock_tab_interface.h"
@@ -349,6 +349,32 @@ TEST_F(IbanBubbleControllerImplTest,
   EXPECT_EQ(
       controller()->GetWindowTitle(),
       l10n_util::GetStringUTF16(IDS_AUTOFILL_SAVE_IBAN_PROMPT_TITLE_SERVER));
+}
+
+TEST_F(IbanBubbleControllerImplTest,
+       NonTabWebContentsDoesNotCrashOrShowBubble) {
+  web_contents()->RemoveUserData(tabs::TabLookupFromWebContents::UserDataKey());
+  ASSERT_EQ(tabs::TabInterface::MaybeGetFromContents(web_contents()), nullptr);
+
+  base::HistogramTester histogram_tester;
+  for (bool should_show_prompt : {true, false}) {
+    controller()->OfferLocalSave(test::GetLocalIban(), should_show_prompt,
+                                 base::DoNothing());
+    EXPECT_EQ(controller()->GetPaymentBubbleView(), nullptr);
+    EXPECT_EQ(controller()->GetIbanBubbleType(), IbanBubbleType::kInactive);
+    EXPECT_FALSE(controller()->IsIconVisible());
+
+    controller()->OfferUploadSave(test::GetServerIban(), LegalMessageLines(),
+                                  should_show_prompt, base::DoNothing());
+    EXPECT_EQ(controller()->GetPaymentBubbleView(), nullptr);
+    EXPECT_EQ(controller()->GetIbanBubbleType(), IbanBubbleType::kInactive);
+    EXPECT_FALSE(controller()->IsIconVisible());
+  }
+
+  histogram_tester.ExpectTotalCount(
+      "Autofill.SaveIbanPromptOffer.Local.FirstShow", 0);
+  histogram_tester.ExpectTotalCount(
+      "Autofill.SaveIbanPromptOffer.Upload.FirstShow", 0);
 }
 
 }  // namespace autofill

@@ -55,7 +55,7 @@ ChromeWebContentsViewFocusHelper*
 ChromeWebContentsViewDelegateViews::GetFocusHelper() const {
   ChromeWebContentsViewFocusHelper* helper =
       ChromeWebContentsViewFocusHelper::FromWebContents(web_contents_);
-  DCHECK(helper);
+  CHECK(helper, base::NotFatalUntil::M162);
   return helper;
 }
 
@@ -83,10 +83,10 @@ std::unique_ptr<RenderViewContextMenuBase>
 ChromeWebContentsViewDelegateViews::BuildMenu(
     content::RenderFrameHost& render_frame_host,
     const content::ContextMenuParams& params) {
-  std::unique_ptr<RenderViewContextMenuBase> menu(
+  std::unique_ptr<RenderViewContextMenuBase> menu =
       RenderViewContextMenuViews::Create(render_frame_host, params,
                                          is_paste_enabled_,
-                                         is_paste_and_match_style_enabled_));
+                                         is_paste_and_match_style_enabled_);
   menu->Init();
   return menu;
 }
@@ -172,7 +172,7 @@ void ChromeWebContentsViewDelegateViews::OnGetAllAvailableFormats(
 void ChromeWebContentsViewDelegateViews::ExecuteCommandForTesting(
     int command_id,
     int event_flags) {
-  DCHECK(context_menu_);
+  CHECK(context_menu_, base::NotFatalUntil::M162);
   context_menu_->ExecuteCommand(command_id, event_flags);
   context_menu_.reset();
 }

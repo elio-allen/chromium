@@ -11,6 +11,7 @@
 #include "content/public/browser/web_contents_delegate.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
+class BrowserUiController;
 class BrowserWindow;
 class BrowserWindowInterface;
 class DesktopBrowserWindowCapabilities;
@@ -38,7 +39,8 @@ class BrowserWebContentsDelegate : public content::WebContentsDelegate {
       UnloadController& unload_controller,
       web_app::AppBrowserController* app_browser_controller,
       BrowserWindow& window,
-      DesktopBrowserWindowCapabilities& capabilities);
+      DesktopBrowserWindowCapabilities& capabilities,
+      BrowserUiController& browser_ui_controller);
   BrowserWebContentsDelegate(const BrowserWebContentsDelegate&) = delete;
   BrowserWebContentsDelegate& operator=(const BrowserWebContentsDelegate&) =
       delete;
@@ -61,8 +63,6 @@ class BrowserWebContentsDelegate : public content::WebContentsDelegate {
                           bool user_gesture,
                           bool last_unlocked_by_target) override;
   void LostPointerLock() override;
-  bool IsWaitingForPointerLockPrompt(
-      content::WebContents* web_contents) override;
   bool AllowKeyboardLockForInnerContents(
       content::WebContents* web_contents) override;
   void RequestKeyboardLock(content::WebContents* web_contents,
@@ -99,6 +99,8 @@ class BrowserWebContentsDelegate : public content::WebContentsDelegate {
       const GURL& blocked_url,
       const GURL& initiator_url,
       const url::Origin& initiator_origin,
+      scoped_refptr<content::InitiatorNavigationState>
+          initiator_navigation_state,
       blink::mojom::NavigationBlockedReason reason) override;
   bool IsBackForwardCacheSupported(content::WebContents& web_contents) override;
 
@@ -174,7 +176,8 @@ class BrowserWebContentsDelegate : public content::WebContentsDelegate {
       WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       const content::StoragePartitionConfig& partition_config,
-      content::SessionStorageNamespace* session_storage_namespace) override;
+      content::SessionStorageNamespaceHandle* session_storage_namespace)
+      override;
   void WebContentsCreated(content::WebContents* source_contents,
                           const content::GlobalRenderFrameHostId& opener_id,
                           const std::string& frame_name,
@@ -197,6 +200,7 @@ class BrowserWebContentsDelegate : public content::WebContentsDelegate {
                           scoped_refptr<content::FileSelectListener> listener,
                           const base::FilePath& path) override;
   bool GetCanResize() override;
+  bool GetIsAlwaysOnTopPopup() override;
   bool CanUseWindowingControls(
       content::RenderFrameHost* requesting_frame) override;
   void MinimizeFromWebAPI() override;
@@ -226,12 +230,6 @@ class BrowserWebContentsDelegate : public content::WebContentsDelegate {
                                  const std::string& protocol,
                                  const GURL& url,
                                  bool user_gesture) override;
-  void FindReply(content::WebContents* web_contents,
-                 int request_id,
-                 int number_of_matches,
-                 const gfx::Rect& selection_rect,
-                 int active_match_ordinal,
-                 bool final_update) override;
   void RequestMediaAccessPermission(
       content::WebContents* web_contents,
       const content::MediaStreamRequest& request,
@@ -264,6 +262,7 @@ class BrowserWebContentsDelegate : public content::WebContentsDelegate {
   const raw_ptr<web_app::AppBrowserController> app_browser_controller_;
   const raw_ref<BrowserWindow> window_;
   const raw_ref<DesktopBrowserWindowCapabilities> capabilities_;
+  const raw_ref<BrowserUiController> browser_ui_controller_;
   const raw_ref<BrowserWindowInterface> browser_;
   ui::ScopedUnownedUserData<BrowserWebContentsDelegate> scoped_data_holder_;
 };

@@ -501,11 +501,6 @@ class POLICY_EXPORT CloudPolicyClient {
       ::chrome::cros::reporting::proto::UploadEventsRequest request,
       ResultCallback callback);
 
-  // DEPRECATED: Use |UploadSecurityEvent| instead.
-  virtual void UploadSecurityEventReport(bool include_device_info,
-                                         base::DictValue report,
-                                         ResultCallback callback);
-
   // Attempts to fetch remote commands, with `last_command_id` being the ID of
   // the last command that finished execution, `command_results` being
   // results for previous commands which have not been reported yet,
@@ -685,10 +680,12 @@ class POLICY_EXPORT CloudPolicyClient {
 
   void RemovePolicyTypeToFetch(const PolicyTypeToFetch& params);
 
-  // Configures a set of device state keys to transfer to the server in the next
-  // policy fetch. If the fetch is successful, the keys will be cleared so they
-  // are only uploaded once.
-  void SetStateKeysToUpload(const std::vector<std::string>& keys);
+  // Configures a set of device state keys and the time quantum index for the
+  // current (first) key to transfer to the server in the next policy fetch. If
+  // the fetch is successful, the keys will be cleared so they are only
+  // uploaded once.
+  void SetStateKeysToUpload(const std::vector<std::string>& keys,
+                            int64_t current_time_quantum_index);
 
   // Whether the client is registered with the device management service.
   bool is_registered() const {
@@ -839,16 +836,6 @@ class POLICY_EXPORT CloudPolicyClient {
       const ::chrome::cros::reporting::proto::UploadEventsRequest&
           upload_request);
 
-  // Callback for realtime report upload requests - JSON format.
-  // TODO(crbug.com/478929452): Delete this callback after the proto-based
-  // reporting launch.
-  void OnRealtimeReportUploadCompletedDeprecated(
-      ResultCallback callback,
-      DeviceManagementService::Job* job,
-      DeviceManagementStatus status,
-      int response_code,
-      std::optional<base::DictValue> response);
-
   // Callback for remote command fetch requests.
   void OnRemoteCommandsFetched(RemoteCommandCallback callback,
                                DMServerJobResult result);
@@ -914,6 +901,7 @@ class POLICY_EXPORT CloudPolicyClient {
 
   PolicyTypeToFetchSet types_to_fetch_;
   std::vector<std::string> state_keys_to_upload_;
+  int64_t current_time_quantum_index_to_upload_ = 0;
 
   // OAuth token that if set is used as an additional form of authentication
   // (next to |dm_token_|) in policy fetch requests.
@@ -984,12 +972,6 @@ class POLICY_EXPORT CloudPolicyClient {
       bool include_device_info,
       ResultCallback callback);
 
-  // DEPRECATED: Use CreateNewRealtimeReportingJob instead.
-  DeviceManagementService::Job* CreateNewRealtimeReportingJobDeprecated(
-      base::DictValue report,
-      const std::string& server_url,
-      bool include_device_info,
-      ResultCallback callback);
 
   void SetClientId(const std::string& client_id);
   // Fills in the common fields of a DeviceRegisterRequest for |Register| and

@@ -202,7 +202,7 @@ class RawVideo::VP9Decoder {
                        base::WaitableEvent* done) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(decoder_sequence_);
     if (size_t cached_index = target_index % kNumCachedFrames;
-        UNSAFE_TODO(cached_frame_indices_[cached_index]) == target_index) {
+        cached_frame_indices_[cached_index] == target_index) {
       *decoded_frame_buffer = cached_frames_[cached_index];
       done->Signal();
       return;
@@ -230,7 +230,7 @@ class RawVideo::VP9Decoder {
       auto buffer = CreateBufferFromFrame(*last_decoded_frame_);
       last_decoded_frame_.reset();
       const size_t cached_index = i % kNumCachedFrames;
-      UNSAFE_TODO(cached_frame_indices_[cached_index]) = i;
+      cached_frame_indices_[cached_index] = i;
       cached_frames_[cached_index] = std::move(buffer);
       if (i == target_index) {
         *decoded_frame_buffer = cached_frames_[cached_index];
@@ -287,7 +287,7 @@ class RawVideo::VP9Decoder {
       GUARDED_BY_CONTEXT(decoder_sequence_);
   // frame_index -> file index
   static constexpr size_t kNumCachedFrames = 30;
-  size_t cached_frame_indices_[kNumCachedFrames];
+  std::array<size_t, kNumCachedFrames> cached_frame_indices_;
   std::array<std::vector<uint8_t>, kNumCachedFrames> cached_frames_;
 
   SEQUENCE_CHECKER(decoder_sequence_);
@@ -418,9 +418,10 @@ RawVideo::Metadata::~Metadata() = default;
 RawVideo::Metadata::Metadata(const Metadata&) = default;
 RawVideo::Metadata& RawVideo::Metadata::operator=(const Metadata&) = default;
 
-RawVideo::FrameData::FrameData(const std::vector<const uint8_t*>& plane_addrs,
-                               const std::vector<size_t>& strides,
-                               std::vector<uint8_t> buffer)
+RawVideo::FrameData::FrameData(
+    const std::vector<raw_ptr<const uint8_t>>& plane_addrs,
+    const std::vector<size_t>& strides,
+    std::vector<uint8_t> buffer)
     : plane_addrs(plane_addrs), strides(strides), buffer(std::move(buffer)) {}
 
 RawVideo::FrameData::FrameData(FrameData&& frame_data)
@@ -700,7 +701,7 @@ RawVideo::FrameData RawVideo::GetFrame(size_t frame_index) const {
 
   const auto& plane_layouts = FrameLayout().planes();
   const size_t num_planes = plane_layouts.size();
-  std::vector<const uint8_t*> plane_addrs(num_planes);
+  std::vector<raw_ptr<const uint8_t>> plane_addrs(num_planes);
   std::vector<size_t> strides(num_planes);
   for (size_t i = 0; i < num_planes; ++i) {
     plane_addrs[i] = frame_span.subspan(plane_layouts[i].offset).data();

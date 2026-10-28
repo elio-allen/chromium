@@ -47,14 +47,13 @@ class DummyDetailViewDelegate extends DummyItemDelegate {
 
 export interface ExtensionsDetailViewElement {
   $: {
-    actionMenu: CrActionMenuElement,
     closeButton: HTMLElement,
     description: HTMLElement,
     enableToggle: CrToggleElement,
     extensionsActivityLogLink: HTMLElement,
     extensionsOptions: CrLinkRowElement,
     parentDisabledPermissionsToolTip: CrTooltipIconElement,
-    safetyCheckWarningContainer: HTMLElement,
+    rateLink: CrLinkRowElement,
     source: HTMLElement,
   };
 }
@@ -111,6 +110,7 @@ export class ExtensionsDetailViewElement extends
       /** Whether the extensions safety check warning is shown. */
       showSafetyCheck_: {type: Boolean},
       webuiRoundedIconsEnabled_: {type: Boolean},
+      isolatedModeEnabled_: {type: Boolean},
     };
   }
 
@@ -128,6 +128,8 @@ export class ExtensionsDetailViewElement extends
   protected accessor sortedViews_: chrome.developerPrivate.ExtensionView[] = [];
   protected accessor webuiRoundedIconsEnabled_: boolean =
       loadTimeData.getBoolean('webuiRoundedIconsEnabled');
+  protected accessor isolatedModeEnabled_: boolean =
+      loadTimeData.getBoolean('isolatedModeEnabled');
 
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
@@ -273,6 +275,18 @@ export class ExtensionsDetailViewElement extends
 
   protected shouldShowIncognitoOption_(): boolean {
     return this.data.incognitoAccess.isEnabled && this.incognitoAvailable;
+  }
+
+  protected getItemAllowIncognitoString_(): string {
+    return this.i18n(
+        this.isolatedModeEnabled_ ? 'itemAllowIsolatedMode' :
+                                    'itemAllowIncognito');
+  }
+
+  protected getIncognitoInfoWarningString_(): string {
+    return this.i18n(
+        this.isolatedModeEnabled_ ? 'isolatedModeInfoWarning' :
+                                    'incognitoInfoWarning');
   }
 
   protected showUserScriptSectionToggle_(): boolean {
@@ -421,6 +435,14 @@ export class ExtensionsDetailViewElement extends
     this.delegate.openUrl(this.data.webStoreUrl);
   }
 
+  protected showOpenReviewPageLink_(): boolean {
+    return this.data.canShowReviewPrompt;
+  }
+
+  protected onOpenReviewPageClick_() {
+    this.delegate.openReviewPage(this.data.id);
+  }
+
   protected computeDependentEntry_(
       item: chrome.developerPrivate.DependentExtension): string {
     return loadTimeData.getStringF('itemDependentEntry', item.name, item.id);
@@ -566,7 +588,7 @@ export class ExtensionsDetailViewElement extends
 
   /** Opens the action menu for the extension. */
   protected onActionMenuButtonClick_(event: MouseEvent): void {
-    this.$.actionMenu.showAt(
+    this.shadowRoot.querySelector<CrActionMenuElement>('#actionMenu')!.showAt(
         event.target as HTMLElement,
         {anchorAlignmentY: AnchorAlignment.AFTER_END});
   }
@@ -579,7 +601,7 @@ export class ExtensionsDetailViewElement extends
     chrome.metricsPrivate.recordUserAction(
         'Extensions.Mv2Deprecation.Unsupported.FindAlternativeForExtension.DetailPage');
 
-    this.$.actionMenu.close();
+    this.shadowRoot.querySelector<CrActionMenuElement>('#actionMenu')!.close();
 
     const recommendationsUrl: string|undefined = this.data.recommendationsUrl;
     assert(!!recommendationsUrl);

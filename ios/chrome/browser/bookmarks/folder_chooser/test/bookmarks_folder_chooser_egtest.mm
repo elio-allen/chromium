@@ -70,6 +70,7 @@ BookmarkStorageType kindOfTestToStorageType(KindOfTest kind) {
 
   [BookmarkEarlGrey waitForBookmarkModelLoaded];
   [BookmarkEarlGrey clearBookmarks];
+  [BookmarkEarlGrey clearBookmarksPositionCache];
 }
 
 // Tear down called once per test.
@@ -215,18 +216,7 @@ BookmarkStorageType kindOfTestToStorageType(KindOfTest kind) {
       performAction:grey_tap()];
 
   // Verify all folder flow UI is now closed.
-  [[EarlGrey
-      selectElementWithMatcher:
-          grey_accessibilityID(kBookmarkFolderCreateViewContainerIdentifier)]
-      assertWithMatcher:grey_notVisible()];
-  [[EarlGrey
-      selectElementWithMatcher:
-          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)]
-      assertWithMatcher:grey_notVisible()];
-  [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(
-                                   kBookmarkFolderEditViewContainerIdentifier)]
-      assertWithMatcher:grey_notVisible()];
+  [BookmarkEarlGreyUI verifyFolderFlowIsClosed];
 
   // Verify new folder has been created under Folder 2.
   [BookmarkEarlGrey verifyChildCount:2
@@ -467,26 +457,30 @@ BookmarkStorageType kindOfTestToStorageType(KindOfTest kind) {
 
   id<GREYMatcher> editFolderMatcher =
       chrome_test_util::BookmarksContextMenuEditButton();
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:editFolderMatcher];
   [[EarlGrey selectElementWithMatcher:editFolderMatcher]
       performAction:grey_tap()];
 
   // Verify that the editor is present.
-  [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(
-                                   kBookmarkFolderEditViewContainerIdentifier)]
-      assertWithMatcher:grey_notNil()];
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:
+          grey_accessibilityID(kBookmarkFolderEditViewContainerIdentifier)];
   NSString* existingFolderTitle = @"Folder 1";
   NSString* newFolderTitle = @"New Folder Title";
   [BookmarkEarlGreyUI renameBookmarkFolderWithFolderTitle:newFolderTitle];
 
   [[EarlGrey selectElementWithMatcher:BookmarksSaveEditFolderButton()]
       performAction:grey_tap()];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
+          grey_accessibilityID(kBookmarkFolderEditViewContainerIdentifier)];
+  [ChromeEarlGreyUI waitForAppToIdle];
 
   // Verify that the change has been made.
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(existingFolderTitle)]
-      assertWithMatcher:grey_nil()];
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(newFolderTitle)]
-      assertWithMatcher:grey_notNil()];
+  [BookmarkEarlGreyUI waitForDeletionOfBookmarkWithTitle:existingFolderTitle];
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:TappableBookmarkNodeWithLabel(
+                                              newFolderTitle)];
 
   // Verify edit mode is closed (context bar back to default state).
   [BookmarkEarlGreyUI verifyContextBarInDefaultStateWithSelectEnabled:YES
@@ -500,7 +494,13 @@ BookmarkStorageType kindOfTestToStorageType(KindOfTest kind) {
                                    kBookmarksHomeTrailingButtonIdentifier)]
       performAction:grey_tap()];
 
+  // Wait for edit mode to activate.
+  [BookmarkEarlGreyUI verifyContextBarInEditMode];
+
   // Select single folder.
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:TappableBookmarkNodeWithLabel(
+                                              newFolderTitle)];
   [[EarlGrey
       selectElementWithMatcher:TappableBookmarkNodeWithLabel(newFolderTitle)]
       performAction:grey_tap()];
@@ -520,12 +520,21 @@ BookmarkStorageType kindOfTestToStorageType(KindOfTest kind) {
   [BookmarkEarlGreyUI closeContextBarEditMode];
   [ChromeEarlGreyUI waitForAppToIdle];
 
+  // Verify context bar is back in default state before navigating.
+  [BookmarkEarlGreyUI verifyContextBarInDefaultStateWithSelectEnabled:YES
+                                                     newFolderEnabled:YES];
+
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:TappableBookmarkNodeWithLabel(
+                                              @"Folder 1.1", kindOfTest)];
+
   // Navigate to "Folder 1.1" and verify "New Folder Title" is under it.
   [[EarlGrey selectElementWithMatcher:TappableBookmarkNodeWithLabel(
                                           @"Folder 1.1", kindOfTest)]
       performAction:grey_tap()];
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(newFolderTitle)]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:TappableBookmarkNodeWithLabel(
+                                              newFolderTitle)];
 
   // 3. Test the cancel button at edit page.
 
@@ -535,8 +544,15 @@ BookmarkStorageType kindOfTestToStorageType(KindOfTest kind) {
                                    kBookmarksHomeTrailingButtonIdentifier)]
       performAction:grey_tap()];
 
+  // Wait for edit mode to activate.
+  [BookmarkEarlGreyUI verifyContextBarInEditMode];
+
   // Select single folder.
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(newFolderTitle)]
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:TappableBookmarkNodeWithLabel(
+                                              newFolderTitle)];
+  [[EarlGrey
+      selectElementWithMatcher:TappableBookmarkNodeWithLabel(newFolderTitle)]
       performAction:grey_tap()];
 
   // Tap cancel after modifying the title.
@@ -547,9 +563,15 @@ BookmarkStorageType kindOfTestToStorageType(KindOfTest kind) {
                           to:@"Dummy"
                  dismissWith:@"Cancel"];
 
+  // Verify that the editor is dismissed.
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
+          grey_accessibilityID(kBookmarkFolderEditViewContainerIdentifier)];
+
   // Verify that the bookmark was not updated.
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(newFolderTitle)]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:TappableBookmarkNodeWithLabel(
+                                              newFolderTitle)];
 
   // Verify edit mode is stayed.
   [BookmarkEarlGreyUI verifyContextBarInEditMode];
@@ -562,27 +584,32 @@ BookmarkStorageType kindOfTestToStorageType(KindOfTest kind) {
                                    [BookmarkEarlGreyUI contextBarMoreString])]
       performAction:grey_tap()];
 
-  [[EarlGrey selectElementWithMatcher:
-                 chrome_test_util::ActionSheetItemWithAccessibilityLabelId(
-                     IDS_IOS_BOOKMARK_CONTEXT_MENU_EDIT_FOLDER)]
+  id<GREYMatcher> actionSheetItem =
+      chrome_test_util::ActionSheetItemWithAccessibilityLabelId(
+          IDS_IOS_BOOKMARK_CONTEXT_MENU_EDIT_FOLDER);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:actionSheetItem];
+  [[EarlGrey selectElementWithMatcher:actionSheetItem]
       performAction:grey_tap()];
 
   // Verify that the editor is present.
-  [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(
-                                   kBookmarkFolderEditViewContainerIdentifier)]
-      assertWithMatcher:grey_notNil()];
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:
+          grey_accessibilityID(kBookmarkFolderEditViewContainerIdentifier)];
 
   [[EarlGrey
       selectElementWithMatcher:grey_accessibilityID(
                                    kBookmarkFolderEditorDeleteButtonIdentifier)]
       performAction:grey_tap()];
 
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
+          grey_accessibilityID(kBookmarkFolderEditViewContainerIdentifier)];
+
   [BookmarkEarlGreyUI closeUndoSnackbarAndWait];
+  [ChromeEarlGreyUI waitForAppToIdle];
 
   // Verify that the folder is deleted.
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(newFolderTitle)]
-      assertWithMatcher:grey_notVisible()];
+  [BookmarkEarlGreyUI waitForDeletionOfBookmarkWithTitle:newFolderTitle];
 
   // 5. Verify that when adding a new folder, edit mode will not mistakenly come
   // back (crbug.com/781783).
@@ -590,9 +617,20 @@ BookmarkStorageType kindOfTestToStorageType(KindOfTest kind) {
   // Create a new folder.
   [BookmarkEarlGreyUI createNewBookmarkFolderWithFolderTitle:newFolderTitle
                                                  pressReturn:YES];
+  [ChromeEarlGreyUI waitForAppToIdle];
+
+  // Verify context bar is back in default state (confirming keyboard is
+  // dismissed and edit mode exited).
+  [BookmarkEarlGreyUI verifyContextBarInDefaultStateWithSelectEnabled:YES
+                                                     newFolderEnabled:YES];
+
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:TappableBookmarkNodeWithLabel(
+                                              newFolderTitle)];
 
   // Tap on the new folder.
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(newFolderTitle)]
+  [[EarlGrey
+      selectElementWithMatcher:TappableBookmarkNodeWithLabel(newFolderTitle)]
       performAction:grey_tap()];
 
   // Verify we enter the new folder. (instead of selecting it in edit mode).
@@ -627,10 +665,9 @@ BookmarkStorageType kindOfTestToStorageType(KindOfTest kind) {
       performAction:grey_tap()];
 
   // Select Mobile Bookmarks as new parent folder for "Title For New Folder".
-  [[EarlGrey
-      selectElementWithMatcher:
-          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:
+          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)];
   [[[EarlGrey selectElementWithMatcher:TappableBookmarkNodeWithLabel(
                                            @"Folder 1.1", destinationKind)]
          usingSearchAction:grey_scrollInDirection(kGREYDirectionDown, 200)
@@ -639,10 +676,9 @@ BookmarkStorageType kindOfTestToStorageType(KindOfTest kind) {
       performAction:grey_tap()];
 
   // Verify folder picker is dismissed.
-  [[EarlGrey
-      selectElementWithMatcher:
-          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)]
-      assertWithMatcher:grey_notVisible()];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
+          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)];
 
   // Verify folder is in destination and not in source.
   [BookmarkEarlGrey verifyChildCount:1
@@ -672,8 +708,9 @@ BookmarkStorageType kindOfTestToStorageType(KindOfTest kind) {
                     inFolderWithName:@"Folder 1"
                            inStorage:kindOfTestToStorageType(sourceKind)];
 
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(@"Folder 2")]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:grey_accessibilityID(
+                                                       @"Folder 2")];
   // Close bookmarks
   [[EarlGrey selectElementWithMatcher:BookmarksHomeDoneButton()]
       performAction:grey_tap()];
@@ -1392,6 +1429,8 @@ BookmarkStorageType kindOfTestToStorageType(KindOfTest kind) {
 // Tests that the default folder bookmarks are saved in is updated to the last
 // used folder.
 - (void)testStickyDefaultSignedOut {
+  [BookmarkEarlGrey setLastUsedBookmarkFolderToMobileBookmarksInStorageType:
+                        BookmarkStorageType::kLocalOrSyncable];
   [self util_testStickyDefaultFolder:KindOfTest::kSignedOut];
 }
 
@@ -1555,6 +1594,45 @@ BookmarkStorageType kindOfTestToStorageType(KindOfTest kind) {
   [self util_searchBookmarks:KindOfTest::kLocal];
 }
 
+// Tests that swiping down on BookmarksFolderChooserViewController when opened
+// directly from Bookmarks Home (e.g. Move action) dismisses cleanly.
+- (void)testSwipeDownToDismissFolderChooserStandaloneLocal {
+  [SigninEarlGreyUI signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
+  [BookmarkEarlGrey
+      setupStandardBookmarksInStorage:BookmarkStorageType::kLocalOrSyncable];
+  [BookmarkEarlGreyUI openBookmarks];
+  [BookmarkEarlGreyUI openMobileBookmarks:KindOfTest::kLocal];
+
+  // Long press on folder and tap Move to open Folder Chooser standalone.
+  [[EarlGrey
+      selectElementWithMatcher:TappableBookmarkNodeWithLabel(@"Folder 1")]
+      performAction:grey_longPress()];
+  [[EarlGrey selectElementWithMatcher:ButtonWithAccessibilityLabelId(
+                                          IDS_IOS_BOOKMARK_CONTEXT_MENU_MOVE)]
+      performAction:grey_tap()];
+
+  // Verify Folder Chooser is visible.
+  [[EarlGrey
+      selectElementWithMatcher:
+          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)]
+      assertWithMatcher:grey_sufficientlyVisible()];
+
+  // Swipe down to dismiss Folder Chooser.
+  [[EarlGrey
+      selectElementWithMatcher:
+          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)]
+      performAction:grey_swipeFastInDirection(kGREYDirectionDown)];
+
+  // Verify Folder Chooser is dismissed.
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
+          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)];
+
+  // Dismiss Bookmarks Home.
+  [[EarlGrey selectElementWithMatcher:BookmarksHomeDoneButton()]
+      performAction:grey_tap()];
+}
+
 @end
 
 @interface BookmarksFolderChooserAccountTestCase
@@ -1608,8 +1686,7 @@ BookmarkStorageType kindOfTestToStorageType(KindOfTest kind) {
   [self util_testLongPressOnSingleFolder:KindOfTest::kAccount];
 }
 
-// TODO(crbug.com/514455596): Flaky. Reenable it.
-- (void)DISABLED_testEditFunctionalityOnSingleFolderAccount {
+- (void)testEditFunctionalityOnSingleFolderAccount {
   [SigninEarlGreyUI signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
   [self util_testEditFunctionalityOnSingleFolder:KindOfTest::kAccount];
 }
@@ -1660,6 +1737,8 @@ BookmarkStorageType kindOfTestToStorageType(KindOfTest kind) {
 // used folder.
 - (void)testStickyDefaultFolderAccount {
   [SigninEarlGreyUI signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
+  [BookmarkEarlGrey setLastUsedBookmarkFolderToMobileBookmarksInStorageType:
+                        BookmarkStorageType::kAccount];
   [self util_testStickyDefaultFolder:KindOfTest::kAccount];
 }
 
@@ -1708,6 +1787,47 @@ BookmarkStorageType kindOfTestToStorageType(KindOfTest kind) {
 - (void)testSearchBookmarksAccount {
   [SigninEarlGreyUI signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
   [self util_searchBookmarks:KindOfTest::kAccount];
+}
+
+// Tests that signing out while BookmarksFolderChooser is open dismisses the
+// chooser gracefully without crash.
+- (void)testSignOutWhileFolderChooserIsOpenAccount {
+  [SigninEarlGreyUI signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
+  [BookmarkEarlGrey addBookmarkWithTitle:@"Account Bookmark"
+                                     URL:@"https://www.example.com"
+                               inStorage:BookmarkStorageType::kAccount];
+  [BookmarkEarlGreyUI openBookmarks];
+  [BookmarkEarlGreyUI
+      openMobileBookmarks:chrome_test_util::KindOfTest::kAccount];
+
+  // Long press on bookmark and tap Edit.
+  [[EarlGrey
+      selectElementWithMatcher:chrome_test_util::TappableBookmarkNodeWithLabel(
+                                   @"Account Bookmark",
+                                   chrome_test_util::KindOfTest::kAccount)]
+      performAction:grey_longPress()];
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::
+                                          BookmarksContextMenuEditButton()]
+      performAction:grey_tap()];
+
+  [BookmarkEarlGreyUI openFolderPicker];
+
+  // Verify Folder Chooser is visible.
+  [[EarlGrey
+      selectElementWithMatcher:
+          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)]
+      assertWithMatcher:grey_sufficientlyVisible()];
+
+  // Sign out while Folder Chooser is open.
+  [SigninEarlGrey signOut];
+
+  // Folder Chooser and Editor should be dismissed gracefully.
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
+          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
+          grey_accessibilityID(kBookmarkEditViewContainerIdentifier)];
 }
 
 @end

@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "content/public/browser/web_contents.h"
@@ -17,7 +18,7 @@ void OpenLearnMorePopup(Profile* profile,
                         const GURL& target_url,
                         const blink::mojom::WindowFeatures& window_features) {
   NavigateParams params(profile, target_url, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_POPUP;
+  params.disposition = WindowOpenDisposition::kNewPopup;
   params.contents_to_insert = std::move(contents);
   params.window_features = window_features;
   Navigate(&params);

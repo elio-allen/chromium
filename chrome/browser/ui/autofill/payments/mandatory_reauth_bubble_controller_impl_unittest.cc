@@ -15,7 +15,7 @@
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/autofill/core/browser/metrics/payments/mandatory_reauth_metrics.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/tabs/public/mock_tab_interface.h"
 #include "components/tabs/public/tab_interface.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -296,6 +296,22 @@ TEST_P(MandatoryReauthBubbleControllerOptInBubbleMetricsTest,
   histogram_tester.ExpectBucketCount(
       GetResultMetricsPath(IsReshow()),
       autofill_metrics::MandatoryReauthOptInBubbleResult::kNotInteracted, 1);
+}
+
+TEST_F(MandatoryReauthBubbleControllerImplTest,
+       NonTabWebContentsDoesNotCrashOrShowBubble) {
+  base::HistogramTester histogram_tester;
+  web_contents()->RemoveUserData(tabs::TabLookupFromWebContents::UserDataKey());
+  ResetFakeTabInterface();
+  ASSERT_EQ(tabs::TabInterface::MaybeGetFromContents(web_contents()), nullptr);
+
+  ShowBubble();
+  EXPECT_EQ(controller()->GetBubbleView(), nullptr);
+  EXPECT_EQ(controller()->GetMandatoryReauthBubbleType(),
+            MandatoryReauthBubbleType::kInactive);
+  EXPECT_FALSE(controller()->IsIconVisible());
+  histogram_tester.ExpectTotalCount(GetOfferMetricsPath(/*is_reshow=*/false),
+                                    0);
 }
 
 }  // namespace autofill

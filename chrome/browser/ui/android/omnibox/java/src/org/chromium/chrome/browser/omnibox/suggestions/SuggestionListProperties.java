@@ -6,12 +6,16 @@ package org.chromium.chrome.browser.omnibox.suggestions;
 
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxLayoutMode;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
+import org.chromium.chrome.browser.omnibox.suggestions.SelectionController.TraversalMode;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.ReadableObjectPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableBooleanPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableFloatPropertyKey;
+import org.chromium.ui.modelutil.PropertyModel.WritableIntDefPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableIntPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
 
@@ -23,9 +27,13 @@ import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
      */
     WritableBooleanPropertyKey ACTIVITY_WINDOW_FOCUSED = new WritableBooleanPropertyKey();
 
-    WritableIntPropertyKey SELECTION_MODE = new WritableIntPropertyKey();
-
     WritableFloatPropertyKey ALPHA = new WritableFloatPropertyKey();
+
+    /** Whether to apply a left margin offset to the suggestions container. */
+    WritableBooleanPropertyKey APPLY_MARGIN_FOR_LEFT_SIDE_BAR = new WritableBooleanPropertyKey();
+
+    /** Whether to apply standard vertical spacing to the dropdown. */
+    WritableBooleanPropertyKey APPLY_VERTICAL_PADDING = new WritableBooleanPropertyKey();
 
     WritableFloatPropertyKey CHILD_TRANSLATION_Y = new WritableFloatPropertyKey();
 
@@ -33,7 +41,8 @@ import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
      * Specifies the color scheme. It can be light or dark because of a publisher defined color,
      * incognito, or the default theme that follows dynamic colors.
      */
-    WritableIntPropertyKey COLOR_SCHEME = new WritableIntPropertyKey();
+    WritableIntDefPropertyKey<BrandedColorScheme> COLOR_SCHEME =
+            new WritableIntDefPropertyKey<>(BrandedColorScheme.APP_DEFAULT);
 
     /**
      * Whether the dropdown container should always be visible, even if there's no suggestions to
@@ -63,8 +72,9 @@ import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
     ReadableObjectPropertyKey<OmniboxSuggestionsDropdownEmbedder> EMBEDDER =
             new ReadableObjectPropertyKey<>();
 
-    /** The layout mode of the fusebox; see {@link FuseboxLayoutMode} */
-    WritableIntPropertyKey FUSEBOX_LAYOUT_MODE = new WritableIntPropertyKey();
+    /** The layout mode of the fusebox. See {@link FuseboxLayoutMode}. */
+    WritableIntDefPropertyKey<FuseboxLayoutMode> FUSEBOX_LAYOUT_MODE =
+            new WritableIntDefPropertyKey<>(FuseboxLayoutMode.TOOLBAR);
 
     /**
      * The observer that will receive notifications that the user is interacting with an item on the
@@ -75,6 +85,9 @@ import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
 
     /** Whether the suggestions are being rendered on a large screen. */
     WritableBooleanPropertyKey IS_LARGE_SCREEN = new WritableBooleanPropertyKey();
+
+    /** The width of the left side bar margin in px. */
+    WritableIntPropertyKey LEFT_SIDE_BAR_MARGIN_PX = new WritableIntPropertyKey();
 
     /** Whether the list encompasses the final set of suggestions for the current user query. */
     WritableBooleanPropertyKey LIST_IS_FINAL = new WritableBooleanPropertyKey();
@@ -93,26 +106,20 @@ import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
             new WritableObjectPropertyKey<>(/* skipEquality= */ true);
 
     /** The resource provider for omnibox suggestions. */
-    WritableObjectPropertyKey<OmniboxResourceProvider> RESOURCE_PROVIDER =
-            new WritableObjectPropertyKey<>();
+    ReadableObjectPropertyKey<OmniboxResourceProvider> RESOURCE_PROVIDER =
+            new ReadableObjectPropertyKey<>();
 
     WritableBooleanPropertyKey ROUND_TOP_CORNERS = new WritableBooleanPropertyKey();
+
+    WritableIntDefPropertyKey<TraversalMode> SELECTION_MODE =
+            new WritableIntDefPropertyKey<>(TraversalMode.SATURATING);
 
     /** The list of models controlling the state of the suggestion items. */
     ReadableObjectPropertyKey<ModelList> SUGGESTION_MODELS = new ReadableObjectPropertyKey<>();
 
-    /** On-screen placement of the Toolbar. */
-    WritableIntPropertyKey TOOLBAR_POSITION = new WritableIntPropertyKey();
-
-    /** Whether to apply a left margin offset to the suggestions container. */
-    WritableBooleanPropertyKey APPLY_MARGIN_FOR_LEFT_SIDE_BAR = new WritableBooleanPropertyKey();
-
-    /** Whether to apply standard vertical spacing to the dropdown. */
-    WritableBooleanPropertyKey APPLY_VERTICAL_PADDING = new WritableBooleanPropertyKey();
-
     PropertyKey[] ALL_KEYS =
             new PropertyKey[] {
-                // keep-sorted start
+                // go/keep-sorted start
                 ACTIVITY_WINDOW_FOCUSED,
                 ALPHA,
                 APPLY_MARGIN_FOR_LEFT_SIDE_BAR,
@@ -129,6 +136,7 @@ import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
                 FUSEBOX_LAYOUT_MODE,
                 GESTURE_OBSERVER,
                 IS_LARGE_SCREEN,
+                LEFT_SIDE_BAR_MARGIN_PX,
                 LIST_IS_FINAL,
                 NAVIGATION_LISTENER,
                 OMNIBOX_SESSION_ACTIVE,
@@ -137,7 +145,6 @@ import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
                 ROUND_TOP_CORNERS,
                 SELECTION_MODE,
                 SUGGESTION_MODELS,
-                TOOLBAR_POSITION,
-                // keep-sorted end
+                // go/keep-sorted end
             };
 }

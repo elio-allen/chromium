@@ -4,47 +4,79 @@
 
 #include "chrome/browser/contextual_tasks/contextual_tasks_utils.h"
 
-#include "base/containers/flat_set.h"
+#include <algorithm>
+
 #include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/timer/elapsed_timer.h"
+#include "base/uuid.h"
 #include "build/build_config.h"
+#include "chrome/browser/autocomplete/aim_eligibility_service_factory.h"
 #include "chrome/browser/contextual_tasks/aim_message_poster.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks.mojom.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_eligibility_manager.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_panel_host.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui_interface.h"
+#include "chrome/browser/contextual_tasks/entry_point_eligibility_manager.h"
 #include "chrome/browser/contextual_tasks/site_exclusion_detail.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search/search.h"
+#include "chrome/browser/tab_list/constants.h"
+#include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/webui/new_tab_page/composebox/variations/composebox_fieldtrial.h"
+#include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_handle.h"
+#include "net/http/http_response_headers.h"
 #if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/contextual_tasks/active_task_context_provider.h"
+#include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_actions.h"
-#include "components/omnibox/common/omnibox_features.h"
+#include "chrome/browser/ui/contextual_search/tab_contextualization_controller.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
+#include "components/lens/contextual_input.h"
+#include "components/omnibox/common/composebox_features.h"
+#include "components/omnibox/common/omnibox_features.h"
+#include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #endif
 #include "chrome/common/webui_url_constants.h"
 #include "components/contextual_search/contextual_search_metrics_recorder.h"
+#include "components/contextual_search/contextual_search_service.h"
 #include "components/contextual_search/contextual_search_session_handle.h"
+#include "components/contextual_tasks/public/contextual_task.h"
+#include "components/contextual_tasks/public/contextual_tasks_service.h"
 #include "components/contextual_tasks/public/features.h"
 #include "components/contextual_tasks/public/prefs.h"
-#include "components/omnibox/browser/location_bar_model_util.h"
+#include "components/contextual_tasks/public/utils.h"
+#include "components/omnibox/browser/aim_eligibility_service.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_controller.h"
 #include "content/public/common/url_constants.h"
+#include "net/base/url_util.h"
 #include "third_party/lens_server_proto/aim_communication.pb.h"
 #include "ui/base/device_form_factor.h"
+#include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/contextual_tasks/android/contextual_tasks_panel_host_android.h"
 #include "chrome/browser/contextual_tasks/android/contextual_tasks_panel_host_desktop_android.h"
 #else
 #include "chrome/browser/contextual_tasks/contextual_tasks_panel_host_desktop.h"
+#include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_service_factory.h"
+#include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/browser_actions.h"
+#include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
+#include "components/omnibox/common/omnibox_features.h"
 #endif
 
 namespace contextual_tasks {
@@ -52,6 +84,29 @@ namespace contextual_tasks {
 bool IsContextualTasksUrl(const GURL& url) {
   return url.scheme() == content::kChromeUIScheme &&
          url.host() == chrome::kChromeUIContextualTasksHost;
+}
+
+std::optional<std::string> GetAiModeThreadId(const GURL& url) {
+  std::string thread_id;
+  if (!net::GetValueForKeyInQuery(url, "mtid", &thread_id) ||
+      thread_id.empty()) {
+    return std::nullopt;
+  }
+  return thread_id;
+}
+
+void UpdateAiModeThreadForTask(ContextualTasksService& service,
+                               const base::Uuid& task_id,
+                               const std::string& thread_id,
+                               const GURL& url) {
+  std::string query;
+  std::string mstk;
+  net::GetValueForKeyInQuery(url, "q", &query);
+  service.UpdateThreadForTask(
+      task_id, ThreadType::kAiMode, thread_id,
+      net::GetValueForKeyInQuery(url, "mstk", &mstk) ? std::make_optional(mstk)
+                                                     : std::nullopt,
+      query.empty() ? std::nullopt : std::make_optional(query));
 }
 
 std::unique_ptr<
@@ -103,6 +158,38 @@ void RecordInnerFrameContentsHttpResponseCode(int http_status_code,
   }
 }
 
+void RecordContextualTasksNavigationMetrics(
+    content::NavigationHandle* navigation_handle,
+    bool is_zero_state) {
+  if (!navigation_handle || navigation_handle->IsSameDocument() ||
+      !navigation_handle->IsInPrimaryMainFrame()) {
+    return;
+  }
+  const GURL& url = navigation_handle->GetURL();
+  if (url.is_empty() || url.IsAboutBlank()) {
+    return;
+  }
+
+  if (const net::HttpResponseHeaders* response_headers =
+          navigation_handle->GetResponseHeaders()) {
+    int response_code = response_headers->response_code();
+    base::UmaHistogramSparse("ContextualTasks.Navigation.HttpResponseCode",
+                             response_code);
+    if (!is_zero_state) {
+      base::UmaHistogramSparse(
+          "ContextualTasks.Navigation.HttpResponseCode.ExcludeZeroStateLoads",
+          response_code);
+    }
+  }
+
+  net::Error net_error = navigation_handle->GetNetErrorCode();
+  if (navigation_handle->HasCommitted() ||
+      (net_error != net::OK && net_error != net::ERR_ABORTED)) {
+    base::UmaHistogramSparse("ContextualTasks.Navigation.NetErrorCode",
+                             std::abs(net_error));
+  }
+}
+
 ContextualTasksUIInterface* GetWebUiInterface(
     content::WebContents* web_contents) {
   if (!web_contents) {
@@ -121,6 +208,251 @@ ContextualTasksUIInterface* GetWebUiInterface(
 
   return controller->GetAs<ContextualTasksUI>();
 }
+
+bool IsTabSharingEligible(Profile* profile) {
+  // Forcing entry point eligibility should ONLY be used for local testing and
+  // debugging purposes to bypass server and backend eligibility checks.
+  if (base::FeatureList::IsEnabled(
+          kContextualTasksForceEntryPointEligibility)) {
+    return true;
+  }
+  if (!profile || profile->IsOffTheRecord()) {
+    return false;
+  }
+  auto* aim_service = AimEligibilityServiceFactory::GetForProfile(profile);
+  return aim_service && aim_service->IsAimEligible() &&
+         aim_service->IsFuseboxEligible();
+}
+
+bool AreContextualTasksUpdatedEntryPointsEnabled(Profile* profile) {
+  if (!base::FeatureList::IsEnabled(kContextualTasksUpdatedEntryPoints)) {
+    return false;
+  }
+  if (!profile) {
+    return false;
+  }
+  auto* eligibility_manager =
+      ContextualTasksEligibilityManager::GetForProfile(profile);
+  auto* aim_service = AimEligibilityServiceFactory::GetForProfile(profile);
+  return eligibility_manager && eligibility_manager->IsSidePanelAvailable() &&
+         aim_service && aim_service->IsAimEligible();
+}
+
+bool ShouldShowAskGoogleContextMenu(Profile* profile) {
+  return AreContextualTasksUpdatedEntryPointsEnabled(profile) &&
+         kContextualTasksContextMenuShowAskGoogle.Get();
+}
+
+bool ShouldRouteAskGoogleToOmnibox(Profile* profile) {
+  return AreContextualTasksUpdatedEntryPointsEnabled(profile) &&
+         kContextualTasksContextMenuRouteAskGoogleToOmnibox.Get();
+}
+
+bool ShouldUseContextualTasksContextMenuSubmenu(Profile* profile) {
+  // Check ShouldShowAskGoogleContextMenu so that the submenu is not used if
+  // there is only one subitem.
+  return ShouldShowAskGoogleContextMenu(profile) &&
+         kContextualTasksContextMenuSubmenu.Get();
+}
+
+bool CanShareTabContext(Profile* profile) {
+  if (!profile || profile->IsOffTheRecord() || !IsTabSharingEligible(profile)) {
+    return false;
+  }
+  return contextual_search::ContextualSearchService::IsContextSharingEnabled(
+      profile->GetPrefs());
+}
+
+lens::ImageEncodingOptions CreateImageEncodingOptions() {
+  const auto& image_upload_config =
+      ntp_composebox::FeatureConfig::Get().config.composebox().image_upload();
+  return lens::ImageEncodingOptions{
+      .max_size = image_upload_config.downscale_max_image_size(),
+      .max_height = image_upload_config.downscale_max_image_height(),
+      .max_width = image_upload_config.downscale_max_image_width(),
+      .compression_quality = image_upload_config.image_compression_quality()};
+}
+
+void RecordTabAddedMetric(
+    tabs::TabInterface* tab,
+    contextual_search::ContextualSearchMetricsRecorder* metrics_recorder,
+    bool is_tab_suggestion_chip,
+    BrowserWindowInterface* browser_window_interface) {
+  if (!metrics_recorder || !tab) {
+    return;
+  }
+  if (!browser_window_interface) {
+    browser_window_interface = tab->GetBrowserWindowInterface();
+  }
+  if (!browser_window_interface) {
+    return;
+  }
+
+  auto* tab_list = TabListInterface::From(browser_window_interface);
+  if (!tab_list) {
+    return;
+  }
+  int tab_index = tab_list->GetIndexOfTab(tab->GetHandle());
+  if (tab_index == ::tab_list::kNoTabIndex) {
+    return;
+  }
+
+  const std::u16string& current_title = tab->GetContents()->GetTitle();
+
+  int title_count = 0;
+  std::vector<std::pair<size_t, base::TimeTicks>> last_active_times;
+  auto all_tabs = tab_list->GetAllTabs();
+  for (size_t i = 0; i < all_tabs.size(); i++) {
+    tabs::TabInterface* tab_interface = all_tabs[i];
+
+    const std::u16string& tab_title = tab_interface->GetContents()->GetTitle();
+    if (tab_title == current_title) {
+      title_count++;
+    }
+
+    last_active_times.emplace_back(
+        i, tab_interface->GetContents()->GetLastActiveTimeTicks());
+  }
+
+  bool has_duplicate_title = title_count > 1;
+
+  std::vector<std::pair<size_t, base::TimeTicks>>
+      reverse_chron_last_active_times(last_active_times.begin(),
+                                      last_active_times.end());
+  std::sort(reverse_chron_last_active_times.begin(),
+            reverse_chron_last_active_times.end(),
+            [](const std::pair<size_t, base::TimeTicks>& a,
+               const std::pair<size_t, base::TimeTicks>& b) {
+              return a.second > b.second;
+            });
+  std::optional<int> recency_ranking;
+  for (size_t i = 0; i < reverse_chron_last_active_times.size(); ++i) {
+    if (reverse_chron_last_active_times[i].first ==
+        static_cast<size_t>(tab_index)) {
+      recency_ranking = static_cast<int>(i);
+      break;
+    }
+  }
+
+  metrics_recorder->RecordTabAddedMetrics(has_duplicate_title, recency_ranking,
+                                          is_tab_suggestion_chip);
+
+  if (is_tab_suggestion_chip) {
+    metrics_recorder->RecordAttachmentButtonUsed(
+        contextual_search::ContextualSearchAttachmentButtonType::kSuggestedTab);
+  } else {
+    tabs::TabInterface* active_tab = tab_list->GetActiveTab();
+    if (active_tab == tab) {
+      metrics_recorder->RecordAttachmentButtonUsed(
+          contextual_search::ContextualSearchAttachmentButtonType::kCurrentTab);
+    } else {
+      metrics_recorder->RecordAttachmentButtonUsed(
+          contextual_search::ContextualSearchAttachmentButtonType::kRecentTab);
+    }
+  }
+}
+
+#if !BUILDFLAG(IS_ANDROID)
+void RemoveTabUnderline(int32_t tab_id,
+                        BrowserWindowInterface* browser_window_interface) {
+  if (base::FeatureList::IsEnabled(omnibox::kContextManagementInComposebox) ||
+      IsContextualTasksSidePanelRearchitectureEnabled()) {
+    const tabs::TabHandle handle = tabs::TabHandle(tab_id);
+    tabs::TabInterface* const tab = handle.Get();
+    auto* browser_window =
+        browser_window_interface
+            ? browser_window_interface
+            : (tab ? tab->GetBrowserWindowInterface() : nullptr);
+    if (browser_window) {
+      if (auto* provider = ActiveTaskContextProvider::From(browser_window)) {
+        provider->RemoveLocalTabUnderline(handle);
+      }
+    }
+  }
+}
+
+base::expected<base::UnguessableToken,
+               contextual_search::ContextUploadErrorType>
+CaptureAndUploadTabContext(
+    int32_t tab_id,
+    contextual_search::ContextualSearchSessionHandle* session_handle,
+    base::RepeatingClosure on_context_uploaded,
+    BrowserWindowInterface* browser_window_interface) {
+  if (!session_handle) {
+    return base::unexpected(
+        contextual_search::ContextUploadErrorType::kBrowserProcessingError);
+  }
+
+  const tabs::TabHandle handle = tabs::TabHandle(tab_id);
+  tabs::TabInterface* const tab = handle.Get();
+  if (!tab) {
+    return base::unexpected(
+        contextual_search::ContextUploadErrorType::kBrowserProcessingError);
+  }
+
+  lens::TabContextualizationController* tab_contextualization_controller =
+      lens::TabContextualizationController::From(tab);
+  if (!tab_contextualization_controller) {
+    return base::unexpected(
+        contextual_search::ContextUploadErrorType::kBrowserProcessingError);
+  }
+
+  RecordTabAddedMetric(tab, session_handle->GetMetricsRecorder(),
+                       /*is_tab_suggestion_chip=*/false,
+                       browser_window_interface);
+
+  if (omnibox::IsTabDeselectionInComposeboxEnabled() ||
+      IsContextualTasksRearchitectureEnabled() ||
+      IsContextualTasksSidePanelRearchitectureEnabled()) {
+    if (content::WebContents* contents = tab->GetContents()) {
+      SessionID session_id = sessions::SessionTabHelper::IdForTab(contents);
+      if (session_id.is_valid()) {
+        session_handle->RemoveDeselectedTab(session_id);
+      }
+    }
+  }
+
+  if (base::FeatureList::IsEnabled(omnibox::kContextManagementInComposebox) ||
+      IsContextualTasksSidePanelRearchitectureEnabled()) {
+    if (auto* browser_window = browser_window_interface
+                                   ? browser_window_interface
+                                   : tab->GetBrowserWindowInterface()) {
+      if (auto* provider = ActiveTaskContextProvider::From(browser_window)) {
+        provider->AddLocalTabUnderline(handle);
+      }
+    }
+  }
+
+  auto context_token = session_handle->CreateContextToken();
+
+  tab_contextualization_controller->GetPageContext(base::BindOnce(
+      [](base::UnguessableToken context_token,
+         base::WeakPtr<contextual_search::ContextualSearchSessionHandle>
+             session_handle,
+         base::RepeatingClosure on_context_uploaded,
+         std::unique_ptr<lens::ContextualInputData> page_content_data) {
+        if (!session_handle || !page_content_data) {
+          return;
+        }
+        auto uploaded_context_tokens =
+            session_handle->GetUploadedContextTokens();
+        if (std::ranges::find(uploaded_context_tokens, context_token) ==
+            uploaded_context_tokens.end()) {
+          return;
+        }
+        session_handle->StartTabContextUploadFlow(context_token,
+                                                  std::move(page_content_data),
+                                                  CreateImageEncodingOptions());
+        if (on_context_uploaded) {
+          on_context_uploaded.Run();
+        }
+      },
+      context_token, session_handle->AsWeakPtr(),
+      std::move(on_context_uploaded)));
+
+  return base::ok(context_token);
+}
+#endif
 
 bool IsValidUrlForSuggestedTab(const GURL& url,
                                Profile* profile,
@@ -195,7 +527,7 @@ PrepareClientToAimRequestInfo(
     info->context_turn_metadata.push_back(active_tab_context_turn_metadata);
   }
 
-  base::flat_set<base::UnguessableToken> file_tokens;
+  std::vector<base::UnguessableToken> file_tokens;
   if (session_handle) {
     file_tokens = session_handle->GetUploadedContextTokens();
   }
@@ -210,7 +542,9 @@ PrepareClientToAimRequestInfo(
   }
 
   if (overlay_token.has_value()) {
-    file_tokens.insert(*overlay_token);
+    if (!std::ranges::contains(file_tokens, *overlay_token)) {
+      file_tokens.push_back(*overlay_token);
+    }
     // When an overlay token is present, it implies a recent Lens Overlay
     // interaction, such as a region search. Setting this flag forces the
     // inclusion of that interaction's data in the request. This is required
@@ -220,7 +554,7 @@ PrepareClientToAimRequestInfo(
     info->force_include_latest_interaction_request_data = true;
   }
 
-  info->file_tokens = std::move(file_tokens).extract();
+  info->file_tokens = std::move(file_tokens);
 
   return info;
 }
@@ -257,10 +591,7 @@ void SendInjectedInputRemovedUpdate(AimMessagePoster* message_poster,
 
 bool ShouldShowSidePanel() {
 #if BUILDFLAG(IS_ANDROID)
-  bool is_tablet_or_desktop =
-      (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET ||
-       ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_DESKTOP);
-  return is_tablet_or_desktop &&
+  return IsAndroidDesktopFormFactor() &&
          !base::FeatureList::IsEnabled(
              kContextualTasksOverrideShowBottomSheetOnLargeScreen);
 #else
@@ -276,14 +607,21 @@ bool IsAndroidMobileFormFactor() {
 #endif
 }
 
-GURL GetContextualTasksFunctionalURL(content::WebContents* web_contents) {
-  auto* ui = GetWebUiInterface(web_contents);
-  return ui ? ui->GetInnerFrameUrl() : GURL();
+bool IsAndroidDesktopFormFactor() {
+#if BUILDFLAG(IS_ANDROID)
+  return ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_DESKTOP;
+#else
+  return false;
+#endif
 }
 
-GURL GetContextualTasksDisplayURL(content::WebContents* web_contents) {
-  GURL inner_frame_url = GetContextualTasksFunctionalURL(web_contents);
-  return location_bar_model::GetContextualTasksDisplayURL(inner_frame_url);
+bool IsUrlValidForContextSharing(const GURL& url) {
+  if (!url.is_valid() || url.IsAboutBlank()) {
+    return false;
+  }
+  return !url.SchemeIs(content::kChromeUIScheme) &&
+         !url.SchemeIs(content::kChromeUIUntrustedScheme) &&
+         !url.SchemeIs("chrome-extension");
 }
 
 // static
@@ -314,8 +652,7 @@ bool GetEffectivePinState(Profile* profile) {
 }
 
 #if !BUILDFLAG(IS_ANDROID)
-void UpdatePinButtonVisibilityState(BrowserWindowInterface* browser_window,
-                                    bool eligible) {
+void UpdatePinButtonVisibilityState(BrowserWindowInterface* browser_window) {
   if (!browser_window || !BrowserActions::From(browser_window)) {
     return;
   }
@@ -338,7 +675,9 @@ void UpdatePinButtonVisibilityState(BrowserWindowInterface* browser_window,
         if (auto* model =
                 PinnedToolbarActionsModel::Get(browser_window->GetProfile())) {
           if (model->Contains(kActionSidePanelShowContextualTasks)) {
-            action_item->SetVisible(eligible);
+            action_item->SetVisible(
+                contextual_tasks::EntryPointEligibilityManager::
+                    IsPinningEligible(browser_window->GetProfile()));
           }
         }
       }
@@ -371,6 +710,55 @@ std::vector<uint8_t> GetSerializedHandshakeMessage() {
   std::vector<uint8_t> serialized_message(size);
   message.SerializeToArray(serialized_message.data(), size);
   return serialized_message;
+}
+
+void RecordExtensionHandshakeStatus(ExtensionHandshakeStatus status) {
+  base::UmaHistogramEnumeration("ContextualTasks.ExtensionHandshake.Status",
+                                status);
+}
+
+void RecordExtensionHandshakeLatency(base::TimeDelta latency) {
+  base::UmaHistogramMediumTimes("ContextualTasks.ExtensionHandshake.Latency",
+                                latency);
+}
+
+void RecordExtensionPostMessageError(ExtensionPostMessageError error) {
+  base::UmaHistogramEnumeration("ContextualTasks.ExtensionPostMessage.Error",
+                                error);
+}
+
+void RecordExtensionQueuedSearchMessagesDropped(size_t count) {
+  base::UmaHistogramCounts100(
+      "ContextualTasks.ExtensionPostMessage.QueuedSearchMessagesDropped",
+      count);
+}
+
+bool ShouldUseDarkMode(Profile* profile, const GURL& url) {
+  std::optional<bool> url_dark_mode = GetDarkModeFromUrl(url);
+  if (url_dark_mode.has_value()) {
+    return *url_dark_mode;
+  }
+  return ShouldUseDarkMode(profile);
+}
+
+bool ShouldUseDarkMode(Profile* profile) {
+#if !BUILDFLAG(IS_ANDROID)
+  // Assume light mode as fallback.
+  if (!profile) {
+    return false;
+  }
+
+  // Always use dark mode in incognito.
+  if (profile->IsOffTheRecord()) {
+    return true;
+  }
+
+  // In all other cases, respect the theme service dark mode preferences.
+  ThemeService* theme_service = ThemeServiceFactory::GetForProfile(profile);
+  return theme_service && theme_service->BrowserUsesDarkColors();
+#else
+  return false;
+#endif
 }
 
 }  // namespace contextual_tasks

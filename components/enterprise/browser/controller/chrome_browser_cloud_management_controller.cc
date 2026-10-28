@@ -42,6 +42,7 @@
 #include "components/policy/core/common/configuration_policy_provider.h"
 #include "components/policy/core/common/features.h"
 #include "components/policy/core/common/policy_logger.h"
+#include "components/policy/core/common/policy_switches.h"
 #include "components/prefs/pref_service.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
@@ -92,10 +93,12 @@ ChromeBrowserCloudManagementController::ChromeBrowserCloudManagementController(
 
 ChromeBrowserCloudManagementController::
     ~ChromeBrowserCloudManagementController() {
-  if (policy_fetcher_)
+  if (policy_fetcher_) {
     policy_fetcher_->RemoveClientObserver(this);
-  if (cloud_policy_client_)
+  }
+  if (cloud_policy_client_) {
     cloud_policy_client_->RemoveObserver(this);
+  }
 }
 
 // static
@@ -103,8 +106,10 @@ bool ChromeBrowserCloudManagementController::IsEnabled() {
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   return true;
 #else
-  return base::CommandLine::ForCurrentProcess()->HasSwitch(
-      switches::kEnableChromeBrowserCloudManagement);
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  return command_line->HasSwitch(
+             ::switches::kEnableChromeBrowserCloudManagement) ||
+         command_line->HasSwitch(policy::switches::kUseFakeDmserver);
 #endif
 }
 
@@ -120,12 +125,13 @@ ChromeBrowserCloudManagementController::CreatePolicyManager(
   DMToken dm_token = BrowserDMTokenStorage::Get()->RetrieveDMToken();
   std::string client_id = BrowserDMTokenStorage::Get()->RetrieveClientId();
 
-  if (dm_token.is_empty())
+  if (dm_token.is_empty()) {
     VLOG_POLICY(1, CBCM_ENROLLMENT) << "DM token = empty";
-  else if (dm_token.is_invalid())
+  } else if (dm_token.is_invalid()) {
     VLOG_POLICY(1, CBCM_ENROLLMENT) << "DM token = invalid";
-  else if (dm_token.is_valid())
+  } else if (dm_token.is_valid()) {
     VLOG_POLICY(1, CBCM_ENROLLMENT) << "DM token = from persistence";
+  }
 
   VLOG_POLICY(1, CBCM_ENROLLMENT) << "Enrollment token = " << enrollment_token;
   VLOG_POLICY(1, CBCM_ENROLLMENT) << "Client ID = " << client_id;
@@ -138,8 +144,9 @@ ChromeBrowserCloudManagementController::CreatePolicyManager(
   }
 
   base::FilePath user_data_dir;
-  if (!base::PathService::Get(delegate_->GetUserDataDirKey(), &user_data_dir))
+  if (!base::PathService::Get(delegate_->GetUserDataDirKey(), &user_data_dir)) {
     return nullptr;
+  }
 
   DVLOG_POLICY(1, CBCM_ENROLLMENT)
       << "Creating machine level user cloud policy manager";
@@ -160,7 +167,7 @@ ChromeBrowserCloudManagementController::CreatePolicyManager(
 
   std::unique_ptr<MachineLevelUserCloudPolicyStore> extension_install_store =
       nullptr;
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   // This is not supported before M146. A feature flag check is not possible
   // here because finch is not yet initialized.
   if (IsExtensionInstallPolicySupportedOnThisVersion()) {
@@ -173,7 +180,7 @@ ChromeBrowserCloudManagementController::CreatePolicyManager(
                  // always finished.
                  base::TaskShutdownBehavior::BLOCK_SHUTDOWN}));
   }
-#endif  // !BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // !BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
   return std::make_unique<MachineLevelUserCloudPolicyManager>(
       std::move(policy_store), std::move(extension_install_store), nullptr,
@@ -210,8 +217,7 @@ void ChromeBrowserCloudManagementController::Init(
            "Google Chrome build.";
     return;
   }
-  VLOG_POLICY(1, CBCM_ENROLLMENT)
-      << "Starting CBCM Controller Initialization";
+  VLOG_POLICY(1, CBCM_ENROLLMENT) << "Starting CBCM Controller Initialization";
 
   delegate_->InitializeOAuthTokenFactory(url_loader_factory, local_state);
 
@@ -243,13 +249,13 @@ void ChromeBrowserCloudManagementController::Init(
     return;
   }
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   if (policy_manager->extension_install_store() &&
       !base::FeatureList::IsEnabled(
           features::kEnableExtensionInstallPolicyFetching)) {
     policy_manager->extension_install_store()->Clear();
   }
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
   // If there exists an enrollment token, then there are three states:
   //   1/ There also exists a valid DM token.  This machine is already
@@ -281,8 +287,9 @@ void ChromeBrowserCloudManagementController::Init(
     return;
   }
 
-  if (!GetEnrollmentTokenAndClientId(&enrollment_token, &client_id))
+  if (!GetEnrollmentTokenAndClientId(&enrollment_token, &client_id)) {
     return;
+  }
 
   DCHECK(!enrollment_token.empty());
   DCHECK(!client_id.empty());
@@ -398,8 +405,9 @@ void ChromeBrowserCloudManagementController::InvalidatePolicies() {
 
   // This causes the scheduler to stop refreshing itself since the DM token is
   // no longer valid.
-  if (report_scheduler_)
+  if (report_scheduler_) {
     report_scheduler_->OnDMTokenUpdated();
+  }
 }
 
 void ChromeBrowserCloudManagementController::UnenrollCallback(
@@ -412,8 +420,9 @@ void ChromeBrowserCloudManagementController::UnenrollCallback(
   DVLOG_POLICY(1, CBCM_ENROLLMENT)
       << "Browser unenrollment: " << (success ? "succeeded" : "failed");
 
-  if (success)
+  if (success) {
     InvalidatePolicies();
+  }
 
   NotifyBrowserUnenrolled(success);
 }
@@ -478,8 +487,9 @@ void ChromeBrowserCloudManagementController::NotifyPolicyRegisterFinished(
 
 void ChromeBrowserCloudManagementController::NotifyBrowserUnenrolled(
     bool succeeded) {
-  for (auto& observer : observers_)
+  for (auto& observer : observers_) {
     observer.OnBrowserUnenrolled(succeeded);
+  }
 }
 
 void ChromeBrowserCloudManagementController::NotifyCloudReportingLaunched() {
@@ -498,8 +508,9 @@ bool ChromeBrowserCloudManagementController::GetEnrollmentTokenAndClientId(
     std::string* enrollment_token,
     std::string* client_id) {
   *client_id = BrowserDMTokenStorage::Get()->RetrieveClientId();
-  if (client_id->empty())
+  if (client_id->empty()) {
     return false;
+  }
 
   *enrollment_token = BrowserDMTokenStorage::Get()->RetrieveEnrollmentToken();
   return !enrollment_token->empty();
@@ -519,8 +530,9 @@ void ChromeBrowserCloudManagementController::
     MachineLevelUserCloudPolicyManager* policy_manager =
         delegate_->GetMachineLevelUserCloudPolicyManager();
 
-    if (policy_manager)
+    if (policy_manager) {
       policy_manager->store()->InitWithoutToken();
+    }
     NotifyPolicyRegisterFinished(false);
     return;
   }

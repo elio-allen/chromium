@@ -3,8 +3,9 @@
 // found in the LICENSE file.
 
 import 'chrome://resources/cr_elements/cr_button/cr_button.js';
-import './iframe.js';
+import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
 import './doodle_share_dialog.js';
+import './doodle_icons.html.js';
 
 import {assert} from 'chrome://resources/js/assert.js';
 import {skColorToRgba} from 'chrome://resources/js/color_utils.js';
@@ -76,6 +77,7 @@ export class LogoElement extends CrLitElement {
       showAnimation_: {type: Boolean},
       showShareDialog_: {type: Boolean},
       imageDoodleTabIndex_: {type: Number},
+      webuiRoundedIconsEnabled_: {type: Boolean},
     };
   }
 
@@ -95,6 +97,8 @@ export class LogoElement extends CrLitElement {
   protected accessor showAnimation_: boolean = false;
   protected accessor showShareDialog_: boolean = false;
   protected accessor imageDoodleTabIndex_: number = -1;
+  protected accessor webuiRoundedIconsEnabled_: boolean =
+      loadTimeData.getBoolean('webuiRoundedIconsEnabled');
 
   private pageHandler_: PageHandlerRemote;
   private imageClickParams_: string|null = null;
@@ -191,9 +195,12 @@ export class LogoElement extends CrLitElement {
   }
 
   private computeDoodleBoxed_(): boolean {
+    if (!this.imageDoodle_) {
+      return false;
+    }
+
     const backgroundColor = this.computeBackgroundColor_();
     return !backgroundColor ||
-        !!this.imageDoodle_ &&
         this.imageDoodle_.backgroundColor.value !== backgroundColor.value;
   }
 
@@ -203,7 +210,7 @@ export class LogoElement extends CrLitElement {
    * doodle-associated URL in new tab/window.
    */
   protected onImageClick_() {
-    if ($$<HTMLElement>(this, '#imageDoodle')!.tabIndex < 0) {
+    if ($$<HTMLElement>(this, '#imageContainer')!.tabIndex < 0) {
       return;
     }
 

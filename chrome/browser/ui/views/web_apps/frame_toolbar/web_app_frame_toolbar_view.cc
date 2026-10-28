@@ -101,8 +101,9 @@ WebAppFrameToolbarView::WebAppFrameToolbarView(BrowserView* browser_view)
       scoped_unowned_user_data_(
           browser_view_->browser()->GetUnownedUserDataHost(),
           *this) {
-  DCHECK(browser_view_);
-  DCHECK(web_app::AppBrowserController::IsWebApp(browser_view_->browser()));
+  CHECK(browser_view_, base::NotFatalUntil::M162);
+  CHECK(web_app::AppBrowserController::IsWebApp(browser_view_->browser()),
+        base::NotFatalUntil::M162);
   SetID(VIEW_ID_WEB_APP_FRAME_TOOLBAR);
 
   {
@@ -212,7 +213,8 @@ std::pair<int, int> WebAppFrameToolbarView::LayoutInContainer(
 }
 
 gfx::Rect WebAppFrameToolbarView::LayoutInContainer(gfx::Rect available_space) {
-  DCHECK(!browser_view_->IsWindowControlsOverlayEnabled());
+  CHECK(!browser_view_->IsWindowControlsOverlayEnabled(),
+        base::NotFatalUntil::M162);
 
   SetVisible(!available_space.IsEmpty());
   if (available_space.IsEmpty()) {
@@ -220,7 +222,8 @@ gfx::Rect WebAppFrameToolbarView::LayoutInContainer(gfx::Rect available_space) {
     return gfx::Rect();
   }
 
-  DCHECK_LE(GetPreferredSize().height(), available_space.height());
+  CHECK_LE(GetPreferredSize().height(), available_space.height(),
+           base::NotFatalUntil::M162);
   SetBoundsRect(available_space);
   DeprecatedLayoutImmediately();
 
@@ -230,7 +233,7 @@ gfx::Rect WebAppFrameToolbarView::LayoutInContainer(gfx::Rect available_space) {
 
   // Bounds for remaining inner space, in parent container coordinates.
   gfx::Rect center_bounds = center_container_->bounds();
-  DCHECK(center_bounds.x() == 0 || left_container_);
+  CHECK(center_bounds.x() == 0 || left_container_, base::NotFatalUntil::M162);
   center_bounds.Offset(bounds().OffsetFromOrigin());
   return center_bounds;
 }
@@ -239,8 +242,9 @@ gfx::Rect WebAppFrameToolbarView::GetCenterContainerForSize(
     const gfx::Size& available_size) const {
   // This value should be cached from/for the current size so amortizes to zero
   // cost.
-  const auto layout = static_cast<const views::FlexLayout*>(GetLayoutManager())
-                          ->GetProposedLayout(available_size);
+  const auto& layout =
+      static_cast<const views::LayoutManagerBase*>(GetLayoutManager())
+          ->GetProposedLayout(available_size);
   for (const auto& child : layout.child_layouts) {
     if (child.child_view == center_container_) {
       return child.visible ? child.bounds : gfx::Rect();
@@ -251,7 +255,7 @@ gfx::Rect WebAppFrameToolbarView::GetCenterContainerForSize(
 
 void WebAppFrameToolbarView::LayoutForWindowControlsOverlay(
     gfx::Rect available_space) {
-  DCHECK(!left_container_);
+  CHECK(!left_container_, base::NotFatalUntil::M162);
   // The center_container_ might have been laid out by the frame view such that
   // it interferes with hit testing in the ToolbarButtonContainer. Ensure that
   // its bounds are cleared when laying out WCO.
@@ -487,7 +491,7 @@ WebAppFrameToolbarView::GetContentSettingViewsForTesting() const {
 void WebAppFrameToolbarView::UpdateCachedColors() {
   const BrowserFrameView* frame_view =
       browser_view_->browser_widget()->GetFrameView();
-  DCHECK(frame_view);
+  CHECK(frame_view, base::NotFatalUntil::M162);
 
   active_background_color_ =
       frame_view->GetFrameColor(BrowserFrameActiveState::kActive);

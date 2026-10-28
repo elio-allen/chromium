@@ -26,6 +26,7 @@ using GeminiEligibilityCallback = void (^)(BOOL eligible);
 
 namespace gemini {
 enum class EntryPoint;
+enum class InputType;
 }
 
 namespace ios::provider {
@@ -165,6 +166,13 @@ enum class GeminiViewMode {
   kLive,
 };
 
+// Enum representing the feature mode for Gemini quota checks.
+// This needs to stay in sync with GCRGeminiFeatureMode internally
+enum class GeminiFeatureMode {
+  // Image generation feature (aka Nano Banana).
+  kNanoBanana,
+};
+
 // Configures Gemini with the given startup configuration.
 void ConfigureWithStartupConfiguration(
     GeminiStartupConfiguration* startup_configuration);
@@ -193,13 +201,16 @@ void UpdatePageAttachmentState(
 
 // Updates the prompt action of the floaty if it's invoked.
 void UpdatePromptAction(gemini::EntryPoint entry_point,
-                        NSString* prepopulated_prompt);
+                        NSString* prepopulated_prompt,
+                        bool should_auto_submit = false);
+
+// Updates the prompt action of the floaty with an input type if it's invoked.
+void UpdatePromptAction(gemini::InputType input_type,
+                        NSString* prepopulated_prompt,
+                        bool should_auto_submit = false);
 
 // Returns true if a URL is protected.
 bool IsProtectedUrl(std::string url);
-
-// Updates the page context of the floaty.
-void UpdatePageContext(GeminiPageContext* gemini_page_context);
 
 // Updates the floaty's active page context and shared tabs, if any.
 void UpdateActivePageContext(GeminiPageContext* gemini_page_context,
@@ -237,6 +248,12 @@ GeminiViewState GetCurrentGeminiViewState();
 // Switches the Gemini view to the specified mode with an animation flag.
 void SwitchToMode(GeminiViewMode mode, bool animated);
 
+// Switches the Gemini view to the specified mode and target state with an
+// animation flag.
+void SwitchToMode(GeminiViewMode mode,
+                  GeminiViewState target_state,
+                  bool animated);
+
 // Returns the current `GeminiViewMode` of the floaty.
 GeminiViewMode GetCurrentMode();
 
@@ -263,8 +280,13 @@ int GetLiveCaptionsNumberOfLines();
 // Sets whether the suggestion chips should be shown on the floaty.
 void SetShouldShowSuggestionChips(bool should_show);
 
-// Sets whether full page context is required for submitting prompts to Gemini.
-void SetRequireFullPageContext(bool require_full_page_context);
+// Sets whether query submission should be blocked while page context is
+// loading.
+void SetBlockQuerySubmissionWhileLoading(bool block_submission);
+
+// Sets whether to display the page loading snackbar on the opening invocation
+// while page context is loading.
+void SetShowPageLoadingSnackbarOnOpeningInvocation(bool show_snackbar);
 
 // Shows the account snackbar on the Gemini floaty.
 void ShowAccountSnackbar();
@@ -272,6 +294,16 @@ void ShowAccountSnackbar();
 // Returns the view controller for the Gemini floaty.
 UIViewController* GetFloatyViewControllerWithConfiguration(
     GeminiConfiguration* gemini_configuration);
+
+// Returns whether the given feature mode is disabled due to quota exhaustion.
+bool IsFeatureModeDisabledByQuota(GeminiFeatureMode feature_mode);
+
+// Returns the date when the quota will be refilled for the given feature mode,
+// or nil if it is not disabled or does not have a refill date.
+NSDate* GetRefillDateForFeatureMode(GeminiFeatureMode feature_mode);
+
+// Forces a refresh of the Gemini quota information.
+void ForceRefreshQuotaInfo();
 
 }  // namespace ios::provider
 

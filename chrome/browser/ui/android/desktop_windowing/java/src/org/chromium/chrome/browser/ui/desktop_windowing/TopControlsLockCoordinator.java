@@ -14,6 +14,8 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.browser_controls.TopControlsStacker;
 import org.chromium.chrome.browser.tabstrip.StripVisibilityState;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.HeightType;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiSpecs;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.UiUpdateRequest;
 import org.chromium.chrome.browser.ui.side_ui.SideUiObserver;
 import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager;
@@ -46,7 +48,18 @@ public class TopControlsLockCoordinator {
                     updateLock();
                 }
             };
-    private final SideUiObserver mSideUiObserver = sideUiSpecs -> updateLock();
+    private final SideUiObserver mSideUiObserver =
+            new SideUiObserver() {
+                @Override
+                public void onSideUiSpecsChangeStarted(
+                        SideUiSpecs sideUiSpecs, UiUpdateRequest request) {
+                    updateLock();
+                }
+
+                @Override
+                public void onSideUiSpecsChangeCompleted(
+                        SideUiSpecs sideUiSpecs, UiUpdateRequest request) {}
+            };
     private @Nullable SideUiStateProvider mSideUiStateProvider;
 
     /**
@@ -77,9 +90,8 @@ public class TopControlsLockCoordinator {
 
     /** Set the {@link SideUiStateProvider} instance. */
     public void setSideUiStateProvider(SideUiStateProvider sideUiStateProvider) {
-        mSideUiStateProvider = sideUiStateProvider;
-        mSideUiStateProvider.addObserver(mSideUiObserver);
-        updateLock();
+        // TODO(crbug.com/542055382): Remove the rest of SideUiState code. The corresponding logic
+        // was implemented using BrowserStateBrowserControlsVisibilityDelegate in Vertical Tabs.
     }
 
     /** Get the token holder used to block scrolling updates. */

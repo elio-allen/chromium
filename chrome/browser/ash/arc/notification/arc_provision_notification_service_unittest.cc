@@ -19,6 +19,7 @@
 #include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
 #include "chrome/browser/ui/ash/login/fake_login_display_host.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/dbus/concierge/concierge_client.h"
@@ -31,6 +32,7 @@
 #include "chromeos/ash/experiences/arc/test/arc_util_test_support.h"
 #include "chromeos/ash/experiences/arc/test/fake_arc_session.h"
 #include "components/prefs/pref_service.h"
+#include "components/prefs/testing_pref_service.h"
 #include "components/services/app_service/public/cpp/app_service_registry.h"
 #include "components/session_manager/core/session.h"
 #include "components/session_manager/core/session_manager.h"
@@ -74,8 +76,8 @@ class ArcProvisionNotificationServiceTest : public BrowserWithTestWindowTest {
     // Create the service (normally handled by ArcServiceLauncher).
     ArcProvisionNotificationService::GetForBrowserContext(profile());
 
-    arc::prefs::RegisterLocalStatePrefs(local_state_.registry());
-    arc::StabilityMetricsManager::Initialize(&local_state_);
+    arc::StabilityMetricsManager::Initialize(
+        TestingBrowserProcess::GetGlobal()->local_state());
   }
 
   void TearDown() override {
@@ -106,13 +108,13 @@ class ArcProvisionNotificationServiceTest : public BrowserWithTestWindowTest {
     return BrowserWithTestWindowTest::CreateProfile(profile_name);
   }
 
+ protected:
   std::unique_ptr<ArcServiceManager> arc_service_manager_;
   std::unique_ptr<ArcDlcInstaller> arc_dlc_installer_;
   std::unique_ptr<ArcSessionManager> arc_session_manager_;
 
  private:
   apps::AppServiceRegistry app_service_registry_;
-  TestingPrefServiceSimple local_state_;
 };
 
 }  // namespace
@@ -130,7 +132,7 @@ TEST_F(ArcProvisionNotificationServiceTest,
       prefs::kArcLocationServiceEnabled, std::make_unique<base::Value>(false));
 
   arc_session_manager_->SetProfile(profile());
-  arc_session_manager_->Initialize();
+  arc_session_manager_->Initialize(/*consent_auditor=*/nullptr);
 
   // Trigger opt-in flow. The notification gets shown when session starts.
   session_manager()->SetSessionState(
@@ -177,7 +179,7 @@ TEST_F(ArcProvisionNotificationServiceTest,
   profile()->GetPrefs()->SetBoolean(prefs::kArcSignedIn, true);
 
   arc_session_manager_->SetProfile(profile());
-  arc_session_manager_->Initialize();
+  arc_session_manager_->Initialize(/*consent_auditor=*/nullptr);
 
   // Enable ARC. The opt-in flow doesn't take place, and no notification is
   // shown when session starts.
@@ -218,7 +220,7 @@ TEST_F(ArcProvisionNotificationServiceTest,
       prefs::kArcLocationServiceEnabled, std::make_unique<base::Value>(false));
 
   arc_session_manager_->SetProfile(profile());
-  arc_session_manager_->Initialize();
+  arc_session_manager_->Initialize(/*consent_auditor=*/nullptr);
 
   // Trigger opt-in flow. The notification gets shown when session starts.
   session_manager()->SetSessionState(
@@ -261,7 +263,7 @@ TEST_F(ArcProvisionNotificationServiceTest,
       prefs::kArcLocationServiceEnabled, std::make_unique<base::Value>(false));
 
   arc_session_manager_->SetProfile(profile());
-  arc_session_manager_->Initialize();
+  arc_session_manager_->Initialize(/*consent_auditor=*/nullptr);
 
   // Trigger opt-in flow. The notification gets shown when session starts.
   session_manager()->SetSessionState(
@@ -300,7 +302,7 @@ TEST_F(ArcProvisionNotificationServiceTest,
   SetArcPlayStoreEnabledForProfile(profile(), true);
 
   arc_session_manager_->SetProfile(profile());
-  arc_session_manager_->Initialize();
+  arc_session_manager_->Initialize(/*consent_auditor=*/nullptr);
 
   // Trigger opt-in flow. The notification is not shown when session starts.
   session_manager()->SetSessionState(
@@ -373,7 +375,7 @@ TEST_F(ArcProvisionNotificationServiceOobeTest,
       prefs::kArcEnabled, std::make_unique<base::Value>(true));
 
   arc_session_manager_->SetProfile(profile());
-  arc_session_manager_->Initialize();
+  arc_session_manager_->Initialize(/*consent_auditor=*/nullptr);
 
   // Trigger opt-in flow. The notification is not shown.
   arc_session_manager_->RequestEnable();

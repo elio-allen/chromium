@@ -243,7 +243,8 @@ void ProcessRankPolicyAndroid::OnHasPictureInPictureChanged(
 }
 
 void ProcessRankPolicyAndroid::OnMainFrameUrlChanged(
-    const PageNode* page_node) {
+    const PageNode* page_node,
+    const GURL& previous_url) {
   UpdateProcessRank(page_node);
 }
 
@@ -278,6 +279,10 @@ void ProcessRankPolicyAndroid::OnEmbedderFrameNodeChanged(
 }
 
 void ProcessRankPolicyAndroid::OnIsActiveTabChanged(const PageNode* page_node) {
+  UpdateProcessRank(page_node);
+}
+
+void ProcessRankPolicyAndroid::OnIsDiscardedChanged(const PageNode* page_node) {
   UpdateProcessRank(page_node);
 }
 

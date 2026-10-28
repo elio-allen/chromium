@@ -2,22 +2,26 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/bookmarks/saved_tab_groups/saved_tab_group_bar.h"
+
 #include <memory>
 #include <optional>
 #include <vector>
 
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/uuid.h"
 #include "chrome/browser/favicon/favicon_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/ui/bookmarks/bookmark_utils_desktop.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_action_context_desktop.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -37,6 +41,8 @@
 #include "components/tab_groups/tab_group_id.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/views/animation/ink_drop.h"
+#include "ui/views/animation/ink_drop_state.h"
 #include "ui/views/test/button_test_api.h"
 
 namespace tab_groups {
@@ -78,7 +84,7 @@ IN_PROC_BROWSER_TEST_P(SavedTabGroupBarBrowserTest,
       tab_groups::TabGroupSyncServiceFactory::GetForProfile(
           browser()->GetProfile());
 
-  TabStripModel* model = browser()->tab_strip_model();
+  TabStripModel* model = browser()->GetTabStripModel();
   const TabGroupId group_id = model->AddToNewGroup({0});
   // Adding a new tab group posts a task. Wait for it to resolve.
   Wait();
@@ -103,7 +109,7 @@ IN_PROC_BROWSER_TEST_P(SavedTabGroupBarBrowserTest,
   TabGroupSyncService* service =
       tab_groups::TabGroupSyncServiceFactory::GetForProfile(
           browser()->GetProfile());
-  TabStripModel* model = browser()->tab_strip_model();
+  TabStripModel* model = browser()->GetTabStripModel();
   const TabGroupId group_id = model->AddToNewGroup({0});
   Wait();
 
@@ -363,7 +369,7 @@ IN_PROC_BROWSER_TEST_F(SavedTabGroupBarNtpSimplificationBrowserTest,
 
 IN_PROC_BROWSER_TEST_P(SavedTabGroupBarBrowserTest,
                        OpenGroupFromBookmarksBarUnfocusesCurrentGroup) {
-  TabStripModel* model = browser()->tab_strip_model();
+  TabStripModel* model = browser()->GetTabStripModel();
   chrome::AddTabAt(browser(), GURL("about:blank"), -1, true);
   ASSERT_EQ(2, model->count());
 
@@ -380,7 +386,7 @@ IN_PROC_BROWSER_TEST_P(SavedTabGroupBarBrowserTest,
   ASSERT_TRUE(saved_group2.has_value());
 
   // Focus Tab Group 1.
-  model->SetFocusedGroup(group1);
+  model->EnterFocusMode(group1);
   EXPECT_EQ(group1, model->GetFocusedGroup());
 
   // Open Tab Group 2 via SavedTabGroupUtils (simulating opening from Bookmarks
@@ -396,7 +402,7 @@ IN_PROC_BROWSER_TEST_P(SavedTabGroupBarBrowserTest,
 IN_PROC_BROWSER_TEST_P(
     SavedTabGroupBarBrowserTest,
     OpenClosedGroupFromBookmarksBarWhileFocusedUnfocusesCurrentGroup) {
-  TabStripModel* model = browser()->tab_strip_model();
+  TabStripModel* model = browser()->GetTabStripModel();
   const TabGroupId group1 = model->AddToNewGroup({0});
   Wait();
 
@@ -404,7 +410,7 @@ IN_PROC_BROWSER_TEST_P(
       TabGroupSyncServiceFactory::GetForProfile(browser()->GetProfile());
 
   // Focus Tab Group 1.
-  model->SetFocusedGroup(group1);
+  model->EnterFocusMode(group1);
   EXPECT_EQ(group1, model->GetFocusedGroup());
 
   // Create a saved tab group that is closed.
@@ -422,6 +428,40 @@ IN_PROC_BROWSER_TEST_P(
                                         OpeningSource::kOpenedFromRevisitUi);
 
   EXPECT_FALSE(model->GetFocusedGroup().has_value());
+}
+
+IN_PROC_BROWSER_TEST_P(SavedTabGroupBarBrowserTest,
+                       SavedTabGroupButtonContextMenuHighlight) {
+  SavedTabGroupBar* saved_tab_group_bar = const_cast<SavedTabGroupBar*>(
+      BrowserView::GetBrowserViewForBrowser(browser())
+          ->bookmark_bar()
+          ->saved_tab_group_bar());
+
+  TabStripModel* model = browser()->GetTabStripModel();
+  model->AddToNewGroup({0});
+  Wait();
+
+  ASSERT_EQ(1, saved_tab_group_bar->GetNumberOfVisibleGroups());
+  views::View* button = saved_tab_group_bar->GetSavedTabGroupButtons()[0];
+  ASSERT_TRUE(button);
+
+  // Verify the ink drop is not activated initially.
+  ASSERT_NE(views::InkDropState::ACTIVATED,
+            views::InkDrop::Get(button)->GetInkDrop()->GetTargetInkDropState());
+  ASSERT_EQ(views::InkDropState::HIDDEN,
+            views::InkDrop::Get(button)->GetInkDrop()->GetTargetInkDropState());
+
+  gfx::Point point;
+  views::View::ConvertPointToScreen(button, &point);
+  button->ShowContextMenu(point, ui::mojom::MenuSourceType::kMouse);
+
+  // Verify the ink drop transitions to ACTIVATED while the menu is open.
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return views::InkDrop::Get(button)->GetInkDrop()->GetTargetInkDropState() ==
+           views::InkDropState::ACTIVATED;
+  }));
+  EXPECT_EQ(views::InkDropState::ACTIVATED,
+            views::InkDrop::Get(button)->GetInkDrop()->GetTargetInkDropState());
 }
 
 }  // namespace tab_groups

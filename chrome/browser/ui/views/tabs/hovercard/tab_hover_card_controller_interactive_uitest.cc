@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_controller.h"
+
 #include <memory>
 
 #include "base/byte_size.h"
@@ -19,16 +21,15 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
-#include "chrome/browser/ui/performance_controls/memory_saver_utils.h"
 #include "chrome/browser/ui/performance_controls/tab_resource_usage_tab_helper.h"
 #include "chrome/browser/ui/performance_controls/test_support/memory_metrics_refresh_waiter.h"
 #include "chrome/browser/ui/performance_controls/test_support/memory_saver_interactive_test_mixin.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/collaboration_messaging_tab_data.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/tabs/hovercard/fade_footer_view.h"
 #include "chrome/browser/ui/views/tabs/hovercard/fade_label_view.h"
 #include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_bubble_view.h"
-#include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_controller.h"
 #include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_test_util.h"
 #include "chrome/browser/ui/views/tabs/tab.h"
 #include "chrome/browser/ui/views/tabs/tab/tab_close_button.h"
@@ -60,8 +61,10 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/models/list_selection_model.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/test/ui_controls.h"
 #include "ui/base/text/bytes_formatting.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/display/display.h"
 #include "ui/events/event.h"
 #include "ui/events/event_constants.h"
@@ -124,7 +127,7 @@ class TabHoverCardInteractiveUiTest
     scoped_feature_list_.InitWithFeatures(
         {features::kTabHoverCardImages,
          data_sharing::features::kDataSharingFeature,
-         features::kTabGroupHoverCards, features::kTabStripDeclutter},
+         features::kTabStripDeclutter},
         {});
   }
 
@@ -168,7 +171,7 @@ class TabHoverCardInteractiveUiTest
 
   TabResourceUsageTabHelper* GetResourceUsageAt(int index) {
     return TabResourceUsageTabHelper::From(
-        browser()->tab_strip_model()->GetTabAtIndex(index));
+        browser()->GetTabStripModel()->GetTabAtIndex(index));
   }
 
   void SetTabData(int index, tabs::TabData data) {
@@ -176,7 +179,11 @@ class TabHoverCardInteractiveUiTest
       BrowserView* const browser_view =
           BrowserView::GetBrowserViewForBrowser(browser());
       if (auto* tab_view = views::AsViewClass<TabView>(
-              browser_view->tab_strip_view()->GetTabAnchorViewAt(index))) {
+              browser_view->tab_strip_view()->GetTabAnchorView(
+                  browser()
+                      ->GetTabStripModel()
+                      ->GetTabAtIndex(index)
+                      ->GetHandle()))) {
         tab_view->SetDataForTesting(std::move(data));
       }
     } else {
@@ -294,7 +301,7 @@ IN_PROC_BROWSER_TEST_F(TabHoverCardInteractiveUiTest,
 
   // Open a second browser window.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL(url::kAboutBlankURL), WindowOpenDisposition::NEW_WINDOW,
+      browser(), GURL(url::kAboutBlankURL), WindowOpenDisposition::kNewWindow,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_BROWSER);
   ASSERT_EQ(2u, GlobalBrowserCollection::GetInstance()->GetSize());
 
@@ -335,7 +342,10 @@ IN_PROC_BROWSER_TEST_F(TabHoverCardInteractiveUiTest,
       base::FeatureList::IsEnabled(tabs::kTabStripUnification)
           ? BrowserView::GetBrowserViewForBrowser(browser())
                 ->tab_strip_view()
-                ->GetTabAnchorViewAt(1)
+                ->GetTabAnchorView(browser()
+                                       ->GetTabStripModel()
+                                       ->GetTabAtIndex(1)
+                                       ->GetHandle())
           : static_cast<views::View*>(GetTabStrip(browser())->tab_at(1));
   EXPECT_EQ(expected_anchor, hover_card->GetAnchorView());
 }
@@ -409,7 +419,7 @@ IN_PROC_BROWSER_TEST_F(TabHoverCardBubbleViewInterstitialBrowserTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
 
   content::WebContents* const tab =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   ASSERT_TRUE(chrome_browser_interstitials::IsShowingInterstitial(tab));
 
   // Open another tab.
@@ -432,7 +442,7 @@ IN_PROC_BROWSER_TEST_F(TabHoverCardBubbleViewInterstitialBrowserTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
 
   content::WebContents* const tab =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   ASSERT_TRUE(chrome_browser_interstitials::IsShowingInterstitial(tab));
 
   // Open another tab.
@@ -779,7 +789,7 @@ IN_PROC_BROWSER_TEST_F(TabHoverCardFadeFooterInteractiveUiTest,
 
   tab_groups::CollaborationMessagingTabData* const data =
       tab_groups::CollaborationMessagingTabData::From(
-          browser()->tab_strip_model()->GetTabAtIndex(1));
+          browser()->GetTabStripModel()->GetTabAtIndex(1));
 
   tab_data.collaboration_messaging = data->GetWeakPtr();
 
@@ -868,7 +878,7 @@ IN_PROC_BROWSER_TEST_F(TabHoverCardSystemWebAppTest,
 // hover card tests.
 IN_PROC_BROWSER_TEST_F(TabHoverCardInteractiveUiTest,
                        DISABLED_HoverCardShowsOnGroupHeader) {
-  browser()->tab_strip_model()->AddToNewGroup({0});
+  browser()->GetTabStripModel()->AddToNewGroup({0});
 
   RunTestSequence(
       WaitForShow(kTabGroupHeaderElementId),
@@ -879,7 +889,7 @@ IN_PROC_BROWSER_TEST_F(TabHoverCardInteractiveUiTest,
 
 IN_PROC_BROWSER_TEST_F(TabHoverCardInteractiveUiTest,
                        DISABLED_GroupHoverCardHidesOnMouseExit) {
-  browser()->tab_strip_model()->AddToNewGroup({0});
+  browser()->GetTabStripModel()->AddToNewGroup({0});
   RunTestSequence(
       WaitForShow(kTabGroupHeaderElementId),
       MoveMouseTo(kNewTabButtonElementId),
@@ -891,7 +901,7 @@ IN_PROC_BROWSER_TEST_F(TabHoverCardInteractiveUiTest,
 
 IN_PROC_BROWSER_TEST_F(TabHoverCardInteractiveUiTest,
                        DISABLED_HoverCardShownOnGroupHeaderFocus) {
-  browser()->tab_strip_model()->AddToNewGroup({0});
+  browser()->GetTabStripModel()->AddToNewGroup({0});
   RunTestSequence(
       WaitForShow(kTabGroupHeaderElementId), FinishTabstripAnimations(),
       FocusElement(kTabGroupHeaderElementId),
@@ -903,7 +913,7 @@ IN_PROC_BROWSER_TEST_F(TabHoverCardInteractiveUiTest,
   ASSERT_TRUE(
       AddTabAtIndex(1, GURL(url::kAboutBlankURL), ui::PAGE_TRANSITION_TYPED));
 
-  browser()->tab_strip_model()->AddToNewGroup({0});
+  browser()->GetTabStripModel()->AddToNewGroup({0});
 
   RunTestSequence(
       WaitForShow(kTabGroupHeaderElementId),

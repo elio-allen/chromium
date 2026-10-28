@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "base/no_destructor.h"
-#include "chrome/common/chrome_features.h"
+#include "components/password_manager/core/common/password_manager_features.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 #include "url/url_constants.h"
@@ -30,6 +30,7 @@ bool IsRemoteActorCredentialSharingAllowedForOrigin(const url::Origin& origin) {
   static const base::NoDestructor<std::vector<url::Origin>> kAllowedOrigins([] {
     return std::vector<url::Origin>{
         url::Origin::Create(GURL("https://gemini.google.com")),
+        url::Origin::Create(GURL("https://gemini.corp.google.com")),
         url::Origin::Create(GURL("https://gemini-preprod.corp.google.com")),
         url::Origin::Create(GURL("https://gemini-staging.corp.google.com")),
         url::Origin::Create(GURL("https://gemini-autopush.corp.google.com")),

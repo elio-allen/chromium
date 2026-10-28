@@ -37,9 +37,16 @@ class OmniboxPopupAimPresenter
   std::string_view GetPopupMetricPrefix() const override;
   std::optional<base::TimeDelta> ShouldDeferUntilVisualStateReady()
       const override;
+  bool ShouldDebounceResize() const override;
+  bool ShouldApplyHeightWorkarounds() const override;
   bool ShouldDetachWebContentsOnHide() const override;
+  bool ShouldEvictOnHide() const override;
+  bool ShouldDestroyWidgetOnHide() const override;
+  bool ShouldSizeWebViewToPreferredHeight() const override;
+  bool ShouldDrawShadowInWebUI() const override;
   // Triggered when a file selection dialog opened by this popup is closed,
-  // initiating the focus restoration flow.
+  // initiating the focus restoration flow (only active when
+  // `omnibox::kOmniboxKeepOpenOnFileSelection` is enabled).
   void OnFileSelectionClosed() override;
 
   bool is_restoring_focus_after_file_selection() const {
@@ -51,6 +58,7 @@ class OmniboxPopupAimPresenter
   void LogResultToContentReadyMetric(base::TimeTicks result_ready_time,
                                      bool is_first_show) override;
   void WidgetDestroyed() override;
+  std::unique_ptr<OmniboxPopupWebUIBaseContent> CreateWebUIContent() override;
 
  private:
   // views::WidgetObserver:
@@ -75,13 +83,15 @@ class OmniboxPopupAimPresenter
       widget_observation_{this};
 
   // Observes the browser window's FocusManager to track focus restoration after
-  // the file selector closes.
+  // the file selector closes. (Only active when
+  // `kOmniboxKeepOpenOnFileSelection` is enabled).
   base::ScopedObservation<views::FocusManager, views::FocusChangeListener>
       focus_manager_observation_{this};
 
   // Set to true when the file selection dialog is closed to prevent the
   // omnibox popup from closing due to focus transitions during focus
-  // restoration.
+  // restoration. (Only active when `kOmniboxKeepOpenOnFileSelection` is
+  // enabled).
   bool is_restoring_focus_after_file_selection_ = false;
 
   base::WeakPtrFactory<OmniboxPopupAimPresenter> weak_factory_{this};

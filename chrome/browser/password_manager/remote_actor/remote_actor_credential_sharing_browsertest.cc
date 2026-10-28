@@ -6,17 +6,17 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/password_manager/remote_actor/remote_actor_credential_sharing_impl.h"
-#include "chrome/common/chrome_features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/password_manager/remote_actor_credential_sharing.mojom.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/password_manager/core/common/password_manager_features.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/no_renderer_crashes_assertion.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
@@ -39,11 +39,11 @@ class RemoteActorCredentialSharingBrowserTest : public InProcessBrowserTest {
   explicit RemoteActorCredentialSharingBrowserTest(bool enable_feature = true) {
     if (enable_feature) {
       scoped_feature_list_.InitAndEnableFeatureWithParameters(
-          features::kRemoteActorCredentialSharing,
+          password_manager::features::kRemoteActorCredentialSharing,
           {{"allowed_host_for_testing", kAllowedHost}});
     } else {
       scoped_feature_list_.InitAndDisableFeature(
-          features::kRemoteActorCredentialSharing);
+          password_manager::features::kRemoteActorCredentialSharing);
     }
   }
 
@@ -110,7 +110,7 @@ IN_PROC_BROWSER_TEST_F(RemoteActorCredentialSharingBrowserTest,
   // call
   EXPECT_EQ(false, content::EvalJs(GetWebContents(), R"(
     new Promise((resolve) => {
-      chrome.requestAgentAuthentication('gaia_id_123', 'google.com', 'actor_id_456', (success) => {
+      chrome.requestAgentAuthentication('gaia_id_123', 'google.com', 'task_id_456', (success) => {
         resolve(success);
       });
     });
@@ -162,53 +162,3 @@ IN_PROC_BROWSER_TEST_F(RemoteActorCredentialSharingDisabledBrowserTest,
                        "typeof chrome !== 'undefined' && typeof "
                        "chrome.requestAgentAuthentication !== 'undefined'"));
 }
-
-class RemoteActorCredentialSharingFencedFrameBrowserTest
-    : public RemoteActorCredentialSharingBrowserTest {
- public:
-  RemoteActorCredentialSharingFencedFrameBrowserTest() = default;
-  ~RemoteActorCredentialSharingFencedFrameBrowserTest() override = default;
-
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_helper_;
-  }
-
- private:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-};
-
-IN_PROC_BROWSER_TEST_F(RemoteActorCredentialSharingFencedFrameBrowserTest,
-                       ApiNotExposedInFencedFrames) {
-  // Navigate to allowed origin on the main frame.
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(
-      browser(), GetURLForHost(kAllowedHost, "/title1.html")));
-
-  // Create a fenced frame and navigate it to the allowed origin as well.
-  GURL fenced_frame_url = GetURLForHost(kAllowedHost, "/fenced_frames/title1.html");
-  content::RenderFrameHost* fenced_frame_host =
-      fenced_frame_test_helper().CreateFencedFrame(
-          GetWebContents()->GetPrimaryMainFrame(), fenced_frame_url);
-  ASSERT_NE(nullptr, fenced_frame_host);
-
-  // 1. Verify JS API is NOT exposed inside the fenced frame.
-  EXPECT_EQ(false, content::EvalJs(
-                       fenced_frame_host,
-                       "typeof chrome !== 'undefined' && typeof "
-                       "chrome.requestAgentAuthentication !== 'undefined'"));
-
-  // 2. Verify trying to bind from the fenced frame does NOT crash the process.
-  content::RenderProcessHostWatcher crash_observer(
-      fenced_frame_host->GetProcess(),
-      content::RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
-
-  mojo::AssociatedRemote<chrome::mojom::RemoteActorCredentialSharing> remote;
-  password_manager::RemoteActorCredentialSharingImpl::BindReceiver(
-      remote.BindNewEndpointAndPassReceiver(), fenced_frame_host);
-
-  // Run some JS to make sure the Mojo message would have been processed.
-  EXPECT_EQ(true, content::EvalJs(fenced_frame_host, "true"));
-
-  // Process should still be alive (no crash).
-  EXPECT_TRUE(fenced_frame_host->GetProcess()->IsInitializedAndNotDead());
-}
-

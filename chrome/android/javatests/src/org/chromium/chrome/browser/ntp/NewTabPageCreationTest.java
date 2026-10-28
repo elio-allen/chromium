@@ -23,6 +23,7 @@ import org.junit.runner.RunWith;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
@@ -33,6 +34,7 @@ import org.chromium.chrome.browser.tabmodel.TabCreatorUtil;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.NewTabPageTestUtils;
 import org.chromium.chrome.test.util.OmniboxTestUtils;
 import org.chromium.chrome.test.util.browser.TabLoadObserver;
@@ -41,6 +43,8 @@ import org.chromium.chrome.test.util.browser.TabLoadObserver;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
+// TODO(b/555414915): Update Android tests with WebUI NTP enabled on AL.
+@DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID)
 public class NewTabPageCreationTest {
     private static final String TEST_URL = "/chrome/test/data/android/test.html";
 
@@ -77,7 +81,9 @@ public class NewTabPageCreationTest {
         histogramWatcher.pollInstrumentationThreadUntilSatisfied();
 
         Tab tab = mActivityTestRule.getActivityTab();
-        NewTabPageTestUtils.waitForNtpLoaded(tab);
+        // TODO(crbug.com/428022848): Hop on once there is a Station for the NTP with the Omnibox
+        // focused, which hides the toolbar buttons and the logo.
+        ChromeTabUtils.waitForNtpLoaded(tab);
 
         verify(mTestState).onNewTabCreated();
         verify(mTestState).onNtpLoaded(any(NewTabPageManager.class));

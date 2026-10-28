@@ -29,22 +29,26 @@ POLICY_EXPORT BASE_DECLARE_FEATURE(kEnhancedSecurityEventFields);
 // Controls if we can use the cec flag in PolicyData.
 POLICY_EXPORT BASE_DECLARE_FEATURE(kUseCECFlagInPolicyData);
 
+// When enabled, increases the maximum cloud policy cache size limit read from
+// disk (for both user and machine level caches) from 1 MB to 2 MB to
+// accommodate large enterprise policy sets.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kUserPolicyCacheSizeLimit2MB);
+
 #if BUILDFLAG(IS_ANDROID)
 // Enables policy initialization for signed-in users in new entry points.
 POLICY_EXPORT BASE_DECLARE_FEATURE(
     kInitializePoliciesForSignedInUserInNewEntryPoints);
 
-// Controls whether to use active admins to calculate the enterprise info.
-POLICY_EXPORT BASE_DECLARE_FEATURE(kAndroidUseAdminsForEnterpriseInfo);
+// Controls whether to use RestrictionsManager instead of UserManager in
+// AppRestrictionsProvider to retrieve application restrictions.
+POLICY_EXPORT BASE_DECLARE_FEATURE(
+    kUseRestrictionsManagerInAppRestrictionsProvider);
 #endif
 
 // Enables a configurable delay for policy registration.
 POLICY_EXPORT BASE_DECLARE_FEATURE(kCustomPolicyRegistrationDelay);
 POLICY_EXPORT extern const base::FeatureParam<base::TimeDelta>
     kPolicyRegistrationDelay;
-
-// Used to enable future_on policies on Desktop Android.
-POLICY_EXPORT BASE_DECLARE_FEATURE(kFuturePoliciesOnDesktopAndroid);
 
 // A blocklist of policies supported on Desktop Android.
 POLICY_EXPORT BASE_DECLARE_FEATURE(kDesktopAndroidPolicy);
@@ -100,6 +104,21 @@ POLICY_EXPORT BASE_DECLARE_FEATURE(kURLBlocklistOverridesIncognitoAllowlist);
 
 // Enables the export of platform policies as JSON on the chrome://policy page.
 POLICY_EXPORT BASE_DECLARE_FEATURE(kExportPlatformPoliciesJson);
+
+// When enabled, migrates user cloud management status and sign-in interception
+// policy fetching from the legacy SecureConnect endpoint to Device Management
+// Server.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kMigrateSecureConnectApiToDmServer);
+POLICY_EXPORT extern const base::FeatureParam<base::TimeDelta>
+    kMigrateSecureConnectApiToDmServerFetchTimeout;
+
+// Returns true if `kMigrateSecureConnectApiToDmServer` is enabled.
+POLICY_EXPORT bool IsMigrateSecureConnectApiToDmServerEnabled();
+
+// When enabled, UserInfoFetcher will use
+// CredentialsMode::kOmitBug_775438_Workaround instead of CredentialsMode::kOmit
+// for user info requests.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kPolicyUserInfoFetcherUseOmitBugWorkaround);
 
 }  // namespace policy::features
 

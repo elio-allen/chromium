@@ -22,7 +22,9 @@ class DictationOverlayView;
 
 class SessionUiImpl : public SessionUi {
  public:
-  explicit SessionUiImpl(tabs::TabInterface& tab, SessionUiDelegate& delegate);
+  explicit SessionUiImpl(tabs::TabInterface& tab,
+                         SessionUiDelegate& delegate,
+                         bool show_reviewing_page_status = false);
   ~SessionUiImpl() override;
 
   SessionUiImpl(const SessionUiImpl&) = delete;
@@ -32,11 +34,12 @@ class SessionUiImpl : public SessionUi {
   friend class DictationSessionUiImplBrowserTest;
 
   // SessionUi:
-  void OnError(StreamType stream_type) override;
+  void OnError(StreamType stream_type, StreamErrorReason reason) override;
   void OnStopped() override;
   void UpdateAudioLevel(float audio_level) override;
   void OnStartedStream(content::GlobalDOMNodeId target_id) override;
 
+  void CreateBubbleUi(bool show_reviewing_page_status);
   void OnDictationBubbleCloseClicked();
   void OnToggleActiveStreamClicked();
   void OnSessionStateChanged(SessionState state);

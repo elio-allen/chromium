@@ -12,7 +12,6 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/receiver_set.h"
 #include "net/net_buildflags.h"
 #include "services/cert_verifier/cert_net_url_loader/cert_net_fetcher_url_loader.h"
 #include "services/cert_verifier/cert_verifier_creation.h"
@@ -69,6 +68,11 @@ class CertVerifierServiceFactoryImpl
                        base::Time update_time,
                        UpdateCtLogListCallback callback) override;
   void DisableCtEnforcement(DisableCtEnforcementCallback callback) override;
+#endif
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
+  void UpdateKeyPinsList(network::mojom::PinListPtr pin_list,
+                         base::Time update_time,
+                         UpdateKeyPinsListCallback callback) override;
 #endif
 #if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
   void UpdateChromeRootStore(

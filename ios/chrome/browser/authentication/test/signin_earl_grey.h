@@ -40,6 +40,11 @@ class GURL;
 - (void)addFakeIdentity:(FakeSystemIdentity*)fakeIdentity
        withCapabilities:(NSDictionary<NSString*, NSNumber*>*)capabilities;
 
+// Updates the `capabilities` of an already added `fakeIdentity`, and makes them
+// visible to the browser, simulating a capabilities fetch.
+- (void)setCapabilities:(NSDictionary<NSString*, NSNumber*>*)capabilities
+            forIdentity:(FakeSystemIdentity*)fakeIdentity;
+
 // Calls -[SigninEarlGreyImpl
 // addFakeIdentityForSSOAuthAddAccountFlow:withUnknownCapabilities:NO].
 - (void)addFakeIdentityForSSOAuthAddAccountFlow:
@@ -65,12 +70,27 @@ class GURL;
 // Simulates a persistent authentication error for an account.
 - (void)setPersistentAuthErrorForAccount:(const CoreAccountId&)accountId;
 
+// Triggers a persistent MDM error for the provided identity.
+- (void)setMDMErrorForIdentity:(FakeSystemIdentity*)fakeIdentity
+                userActionable:(BOOL)userActionable;
+
+// Clears the persistent MDM error for the provided identity.
+- (void)clearMDMErrorForIdentity:(FakeSystemIdentity*)fakeIdentity;
+
+// Resets the recorded MDM notification display status in
+// `FakeSystemIdentityManager`.
+- (void)resetMDMNotificationDisplayed;
+
+// Returns YES if `DisplayMDMNotification()` was called on
+// `FakeSystemIdentityManager`.
+- (BOOL)wasMDMNotificationDisplayed;
+
+// Waits for the MDM notification to be displayed.
+- (void)waitForMDMNotificationDisplayed;
+
 // Returns the gaia ID of the signed-in account.
 // If there is no signed-in account returns an empty string.
 - (GaiaId)primaryAccountGaiaID;
-
-// Returns the gaia IDs of all accounts in the current profile.
-- (const base::flat_set<GaiaId>)accountsInProfileGaiaIDs;
 
 // Checks that no identity is signed in.
 - (BOOL)isSignedOut;
@@ -161,11 +181,10 @@ class GURL;
 // if User Policy is enabled.
 - (void)closeManagedAccountSignInDialogIfAny:(FakeSystemIdentity*)fakeIdentity;
 
-// Returns whether the feature to put each managed account into its own separate
-// profile is enabled. This depends on the `kSeparateProfilesForManagedAccounts`
-// feature flag, plus some additional conditions which can't be directly checked
-// in the test app.
-- (BOOL)areSeparateProfilesForManagedAccountsEnabled;
+// Sets the preferred account in `TestAccountPreviewDataService` when offering
+// signed-out users to sign in. If `fakeIdentity` is nil, clears the preferred
+// account.
+- (void)setPreferredAccountForSignin:(FakeSystemIdentity*)fakeIdentity;
 
 @end
 

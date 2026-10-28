@@ -19,6 +19,8 @@
 #include "base/win/scoped_bstr.h"
 #include "base/win/scoped_variant.h"
 #include "base/win/windows_version.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
+#include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/ax_role_properties.h"
 #include "ui/accessibility/platform/assistive_tech.h"
 #include "ui/accessibility/platform/ax_fragment_root_win.h"
@@ -1027,6 +1029,67 @@ bool BrowserAccessibilityManagerWin::CanFireEvents() const {
   return delegate && delegate->AccessibilityGetAcceleratedWidget();
 }
 
+void BrowserAccessibilityManagerWin::SetLocationChangeEventCallbackForTesting(
+    const LocationChangeEventCallbackForTesting& callback) {
+  location_change_event_callback_for_testing_ = callback;
+}
+
+void BrowserAccessibilityManagerWin::SendLocationChangeEvents(
+    const std::vector<AXLocationChange>& changes) {
+  if (!features::IsAccessibilityGroupLocationChangeByCommonAncestorEnabled()) {
+    BrowserAccessibilityManager::SendLocationChangeEvents(changes);
+    return;
+  }
+
+  if (changes.empty()) {
+    return;
+  } else if (changes.size() == 1) {
+    BrowserAccessibility* obj = GetFromID(changes.front().id);
+    if (obj) {
+      obj->OnLocationChanged();
+      if (!location_change_event_callback_for_testing_.is_null()) {
+        location_change_event_callback_for_testing_.Run(obj);
+      }
+    }
+    return;
+  }
+
+  // Track changed subtrees per node, updating the least common ancestor of the
+  // set of nodes each iteration.
+  absl::flat_hash_map<BrowserAccessibility*, size_t> changed_children;
+  BrowserAccessibility* least_ancestor = nullptr;
+  for (const auto& change : changes) {
+    BrowserAccessibility* obj = GetFromID(change.id);
+    BrowserAccessibility* obj_least_ancestor = nullptr;
+    size_t max_changed_children = 0;
+
+    // Search upward, finding the lowest parent with the most changed children.
+    while (obj) {
+      size_t obj_changed_children = ++changed_children[obj];
+      if (obj_changed_children > max_changed_children) {
+        obj_least_ancestor = obj;
+        max_changed_children = obj_changed_children;
+      }
+      obj = obj->PlatformGetParent();
+    }
+
+    // The least ancestor of the whole set will always be an ancestor of this
+    // node.
+    if (obj_least_ancestor != nullptr) {
+      least_ancestor = obj_least_ancestor;
+    }
+  }
+
+  // At this point, `least_ancestor` is the lowest common ancestor of all the
+  // nodes with location changes; fire a single location changed event on it.
+  if (least_ancestor) {
+    least_ancestor->OnLocationChanged();
+    if (!location_change_event_callback_for_testing_.is_null()) {
+      location_change_event_callback_for_testing_.Run(least_ancestor);
+    }
+  }
+}
+
 void BrowserAccessibilityManagerWin::OnSubtreeWillBeDeleted(AXTree* tree,
                                                             AXNode* node) {
   BrowserAccessibility* obj = GetFromAXNode(node);
@@ -1051,19 +1114,26 @@ void BrowserAccessibilityManagerWin::OnAtomicUpdateFinished(
   absl::flat_hash_set<AXPlatformNode*> objs_to_update;
   CollectChangedNodesAndParentsForAtomicUpdate(tree, changes, &objs_to_update);
 
-  // Allocate space to hold intermediate state for all nodes.
+  // Allocate space to hold intermediate state for all nodes;
+  // `objs_to_update.size()` is an upper bound on the number of
+  // `BrowserAccessibilityComWin` nodes updated.
   auto update_states =
       base::HeapArray<BrowserAccessibilityComWin::UpdateState>::WithSize(
           objs_to_update.size());
 
   // The first step moves win_attributes_ to old_win_attributes_ and then
-  // recomputes all of win_attributes_ other than IAccessibleText.
+  // recomputes all of win_attributes_ other than IAccessibleText. Also record
+  // the AXNodeID of each node for Step 3 because firing synchronous WinEvents
+  // can mutate the tree and remove individual nodes without destroying `this`.
+  std::vector<AXNodeID> node_ids_to_update;
+  node_ids_to_update.reserve(objs_to_update.size());
   auto state_scan = update_states.begin();
   for (auto* node : objs_to_update) {
     if (auto* com_win = ToBrowserAccessibilityComWin(node)) {
       com_win->UpdateStep1ComputeWinAttributes(&*state_scan);
+      node_ids_to_update.push_back(com_win->GetDelegate()->GetId());
+      ++state_scan;
     }
-    ++state_scan;
   }
 
   // The next step updates the hypertext of each node, which is a
@@ -1077,15 +1147,19 @@ void BrowserAccessibilityManagerWin::OnAtomicUpdateFinished(
 
   // The third step fires events on nodes based on what's changed - like
   // if the name, value, or description changed, or if the hypertext had
-  // text inserted or removed. It's able to figure out exactly what changed
-  // because we still have old_win_attributes_ populated.
-  // This step has to run after the previous two steps complete because the
+  // text inserted or removed. It's able to figure out those details because
+  // old_win_attributes_ is still pinned in update_states.
+  // This has to run after all nodes have been updated because a
   // client may walk the tree when it receives any of these events.
   // At the end, it deletes old_win_attributes_ since they're not needed
   // anymore.
-  for (auto* node : objs_to_update) {
-    if (auto* com_win = ToBrowserAccessibilityComWin(node)) {
+  base::WeakPtr<AXTreeManager> alive = GetWeakPtr();
+  for (AXNodeID id : node_ids_to_update) {
+    if (auto* com_win = ToBrowserAccessibilityComWin(GetFromID(id))) {
       com_win->UpdateStep3FireEvents();
+      if (!alive) {
+        return;
+      }
     }
   }
 }
@@ -1178,9 +1252,10 @@ void BrowserAccessibilityManagerWin::HandleSelectedStateChanged(
   // selection container as the key because |FinalizeSelectionEvents| needs to
   // determine whether or not there is only one element selected in order to
   // optimize what platform events are sent.
-  BrowserAccessibility* key = node;
-  if (auto* selection_container = node->PlatformGetSelectionContainer())
-    key = selection_container;
+  AXNodeID key = node->node()->id();
+  if (auto* selection_container = node->PlatformGetSelectionContainer()) {
+    key = selection_container->node()->id();
+  }
 
   if (is_selected)
     selection_events_map[key].added.push_back(node);
@@ -1188,20 +1263,20 @@ void BrowserAccessibilityManagerWin::HandleSelectedStateChanged(
     selection_events_map[key].removed.push_back(node);
 }
 
-// static
 void BrowserAccessibilityManagerWin::FinalizeSelectionEvents(
     SelectionEventsMap& selection_events_map,
     IsSelectedPredicate is_selected_predicate,
     FirePlatformSelectionEventsCallback fire_platform_events_callback) {
   for (auto&& selected : selection_events_map) {
-    BrowserAccessibility* key_node = selected.first;
+    AXNodeID key_node_id = selected.first;
     SelectionEvents& changes = selected.second;
 
     // Determine if |node| is a selection container with one selected child in
     // order to optimize what platform events are sent.
     BrowserAccessibility* container = nullptr;
     BrowserAccessibility* only_selected_child = nullptr;
-    if (IsContainerWithSelectableChildren(key_node->GetRole())) {
+    BrowserAccessibility* key_node = GetFromID(key_node_id);
+    if (key_node && IsContainerWithSelectableChildren(key_node->GetRole())) {
       container = key_node;
       for (auto it = container->InternalChildrenBegin();
            it != container->InternalChildrenEnd(); ++it) {

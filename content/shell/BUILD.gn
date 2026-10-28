@@ -331,6 +331,7 @@ static_library("content_shell_lib") {
     ":shell_controller_mojom",
     "//base",
     "//base:base_static",
+    "//base:i18n",
     "//components/cdm/renderer",
     "//components/custom_handlers",
     "//components/custom_handlers:test_support",
@@ -425,6 +426,7 @@ static_library("content_shell_lib") {
 
   if (is_ios) {
     deps += [
+      "//components/application_locale_storage",
       "//components/permissions",
       "//components/strings:components_strings",
       "//services/tracing/public/cpp",
@@ -632,6 +634,7 @@ if (is_android) {
       content_shell_version,
     ]
   }
+
   mac_app_bundle("content_shell") {
     testonly = true
     output_name = content_shell_product_name
@@ -861,6 +864,7 @@ if (is_apple) {
       }
       if (!use_v8_context_snapshot || include_both_v8_snapshots) {
         sources += [ "$root_out_dir/snapshot_blob.bin" ]
+        public_deps += [ "//v8:run_mksnapshot_default" ]
       }
     }
 
@@ -872,12 +876,14 @@ if (is_mac) {
   content_shell_framework_name = "$content_shell_product_name Framework"
   content_shell_helper_name = "$content_shell_product_name Helper"
 
+  content_shell_mac_helpers = content_mac_helpers + content_mac_aperitif_helpers
+
   bundle_data("content_shell_framework_helpers") {
     testonly = true
     sources = [ "$root_out_dir/chrome_crashpad_handler" ]
     outputs = [ "{{bundle_contents_dir}}/Helpers/{{source_file_part}}" ]
     public_deps = [ "//components/crash/core/app:chrome_crashpad_handler" ]
-    foreach(helper_params, content_mac_helpers) {
+    foreach(helper_params, content_shell_mac_helpers) {
       sources += [
         "$root_out_dir/${content_shell_helper_name}${helper_params[2]}.app",
       ]
@@ -1024,10 +1030,11 @@ if (is_mac) {
     }
   }
 
-  foreach(helper_params, content_mac_helpers) {
+  foreach(helper_params, content_shell_mac_helpers) {
     _helper_target = helper_params[0]
     _helper_bundle_id = helper_params[1]
     _helper_suffix = helper_params[2]
+
     content_shell_helper_app("content_shell_helper_app_${_helper_target}") {
       helper_name_suffix = _helper_suffix
       helper_bundle_id_suffix = _helper_bundle_id
@@ -1085,7 +1092,7 @@ if (is_mac) {
 }
 
 mojom("content_browsertests_mojom") {
-  cpp_only = true
+  generate_legacy_js = false
   sources = [
     "common/main_frame_counter_test.mojom",
     "common/memory_coordinator/memory_coordinator_test.mojom",

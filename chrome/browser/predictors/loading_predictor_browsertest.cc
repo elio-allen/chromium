@@ -40,8 +40,9 @@
 #include "chrome/browser/predictors/predictors_enums.h"
 #include "chrome/browser/predictors/predictors_features.h"
 #include "chrome/browser/predictors/predictors_switches.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -69,7 +70,6 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_mock_cert_verifier.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/preconnect_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/simple_url_loader_test_helper.h"
@@ -100,6 +100,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/navigation/preloading_headers.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -225,11 +226,21 @@ class TestPreconnectManagerObserver
     preconnect_manager->SetObserverForTesting(this);
   }
 
-  void OnPreconnectUrl(const GURL& url,
-                       int num_sockets,
-                       bool allow_credentials) override {
+  void OnPreconnectUrl(
+      const GURL& url,
+      int num_sockets,
+      bool allow_credentials,
+      const net::NetworkAnonymizationKey& network_anonymization_key,
+      mojo::PendingRemote<network::mojom::ConnectionChangeObserverClient>&
+          connection_change_observer_client) override {
     preconnect_url_attempts_.insert(url.DeprecatedGetOriginAsURL());
     preconnect_url_attempts_history_.push_back(url.DeprecatedGetOriginAsURL());
+    if (!ProxyFound(url, network_anonymization_key)) {
+      ResolveHostRequestInfo preconnect_info{url.GetHost(),
+                                             network_anonymization_key};
+      successful_dns_lookups_.insert(preconnect_info);
+    }
+    CheckForWaitingLoop();
   }
 
   void OnPreresolveFinished(
@@ -537,7 +548,7 @@ class LoadingPredictorBrowserTest : public InProcessBrowserTest {
       const GURL& url) {
     chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
     content::WebContents* tab =
-        browser()->tab_strip_model()->GetActiveWebContents();
+        browser()->GetTabStripModel()->GetActiveWebContents();
     DCHECK(tab);
     auto observer = std::make_unique<content::TestNavigationManager>(tab, url);
     tab->GetController().LoadURL(url, content::Referrer(),
@@ -996,7 +1007,7 @@ class LCPPBrowserTestBase : public LoadingPredictorBrowserTest {
     LcpElementLearnWaiter lcp_element_waiter(
         loading_predictor()->resource_prefetch_predictor());
     page_load_metrics::PageLoadMetricsTestWaiter waiter(
-        browser()->tab_strip_model()->GetActiveWebContents());
+        browser()->GetTabStripModel()->GetActiveWebContents());
     waiter.AddPageExpectation(page_load_metrics::PageLoadMetricsTestWaiter::
                                   TimingField::kLargestContentfulPaint);
     ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url))
@@ -1281,7 +1292,7 @@ class LCPPTimingPredictorTestBase : public InProcessBrowserTest {
       const std::optional<size_t>& expected_lcp_index,
       const base::Location& from_here = FROM_HERE) {
     content::WebContents* web_contents =
-        browser()->tab_strip_model()->GetActiveWebContents();
+        browser()->GetTabStripModel()->GetActiveWebContents();
 
     page_load_metrics::PageLoadMetricsTestWaiter onload_waiter(web_contents);
     onload_waiter.AddPageExpectation(
@@ -1463,7 +1474,7 @@ class LCPPAutoPreconnectTest : public InProcessBrowserTest,
       const GURL& url,
       const base::Location& from_here = FROM_HERE) {
     content::WebContents* web_contents =
-        browser()->tab_strip_model()->GetActiveWebContents();
+        browser()->GetTabStripModel()->GetActiveWebContents();
 
     page_load_metrics::PageLoadMetricsTestWaiter waiter(web_contents);
     waiter.AddMinimumLargestContentfulPaintImageExpectation(1);
@@ -1532,57 +1543,6 @@ INSTANTIATE_TEST_SUITE_P(Flags,
                          LCPPAutoPreconnectTest,
                          ::testing::Bool(),
                          ::testing::PrintToStringParamName());
-
-class SuppressesLoadingPredictorOnSlowNetworkBrowserTest
-    : public LoadingPredictorBrowserTest {
- public:
-  SuppressesLoadingPredictorOnSlowNetworkBrowserTest() {
-    scoped_feature_list_.InitWithFeaturesAndParameters(
-        {{features::kSuppressesLoadingPredictorOnSlowNetwork,
-          {{features::kSuppressesLoadingPredictorOnSlowNetworkThreshold.name,
-            "500ms"}}}},
-        {});
-  }
-
-  network::NetworkQualityTracker& GetNetworkQualityTracker() const {
-    return *g_browser_process->network_quality_tracker();
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-// Tests that kSuppressesLoadingPredictorOnSlowNetwork feature suppresses
-// LoadingPredictor on slow network.
-IN_PROC_BROWSER_TEST_F(SuppressesLoadingPredictorOnSlowNetworkBrowserTest,
-                       SuppressesOnSlowNetwork) {
-  GURL url = embedded_test_server()->GetURL("/nocontent");
-  base::TimeDelta http_rtt = GetNetworkQualityTracker().GetHttpRTT();
-  int32_t downstream_throughput_kbps =
-      GetNetworkQualityTracker().GetDownstreamThroughputKbps();
-
-  {
-    // LoadingPredictor will be suppressed on slow networks.
-    GetNetworkQualityTracker().ReportRTTsAndThroughputForTesting(
-        base::Milliseconds(501), downstream_throughput_kbps);
-    auto observer = NavigateToURLAsync(url);
-    ASSERT_TRUE(observer->WaitForNavigationFinished());
-    EXPECT_EQ(0u, loading_predictor()->GetTotalHintsActivatedForTesting());
-  }
-
-  {
-    // LoadingPredictor will not be suppressed on fast networks.
-    GetNetworkQualityTracker().ReportRTTsAndThroughputForTesting(
-        base::Milliseconds(500), downstream_throughput_kbps);
-    auto observer = NavigateToURLAsync(url);
-    ASSERT_TRUE(observer->WaitForNavigationFinished());
-    EXPECT_EQ(1u, loading_predictor()->GetTotalHintsActivatedForTesting());
-  }
-
-  // Reset to the original values.
-  GetNetworkQualityTracker().ReportRTTsAndThroughputForTesting(
-      http_rtt, downstream_throughput_kbps);
-}
 
 enum class NetworkIsolationKeyMode {
   kDisabled,
@@ -1679,7 +1639,7 @@ class LoadingPredictorNetworkIsolationKeyBrowserTest
 
     // Preconnect a socket.
     content::WebContents* tab =
-        browser()->tab_strip_model()->GetActiveWebContents();
+        browser()->GetTabStripModel()->GetActiveWebContents();
     GURL preconnect_url = embedded_test_server()->base_url();
     std::string start_preconnect = base::StringPrintf(
         "var link = document.createElement('link');"
@@ -1763,7 +1723,7 @@ IN_PROC_BROWSER_TEST_P(LoadingPredictorNetworkIsolationKeyBrowserTest,
         "  return resp.status; })();",
         embedded_test_server()->GetURL("/echo").spec().c_str());
     EXPECT_EQ(200, EvalJs(browser()
-                              ->tab_strip_model()
+                              ->GetTabStripModel()
                               ->GetActiveWebContents()
                               ->GetPrimaryMainFrame(),
                           fetch_resource));
@@ -1810,7 +1770,7 @@ IN_PROC_BROWSER_TEST_P(LoadingPredictorNetworkIsolationKeyBrowserTest,
       "  return resp.status; })();",
       embedded_test_server()->GetURL("/echo").spec().c_str());
   EXPECT_EQ(200, EvalJs(browser()
-                            ->tab_strip_model()
+                            ->GetTabStripModel()
                             ->GetActiveWebContents()
                             ->GetPrimaryMainFrame(),
                         fetch_resource));
@@ -1895,13 +1855,13 @@ IN_PROC_BROWSER_TEST_P(LoadingPredictorNetworkIsolationKeyBrowserTest,
   // Navigate two tabs, one to each host.
 
   content::WebContents* tab1 =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), preconnecting_test_server()->GetURL(kHost1, "/title1.html")));
 
   chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   content::WebContents* tab2 =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), preconnecting_test_server()->GetURL(kHost2, "/title1.html")));
 
@@ -1954,7 +1914,7 @@ IN_PROC_BROWSER_TEST_P(LoadingPredictorNetworkIsolationKeyBrowserTest,
 
   // Tab 1 has two iframes, one at kHost1, one at kHost2.
   content::WebContents* tab1 =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), preconnecting_test_server()->GetURL(
                      kHost1, GetPathWithPortReplacement(
@@ -1972,7 +1932,7 @@ IN_PROC_BROWSER_TEST_P(LoadingPredictorNetworkIsolationKeyBrowserTest,
   // Create another tab without an iframe, at kHost2.
   chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   content::WebContents* tab2 =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), preconnecting_test_server()->GetURL(kHost2, "/title1.html")));
 
@@ -2406,7 +2366,7 @@ IN_PROC_BROWSER_TEST_P(LoadingPredictorBrowserTestWithOptimizationGuide,
       observer->web_contents()->GetPrimaryMainFrame());
   // Disable BFCache to ensure the navigation below unloads |rfh|.
   content::DisableBackForwardCacheForTesting(
-      browser()->tab_strip_model()->GetActiveWebContents(),
+      browser()->GetTabStripModel()->GetActiveWebContents(),
       content::BackForwardCache::DisableForTestingReason::
           TEST_REQUIRES_NO_CACHING);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
@@ -2907,7 +2867,7 @@ class LoadingPredictorMultiplePageBrowserTest
   }
 
   content::WebContents* GetWebContents() {
-    return browser()->tab_strip_model()->GetActiveWebContents();
+    return browser()->GetTabStripModel()->GetActiveWebContents();
   }
 
  protected:
@@ -3016,76 +2976,10 @@ IN_PROC_BROWSER_TEST_F(LoadingPredictorMultiplePageBrowserTest,
 }
 
 // Test interaction with fenced frames.
-class FencedFrameLoadingPredictorBrowserTest
-    : public LoadingPredictorBrowserTest {
- public:
-  void SetUpOnMainThread() override {
-    LoadingPredictorBrowserTest::SetUpOnMainThread();
 
-    // Set up the embedded https test server for fenced frame which requires a
-    // secure context to load.
-    embedded_https_test_server().SetSSLConfig(
-        net::EmbeddedTestServer::CERT_TEST_NAMES);
-
-    // Add content/test/data for cross_site_iframe_factory.html.
-    embedded_https_test_server().ServeFilesFromSourceDirectory(
-        "content/test/data");
-    embedded_https_test_server().ServeFilesFromDirectory(
-        GetChromeTestDataDir());
-  }
-
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_test_helper_;
-  }
-
-  content::WebContents* GetWebContents() {
-    return browser()->tab_strip_model()->GetActiveWebContents();
-  }
-
- private:
-  content::test::FencedFrameTestHelper fenced_frame_test_helper_;
-};
 
 // Verify DNS prefetch is working in fenced frame.
-IN_PROC_BROWSER_TEST_F(FencedFrameLoadingPredictorBrowserTest, DnsPrefetch) {
-  ASSERT_TRUE(embedded_https_test_server().Start());
 
-  // Navigate to a page that contains a fenced frame.
-  const GURL main_url = embedded_https_test_server().GetURL(
-      "a.test", "/cross_site_iframe_factory.html?a.test(a.test{fenced})");
-  EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url));
-
-  // Get fenced frame render frame host.
-  std::vector<content::RenderFrameHost*> child_frames =
-      fenced_frame_test_helper().GetChildFencedFrameHosts(
-          GetWebContents()->GetPrimaryMainFrame());
-  ASSERT_EQ(child_frames.size(), 1u);
-  content::RenderFrameHost* fenced_frame_rfh = child_frames[0];
-
-  // Get fenced frame NetworkAnonymizationKey.
-  const net::NetworkAnonymizationKey& network_anonymization_key =
-      fenced_frame_rfh->GetIsolationInfoForSubresources()
-          .network_anonymization_key();
-
-  GURL dns_prefetch_url("https://chromium.org");
-
-  // Add a link element in fenced frame that does a DNS prefetch.
-  EXPECT_TRUE(ExecJs(fenced_frame_rfh, content::JsReplace(R"(
-                    var link_element = document.createElement('link');
-                    link_element.href = $1;
-                    link_element.rel = 'dns-prefetch';
-                    document.body.appendChild(link_element);
-          )",
-                                                          dns_prefetch_url)));
-
-  // The observer should observe a DNS prefetch which succeeds.
-  preconnect_manager_observer()->WaitUntilHostLookedUp(
-      dns_prefetch_url.GetHost(), network_anonymization_key);
-  EXPECT_TRUE(preconnect_manager_observer()->HasHostBeenLookedUp(
-      dns_prefetch_url.GetHost(), network_anonymization_key));
-  EXPECT_TRUE(preconnect_manager_observer()->HostFound(
-      dns_prefetch_url.GetHost(), network_anonymization_key));
-}
 
 // TODO(crbug.com/489349560): Allow `LoadingPredictorBrowserTest` to specify the
 // type of EmbeddedTestServer, instead of the subclass to construct its own.
@@ -3095,7 +2989,7 @@ class ConnectionAllowlistLoadingPredictorBrowserTest
   ConnectionAllowlistLoadingPredictorBrowserTest() {
     feature_list_.InitWithFeatures(
         /*enabled_features=*/{network::features::kConnectionAllowlists},
-        /*disabled_features=*/{});
+        /*disabled_features=*/{features::kPreconnectManagerDirectFastPath});
   }
 
   // Note: `LoadingPredictorBrowserTest::SetUpOnMainThread()` sets up the
@@ -3188,7 +3082,7 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistLoadingPredictorBrowserTest,
   GURL dns_prefetch_url("https://c.test");
 
   content::RenderFrameHost* main_frame_rfh = browser()
-                                                 ->tab_strip_model()
+                                                 ->GetTabStripModel()
                                                  ->GetActiveWebContents()
                                                  ->GetPrimaryMainFrame();
   // Add a link element that does a DNS prefetch.
@@ -3228,7 +3122,7 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistLoadingPredictorBrowserTest,
   GURL dns_prefetch_url("https://b.test");
 
   content::RenderFrameHost* main_frame_rfh = browser()
-                                                 ->tab_strip_model()
+                                                 ->GetTabStripModel()
                                                  ->GetActiveWebContents()
                                                  ->GetPrimaryMainFrame();
   // Add a link element that does a DNS prefetch.
@@ -3270,7 +3164,7 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistLoadingPredictorBrowserTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url));
 
   content::RenderFrameHost* main_frame_rfh = browser()
-                                                 ->tab_strip_model()
+                                                 ->GetTabStripModel()
                                                  ->GetActiveWebContents()
                                                  ->GetPrimaryMainFrame();
   ASSERT_FALSE(main_frame_rfh->GetNetworkRestrictionsID().is_empty());
@@ -3387,7 +3281,7 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistLoadingPredictorBrowserTest,
   GURL dns_prefetch_url("https://c.test");
 
   content::RenderFrameHost* main_frame_rfh = browser()
-                                                 ->tab_strip_model()
+                                                 ->GetTabStripModel()
                                                  ->GetActiveWebContents()
                                                  ->GetPrimaryMainFrame();
   EXPECT_FALSE(main_frame_rfh->GetNetworkRestrictionsID().is_empty());
@@ -3396,7 +3290,7 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistLoadingPredictorBrowserTest,
   // document should now correctly inherit policies and get a
   // network_restrictions_id.
   content::TestNavigationObserver observer(
-      browser()->tab_strip_model()->GetActiveWebContents());
+      browser()->GetTabStripModel()->GetActiveWebContents());
   EXPECT_TRUE(ExecJs(main_frame_rfh, R"(
             var iframe = document.createElement('iframe');
             document.body.appendChild(iframe);
@@ -3445,11 +3339,11 @@ IN_PROC_BROWSER_TEST_F(
   GURL dns_prefetch_url("https://c.test");
 
   content::RenderFrameHost* main_frame_rfh = browser()
-                                                 ->tab_strip_model()
+                                                 ->GetTabStripModel()
                                                  ->GetActiveWebContents()
                                                  ->GetPrimaryMainFrame();
   content::TestNavigationObserver observer(
-      browser()->tab_strip_model()->GetActiveWebContents());
+      browser()->GetTabStripModel()->GetActiveWebContents());
   EXPECT_TRUE(ExecJs(main_frame_rfh, R"(
             var iframe = document.createElement('iframe');
             iframe.src = ' about:';
@@ -3498,12 +3392,12 @@ IN_PROC_BROWSER_TEST_F(
   GURL dns_prefetch_url("https://c.test");
 
   content::RenderFrameHost* main_frame_rfh = browser()
-                                                 ->tab_strip_model()
+                                                 ->GetTabStripModel()
                                                  ->GetActiveWebContents()
                                                  ->GetPrimaryMainFrame();
   // Create about:blank iframe and wait for it to load.
   content::TestNavigationObserver observer(
-      browser()->tab_strip_model()->GetActiveWebContents());
+      browser()->GetTabStripModel()->GetActiveWebContents());
   EXPECT_TRUE(ExecJs(main_frame_rfh, R"(
             var iframe = document.createElement('iframe');
             iframe.src = 'about:blank';
@@ -3571,7 +3465,7 @@ IN_PROC_BROWSER_TEST_P(
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
 
   ASSERT_TRUE(browser()
-                  ->tab_strip_model()
+                  ->GetTabStripModel()
                   ->GetActiveWebContents()
                   ->GetPrimaryMainFrame()
                   ->GetConnectionAllowlists()
@@ -3595,7 +3489,7 @@ IN_PROC_BROWSER_TEST_P(
                          /*preconnect_only=*/true)});
 
   content::WebContents* tab =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   EXPECT_TRUE(
       content::ExecJs(tab, content::JsReplace("window.location = $1", url2)));
 
@@ -3684,7 +3578,7 @@ class LoadingPredictorPrefetchBrowserTestWithConnectionAllowlist
     ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
 
     ASSERT_TRUE(browser()
-                    ->tab_strip_model()
+                    ->GetTabStripModel()
                     ->GetActiveWebContents()
                     ->GetPrimaryMainFrame()
                     ->GetConnectionAllowlists()
@@ -3717,7 +3611,7 @@ class LoadingPredictorPrefetchBrowserTestWithConnectionAllowlist
 
     // 4. Initiate second navigation.
     content::WebContents* tab =
-        browser()->tab_strip_model()->GetActiveWebContents();
+        browser()->GetTabStripModel()->GetActiveWebContents();
     EXPECT_TRUE(
         content::ExecJs(tab, content::JsReplace("window.location = $1", url2)));
 

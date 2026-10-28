@@ -32,10 +32,9 @@ class CORE_EXPORT HTMLUserMediaElement : public HTMLMediaCaptureElementBase {
                                 mojom::blink::PermissionStatus status) override;
   void OnEmbeddedPermissionsDecided(
       mojom::blink::EmbeddedPermissionControlResult result) override;
+  void RunActivationBehavior(Event&, EventDispatchHandlingState*) override;
   void DefaultEventHandler(Event& event) override;
   void OnActivationFailed(const String& error_message) override;
-
-  void ApplyDefaultConstraints() override;
 
   Vector<mojom::blink::PermissionDescriptorPtr> ParseType(
       const AtomicString& type);

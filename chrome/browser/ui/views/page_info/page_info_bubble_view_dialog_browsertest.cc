@@ -10,10 +10,10 @@
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/page_info/about_this_site_service_factory.h"
-#include "chrome/browser/safe_browsing/chrome_password_protection_service.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/location_bar/location_icon_view.h"
+#include "chrome/browser/ui/views/location_bar/location_icon_test_accessor.h"
 #include "chrome/browser/ui/views/page_info/page_info_bubble_view.h"
 #include "chrome/browser/ui/views/page_info/page_info_cookies_content_view.h"
 #include "chrome/browser/ui/views/page_info/page_info_main_view.h"
@@ -36,19 +36,16 @@
 #include "components/content_settings/core/browser/permission_settings_registry.h"
 #include "components/content_settings/core/common/cookie_controls_state.h"
 #include "components/content_settings/core/common/features.h"
+#include "components/optimization_guide/core/optimization_guide_permissions_util.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/page_info/core/about_this_site_service.h"
 #include "components/page_info/core/features.h"
 #include "components/page_info/core/proto/about_this_site_metadata.pb.h"
 #include "components/page_info/page_info.h"
 #include "components/permissions/permission_decision_auto_blocker.h"
 #include "components/permissions/permissions_client.h"
-#include "components/privacy_sandbox/canonical_topic.h"
 #include "components/privacy_sandbox/privacy_sandbox_features.h"
-#include "components/safe_browsing/content/browser/password_protection/password_protection_test_util.h"
-#include "components/safe_browsing/core/browser/password_protection/metrics_util.h"
-#include "components/safe_browsing/core/common/features.h"
+#include "components/safe_browsing/buildflags.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/webapps/common/web_app_id.h"
 #include "content/public/common/content_features.h"
@@ -61,8 +58,14 @@
 #include "net/test/test_data_directory.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/events/test/test_event.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+#include "chrome/browser/safe_browsing/chrome_password_protection_service.h"
+#include "components/safe_browsing/core/common/proto/csd.pb.h"
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/web_applications/os_integration/mac/app_shim_registry.h"
@@ -76,24 +79,22 @@ constexpr char kMerchantTrustUrl[] = "b.test";
 constexpr char kMerchantTrustUrlWithoutSummary[] = "c.test";
 
 // Clicks the location icon to open the page info bubble.
-void OpenPageInfoBubble(Browser* browser) {
-  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
-  LocationIconView* location_icon_view =
-      browser_view->toolbar()->location_bar_view()->location_icon_view();
-  ASSERT_TRUE(location_icon_view);
-  ui::test::TestEvent event;
-  location_icon_view->ShowBubble(event);
+void OpenPageInfoBubble(BrowserWindowInterface* browser) {
+  LocationIconTestAccessor(browser).ShowBubble();
   views::BubbleDialogDelegateView* page_info =
-      PageInfoBubbleView::GetPageInfoBubbleForTesting();
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(
+          browser->GetTabStripModel()->GetActiveWebContents());
   EXPECT_NE(nullptr, page_info);
   page_info->set_close_on_deactivate(false);
 }
 
 // Opens the Page Info bubble and retrieves the UI view identified by
 // |view_id|.
-views::View* GetView(Browser* browser, int view_id) {
+views::View* GetView(BrowserWindowInterface* browser, int view_id) {
   views::Widget* page_info_bubble =
-      PageInfoBubbleView::GetPageInfoBubbleForTesting()->GetWidget();
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(
+          browser->GetTabStripModel()->GetActiveWebContents())
+          ->GetWidget();
   EXPECT_TRUE(page_info_bubble);
 
   views::View* view = page_info_bubble->GetRootView()->GetViewByID(view_id);
@@ -102,9 +103,11 @@ views::View* GetView(Browser* browser, int view_id) {
 }
 
 // Set static site name to prevent flakes caused by changing port.
-void SetStaticSiteName(std::u16string site_name) {
+void SetStaticSiteName(BrowserWindowInterface* browser,
+                       std::u16string site_name) {
   auto* bubble_view = static_cast<PageInfoBubbleView*>(
-      PageInfoBubbleView::GetPageInfoBubbleForTesting());
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(
+          browser->GetTabStripModel()->GetActiveWebContents()));
   bubble_view->presenter_for_testing()->SetSiteNameForTesting(site_name);
   ASSERT_EQ(bubble_view->presenter_for_testing()->GetSubjectNameForDisplay(),
             site_name);
@@ -190,16 +193,19 @@ class PageInfoBubbleViewDialogBrowserTest : public DialogBrowserTest {
     constexpr char kInternalViewSource[] = "InternalViewSource";
     constexpr char kFile[] = "File";
     constexpr char kSecure[] = "Secure";
+    constexpr char kSecureLongUrl[] = "SecureLongUrl";
     constexpr char kSecureSubpage[] = "SecureSubpage";
     constexpr char kEvSecure[] = "EvSecure";
     constexpr char kEvSecureSubpage[] = "EvSecureSubpage";
     constexpr char kMalware[] = "Malware";
     constexpr char kDeceptive[] = "Deceptive";
     constexpr char kUnwantedSoftware[] = "UnwantedSoftware";
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
     constexpr char kSignInSyncPasswordReuse[] = "SignInSyncPasswordReuse";
     constexpr char kSignInNonSyncPasswordReuse[] = "SignInNonSyncPasswordReuse";
     constexpr char kEnterprisePasswordReuse[] = "EnterprisePasswordReuse";
     constexpr char kSavedPasswordReuse[] = "SavedPasswordReuse";
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
     constexpr char kMalwareAndBadCert[] = "MalwareAndBadCert";
     constexpr char kMixedContentForm[] = "MixedContentForm";
     constexpr char kMixedContent[] = "MixedContent";
@@ -214,8 +220,13 @@ class PageInfoBubbleViewDialogBrowserTest : public DialogBrowserTest {
     // versions of Page Info to appear, but are here to indicate the type of
     // URL each IdentityInfo type would normally be associated with.
     const GURL https_url("https://example.com");
+    const GURL https_long_url(
+        "https://www.example-long-domain-name-that-wraps-lines-in-page-info-"
+        "dialog.com/home/products");
     const GURL http_url("http://example.com");
     const std::string kSiteOrigin = "example.com";
+    const std::string kLongSiteOrigin =
+        "example-long-domain-name-that-wraps-lines-in-page-info-dialog.com";
 
     GURL url = http_url;
     if (name == kSecure || name == kEvSecure || name == kMixedContentForm ||
@@ -223,6 +234,8 @@ class PageInfoBubbleViewDialogBrowserTest : public DialogBrowserTest {
         name == kBlockAllPermissions || name == kMalwareAndBadCert ||
         name == kNotificationsEmbargoed) {
       url = https_url;
+    } else if (name == kSecureLongUrl) {
+      url = https_long_url;
     }
     if (name == kInternal) {
       url = internal_url;
@@ -264,12 +277,15 @@ class PageInfoBubbleViewDialogBrowserTest : public DialogBrowserTest {
     ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
     OpenPageInfoBubble(browser());
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
     safe_browsing::ReusedPasswordAccountType reused_password_account_type;
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
     PageInfoUI::IdentityInfo identity;
     if (name == kInsecure) {
       identity.identity_status = PageInfo::SITE_IDENTITY_STATUS_NO_CERT;
-    } else if (name == kSecure || name == kAllowAllPermissions ||
-               name == kBlockAllPermissions || name == kSecureSubpage) {
+    } else if (name == kSecure || name == kSecureLongUrl ||
+               name == kAllowAllPermissions || name == kBlockAllPermissions ||
+               name == kSecureSubpage) {
       // Generate a valid mock HTTPS identity, with a certificate.
       identity.identity_status = PageInfo::SITE_IDENTITY_STATUS_CERT;
       constexpr char kGoodCertificateFile[] = "ok_cert.pem";
@@ -293,6 +309,7 @@ class PageInfoBubbleViewDialogBrowserTest : public DialogBrowserTest {
     } else if (name == kUnwantedSoftware) {
       identity.safe_browsing_status =
           PageInfo::SAFE_BROWSING_STATUS_UNWANTED_SOFTWARE;
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
     } else if (name == kSignInSyncPasswordReuse) {
       reused_password_account_type.set_account_type(
           safe_browsing::ReusedPasswordAccountType::GSUITE);
@@ -317,6 +334,7 @@ class PageInfoBubbleViewDialogBrowserTest : public DialogBrowserTest {
       identity.safe_browsing_status =
           PageInfo::SAFE_BROWSING_STATUS_SAVED_PASSWORD_REUSE;
       identity.show_change_password_buttons = true;
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
     } else if (name == kMalwareAndBadCert) {
       identity.identity_status = PageInfo::SITE_IDENTITY_STATUS_ERROR;
       identity.certificate = net::ImportCertFromFile(
@@ -361,7 +379,8 @@ class PageInfoBubbleViewDialogBrowserTest : public DialogBrowserTest {
       EXPECT_TRUE(presenter->ui_for_testing());
       auto* current_ui = presenter->ui_for_testing();
       views::View* bubble_view =
-          PageInfoBubbleView::GetPageInfoBubbleForTesting();
+          PageInfoBubbleView::GetPageInfoBubbleForTesting(
+              browser()->GetTabStripModel()->GetActiveWebContents());
       // Normally |PageInfoBubbleView| doesn't update the permissions already
       // shown if they change while it's still open. For this test, manually
       // force an update by clearing the existing permission views here.
@@ -375,6 +394,7 @@ class PageInfoBubbleViewDialogBrowserTest : public DialogBrowserTest {
                                     std::move(chosen_object_list));
     }
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
     if (name == kSignInSyncPasswordReuse ||
         name == kSignInNonSyncPasswordReuse ||
         name == kEnterprisePasswordReuse || name == kSavedPasswordReuse) {
@@ -386,16 +406,18 @@ class PageInfoBubbleViewDialogBrowserTest : public DialogBrowserTest {
       identity.safe_browsing_details = service->GetWarningDetailText(
           service->reused_password_account_type_for_last_shown_warning());
     }
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
     if (name == kSecureSubpage || name == kEvSecureSubpage) {
       PageInfoBubbleView* bubble_view = static_cast<PageInfoBubbleView*>(
-          PageInfoBubbleView::GetPageInfoBubbleForTesting());
+          PageInfoBubbleView::GetPageInfoBubbleForTesting(
+              browser()->GetTabStripModel()->GetActiveWebContents()));
       bubble_view->OpenSecurityPage();
     }
 
-    if (name != kInsecure && name.find(kInternal) == std::string::npos &&
-        name != kFile) {
-      identity.site_identity = kSiteOrigin;
+    if (name != kInsecure && !name.contains(kInternal) && name != kFile) {
+      identity.site_identity =
+          (name == kSecureLongUrl) ? kLongSiteOrigin : kSiteOrigin;
       // The bubble may be PageInfoBubbleView or InternalPageInfoBubbleView. The
       // latter is only used for |kInternal|, so it is safe to static_cast here.
       PageInfo* presenter = GetPresenter();
@@ -405,15 +427,19 @@ class PageInfoBubbleViewDialogBrowserTest : public DialogBrowserTest {
     }
   }
 
+  virtual BrowserWindowInterface* GetBrowser() { return browser(); }
+
   bool VerifyUi() override {
     if (!DialogBrowserTest::VerifyUi()) {
       return false;
     }
     // Check that each expected View is present in the Page Info bubble.
     views::View* page_info_bubble_view =
-        PageInfoBubbleView::GetPageInfoBubbleForTesting()->GetContentsView();
+        PageInfoBubbleView::GetPageInfoBubbleForTesting(
+            GetBrowser()->GetTabStripModel()->GetActiveWebContents())
+            ->GetContentsView();
     for (auto id : expected_identifiers_) {
-      views::View* view = GetView(browser(), id);
+      views::View* view = GetView(GetBrowser(), id);
       if (!page_info_bubble_view->Contains(view)) {
         return false;
       }
@@ -423,7 +449,8 @@ class PageInfoBubbleViewDialogBrowserTest : public DialogBrowserTest {
 
   PageInfo* GetPresenter() {
     return static_cast<PageInfoBubbleView*>(
-               PageInfoBubbleView::GetPageInfoBubbleForTesting())
+               PageInfoBubbleView::GetPageInfoBubbleForTesting(
+                   browser()->GetTabStripModel()->GetActiveWebContents()))
         ->presenter_for_testing();
   }
 
@@ -439,6 +466,12 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewDialogBrowserTest, InvokeUi_Insecure) {
 
 // Shows the Page Info bubble for a HTTPS page.
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewDialogBrowserTest, InvokeUi_Secure) {
+  ShowAndVerifyUi();
+}
+
+// Shows the Page Info bubble for a HTTPS page with a long URL that wraps.
+IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewDialogBrowserTest,
+                       InvokeUi_SecureLongUrl) {
   ShowAndVerifyUi();
 }
 
@@ -543,6 +576,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewDialogBrowserTest,
   ShowAndVerifyUi();
 }
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 // Shows the Page Info bubble Safe Browsing warning after detecting the user has
 // re-used an existing password on a site, e.g. due to phishing.
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewDialogBrowserTest,
@@ -573,6 +607,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewDialogBrowserTest,
                        InvokeUi_EnterprisePasswordReuse) {
   ShowAndVerifyUi();
 }
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
 class PageInfoBubbleViewAboutThisSiteDialogBrowserTest
     : public DialogBrowserTest {
@@ -598,8 +633,8 @@ class PageInfoBubbleViewAboutThisSiteDialogBrowserTest
   }
 
   void SetUpCommandLine(base::CommandLine* cmd) override {
-    cmd->AppendSwitch(optimization_guide::switches::
-                          kDisableCheckingUserPermissionsForTesting);
+    cmd->AppendSwitch(
+        optimization_guide::kDisableCheckingUserPermissionsForTestingSwitch);
   }
 
   // DialogBrowserTest:
@@ -613,7 +648,7 @@ class PageInfoBubbleViewAboutThisSiteDialogBrowserTest
     OpenPageInfoBubble(browser());
 
     // Set static site name to prevent flakes caused by changing port.
-    SetStaticSiteName(u"Example site");
+    SetStaticSiteName(browser(), u"Example site");
 
     const std::string& name =
         name_with_param_suffix.substr(0, name_with_param_suffix.find("/"));
@@ -638,7 +673,6 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewAboutThisSiteDialogBrowserTest,
   set_baseline("6730899");
   ShowAndVerifyUi();
 }
-
 
 class PageInfoBubbleViewCookiesSubpageBrowserTest : public DialogBrowserTest {
  public:
@@ -674,7 +708,8 @@ class PageInfoBubbleViewCookiesSubpageBrowserTest : public DialogBrowserTest {
     run_loop.Run();
 
     auto* bubble_view = static_cast<PageInfoBubbleView*>(
-        PageInfoBubbleView::GetPageInfoBubbleForTesting());
+        PageInfoBubbleView::GetPageInfoBubbleForTesting(
+            browser()->GetTabStripModel()->GetActiveWebContents()));
     auto* presenter = bubble_view->presenter_for_testing();
     EXPECT_TRUE(presenter);
     EXPECT_TRUE(presenter->ui_for_testing());
@@ -770,14 +805,15 @@ class PageInfoBubbleViewIsolatedWebAppBrowserTest : public DialogBrowserTest {
     // https://crbug.com/41419544.
     set_should_verify_dialog_bounds(false);
 
-    Browser* iwa_browser =
+    BrowserWindowInterface* iwa_browser =
         web_app::LaunchWebAppBrowserAndWait(browser()->GetProfile(), app_id_);
 
     ASSERT_TRUE(iwa_browser);
     OpenPageInfoBubble(iwa_browser);
 
     auto* bubble_view = static_cast<PageInfoBubbleView*>(
-        PageInfoBubbleView::GetPageInfoBubbleForTesting());
+        PageInfoBubbleView::GetPageInfoBubbleForTesting(
+            iwa_browser->GetTabStripModel()->GetActiveWebContents()));
     bubble_view->presenter_for_testing()->UpdateSecurityState();
 
     // For Isolated Web Apps, normal site name gets overridden by app name.
@@ -859,10 +895,15 @@ class PageInfoBubbleViewWebAppBrowserTest
   }
 
   void TearDownOnMainThread() override {
+    app_browser_ = nullptr;
     web_app::test::UninstallAllWebApps(browser()->GetProfile());
     override_registration_.reset();
 
     PageInfoBubbleViewDialogBrowserTest::TearDownOnMainThread();
+  }
+
+  BrowserWindowInterface* GetBrowser() override {
+    return app_browser_ ? app_browser_.get() : browser();
   }
 
   // DialogBrowserTest:
@@ -877,7 +918,8 @@ class PageInfoBubbleViewWebAppBrowserTest
 #if BUILDFLAG(IS_MAC)
     if (name == "NotificationSystemPermissionDenied") {
       AppShimRegistry::Get()->SaveNotificationPermissionStatusForApp(
-          app_id_, mac_notifications::mojom::PermissionStatus::kDenied);
+          app_id_,
+          AppShimRegistry::NotificationPermissionStatus::kExplicitlyDenied);
 
       HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->SetContentSettingDefaultScope(
@@ -886,18 +928,18 @@ class PageInfoBubbleViewWebAppBrowserTest
     }
 #endif
 
-    Browser* app_browser = browser();
+    app_browser_ = browser();
     switch (GetParam()) {
       case WebAppWindowMode::kBrowserTab:
         ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), start_url_));
         break;
       case WebAppWindowMode::kAppWindow:
-        app_browser = web_app::LaunchWebAppBrowserAndWait(
+        app_browser_ = web_app::LaunchWebAppBrowserAndWait(
             browser()->GetProfile(), app_id_);
-        ASSERT_TRUE(app_browser);
+        ASSERT_TRUE(app_browser_);
         break;
     }
-    OpenPageInfoBubble(app_browser);
+    OpenPageInfoBubble(app_browser_);
   }
 
  private:
@@ -905,6 +947,7 @@ class PageInfoBubbleViewWebAppBrowserTest
   net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
   GURL start_url_;
   webapps::AppId app_id_;
+  raw_ptr<BrowserWindowInterface> app_browser_ = nullptr;
 
   std::unique_ptr<
       ::web_app::OsIntegrationTestOverrideImpl::BlockingRegistration>
@@ -944,13 +987,12 @@ class PageInfoBubbleViewMerchantTrustDialogBrowserTest
     auto* optimization_guide_decider =
         OptimizationGuideKeyedServiceFactory::GetForProfile(
             browser()->GetProfile());
-    optimization_guide_decider->AddHintForTesting(
-        GetUrl(kAboutThisSiteUrl), optimization_guide::proto::ABOUT_THIS_SITE,
-        GetAboutThisSiteMetadata());
-    optimization_guide_decider->AddHintForTesting(
+    optimization_guide_decider->AddHintWithMultipleOptimizationsForTesting(
         GetUrl(kAboutThisSiteUrl),
-        optimization_guide::proto::MERCHANT_TRUST_SIGNALS_V2,
-        GetMerchantTrustMetadata());
+        {{optimization_guide::proto::ABOUT_THIS_SITE,
+          GetAboutThisSiteMetadata()},
+         {optimization_guide::proto::MERCHANT_TRUST_SIGNALS_V2,
+          GetMerchantTrustMetadata()}});
     optimization_guide_decider->AddHintForTesting(
         GetUrl(kMerchantTrustUrl),
         optimization_guide::proto::MERCHANT_TRUST_SIGNALS_V2,
@@ -962,8 +1004,8 @@ class PageInfoBubbleViewMerchantTrustDialogBrowserTest
   }
 
   void SetUpCommandLine(base::CommandLine* cmd) override {
-    cmd->AppendSwitch(optimization_guide::switches::
-                          kDisableCheckingUserPermissionsForTesting);
+    cmd->AppendSwitch(
+        optimization_guide::kDisableCheckingUserPermissionsForTestingSwitch);
   }
 
   // DialogBrowserTest:
@@ -987,11 +1029,12 @@ class PageInfoBubbleViewMerchantTrustDialogBrowserTest
 
     OpenPageInfoBubble(browser());
     // Set static site name to prevent flakes caused by changing port.
-    SetStaticSiteName(u"Example site");
+    SetStaticSiteName(browser(), u"Example site");
 
     if (name == "MerchantTrustSubpage") {
       PageInfoBubbleView* bubble_view = static_cast<PageInfoBubbleView*>(
-          PageInfoBubbleView::GetPageInfoBubbleForTesting());
+          PageInfoBubbleView::GetPageInfoBubbleForTesting(
+              browser()->GetTabStripModel()->GetActiveWebContents()));
       bubble_view->OpenMerchantTrustPage();
     }
   }
@@ -1027,10 +1070,8 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewMerchantTrustDialogBrowserTest,
   ShowAndVerifyUi();
 }
 
-// TODO(crbug.com/383355629): Optimization guide doesn't support setting hints
-// for two optimization types.
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewMerchantTrustDialogBrowserTest,
-                       DISABLED_InvokeUi_MerchantTrustAndAboutThisSite) {
+                       InvokeUi_MerchantTrustAndAboutThisSite) {
   set_baseline("6070208");
   ShowAndVerifyUi();
 }

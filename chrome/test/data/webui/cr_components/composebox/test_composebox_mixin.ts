@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// clang-format off
 import 'chrome://resources/cr_components/composebox/composebox_dropdown.js';
 import 'chrome://resources/cr_components/composebox/composebox_file_inputs.js';
 import 'chrome://resources/cr_components/composebox/composebox_input.js';
@@ -14,15 +15,17 @@ import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
 
 import {getCss} from 'chrome://resources/cr_components/composebox/composebox.css.js';
 import type {ComposeboxDropdownElement} from 'chrome://resources/cr_components/composebox/composebox_dropdown.js';
+import type {ComposeboxFileInputsElement} from 'chrome://resources/cr_components/composebox/composebox_file_inputs.js';
 import type {ComposeboxInputElement} from 'chrome://resources/cr_components/composebox/composebox_input.js';
 import {ComposeboxEmbedderMixin} from 'chrome://resources/cr_components/composebox/composebox_mixin.js';
 import {ComposeboxProxyImpl} from 'chrome://resources/cr_components/composebox/composebox_proxy.js';
-import type {ComposeboxVoiceSearchElement} from 'chrome://resources/cr_components/composebox/composebox_voice_search.js';
+import type {ComposeboxSubmitElement} from 'chrome://resources/cr_components/composebox/composebox_submit.js';
 import type {ContextualEntrypointAndMenuElement} from 'chrome://resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
 import type {SearchAnimatedGlowElement} from 'chrome://resources/cr_components/search/animated_glow.js';
 import {I18nMixinLit} from 'chrome://resources/cr_elements/i18n_mixin_lit.js';
 import {CrLitElement, html} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import type {PageCallbackRouter as SearchboxPageCallbackRouter} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+// clang-format on
 
 const TestElementBase = ComposeboxEmbedderMixin(I18nMixinLit(CrLitElement));
 
@@ -31,10 +34,11 @@ export interface TestComposeboxMixinElement {
     animatedSearchElement: SearchAnimatedGlowElement,
     composebox: HTMLElement,
     contextEntrypoint: ContextualEntrypointAndMenuElement,
+    fileInputs: ComposeboxFileInputsElement,
     input: ComposeboxInputElement,
     inputWrapper: HTMLElement,
     matches: ComposeboxDropdownElement,
-    voiceSearch: ComposeboxVoiceSearchElement,
+    submit: ComposeboxSubmitElement,
   };
 }
 
@@ -90,9 +94,13 @@ export class TestComposeboxMixinElement extends TestElementBase {
           <cr-composebox-dropdown id="matches"
               .result="${this.result}"
               .selectedMatchIndex="${this.selectedMatchIndex}"
+              .richImageSuggestionsEnabled="${
+                  this.richImageSuggestionsEnabled}"
               @selected-match-index-changed="${this.onSelectedMatchIndexChanged}"
               @match-focusin="${this.onMatchFocusin}"
-              @match-click="${this.onMatchClick}">
+              @match-click="${this.onMatchClick}"
+              ?hidden="${this.shouldHideDropdown()}"
+              .lastQueriedInput="${this.lastQueriedInput}">
           </cr-composebox-dropdown>
           <cr-composebox-file-inputs id="fileInputs"
               @file-change="${this.onFileChange}"
@@ -108,9 +116,11 @@ export class TestComposeboxMixinElement extends TestElementBase {
           <cr-composebox-contextual-entrypoint-and-menu
               id="contextEntrypoint"
               .inputState="${this.inputState}"
+              .composeboxContextMenuTooltipsEnabled="${
+                  this.composeboxContextMenuTooltipsEnabled}"
               @tool-click="${this.onToolClick}">
           </cr-composebox-contextual-entrypoint-and-menu>
-          <cr-composebox-submit
+          <cr-composebox-submit id="submit"
               ?disabled="${!this.canSubmitFilesAndInput}"
               .iconType="${this.submitButtonIconType}"
               .submitButtonTitle="${this.i18n('composeboxSubmitButtonTitle')}"
@@ -138,6 +148,12 @@ export class TestComposeboxMixinElement extends TestElementBase {
       ` : ''}
     `;
     // clang-format on
+  }
+
+  suggestionFuseboxActionsEnabled = false;
+
+  override shouldHandleSuggestionFuseboxActions(): boolean {
+    return this.suggestionFuseboxActionsEnabled;
   }
 
   override getInputElement(): ComposeboxInputElement {
@@ -177,6 +193,10 @@ export class TestComposeboxMixinElement extends TestElementBase {
 
   override getContextEntrypointElement(): ContextualEntrypointAndMenuElement {
     return this.$.contextEntrypoint;
+  }
+
+  override getFileInputsElement(): ComposeboxFileInputsElement|null {
+    return this.shouldDisableFileInputs() ? null : this.$.fileInputs;
   }
 }
 

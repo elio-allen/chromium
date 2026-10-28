@@ -14,10 +14,10 @@ import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import type {TextAnnotation, TextAttributes, TextBoxRect} from '../constants.js';
 import {TextTypeface} from '../constants.js';
 import {Ink2Manager, MIN_TEXTBOX_SIZE_PX, stylesEqual} from '../ink2_manager.js';
-import {convertRotatedCoordinates} from '../ink_text_annotation_utils.js';
+import {convertRotatedCoordinates, screenToPageCoordinates} from '../ink_text_annotation_utils.js';
 import {record, UserAction} from '../metrics.js';
 import {PdfViewerPrivateProxyImpl} from '../pdf_viewer_private_proxy.js';
-import {colorsEqual, colorToHex, hasCtrlModifier} from '../pdf_viewer_utils.js';
+import {colorsEqual, colorToHex, getTextStyleForShortcut, hasCtrlModifier, hasCtrlModifierOnly} from '../pdf_viewer_utils.js';
 import type {Viewport, ViewportRect} from '../viewport.js';
 
 import {getCss} from './ink_text_box.css.js';
@@ -91,6 +91,7 @@ export class InkTextBoxElement extends InkTextBoxElementBase {
       viewport: {type: Object},
       annotation: {type: Object},
       pageDimensions: {type: Object},
+      isPaste: {type: Boolean},
     };
   }
 
@@ -108,6 +109,7 @@ export class InkTextBoxElement extends InkTextBoxElementBase {
   private accessor viewportRotations_: number = 0;
   private accessor width_: number = MIN_TEXTBOX_SIZE_PX;
   private accessor zoom_: number = 1.0;
+  accessor isPaste: boolean = false;
   accessor viewport: Viewport|null = null;
   accessor annotation: TextAnnotation|null = null;
   accessor pageDimensions: ViewportRect|null = null;
@@ -242,6 +244,55 @@ export class InkTextBoxElement extends InkTextBoxElementBase {
     this.updateMinimumSize_();
   }
 
+  // Populates a `TextAnnotation` with the current state that can
+  // be passed to Ink2Manager.
+  private createClipboardAnnotation_(): TextAnnotation|null {
+    if (!this.viewport || !this.attributes_ || this.textValue_ === '') {
+      return null;
+    }
+    const pageRect = screenToPageCoordinates(
+        this.pageIndex_, {
+          height: this.height_,
+          locationX: this.locationX_,
+          locationY: this.locationY_,
+          width: this.width_,
+        },
+        this.viewport);
+    return {
+      id: this.id_,
+      mojoTextInfo: new ArrayBuffer(0),
+      pageIndex: this.pageIndex_,
+      pdfZoom: this.zoom_,
+      text: this.textValue_,
+      textAttributes: structuredClone(this.attributes_),
+      textBoxRect: pageRect,
+      textOrientation: this.textOrientation_,
+      viewportOrientation: this.viewportRotations_,
+    };
+  }
+
+  private copyAnnotation_() {
+    const annotation = this.createClipboardAnnotation_();
+    if (!annotation) {
+      return;
+    }
+    Ink2Manager.getInstance().saveAnnotationToClipboard(
+        annotation, /*isCut=*/ false);
+  }
+
+  private cutAnnotation_() {
+    const annotation = this.createClipboardAnnotation_();
+    if (!annotation) {
+      return;
+    }
+    Ink2Manager.getInstance().saveAnnotationToClipboard(
+        annotation, /*isCut=*/ true);
+    this.textValue_ = '';
+    this.$.textbox.value = '';
+    this.textBoxEdited_();
+    this.commitTextAnnotation();
+  }
+
   private textBoxEdited_() {
     if (this.state_ === TextBoxState.NEW) {
       this.state_ = TextBoxState.EDITED;
@@ -327,11 +378,19 @@ export class InkTextBoxElement extends InkTextBoxElementBase {
     this.resetDrag_();
 
     const hasTextValue = this.textValue_ !== '';
-    if ((!hasTextValue || this.state_ !== TextBoxState.EDITED) &&
-        !this.existing_) {
+    const isUnedited = this.state_ !== TextBoxState.EDITED && !this.isPaste;
+    if ((!hasTextValue || isUnedited) && !this.existing_) {
       // Empty textbox.
       this.finishCommit_();
       record(UserAction.ADD_INK2_TEXT_ANNOTATION_ABORTED);
+      return promise;
+    }
+
+    if (!hasTextValue) {
+      // Text deleted.
+      Ink2Manager.getInstance().deleteTextAnnotation(this.id_, this.pageIndex_);
+      this.finishCommit_();
+      record(UserAction.DELETE_INK2_TEXT_ANNOTATION);
       return promise;
     }
 
@@ -364,7 +423,7 @@ export class InkTextBoxElement extends InkTextBoxElementBase {
       return promise;
     }
 
-    // Has edits.
+    // Addition or edit.
     (async () => {
       try {
         const result =
@@ -378,15 +437,9 @@ export class InkTextBoxElement extends InkTextBoxElementBase {
         annotation.mojoTextInfo = result.mojoTextInfo;
         Ink2Manager.getInstance().commitTextAnnotation(
             annotation, isEdited, result.typefaces);
-        let action;
-        if (this.existing_) {
-          action = hasTextValue ?
-              UserAction.EDIT_INK2_TEXT_ANNOTATION :
-              action = UserAction.DELETE_INK2_TEXT_ANNOTATION;
-        } else {
-          action = UserAction.ADD_INK2_TEXT_ANNOTATION;
-        }
-        record(action);
+        record(
+            this.existing_ ? UserAction.EDIT_INK2_TEXT_ANNOTATION :
+                             UserAction.ADD_INK2_TEXT_ANNOTATION);
       } catch (e) {
         console.error('Error committing text annotation:', e);
       } finally {
@@ -427,8 +480,8 @@ export class InkTextBoxElement extends InkTextBoxElementBase {
     this.minWidth_ = MIN_TEXTBOX_SIZE_PX;
     this.locationX_ = annotation.textBoxRect.locationX;
     this.locationY_ = annotation.textBoxRect.locationY;
-    this.state_ = TextBoxState.NEW;
-    this.existing_ = annotation.text !== '';
+    this.state_ = this.isPaste ? TextBoxState.EDITED : TextBoxState.NEW;
+    this.existing_ = annotation.text !== '' && !this.isPaste;
     this.textValue_ = annotation.text;
     this.id_ = annotation.id;
     this.pageIndex_ = annotation.pageIndex;
@@ -441,7 +494,11 @@ export class InkTextBoxElement extends InkTextBoxElementBase {
   private async focusTextboxWhenReady_() {
     await this.updateComplete;
     setTimeout(() => {
-      this.$.textbox.focus();
+      if (this.isPaste) {
+        this.focus();
+      } else {
+        this.$.textbox.focus();
+      }
       this.fire('textbox-focused-for-test');
     }, 0);
   }
@@ -506,11 +563,40 @@ export class InkTextBoxElement extends InkTextBoxElementBase {
   }
 
   private onKeyDown_(e: KeyboardEvent) {
+    if (this.state_ === TextBoxState.INACTIVE) {
+      return;
+    }
+
+    // Handle text styling shortcuts.
+    const textStyle = getTextStyleForShortcut(e);
+    if (textStyle !== null) {
+      e.preventDefault();
+      e.stopPropagation();
+      Ink2Manager.getInstance().toggleTextStyle(textStyle);
+      return;
+    }
+
     const target = e.composedPath()[0];
+
     // Ignore keyboard events on the textbox itself, other than 'Escape', which
     // is separately handled by the global keyhandler above.
     if (!(target instanceof HTMLElement) || target === this.$.textbox) {
       return;
+    }
+
+    // Handle copy and cut.
+    if (hasCtrlModifierOnly(e)) {
+      const key = e.key.toLowerCase();
+      if (key === 'c' || key === 'x') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (key === 'c') {
+          this.copyAnnotation_();
+        } else {
+          this.cutAnnotation_();
+        }
+        return;
+      }
     }
 
     // Backspace/Delete key not in the textbox deletes the annotation.
@@ -705,6 +791,14 @@ export class InkTextBoxElement extends InkTextBoxElementBase {
     this.$.textbox.style.fontWeight =
         newAttributes.styles.bold ? 'bold' : 'normal';
     this.$.textbox.style.color = colorToHex(newAttributes.color);
+    const decorations: string[] = [];
+    if (newAttributes.styles.underline) {
+      decorations.push('underline');
+    }
+    if (newAttributes.styles.strikethrough) {
+      decorations.push('line-through');
+    }
+    this.$.textbox.style.textDecoration = decorations.join(' ') || 'none';
   }
 
   override onTextAttributesChanged(newAttributes: TextAttributes) {

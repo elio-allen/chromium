@@ -15,6 +15,7 @@
 #include "base/thread_annotations.h"
 #include "chrome/browser/context_hub/memory_bank/memory_bank_entry.h"
 #include "chrome/browser/context_hub/storage/memory_bank_table.h"
+#include "components/passage_embeddings/core/passage_embeddings_types.h"
 
 namespace sql {
 class Database;
@@ -26,7 +27,7 @@ namespace context_hub {
 class ContextHubDatabase {
  public:
   // Current database schema version.
-  static constexpr int kCurrentVersionNumber = 1;
+  static constexpr int kCurrentVersionNumber = 4;
 
   ContextHubDatabase();
   ContextHubDatabase(const ContextHubDatabase&) = delete;
@@ -38,11 +39,24 @@ class ContextHubDatabase {
   bool Init(const base::FilePath& db_path);
 
   // Operations on memory bank entries (delegates to MemoryBankTable):
-  bool AddOrUpdateMemoryBankEntry(const MemoryBankEntry& entry);
+  std::optional<int64_t> AddOrUpdateMemoryBankEntry(
+      const MemoryBankEntry& entry);
+  bool UpdateMemoryBankEntryAnnotations(
+      int64_t id,
+      const std::vector<std::string>& tags,
+      const std::optional<std::string>& note,
+      const std::optional<std::string>& collection);
+  bool AddOrUpdateMemoryBankEmbeddings(
+      int64_t entry_id,
+      base::span<const passage_embeddings::Embedding> embeddings);
+  std::vector<int64_t> GetMemoryBankEntryIdsWithoutEmbeddings();
+  bool SetMemoryBankEmbeddingsVersion(int64_t version);
   std::optional<MemoryBankEntry> GetMemoryBankEntry(int64_t id);
   std::vector<MemoryBankEntry> GetMemoryBankEntriesByIds(
       base::span<const int64_t> ids);
   std::vector<MemoryBankEntry> GetAllMemoryBankEntries();
+  std::vector<std::string> GetAllMemoryBankTags();
+  std::vector<std::string> GetAllMemoryBankCollections();
   bool DeleteMemoryBankEntries(base::span<const int64_t> ids);
 
  private:
@@ -51,6 +65,9 @@ class ContextHubDatabase {
   // Migrates the database schema from `detected_user_version` to
   // `kCurrentVersionNumber`.
   bool MigrateOldVersionsAsNeeded(int detected_user_version);
+
+  // Migrates the database schema to `version`.
+  bool MigrateToVersion(int version);
 
   std::unique_ptr<sql::Database> db_;
 

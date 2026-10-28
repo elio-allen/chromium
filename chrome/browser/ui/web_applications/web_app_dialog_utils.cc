@@ -16,7 +16,6 @@
 #include "base/no_destructor.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/shell_integration.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
@@ -49,7 +48,10 @@
 #include "components/webapps/browser/installable/ml_install_operation_tracker.h"
 #include "components/webapps/browser/installable/ml_installability_promoter.h"
 #include "components/webapps/browser/web_app_url_config.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/visibility.h"
+#include "content/public/browser/web_contents.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
@@ -92,7 +94,16 @@ void ShowWebAppInstallFlowDialog(
     InstallOsType os_type,
     std::optional<ui::ImageModel> folder_image_model,
     std::optional<std::u16string> folder_label) {
-  if (!initiator_web_contents) {
+  // On MacOS, the showing of the install flow dialog goes through an async hop
+  // in the middle of which the installation might be cancelled if the user
+  // changes tabs, or closes the web contents. Explicitly exit the install
+  // flow earlier if that happens.
+  if (!initiator_web_contents ||
+      initiator_web_contents->GetVisibility() == content::Visibility::HIDDEN) {
+    CHECK(install_tracker);
+    install_tracker->ReportResult(webapps::MlInstallUserResponse::kIgnored);
+    std::move(web_app_acceptance_callback)
+        .Run(/*user_accepted=*/false, nullptr, base::DoNothing());
     return;
   }
   auto progress_delay =
@@ -115,7 +126,7 @@ void OnWebAppInstallShowInstallDialog(
     content::WebContents* initiator_web_contents,
     std::unique_ptr<WebAppInstallInfo> web_app_info,
     WebAppInstallationAcceptanceCallback web_app_acceptance_callback) {
-  DCHECK(web_app_info);
+  CHECK(web_app_info, base::NotFatalUntil::M162);
   InstallOsType os_type = InstallOsType::kOther;
 #if BUILDFLAG(IS_CHROMEOS)
   os_type = InstallOsType::kCros;
@@ -245,7 +256,7 @@ void OnWebAppInstalled(WebAppInstalledCallback callback,
 
 }  // namespace
 
-bool CanCreateWebApp(Browser* browser) {
+bool CanCreateWebApp(BrowserWindowInterface* browser) {
   // Check whether user is allowed to install web app.
   if (!WebAppProvider::GetForWebApps(browser->GetProfile()) ||
       !AreWebAppsUserInstallable(browser->GetProfile())) {
@@ -273,14 +284,14 @@ bool CanPopOutWebApp(Profile* profile) {
          !profile->IsOffTheRecord();
 }
 
-void CreateWebAppFromCurrentWebContents(Browser* browser,
+void CreateWebAppFromCurrentWebContents(BrowserWindowInterface* browser,
                                         WebAppInstallFlow flow) {
-  DCHECK(CanCreateWebApp(browser));
+  CHECK(CanCreateWebApp(browser), base::NotFatalUntil::M162);
 
   content::WebContents* web_contents =
       browser->tab_strip_model()->GetActiveWebContents();
   auto* provider = WebAppProvider::GetForWebContents(web_contents);
-  DCHECK(provider);
+  CHECK(provider, base::NotFatalUntil::M162);
 
   webapps::MLInstallabilityPromoter* promoter =
       webapps::MLInstallabilityPromoter::FromWebContents(web_contents);
@@ -351,6 +362,7 @@ bool CreateWebAppFromManifest(content::WebContents* web_contents,
 
   webapps::MLInstallabilityPromoter* promoter =
       webapps::MLInstallabilityPromoter::FromWebContents(web_contents);
+  CHECK(promoter);
   if (promoter->HasCurrentInstall()) {
     std::move(installed_callback)
         .Run(/*app_id=*/"",
@@ -396,27 +408,6 @@ bool CreateWebAppFromManifest(content::WebContents* web_contents,
       base::BindOnce(OnWebAppInstalled, std::move(installed_callback)),
       fallback_behavior);
   return true;
-}
-
-void CreateWebAppForBackgroundInstall(
-    content::WebContents* initiating_web_contents,
-    std::unique_ptr<webapps::MlInstallOperationTracker> tracker,
-    const GURL& install_url,
-    const std::optional<GURL>& manifest_id,
-    const GURL& last_committed_url,
-    WebAppInstalledCallback installed_callback) {
-  auto* provider = WebAppProvider::GetForWebContents(initiating_web_contents);
-  CHECK(provider);
-
-  provider->scheduler().InstallAppFromUrl(
-      install_url, manifest_id, initiating_web_contents->GetWeakPtr(),
-      last_committed_url,
-      base::BindOnce(&OnWebAppInstallShowInstallDialog,
-                     WebAppInstallFlow::kInstallSite,
-                     webapps::WebappInstallSource::WEB_INSTALL,
-                     PwaInProductHelpState::kNotShown, std::move(tracker),
-                     /*show_initiating_origin=*/true),
-      std::move(installed_callback));
 }
 
 void CreateWebAppForManifestInstall(

@@ -19,7 +19,6 @@ import {assert} from 'chrome://resources/js/assert.js';
 
 import type {AmbientModeAlbum} from '../../personalization_app.mojom-webui.js';
 import {TopicSource} from '../../personalization_app.mojom-webui.js';
-import {logAmbientModeLinkToGooglePhotosClick} from '../personalization_metrics_logger.js';
 import {PersonalizationRouterElement} from '../personalization_router_element.js';
 import {WithPersonalizationStore} from '../personalization_store.js';
 import {getNumberOfGridItemsPerRow} from '../utils.js';
@@ -68,7 +67,6 @@ export class AlbumsSubpageElement extends WithPersonalizationStore {
 
   declare topicSource: TopicSource;
   declare albums: AmbientModeAlbum[]|null;
-  loadingAlbums: boolean;
 
   declare private ambientModeEnabled_: boolean|null;
   declare private showArtAlbumDialog_: boolean;
@@ -153,7 +151,6 @@ export class AlbumsSubpageElement extends WithPersonalizationStore {
 
   private onGooglePhotosLinkClicked_(event: Event) {
     event.stopPropagation();
-    logAmbientModeLinkToGooglePhotosClick();
   }
 }
 

@@ -29,15 +29,12 @@
 #include "chrome/browser/gcm/instance_id/instance_id_profile_service_factory.h"
 #include "chrome/browser/notifications/notification_display_service_tester.h"
 #include "chrome/browser/notifications/notification_handler.h"
-#include "chrome/browser/permissions/crowd_deny_fake_safe_browsing_database_manager.h"
-#include "chrome/browser/permissions/crowd_deny_preload_data.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/push_messaging/push_messaging_app_identifier.h"
 #include "chrome/browser/push_messaging/push_messaging_service_factory.h"
 #include "chrome/browser/push_messaging/push_messaging_service_impl.h"
 #include "chrome/browser/push_messaging/push_messaging_unsubscribed_entry.h"
-#include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/channel_info.h"
@@ -64,6 +61,7 @@
 #include "components/push_messaging/push_messaging_constants.h"
 #include "components/push_messaging/push_messaging_features.h"
 #include "components/push_messaging/push_messaging_utils.h"
+#include "components/safe_browsing/buildflags.h"
 #include "components/site_engagement/content/site_engagement_score.h"
 #include "components/site_engagement/content/site_engagement_service.h"
 #include "content/public/browser/browsing_data_remover.h"
@@ -82,6 +80,12 @@
 #include "third_party/blink/public/mojom/push_messaging/push_messaging_status.mojom.h"
 #include "ui/base/window_open_disposition.h"
 #include "ui/message_center/public/cpp/notification.h"
+
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+#include "chrome/browser/permissions/crowd_deny_fake_safe_browsing_database_manager.h"
+#include "chrome/browser/permissions/crowd_deny_preload_data.h"
+#include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
+#endif
 
 namespace {
 
@@ -268,7 +272,7 @@ class PushMessagingBrowserTestBase
   content::EvalJsResult RunScript(const std::string& script,
                                   content::WebContents* web_contents) {
     if (!web_contents) {
-      web_contents = GetBrowser()->tab_strip_model()->GetActiveWebContents();
+      web_contents = GetBrowser()->GetTabStripModel()->GetActiveWebContents();
     }
     return content::EvalJs(web_contents->GetPrimaryMainFrame(), script);
   }
@@ -279,7 +283,7 @@ class PushMessagingBrowserTestBase
 
   permissions::PermissionRequestManager* GetPermissionRequestManager() {
     return permissions::PermissionRequestManager::FromWebContents(
-        GetBrowser()->tab_strip_model()->GetActiveWebContents());
+        GetBrowser()->GetTabStripModel()->GetActiveWebContents());
   }
 
   // Calls should be wrapped in the ASSERT_NO_FATAL_FAILURE() macro.
@@ -389,7 +393,7 @@ class PushMessagingBrowserTestBase
     return "/push_messaging/test_no_manifest.html";
   }
 
-  virtual Browser* GetBrowser() const { return browser(); }
+  virtual BrowserWindowInterface* GetBrowser() const { return browser(); }
 
   gcm::GCMProfileServiceFactory::ScopedTestingFactoryInstaller
       scoped_testing_factory_installer_;
@@ -1414,7 +1418,7 @@ IN_PROC_BROWSER_TEST_F(PushMessagingBrowserTest,
   // We'll need to specify the web_contents in which to eval script, since we're
   // going to run script in a background tab.
   content::WebContents* web_contents =
-      GetBrowser()->tab_strip_model()->GetActiveWebContents();
+      GetBrowser()->GetTabStripModel()->GetActiveWebContents();
 
   // Set the site engagement score for the site. Setting it to 10 means it
   // should have a budget of 4, enough for two non-shown notification, which
@@ -1436,7 +1440,7 @@ IN_PROC_BROWSER_TEST_F(PushMessagingBrowserTest,
   // Open a blank foreground tab so site is no longer visible.
   ui_test_utils::NavigateToURLWithDisposition(
       GetBrowser(), GURL("about:blank"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
 
   // If the Service Worker push event handler shows a notification, we
@@ -1518,13 +1522,13 @@ IN_PROC_BROWSER_TEST_F(PushMessagingBrowserTest,
   // We'll need to specify the web_contents in which to eval script, since we're
   // going to run script in a background tab.
   content::WebContents* web_contents =
-      GetBrowser()->tab_strip_model()->GetActiveWebContents();
+      GetBrowser()->GetTabStripModel()->GetActiveWebContents();
 
   SetSiteEngagementScore(web_contents->GetLastCommittedURL(), 5.0);
 
   ui_test_utils::NavigateToURLWithDisposition(
       GetBrowser(), GURL("about:blank"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
 
   // Send a missed notification to use up the budget.
@@ -1568,6 +1572,7 @@ IN_PROC_BROWSER_TEST_F(PushMessagingBrowserTest,
   ASSERT_EQ(0u, GetNotificationCount());
 }
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 class PushMessagingBrowserTestWithAbusiveOriginPermissionRevocation
     : public PushMessagingBrowserTestBase {
  public:
@@ -1702,6 +1707,7 @@ IN_PROC_BROWSER_TEST_F(
       "PushMessaging.DeliveryStatus",
       static_cast<int>(blink::mojom::PushEventStatus::SUCCESS), 1);
 }
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
 IN_PROC_BROWSER_TEST_F(PushMessagingBrowserTestBase,
                        PushEventIgnoresScheduledNotificationsForEnforcement) {
@@ -1716,14 +1722,14 @@ IN_PROC_BROWSER_TEST_F(PushMessagingBrowserTestBase,
   // We'll need to specify the web_contents in which to eval script, since we're
   // going to run script in a background tab.
   content::WebContents* web_contents =
-      GetBrowser()->tab_strip_model()->GetActiveWebContents();
+      GetBrowser()->GetTabStripModel()->GetActiveWebContents();
 
   // Initialize site engagement score to have no budget for silent pushes.
   SetSiteEngagementScore(web_contents->GetLastCommittedURL(), 0);
 
   ui_test_utils::NavigateToURLWithDisposition(
       GetBrowser(), GURL("about:blank"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
 
   gcm::IncomingMessage message;
@@ -1795,7 +1801,7 @@ IN_PROC_BROWSER_TEST_F(PushMessagingBrowserTest,
 IN_PROC_BROWSER_TEST_F(PushMessagingBrowserTest,
                        PushEventNotificationWithoutEventWaitUntil) {
   content::WebContents* web_contents =
-      GetBrowser()->tab_strip_model()->GetActiveWebContents();
+      GetBrowser()->GetTabStripModel()->GetActiveWebContents();
 
   ASSERT_NO_FATAL_FAILURE(SubscribeSuccessfully());
   push_messaging::AppIdentifier app_identifier =
@@ -1877,7 +1883,7 @@ IN_PROC_BROWSER_TEST_P(PushMessagingPartitionedBrowserTest, CrossOriginFrame) {
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(GetBrowser(), kEmbedderURL));
 
-  auto* web_contents = GetBrowser()->tab_strip_model()->GetActiveWebContents();
+  auto* web_contents = GetBrowser()->GetTabStripModel()->GetActiveWebContents();
   LOG(ERROR) << web_contents->GetLastCommittedURL();
   auto* subframe =
       content::ChildFrameAt(web_contents->GetPrimaryMainFrame(), 0u);
@@ -2735,15 +2741,18 @@ class PushMessagingIncognitoBrowserTest : public PushMessagingBrowserTestBase {
     prerender_helper_.RegisterServerRequestMonitor(https_server());
     PushMessagingBrowserTestBase::SetUpOnMainThread();
   }
-  Browser* GetBrowser() const override { return incognito_browser_; }
+  BrowserWindowInterface* GetBrowser() const override {
+    return incognito_browser_;
+  }
 
   content::WebContents* web_contents() {
-    return GetBrowser()->tab_strip_model()->GetActiveWebContents();
+    return GetBrowser()->GetTabStripModel()->GetActiveWebContents();
   }
 
  protected:
   content::test::PrerenderTestHelper prerender_helper_;
-  raw_ptr<Browser, AcrossTasksDanglingUntriaged> incognito_browser_ = nullptr;
+  raw_ptr<BrowserWindowInterface, AcrossTasksDanglingUntriaged>
+      incognito_browser_ = nullptr;
 };
 
 // Regression test for https://crbug.com/40413606

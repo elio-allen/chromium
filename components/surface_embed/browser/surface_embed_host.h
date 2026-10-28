@@ -52,7 +52,11 @@ class SurfaceEmbedHost : public mojom::SurfaceEmbedHost,
   // mojom::SurfaceEmbedHost implementation:
   void SetSurfaceEmbed(mojo::PendingAssociatedRemote<mojom::SurfaceEmbed>
                            surface_embed) override;
-  void AttachConnector(const base::UnguessableToken& content_id) override;
+  void AttachConnector(const base::UnguessableToken& content_id,
+                       bool is_embed_element_focused,
+                       bool allow_pinch_zoom) override;
+  void SetAllowPinchZoom(bool allow_pinch_zoom) override;
+  void DetachConnector() override;
   void SynchronizeVisualProperties(
       const blink::FrameVisualProperties& visual_properties,
       bool is_visible) override;
@@ -60,6 +64,7 @@ class SurfaceEmbedHost : public mojom::SurfaceEmbedHost,
                              blink::mojom::FocusType focus_type) override;
   void OnEmbedElementThrottlingStatusChanged(
       mojom::RenderThrottlingStatusPtr status) override;
+  void SetParentAccessibilityInfo(ui::AXNodeID ax_node_id) override;
 
   // content::SurfaceEmbedConnector::Delegate implementation:
   void SetFrameSinkId(const viz::FrameSinkId& frame_sink_id,
@@ -69,13 +74,17 @@ class SurfaceEmbedHost : public mojom::SurfaceEmbedHost,
   void ChildProcessGone() override;
   void DetachedByHost() override;
   void RequestFocusOnEmbedElement() override;
+  void AdvanceFocusFromEmbedElement(bool reverse) override;
   bool IsAttachedForTesting() const override;
 
-  // TODO: Update surface_embed.mojom so that this is an override of a virtual
-  // from mojom::SurfaceEmbedHost.
-  void DetachConnector();
-
   void SetDestructionCallbackForTesting(base::OnceClosure callback);
+
+  bool HasReceivedParentAccessibilityInfoForTesting() const {
+    return container_accessibility_node_id_ != ui::kInvalidAXNodeID;
+  }
+  bool HasReceivedAttachConnectorForTesting() const {
+    return has_received_attach_connector_for_testing_;
+  }
 
  private:
   friend class SurfaceEmbedHostCollection;
@@ -86,9 +95,14 @@ class SurfaceEmbedHost : public mojom::SurfaceEmbedHost,
 
   void OnMojoDisconnect();
   void OnRequestFocusOnEmbedElementCompleted();
+  void FocusChildWebContents();
 
   // May return null.
   content::SurfaceEmbedConnector* GetConnector() const;
+
+  // Derives the parent AX tree token from the embedder RenderFrameHost and
+  // forwards it, with the stored node id, to the connector.
+  void ForwardParentAccessibilityInfo();
 
   raw_ref<SurfaceEmbedHostCollection> collection_;
   base::OnceClosure destruction_callback_for_testing_;
@@ -97,6 +111,9 @@ class SurfaceEmbedHost : public mojom::SurfaceEmbedHost,
   base::WeakPtr<content::WebContents> child_contents_ = nullptr;
 
   bool pending_request_focus_on_embed_element_ = false;
+  bool has_received_attach_connector_for_testing_ = false;
+
+  ui::AXNodeID container_accessibility_node_id_ = ui::kInvalidAXNodeID;
 
   mojo::AssociatedRemote<mojom::SurfaceEmbed> surface_embed_;
   mojo::AssociatedReceiver<mojom::SurfaceEmbedHost> receiver_{this};

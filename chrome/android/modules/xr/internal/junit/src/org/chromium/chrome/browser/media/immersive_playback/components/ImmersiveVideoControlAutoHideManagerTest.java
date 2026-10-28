@@ -12,7 +12,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
-import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -21,7 +20,6 @@ import java.util.concurrent.TimeUnit;
 
 /** Tests for {@link ImmersiveVideoControlAutoHideManager}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class ImmersiveVideoControlAutoHideManagerTest {
     private static final long TEST_DELAY_MS = 1000L;
 
@@ -117,6 +115,19 @@ public class ImmersiveVideoControlAutoHideManagerTest {
         verify(mMockRunnable, never()).run();
 
         mManager.onFormatPanelAccessibilityFocusChanged(false);
+        ShadowLooper.idleMainLooper(TEST_DELAY_MS, TimeUnit.MILLISECONDS);
+        verify(mMockRunnable).run();
+    }
+
+    @Test
+    public void testPlayerPanelMoving_PreventsTimerFromFiring() {
+        mManager.startTimer();
+        mManager.onPlayerPanelMovingChanged(true);
+
+        ShadowLooper.idleMainLooper(TEST_DELAY_MS, TimeUnit.MILLISECONDS);
+        verify(mMockRunnable, never()).run();
+
+        mManager.onPlayerPanelMovingChanged(false);
         ShadowLooper.idleMainLooper(TEST_DELAY_MS, TimeUnit.MILLISECONDS);
         verify(mMockRunnable).run();
     }

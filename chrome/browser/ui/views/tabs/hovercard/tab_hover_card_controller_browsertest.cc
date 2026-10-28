@@ -13,6 +13,7 @@
 #include "chrome/browser/ui/performance_controls/memory_saver_chip_tab_helper.h"
 #include "chrome/browser/ui/performance_controls/tab_resource_usage_tab_helper.h"
 #include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/thumbnails/thumbnail_image.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
@@ -31,6 +32,7 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "ui/base/window_open_disposition.h"
 
 // These are regression tests for possible crashes.
 
@@ -41,16 +43,7 @@ class TabHoverCardControllerTest : public InProcessBrowserTest {
   void SetUpOnMainThread() override {
     InProcessBrowserTest::SetUpOnMainThread();
 
-    if (base::FeatureList::IsEnabled(tabs::kTabStripUnification)) {
-      auto* base_region_view = views::AsViewClass<BaseTabStripRegionView>(
-          GetBrowserView()->tab_strip_view());
-      controller_ = base_region_view->GetTabStripCollectionController()
-                        ->GetHoverCardController();
-    } else {
-      controller_ = GetBrowserView()
-                        ->horizontal_tab_strip_for_testing()
-                        ->hover_card_controller_for_testing();
-    }
+    controller_ = test::TabHoverCardTestUtil::GetHoverCardController(browser());
     g_browser_process->local_state()->SetBoolean(prefs::kHoverCardImagesEnabled,
                                                  true);
   }
@@ -66,7 +59,8 @@ class TabHoverCardControllerTest : public InProcessBrowserTest {
   HoverCardAnchorTarget* GetHoverCardAnchorTargetAt(int index) {
     bool is_vertical = GetBrowserView()->ShouldDrawVerticalTabStrip();
     views::View* tab_view =
-        GetBrowserView()->tab_strip_view()->GetTabAnchorViewAt(index);
+        GetBrowserView()->tab_strip_view()->GetTabAnchorView(
+            browser()->GetTabStripModel()->GetTabAtIndex(index)->GetHandle());
 
     if (is_vertical ||
         base::FeatureList::IsEnabled(tabs::kTabStripUnification)) {
@@ -94,7 +88,7 @@ IN_PROC_BROWSER_TEST_F(TabHoverCardControllerTest,
 IN_PROC_BROWSER_TEST_F(TabHoverCardControllerTest, ShowPreviewsForTab) {
   chrome::AddTabAt(browser(), GURL("http://foo1.com"), 0, false);
   chrome::AddTabAt(browser(), GURL("http://foo2.com"), 1, false);
-  browser()->tab_strip_model()->ActivateTabAt(0);
+  browser()->GetTabStripModel()->ActivateTabAt(0);
 
   HoverCardAnchorTarget* target_tab = GetHoverCardAnchorTargetAt(1);
   controller()->target_tab_ = target_tab;
@@ -109,7 +103,7 @@ IN_PROC_BROWSER_TEST_F(TabHoverCardControllerTest, DisablePreviewsForTab) {
 
   chrome::AddTabAt(browser(), GURL("http://foo1.com"), 0, false);
   chrome::AddTabAt(browser(), GURL("http://foo2.com"), 1, false);
-  browser()->tab_strip_model()->ActivateTabAt(0);
+  browser()->GetTabStripModel()->ActivateTabAt(0);
 
   HoverCardAnchorTarget* target_tab = GetHoverCardAnchorTargetAt(1);
   controller()->target_tab_ = target_tab;
@@ -122,7 +116,7 @@ IN_PROC_BROWSER_TEST_F(TabHoverCardControllerTest,
                        HidePreviewsForDiscardedTab) {
   chrome::AddTabAt(browser(), GURL("http://foo1.com"), 0, false);
   chrome::AddTabAt(browser(), GURL("http://foo2.com"), 1, false);
-  browser()->tab_strip_model()->ActivateTabAt(0);
+  browser()->GetTabStripModel()->ActivateTabAt(0);
 
   HoverCardAnchorTarget* target_tab = GetHoverCardAnchorTargetAt(1);
   controller()->target_tab_ = target_tab;
@@ -141,7 +135,7 @@ IN_PROC_BROWSER_TEST_F(TabHoverCardControllerTest, DisableMemoryUsageForTab) {
 
   chrome::AddTabAt(browser(), GURL("http://foo1.com"), 0, false);
   chrome::AddTabAt(browser(), GURL("http://foo2.com"), 1, false);
-  browser()->tab_strip_model()->ActivateTabAt(0);
+  browser()->GetTabStripModel()->ActivateTabAt(0);
 
   HoverCardAnchorTarget* target_tab = GetHoverCardAnchorTargetAt(1);
   controller()->target_tab_ = target_tab;
@@ -169,7 +163,7 @@ IN_PROC_BROWSER_TEST_F(TabHoverCardControllerTest,
                        ShowPreviewsForDiscardedTabWithThumbnail) {
   chrome::AddTabAt(browser(), GURL("http://foo1.com"), 0, false);
   chrome::AddTabAt(browser(), GURL("http://foo2.com"), 1, false);
-  browser()->tab_strip_model()->ActivateTabAt(0);
+  browser()->GetTabStripModel()->ActivateTabAt(0);
 
   HoverCardAnchorTarget* target_tab = GetHoverCardAnchorTargetAt(1);
   controller()->target_tab_ = target_tab;
@@ -187,11 +181,11 @@ IN_PROC_BROWSER_TEST_F(TabHoverCardControllerTest,
 IN_PROC_BROWSER_TEST_F(TabHoverCardControllerTest, ShowPreviewsForCrashedTab) {
   chrome::AddTabAt(browser(), GURL("http://foo1.com"), 0, false);
   chrome::AddTabAt(browser(), GURL("http://foo2.com"), 1, false);
-  content::WaitForLoadStop(browser()->tab_strip_model()->GetWebContentsAt(1));
-  browser()->tab_strip_model()->ActivateTabAt(0);
+  content::WaitForLoadStop(browser()->GetTabStripModel()->GetWebContentsAt(1));
+  browser()->GetTabStripModel()->ActivateTabAt(0);
 
   HoverCardAnchorTarget* const target_tab = GetHoverCardAnchorTargetAt(1);
-  content::CrashTab(browser()->tab_strip_model()->GetWebContentsAt(1));
+  content::CrashTab(browser()->GetTabStripModel()->GetWebContentsAt(1));
 
   controller()->CreateHoverCard(target_tab);
   controller()->UpdateCardContent(target_tab);
@@ -208,7 +202,7 @@ IN_PROC_BROWSER_TEST_F(TabHoverCardControllerTest, HoverCardLabel_DomainIsUrl) {
 
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL("https://example.com"),
-      WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      WindowOpenDisposition::kNewBackgroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   HoverCardAnchorTarget* const target_tab = GetHoverCardAnchorTargetAt(1);

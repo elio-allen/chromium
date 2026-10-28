@@ -27,6 +27,23 @@ namespace {
 
 using ::testing::_;
 
+class TestCategoryClassificationService
+    : public InProcessCategoryClassificationService {
+ public:
+  using InProcessCategoryClassificationService::
+      InProcessCategoryClassificationService;
+  using InProcessCategoryClassificationService::OnGotEmbeddings;
+};
+
+passage_embeddings::mojom::PassageEmbeddingsResultPtr CreateNormalizedResult(
+    size_t dim = 768,
+    size_t index = 0) {
+  auto res = passage_embeddings::mojom::PassageEmbeddingsResult::New();
+  res->embeddings = std::vector<float>(dim, 0.0f);
+  res->embeddings[index] = 1.0f;
+  return res;
+}
+
 class InProcessCategoryClassificationServiceTest : public PlatformTest {
  public:
   InProcessCategoryClassificationServiceTest() = default;
@@ -40,12 +57,15 @@ class InProcessCategoryClassificationServiceTest : public PlatformTest {
 
     model_provider_ = std::make_unique<
         optimization_guide::TestOptimizationGuideModelProvider>();
-    service_ = std::make_unique<InProcessCategoryClassificationService>(
+    service_ = std::make_unique<TestCategoryClassificationService>(
         model_provider_.get());
     service_->ResetPassageEmbedderForTesting();
   }
 
   void TearDown() override {
+    if (service_) {
+      service_->Shutdown();
+    }
     service_.reset();
     model_provider_.reset();
     PlatformTest::TearDown();
@@ -57,17 +77,23 @@ class InProcessCategoryClassificationServiceTest : public PlatformTest {
   base::FilePath model_path_;
   std::unique_ptr<optimization_guide::TestOptimizationGuideModelProvider>
       model_provider_;
-  std::unique_ptr<InProcessCategoryClassificationService> service_;
+  std::unique_ptr<TestCategoryClassificationService> service_;
 };
 
-// Tests that empty page content triggers the callback immediately with no
-// results.
-TEST_F(InProcessCategoryClassificationServiceTest, ClassifyEmptyContent) {
+// Tests that empty page content (Title and URL only) queues classification
+// and executes when the model is loaded.
+TEST_F(InProcessCategoryClassificationServiceTest,
+       ClassifyEmptyContentDispatchesTitleUrl) {
   base::test::TestFuture<const std::vector<page_content_annotations::Category>&>
       future;
   service_->ClassifyPageContext(GURL("https://example.com"), "Title", "",
                                 ukm::SourceId(), future.GetCallback());
 
+  EXPECT_FALSE(future.IsReady());
+
+  service_->OnPassageEmbedderLoadedForTesting(1, 768, /*success=*/true);
+
+  ASSERT_TRUE(future.IsReady());
   EXPECT_TRUE(future.Get().empty());
 }
 
@@ -215,6 +241,165 @@ TEST_F(InProcessCategoryClassificationServiceTest,
   ASSERT_TRUE(future2.IsReady());
   EXPECT_TRUE(future1.Get().empty());
   EXPECT_TRUE(future2.Get().empty());
+}
+
+// Tests in-memory caching: OnGotEmbeddings caches embeddings in memory
+// and ClassifyPageContext uses them directly without re-embedding.
+TEST_F(InProcessCategoryClassificationServiceTest,
+       InMemoryCacheStoresAndReusesEmbeddings) {
+  service_->OnPassageEmbedderLoadedForTesting(1, 768, /*success=*/true);
+
+  GURL url("https://example.com");
+  std::vector<page_content_annotations::EmbeddingPassageType> passage_types = {
+      page_content_annotations::EmbeddingPassageType::kPageContent,
+      page_content_annotations::EmbeddingPassageType::kTitleAndUrl};
+
+  std::vector<passage_embeddings::mojom::PassageEmbeddingsResultPtr> results;
+  results.push_back(CreateNormalizedResult(768, 0));
+  results.push_back(CreateNormalizedResult(768, 1));
+
+  service_->OnGotEmbeddings(url, ukm::SourceId(), passage_types,
+                            std::move(results));
+
+  std::optional<InProcessCategoryClassificationService::CachedEmbeddings>
+      cached = service_->GetCachedEmbeddings(url);
+  ASSERT_TRUE(cached.has_value());
+  ASSERT_TRUE(cached->title_url_embedding.has_value());
+  EXPECT_EQ(cached->passage_embeddings.size(), 1u);
+
+  // Calling ClassifyPageContext for the same URL hits the in-memory cache
+  // and invokes OnPageEmbeddingAvailable without re-queueing.
+  base::test::TestFuture<const std::vector<page_content_annotations::Category>&>
+      future;
+  service_->ClassifyPageContext(url, "Title", "Some paragraph content.",
+                                ukm::SourceId(), future.GetCallback());
+  EXPECT_TRUE(future.Wait());
+  EXPECT_TRUE(future.Get().empty());
+}
+
+// Tests caching when only a TitleAndUrl embedding is returned (no passages).
+TEST_F(InProcessCategoryClassificationServiceTest,
+       InMemoryCacheStoresTitleUrlOnlyEmbedding) {
+  service_->OnPassageEmbedderLoadedForTesting(1, 768, /*success=*/true);
+
+  GURL url("https://example.com");
+  std::vector<page_content_annotations::EmbeddingPassageType> passage_types = {
+      page_content_annotations::EmbeddingPassageType::kTitleAndUrl};
+
+  std::vector<passage_embeddings::mojom::PassageEmbeddingsResultPtr> results;
+  results.push_back(CreateNormalizedResult(768, 0));
+
+  service_->OnGotEmbeddings(url, ukm::SourceId(), passage_types,
+                            std::move(results));
+
+  std::optional<InProcessCategoryClassificationService::CachedEmbeddings>
+      cached = service_->GetCachedEmbeddings(url);
+  ASSERT_TRUE(cached.has_value());
+  ASSERT_TRUE(cached->title_url_embedding.has_value());
+  EXPECT_TRUE(cached->passage_embeddings.empty());
+}
+
+// Tests HasCachedEmbeddings and ClassifyWithCachedEmbeddings.
+TEST_F(InProcessCategoryClassificationServiceTest,
+       ClassifyWithCachedEmbeddingsHitAndMiss) {
+  GURL uncached_url("https://uncached.com");
+  EXPECT_FALSE(service_->HasCachedEmbeddings(uncached_url));
+
+  base::test::TestFuture<const std::vector<page_content_annotations::Category>&>
+      miss_future;
+  service_->ClassifyWithCachedEmbeddings(uncached_url, ukm::SourceId(),
+                                         miss_future.GetCallback());
+  EXPECT_TRUE(miss_future.Wait());
+  EXPECT_TRUE(miss_future.Get().empty());
+
+  GURL cached_url("https://cached.com");
+  std::vector<page_content_annotations::EmbeddingPassageType> passage_types = {
+      page_content_annotations::EmbeddingPassageType::kPageContent,
+      page_content_annotations::EmbeddingPassageType::kTitleAndUrl};
+
+  std::vector<passage_embeddings::mojom::PassageEmbeddingsResultPtr> results;
+  results.push_back(CreateNormalizedResult(768, 0));
+  results.push_back(CreateNormalizedResult(768, 1));
+
+  service_->OnGotEmbeddings(cached_url, ukm::SourceId(), passage_types,
+                            std::move(results));
+
+  EXPECT_TRUE(service_->HasCachedEmbeddings(cached_url));
+
+  base::test::TestFuture<const std::vector<page_content_annotations::Category>&>
+      hit_future;
+  service_->ClassifyWithCachedEmbeddings(cached_url, ukm::SourceId(),
+                                         hit_future.GetCallback());
+  EXPECT_TRUE(hit_future.Wait());
+  EXPECT_TRUE(hit_future.Get().empty());
+}
+
+// Tests that cached embeddings are cleared when the embedder disconnects.
+TEST_F(InProcessCategoryClassificationServiceTest,
+       CacheClearedOnEmbedderDisconnect) {
+  GURL url("https://example.com");
+  std::vector<page_content_annotations::EmbeddingPassageType> passage_types = {
+      page_content_annotations::EmbeddingPassageType::kPageContent,
+      page_content_annotations::EmbeddingPassageType::kTitleAndUrl};
+
+  std::vector<passage_embeddings::mojom::PassageEmbeddingsResultPtr> results;
+  results.push_back(CreateNormalizedResult(768, 0));
+  results.push_back(CreateNormalizedResult(768, 1));
+
+  service_->OnGotEmbeddings(url, ukm::SourceId(), passage_types,
+                            std::move(results));
+  EXPECT_TRUE(service_->HasCachedEmbeddings(url));
+
+  service_->OnEmbedderDisconnectForTesting();
+  EXPECT_FALSE(service_->HasCachedEmbeddings(url));
+}
+
+// Tests that cached embeddings are cleared when a new model version is loaded.
+TEST_F(InProcessCategoryClassificationServiceTest, CacheClearedOnModelReload) {
+  GURL url("https://example.com");
+  std::vector<page_content_annotations::EmbeddingPassageType> passage_types = {
+      page_content_annotations::EmbeddingPassageType::kPageContent,
+      page_content_annotations::EmbeddingPassageType::kTitleAndUrl};
+
+  std::vector<passage_embeddings::mojom::PassageEmbeddingsResultPtr> results;
+  results.push_back(CreateNormalizedResult(768, 0));
+  results.push_back(CreateNormalizedResult(768, 1));
+
+  service_->OnGotEmbeddings(url, ukm::SourceId(), passage_types,
+                            std::move(results));
+  EXPECT_TRUE(service_->HasCachedEmbeddings(url));
+
+  // Loading a new model clears stale cached embeddings from the old version.
+  service_->OnPassageEmbedderLoadedForTesting(2, 768, /*success=*/true);
+  EXPECT_FALSE(service_->HasCachedEmbeddings(url));
+}
+
+// Tests that Shutdown() cancels pending requests, clears cached embeddings, and
+// safely unregisters model observers so the model provider can be destroyed
+// after Shutdown() without UAF.
+TEST_F(InProcessCategoryClassificationServiceTest,
+       ShutdownCleansUpObserversAndCancelsPendingRequests) {
+  GURL url("https://example.com");
+  service_->SetCachedEmbeddingsForTesting(
+      url, InProcessCategoryClassificationService::CachedEmbeddings{});
+  EXPECT_TRUE(service_->HasCachedEmbeddings(url));
+
+  base::test::TestFuture<const std::vector<page_content_annotations::Category>&>
+      future;
+  service_->ClassifyPageContext(GURL("https://pending.com"), "Title", "Content",
+                                ukm::SourceId(), future.GetCallback());
+  EXPECT_FALSE(future.IsReady());
+
+  service_->Shutdown();
+
+  EXPECT_TRUE(future.IsReady());
+  EXPECT_TRUE(future.Get().empty());
+  EXPECT_FALSE(service_->HasCachedEmbeddings(url));
+
+  // Destroying model_provider_ before service_ after Shutdown() must be safe
+  // because all observers were unregistered during Shutdown().
+  model_provider_.reset();
+  service_.reset();
 }
 
 }  // namespace

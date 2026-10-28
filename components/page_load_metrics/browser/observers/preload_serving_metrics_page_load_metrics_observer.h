@@ -5,13 +5,41 @@
 #ifndef COMPONENTS_PAGE_LOAD_METRICS_BROWSER_OBSERVERS_PRELOAD_SERVING_METRICS_PAGE_LOAD_METRICS_OBSERVER_H_
 #define COMPONENTS_PAGE_LOAD_METRICS_BROWSER_OBSERVERS_PRELOAD_SERVING_METRICS_PAGE_LOAD_METRICS_OBSERVER_H_
 
+#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
+#include "base/time/time.h"
 #include "components/page_load_metrics/browser/page_load_metrics_observer.h"
 #include "content/public/browser/preload_serving_metrics_capsule.h"
 
-// Records FirstContentfulPaint for `PreloadServingMetrics`
+namespace page_load_metrics_internal {
+
+void RecordPreloadServingMetricsByNavigationInitiator(
+    content::UsedInstantLoad used_instant_load,
+    bool is_served_by_disk_cache,
+    std::string_view navigation_initiator_string,
+    bool is_url_srp);
+
+void RecordFirstContentfulPaint(
+    base::TimeDelta corrected_first_contentful_paint,
+    bool is_in_foreground,
+    content::UsedInstantLoad used_instant_load,
+    bool is_served_by_disk_cache,
+    std::string_view navigation_initiator_string,
+    bool is_url_srp);
+
+void RecordLargestContentfulPaint(
+    base::TimeDelta corrected_largest_contentful_paint,
+    content::UsedInstantLoad used_instant_load,
+    bool is_served_by_disk_cache,
+    std::string_view navigation_initiator_string,
+    bool is_url_srp);
+
+}  // namespace page_load_metrics_internal
+
+// Records metrics using `PreloadServingMetrics`.
 //
 // See `PreloadServingMetrics` for more details.
 class PreloadServingMetricsPageLoadMetricsObserver
@@ -58,26 +86,28 @@ class PreloadServingMetricsPageLoadMetricsObserver
 
   void MaybeRecord();
 
-  void RetrieveNavigationInitiatorLocationAndSrp(
-      content::NavigationHandle* navigation_handle);
+  // Holds data for a single navigation (or BFCache restore) needed to record
+  // metrics.
+  //
+  // Created on commit (or BFCache restore) and reset when entering BFCache or
+  // after metrics are recorded.
+  struct NavigationData {
+    NavigationData(content::NavigationHandle& navigation_handle,
+                   bool used_bfcache);
+    ~NavigationData();
+    NavigationData(NavigationData&&);
+    NavigationData& operator=(NavigationData&&);
 
-  std::unique_ptr<content::PreloadServingMetricsCapsule>
-      preload_serving_metrics_capsule_;
+    std::unique_ptr<content::PreloadServingMetricsCapsule>
+        preload_serving_metrics_capsule;
+    bool used_bfcache;
+    std::string navigation_initiator_string;
+    bool is_url_srp;
+    bool is_served_by_legacy_search_prefetch;
+    bool is_served_by_disk_cache;
+  };
 
-  // TODO(https://crbug.com/517725655): There is a long term refactoring plan
-  // for the PageLoadMetricsObserver. Please refer to the document fore more
-  // details
-  // https://docs.google.com/document/d/1d9k-YDEdT35LDVN3BkILyDVqZKlv-b6F0yV_OZRVIQk/edit?resourcekey=0-Jr0Dysk9Cabb0vZlG-ESXg&tab=t.0#heading=h.dygbqkif9aw5
-  std::optional<std::string> navigation_initiator_string_;
-  bool is_url_srp_ = false;
-  // TODO(https://crbug.com/539388005): `PLMO::OnFirstContentfulPaintInPage()`
-  // is not expected to be called between `PLMO::OnEnterBackForwardCache()` and
-  // `PLMO::OnRestoreFromBackForwardCache()`, but currently it is happening. To
-  // avoid this issue, `has_entered_bfcache_` is introduced and used in FCP
-  // recording to avoid crash. Remove this variable once the problem is
-  // resolved.
-  bool has_entered_bfcache_ = false;
-  bool has_restored_from_bfcache_ = false;
+  std::optional<NavigationData> navigation_data_;
 };
 
 #endif  // COMPONENTS_PAGE_LOAD_METRICS_BROWSER_OBSERVERS_PRELOAD_SERVING_METRICS_PAGE_LOAD_METRICS_OBSERVER_H_

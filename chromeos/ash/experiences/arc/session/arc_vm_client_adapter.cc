@@ -63,6 +63,7 @@
 #include "chromeos/ash/components/dbus/vm_concierge/concierge_service.pb.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
+#include "chromeos/ash/experiences/arc/metrics/arc_metrics_constants.h"
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
 #include "chromeos/ash/experiences/arc/session/arc_client_adapter.h"
 #include "chromeos/ash/experiences/arc/session/arc_service_manager.h"
@@ -170,14 +171,24 @@ std::vector<std::string> GenerateUpgradeProps(
       base::StringPrintf("%s.skip_tts_cache=%d", prefix.c_str(),
                          upgrade_params.skip_tts_cache),
   };
-  // Conditionally sets more properties based on |upgrade_params|.
+  // Conditionally sets more properties based on |upgrade_params|. Strip
+  // newlines so values cannot inject extra lines when joined by '\n'.
   if (!upgrade_params.locale.empty()) {
-    result.push_back(base::StringPrintf("%s.locale=%s", prefix.c_str(),
-                                        upgrade_params.locale.c_str()));
+    std::string locale;
+    base::RemoveChars(upgrade_params.locale, "\r\n", &locale);
+    result.push_back(
+        base::StringPrintf("%s.locale=%s", prefix.c_str(), locale.c_str()));
     if (!upgrade_params.preferred_languages.empty()) {
+      std::vector<std::string> preferred_languages;
+      preferred_languages.reserve(upgrade_params.preferred_languages.size());
+      for (const std::string& lang : upgrade_params.preferred_languages) {
+        std::string sanitized_lang;
+        base::RemoveChars(lang, "\r\n", &sanitized_lang);
+        preferred_languages.push_back(std::move(sanitized_lang));
+      }
       result.push_back(base::StringPrintf(
           "%s.preferred_languages=%s", prefix.c_str(),
-          base::JoinString(upgrade_params.preferred_languages, ",").c_str()));
+          base::JoinString(preferred_languages, ",").c_str()));
     }
   }
 
@@ -469,11 +480,7 @@ vm_tools::concierge::StartArcVmRequest CreateStartArcVmRequest(
   request.set_mglru_reclaim_interval(kArcMglruReclaimIntervalMs);
   request.set_mglru_reclaim_swappiness(kArcMglruReclaimSwappiness);
 
-  if (base::FeatureList::IsEnabled(kVmMemoryPSIReports)) {
-    request.set_vm_memory_psi_period(kVmMemoryPSIReportsPeriod.Get());
-  } else {
-    request.set_vm_memory_psi_period(-1);
-  }
+  request.set_vm_memory_psi_period(kVmMemoryPsiPeriod.InSeconds());
 
   request.set_enable_vmm_swap(
       base::FeatureList::IsEnabled(kVmmSwapPolicy) ||
@@ -540,10 +547,9 @@ vm_tools::concierge::StartArcVmRequest CreateStartArcVmRequest(
 }
 
 const sockaddr_un* GetArcVmBootNotificationServerAddress() {
-  static struct sockaddr_un address {
-    .sun_family = AF_UNIX,
-    .sun_path = "/run/arcvm_boot_notification_server/host.socket"
-  };
+  static struct sockaddr_un address{
+      .sun_family = AF_UNIX,
+      .sun_path = "/run/arcvm_boot_notification_server/host.socket"};
   return &address;
 }
 

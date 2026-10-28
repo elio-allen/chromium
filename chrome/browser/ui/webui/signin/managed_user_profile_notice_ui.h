@@ -10,7 +10,7 @@
 #include "chrome/browser/profiles/profile_statistics_common.h"
 #include "chrome/browser/ui/webui/signin/signin_utils.h"
 #include "content/public/browser/web_contents_user_data.h"
-#include "content/public/browser/web_ui_controller.h"
+#include "ui/webui/mojo_web_ui_controller.h"
 
 #if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
 #include "chrome/common/webui_url_constants.h"
@@ -19,7 +19,9 @@
 #endif  //  !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
 
 class BrowserWindowInterface;
+class GURL;
 class ManagedUserProfileNoticeHandler;
+class Profile;
 
 namespace content {
 class WebUI;
@@ -37,7 +39,7 @@ class ManagedUserProfileNoticeUIConfig
 };
 #endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
 
-class ManagedUserProfileNoticeUI : public content::WebUIController {
+class ManagedUserProfileNoticeUI : public ui::MojoWebUIController {
  public:
   // Type of a managed user notice screen.
   // LINT.IfChange(ScreenType)
@@ -60,6 +62,11 @@ class ManagedUserProfileNoticeUI : public content::WebUIController {
   ManagedUserProfileNoticeUI(const ManagedUserProfileNoticeUI&) = delete;
   ManagedUserProfileNoticeUI& operator=(const ManagedUserProfileNoticeUI&) =
       delete;
+
+  // Returns the URL to load, choosing between the legacy and the refreshed
+  // ManagedUserProfileNotice UI based on the feature flags relevant to
+  // `screen_type`. Callers should use it instead of referencing URLs directly.
+  static GURL GetUrl(ScreenType screen_type, Profile& profile);
 
   // Allows tests to trigger page events.
   ManagedUserProfileNoticeHandler* GetHandlerForTesting();

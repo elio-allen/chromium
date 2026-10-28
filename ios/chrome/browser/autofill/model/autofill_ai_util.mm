@@ -6,11 +6,14 @@
 
 #import "base/strings/string_util.h"
 #import "components/account_settings/account_setting_service.h"
+#import "components/autofill/core/browser/at_memory/at_memory_enablement_util.h"
 #import "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
 #import "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
+#import "components/autofill/core/browser/foundations/autofill_client.h"
 #import "components/autofill/core/browser/integrators/personal_context/personal_context_autofill_util.h"
-#import "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_utils.h"
+#import "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_util.h"
 #import "components/autofill/core/common/autofill_features.h"
+#import "components/autofill/core/common/autofill_prefs.h"
 #import "components/personal_context/core/personal_context_eligibility_service.h"
 #import "components/personal_context/core/personal_context_types.h"
 #import "components/personal_context/first_run/personal_context_first_run_service.h"
@@ -30,16 +33,6 @@
 #import "ios/chrome/browser/subscription_eligibility/model/subscription_eligibility_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
-
-namespace {
-
-// Returns true if the user has completed the Gemini First Run Experience.
-bool IsGeminiFirstRunCompleted(ProfileIOS* profile) {
-  return gemini::CurrentFirstRunState(profile->GetPrefs()) ==
-         gemini::FirstRunState::kCompleted;
-}
-
-}  // namespace
 
 namespace autofill {
 
@@ -105,7 +98,6 @@ bool CanPerformAutofillAiAction(ProfileIOS* profile,
       SyncServiceFactory::GetForProfile(profile),
       IsWalletPublicPassStorageEnabled(profile), profile->IsOffTheRecord(),
       GeoIpCountryCode(GetCountryCodeFromVariations()),
-      SubscriptionEligibilityServiceFactory::GetForProfile(profile),
       personal_context_eligibility_state, action, entity_type);
 }
 
@@ -116,7 +108,8 @@ bool IsAmbientAutofillEnabled(ProfileIOS* profile) {
   }
 
   // Check Gemini First Run state before any pcontext features.
-  if (!IsGeminiFirstRunCompleted(profile)) {
+  const PrefService* prefs = profile->GetPrefs();
+  if (!prefs || !gemini::DidUserConsentToGemini(prefs)) {
     return false;
   }
 
@@ -137,11 +130,31 @@ bool IsAutofillAtMemoryEnabled() {
   return base::FeatureList::IsEnabled(features::kAutofillAtMemory);
 }
 
+bool IsAutofillAtMemorySearchUIEnabled(const AutofillClient* client) {
+  if (!client || !IsAutofillAtMemoryEnabled()) {
+    return false;
+  }
+
+  // Check Gemini First Run state before any pcontext features.
+  const PrefService* prefs = client->GetPrefs();
+  if (!prefs || !gemini::DidUserConsentToGemini(prefs)) {
+    return false;
+  }
+
+  return MayPerformAtMemoryAction(AtMemoryAction::kTriggerSearchUI, *client);
+}
+
 bool IsEnhancedAutofillEnabled(ProfileIOS* profile) {
   ProfileIOS* original_profile = profile->GetOriginalProfile();
   return GetAutofillAiOptInStatus(
       original_profile->GetPrefs(),
       IdentityManagerFactory::GetForProfile(original_profile));
+}
+
+const char* GetAutofillAiOptInPreferenceKeyName() {
+  return base::FeatureList::IsEnabled(features::kAutofillAiUsePrivateAi)
+             ? prefs::kAutofillAiPrivateInferenceOptInStatus
+             : prefs::kAutofillAiOptInStatus;
 }
 
 void SetEnhancedAutofillEnabled(ProfileIOS* profile, bool enabled) {
@@ -155,7 +168,6 @@ void SetEnhancedAutofillEnabled(ProfileIOS* profile, bool enabled) {
       IsWalletPublicPassStorageEnabled(original_profile),
       original_profile->IsOffTheRecord(),
       GeoIpCountryCode(GetCountryCodeFromVariations()),
-      SubscriptionEligibilityServiceFactory::GetForProfile(original_profile),
       PersonalContextEligibilityState::kDisabledNotEligible,
       enabled ? AutofillAiOptInStatus::kOptedIn
               : AutofillAiOptInStatus::kOptedOut);

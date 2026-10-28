@@ -17,16 +17,15 @@ import static org.mockito.Mockito.when;
 
 import static org.chromium.chrome.browser.autofill.autofill_ai.AutofillAiSaveUpdateEntityPrompt.ENTITY_EDITOR_OPENED_HISTOGRAM;
 
-import android.app.Activity;
 import android.graphics.Paint;
 import android.text.SpannableString;
 import android.text.style.ClickableSpan;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -36,7 +35,6 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.RuntimeEnvironment;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
@@ -49,9 +47,11 @@ import org.chromium.chrome.browser.autofill.editors.autofill_ai.EntityEditorCoor
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
+import org.chromium.components.autofill.autofill_ai.AutofillAiWalletNoticeFunnelEvents;
 import org.chromium.components.autofill.autofill_ai.EntityInstance;
 import org.chromium.components.autofill.autofill_ai.RecordType;
 import org.chromium.components.autofill.autofill_ai.utils.TestUtils;
+import org.chromium.components.autofill.payments.LegalMessageLine;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.modaldialog.ModalDialogManager.ModalDialogType;
@@ -64,7 +64,6 @@ import java.util.List;
 
 /** Unit tests for {@link AutofillAiSaveUpdateEntityPrompt}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @EnableFeatures({
     ChromeFeatureList.AUTOFILL_AI_EDIT_ENTITIES_FROM_SAVE_UPDATE_PROMPT,
     ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA
@@ -88,7 +87,7 @@ public class AutofillAiSaveUpdateEntityPromptTest {
                     .setGuid("guid1")
                     .setRecordType(RecordType.LOCAL)
                     .build();
-    private Activity mActivity;
+    private TestActivity mActivity;
     private AutofillAiSaveUpdateEntityPromptController mPromptController;
     private AutofillAiSaveUpdateEntityPrompt mPrompt;
     private FakeModalDialogManager mModalDialogManager;
@@ -110,7 +109,6 @@ public class AutofillAiSaveUpdateEntityPromptTest {
     }
 
     @Test
-    @SmallTest
     public void userAccepted() {
         mPrompt.show();
         assertNotNull(mModalDialogManager.getShownDialogModel());
@@ -124,7 +122,6 @@ public class AutofillAiSaveUpdateEntityPromptTest {
     }
 
     @Test
-    @SmallTest
     public void userEdited() {
         mPrompt.show();
         assertNotNull(mModalDialogManager.getShownDialogModel());
@@ -144,7 +141,6 @@ public class AutofillAiSaveUpdateEntityPromptTest {
     }
 
     @Test
-    @SmallTest
     public void userDeclined() {
         mPrompt.show();
         assertNotNull(mModalDialogManager.getShownDialogModel());
@@ -158,7 +154,6 @@ public class AutofillAiSaveUpdateEntityPromptTest {
     }
 
     @Test
-    @SmallTest
     public void promptDismissed() {
         HistogramWatcher histogram =
                 HistogramWatcher.newSingleRecordWatcher(ENTITY_EDITOR_OPENED_HISTOGRAM, false);
@@ -174,7 +169,6 @@ public class AutofillAiSaveUpdateEntityPromptTest {
     }
 
     @Test
-    @SmallTest
     public void showAfterDismiss() {
         mPrompt.show();
         assertNotNull(mModalDialogManager.getShownDialogModel());
@@ -189,7 +183,7 @@ public class AutofillAiSaveUpdateEntityPromptTest {
     }
 
     @Test
-    @SmallTest
+    @DisableFeatures(ChromeFeatureList.AUTOFILL_AI_WALLET_PASS_BRANDING_2026)
     public void dialogStrings() {
         mPrompt.setDialogDetails(
                 "title",
@@ -207,10 +201,29 @@ public class AutofillAiSaveUpdateEntityPromptTest {
                 "negative button text",
                 propertyModel.get(ModalDialogProperties.NEGATIVE_BUTTON_TEXT));
         assertNotNull(propertyModel.get(ModalDialogProperties.TITLE_END_ICON));
+        assertEquals(
+                Gravity.NO_GRAVITY,
+                propertyModel.get(ModalDialogProperties.TITLE_END_ICON_GRAVITY));
     }
 
     @Test
-    @SmallTest
+    @EnableFeatures(ChromeFeatureList.AUTOFILL_AI_WALLET_PASS_BRANDING_2026)
+    public void dialogStrings_branding2026Enabled() {
+        mPrompt.setDialogDetails(
+                "title",
+                "positive button text",
+                "negative button text",
+                /* isWalletableEntity= */ true);
+        mPrompt.show();
+        PropertyModel propertyModel = mModalDialogManager.getShownDialogModel();
+
+        assertNotNull(propertyModel.get(ModalDialogProperties.TITLE_END_ICON));
+        assertEquals(
+                Gravity.TOP,
+                propertyModel.get(ModalDialogProperties.TITLE_END_ICON_GRAVITY));
+    }
+
+    @Test
     public void localSourceNotice() {
         mPrompt.setSourceNotice("Entity will be saved locally", /* insertManageInfoLink= */ false);
         mPrompt.show();
@@ -221,7 +234,6 @@ public class AutofillAiSaveUpdateEntityPromptTest {
     }
 
     @Test
-    @SmallTest
     public void emptyWalletNotice() {
         mPrompt.setSourceNotice("", /* insertManageInfoLink= */ true);
         mPrompt.show();
@@ -232,13 +244,13 @@ public class AutofillAiSaveUpdateEntityPromptTest {
     }
 
     @Test
-    @SmallTest
     public void walletNotice() {
         String walletTitle =
-                RuntimeEnvironment.application.getString(R.string.autofill_google_wallet_title);
+                RuntimeEnvironment.getApplication()
+                        .getString(R.string.autofill_google_wallet_title);
         String email = "alexpark@gmail.com";
         String sourceNotice =
-                RuntimeEnvironment.application
+                RuntimeEnvironment.getApplication()
                         .getString(
                                 R.string.autofill_ai_save_or_update_entity_in_wallet_source_notice)
                         .replace("$1", walletTitle)
@@ -265,7 +277,54 @@ public class AutofillAiSaveUpdateEntityPromptTest {
     }
 
     @Test
-    @SmallTest
+    public void publicPassesNotice_default_viewIsGone() {
+        mPrompt.show();
+
+        View dialogView = mPrompt.getDialogViewForTesting();
+        TextView publicPassesNoticeView =
+                dialogView.findViewById(R.id.autofill_ai_public_passes_notice);
+        assertEquals(View.GONE, publicPassesNoticeView.getVisibility());
+    }
+
+    @Test
+    public void publicPassNotice_empty_viewIsGone() {
+        mPrompt.setPublicPassesNotice(Collections.emptyList());
+        mPrompt.show();
+
+        View dialogView = mPrompt.getDialogViewForTesting();
+        TextView publicPassNoticeView =
+                dialogView.findViewById(R.id.autofill_ai_public_passes_notice);
+        assertEquals(View.GONE, publicPassNoticeView.getVisibility());
+    }
+
+    @Test
+    public void publicPassesNotice_nonEmpty_viewIsVisible() {
+        LegalMessageLine line =
+                new LegalMessageLine(
+                        "Legal message with a link.",
+                        List.of(new LegalMessageLine.Link(22, 26, "https://example.com")));
+        mPrompt.setPublicPassesNotice(List.of(line));
+        mPrompt.show();
+
+        View dialogView = mPrompt.getDialogViewForTesting();
+        TextView publicPassesNoticeView =
+                dialogView.findViewById(R.id.autofill_ai_public_passes_notice);
+        assertEquals(View.VISIBLE, publicPassesNoticeView.getVisibility());
+        assertEquals("Legal message with a link.", publicPassesNoticeView.getText().toString());
+
+        SpannableString spannableString = (SpannableString) publicPassesNoticeView.getText();
+        ClickableSpan[] spans =
+                spannableString.getSpans(0, spannableString.length(), ClickableSpan.class);
+        assertThat(spans.length, is(1));
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        AutofillAiSaveUpdateEntityPrompt.WALLET_NOTICE_SAVE_FUNNEL_HISTOGRAM,
+                        AutofillAiWalletNoticeFunnelEvents.LINK_CLICKED);
+        spans[0].onClick(publicPassesNoticeView);
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
     public void noEntityAttributeUpdateDetails() {
         mPrompt.setEntityUpdateDetails(Collections.emptyList(), /* isUpdatePrompt= */ false);
         mPrompt.show();
@@ -276,7 +335,6 @@ public class AutofillAiSaveUpdateEntityPromptTest {
     }
 
     @Test
-    @SmallTest
     public void entityAttributeUpdateDetailsInSavePrompt() {
         final EntityAttributeUpdateDetails passportNumber =
                 new EntityAttributeUpdateDetails(
@@ -334,7 +392,6 @@ public class AutofillAiSaveUpdateEntityPromptTest {
     }
 
     @Test
-    @SmallTest
     public void entityAttributeUpdateDetailsInUpdatePrompt() {
         final EntityAttributeUpdateDetails passportNumber =
                 new EntityAttributeUpdateDetails(
@@ -392,7 +449,6 @@ public class AutofillAiSaveUpdateEntityPromptTest {
     }
 
     @Test
-    @SmallTest
     @DisableFeatures(ChromeFeatureList.AUTOFILL_AI_EDIT_ENTITIES_FROM_SAVE_UPDATE_PROMPT)
     public void editButtonNotVisibleWhenFeatureDisabled() {
         // The metric should not be logged when the feature is disabled.
@@ -434,7 +490,6 @@ public class AutofillAiSaveUpdateEntityPromptTest {
     }
 
     @Test
-    @SmallTest
     public void clickEditButton() {
         HistogramWatcher histogram =
                 HistogramWatcher.newSingleRecordWatcher(ENTITY_EDITOR_OPENED_HISTOGRAM, true);
@@ -475,7 +530,6 @@ public class AutofillAiSaveUpdateEntityPromptTest {
     }
 
     @Test
-    @SmallTest
     public void openEditorTwice() {
         final EntityAttributeUpdateDetails passportNumber =
                 new EntityAttributeUpdateDetails(

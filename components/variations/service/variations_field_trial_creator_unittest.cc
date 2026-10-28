@@ -107,7 +107,8 @@ std::unique_ptr<VariationsSeedStore> CreateSeedStore(
     const base::FilePath& seed_file_dir) {
   return std::make_unique<VariationsSeedStore>(
       local_state, /*initial_seed=*/nullptr,
-      /*signature_verification_enabled=*/true,
+      /*signature_verification_enabled_on_load=*/true,
+      /*signature_verification_enabled_on_receive=*/true,
       std::make_unique<VariationsSafeSeedStore>(local_state, seed_file_dir,
                                                 version_info::Channel::UNKNOWN,
                                                 /*entropy_providers=*/nullptr),
@@ -279,8 +280,8 @@ class MockSafeSeedManager : public SafeSeedManager {
                     base::Time seed_fetch_time));
 
   void SetActiveSeedState(
-      const std::string& seed_data,
-      const std::string& base64_seed_signature,
+      std::string seed_data,
+      std::string base64_seed_signature,
       int seed_milestone,
       std::unique_ptr<ClientFilterableState> client_filterable_state,
       base::Time seed_fetch_time) override {
@@ -358,7 +359,8 @@ class TestVariationsSeedStore : public VariationsSeedStore {
   explicit TestVariationsSeedStore(PrefService* local_state)
       : VariationsSeedStore(local_state,
                             /*initial_seed=*/nullptr,
-                            /*signature_verification_enabled=*/true,
+                            /*signature_verification_enabled_on_load=*/true,
+                            /*signature_verification_enabled_on_receive=*/true,
                             std::make_unique<VariationsSafeSeedStore>(
                                 local_state,
                                 /*seed_file_dir=*/base::FilePath(),
@@ -636,7 +638,8 @@ TEST_F(FieldTrialCreatorTest, SetUpFieldTrials_ValidSeed_NoLastFetchTime) {
       user_data_dir_path());
 
   // Simulate a first run by leaving fetch time empty.
-  EXPECT_EQ(base::Time(), field_trial_creator.GetLatestSeedFetchTime());
+  EXPECT_EQ(base::Time(),
+            field_trial_creator.seed_store()->GetLatestSeedFetchTime());
 
   // Check that field trials are created from the seed. Since the test study has
   // only one experiment with 100% probability weight, we must be part of it.
@@ -732,7 +735,8 @@ TEST_F(FieldTrialCreatorTest, SetUpFieldTrials_ExpiredSeed) {
 // Verify that a regular seed is not used when the milestone with which it was
 // fetched is greater than the client's milestone.
 TEST_F(FieldTrialCreatorTest, SetUpFieldTrials_FutureMilestone) {
-  const int future_seed_milestone = 7890;
+  const int future_seed_milestone =
+      version_info::GetMajorVersionNumberAsInt() + 5;
 
   // When the seed is associated with a future milestone (relative to the
   // client's milestone), no field trials should be created from the seed.
@@ -915,7 +919,8 @@ TEST_F(FieldTrialCreatorTest, SetUpFieldTrials_ExpiredSafeSeed) {
 // Verify that no seed is applied when (i) safe mode is triggered and (ii) the
 // loaded safe seed was fetched with a future milestone.
 TEST_F(FieldTrialCreatorTest, SetUpFieldTrials_SafeSeedForFutureMilestone) {
-  const int future_seed_milestone = 7890;
+  const int future_seed_milestone =
+      version_info::GetMajorVersionNumberAsInt() + 5;
 
   // The safe seed manager should not be informed of the active seed state.
   NiceMock<MockSafeSeedManager> safe_seed_manager(local_state());
@@ -1172,7 +1177,8 @@ TEST_F(FieldTrialCreatorTest, SetUpFieldTrials_LoadsCountryOnFirstRun) {
   // the interaction between these two classes is what's being tested.
   auto seed_store = std::make_unique<VariationsSeedStore>(
       local_state(), std::move(initial_seed),
-      /*signature_verification_enabled=*/false,
+      /*signature_verification_enabled_on_load=*/false,
+      /*signature_verification_enabled_on_receive=*/false,
       std::make_unique<VariationsSafeSeedStore>(
           local_state(),
           /*seed_file_dir=*/base::FilePath(), version_info::Channel::UNKNOWN,

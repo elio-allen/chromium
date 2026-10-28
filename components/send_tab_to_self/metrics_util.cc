@@ -14,21 +14,6 @@ namespace send_tab_to_self {
 
 namespace {
 
-// Status of received STTS notifications.
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-// Keep in sync with SendTabToSelfNotificationStatus in enums.xml.
-enum class NotificationStatus {
-  kShown = 0,
-  kDismissed = 1,
-  kOpened = 2,
-  kTimedOut = 3,
-  // kSent = 4,
-  kDismissReasonUnknown = 5,
-  kThrottled = 6,
-  kMaxValue = kThrottled,
-};
-
 SendTabToSelfFormFactorCombination GetFormFactorCombination(
     syncer::DeviceInfo::FormFactor sender_form_factor,
     syncer::DeviceInfo::FormFactor target_form_factor) {
@@ -149,38 +134,20 @@ std::string GetEntryPointSuffix(ShareEntryPoint entry_point) {
 
 }  // namespace
 
-void RecordNotificationShown() {
+void RecordNotificationStatus(NotificationStatus status) {
   base::UmaHistogramEnumeration("Sharing.SendTabToSelf.NotificationStatus",
-                                NotificationStatus::kShown);
+                                status);
 }
 
-void RecordNotificationDismissed() {
-  base::UmaHistogramEnumeration("Sharing.SendTabToSelf.NotificationStatus",
-                                NotificationStatus::kDismissed);
-}
-
-void RecordNotificationOpened() {
-  base::UmaHistogramEnumeration("Sharing.SendTabToSelf.NotificationStatus",
-                                NotificationStatus::kOpened);
-}
-
-void RecordNotificationTimedOut() {
-  base::UmaHistogramEnumeration("Sharing.SendTabToSelf.NotificationStatus",
-                                NotificationStatus::kTimedOut);
-}
-
-void RecordNotificationDismissReasonUnknown() {
-  base::UmaHistogramEnumeration("Sharing.SendTabToSelf.NotificationStatus",
-                                NotificationStatus::kDismissReasonUnknown);
-}
-
-void RecordNotificationThrottled() {
-  base::UmaHistogramEnumeration("Sharing.SendTabToSelf.NotificationStatus",
-                                NotificationStatus::kThrottled);
+void RecordAutoOpenedImmediately(bool opened_immediately, size_t count) {
+  for (size_t i = 0; i < count; ++i) {
+    base::UmaHistogramBoolean("Sharing.SendTabToSelf.AutoOpenedImmediately",
+                              opened_immediately);
+  }
 }
 
 void RecordAutoOpenOutcome(AutoOpenOutcome outcome) {
-  base::UmaHistogramEnumeration("Sharing.SendTabToSelf.AutoOpenOutcome2",
+  base::UmaHistogramEnumeration("Sharing.SendTabToSelf.AutoOpenOutcome3",
                                 outcome);
 }
 
@@ -219,7 +186,7 @@ void RecordHasScrollPositionOnOpened(bool has_scroll_position) {
 }
 
 void RecordPageContextSize(size_t size) {
-  base::UmaHistogramCounts10000("Sharing.SendTabToSelf.PageContextSize", size);
+  base::UmaHistogramCounts10000("Sharing.SendTabToSelf.PageContextSize2", size);
 }
 
 void RecordScrollVolume(float volume, bool with_restoration) {
@@ -231,7 +198,7 @@ void RecordScrollVolume(float volume, bool with_restoration) {
 }
 
 void RecordTimeSentToReceived(base::TimeDelta delay) {
-  base::UmaHistogramCustomTimes("Sharing.SendTabToSelf.TimeSentToReceived",
+  base::UmaHistogramCustomTimes("Sharing.SendTabToSelf.TimeSentToReceived2",
                                 delay, base::Milliseconds(100), base::Days(10),
                                 100);
 }

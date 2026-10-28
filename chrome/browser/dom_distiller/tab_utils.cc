@@ -33,6 +33,7 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
+#include "ui/base/page_transition_types.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/android/tab_android.h"
@@ -203,8 +204,8 @@ void MaybeStartDistillation(
   view_request_delegate->TakeViewerHandle(std::move(viewer_handle));
 }
 
-void OnReadabilityHeuristicResult(base::OnceCallback<void(bool)> callback,
-                                  base::Value value) {
+void OnHeuristicResult(base::OnceCallback<void(bool)> callback,
+                       base::Value value) {
   std::move(callback).Run(value.GetIfBool().value_or(false));
 }
 
@@ -213,7 +214,7 @@ void OnReadabilityHeuristicResult(base::OnceCallback<void(bool)> callback,
 void DistillCurrentPageAndViewIfSuccessful(
     content::WebContents* web_contents,
     base::OnceCallback<void(bool)> callback) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M161);
   SelfDeletingRequestDelegate* view_request_delegate =
       new SelfDeletingRequestDelegate(
           web_contents,
@@ -237,7 +238,7 @@ void DistillCurrentPageAndViewIfSuccessful(
 }
 
 void DistillCurrentPage(content::WebContents* source_web_contents) {
-  DCHECK(source_web_contents);
+  CHECK(source_web_contents, base::NotFatalUntil::M161);
 
   std::unique_ptr<SourcePageHandleWebContents> source_page_handle(
       new SourcePageHandleWebContents(source_web_contents, false));
@@ -250,7 +251,7 @@ void DistillCurrentPage(content::WebContents* source_web_contents) {
 
 void DistillAndView(content::WebContents* source_web_contents,
                     content::WebContents* destination_web_contents) {
-  DCHECK(destination_web_contents);
+  CHECK(destination_web_contents, base::NotFatalUntil::M161);
 
   DistillCurrentPage(source_web_contents);
 
@@ -258,13 +259,12 @@ void DistillAndView(content::WebContents* source_web_contents,
                                    source_web_contents->GetLastCommittedURL());
 }
 
-void RunReadabilityHeuristicsOnWebContents(
-    content::WebContents* web_contents,
-    base::OnceCallback<void(bool)> callback) {
-  std::string script = dom_distiller::GetReadabilityTriggeringScript();
+void RunHeuristicsOnWebContents(content::WebContents* web_contents,
+                                base::OnceCallback<void(bool)> callback) {
+  std::string script = dom_distiller::GetDistillerTriggeringScript();
   web_contents->GetPrimaryMainFrame()->ExecuteJavaScriptInIsolatedWorld(
       base::UTF8ToUTF16(script),
-      base::BindOnce(OnReadabilityHeuristicResult,
+      base::BindOnce(OnHeuristicResult,
                      mojo::WrapCallbackWithDefaultInvokeIfNotRun(
                          std::move(callback), false)),
       ISOLATED_WORLD_ID_CHROME_INTERNAL);

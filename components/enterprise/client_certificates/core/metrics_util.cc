@@ -35,6 +35,21 @@ std::string_view WithRetryToString(bool with_retry) {
 
 }  // namespace
 
+void LogCertificateValidationResult(const std::string& logging_context,
+                                    CertificateValidationResult result) {
+  static constexpr char kCertificateValidationResultHistogram[] =
+      "Enterprise.ClientCertificate.%s.CertificateValidation.Result";
+  base::UmaHistogramEnumeration(
+      base::StringPrintf(kCertificateValidationResultHistogram,
+                         logging_context.c_str()),
+      result);
+}
+
+void LogCommonNameSanitization(CommonNameSanitizationType sanitization_type) {
+  base::UmaHistogramEnumeration(
+      "Enterprise.ClientCertificate.CommonNameSanitization", sanitization_type);
+}
+
 void LogProvisioningError(const std::string& logging_context,
                           ProvisioningError provisioning_error,
                           std::optional<StoreError> store_error) {
@@ -152,6 +167,16 @@ void RecordKcerHardwareKeyGenerationError(kcer::Error error) {
 void RecordKcerKeyTaggingError(kcer::Error error) {
   base::UmaHistogramEnumeration(
       "Enterprise.ClientCertificate.Ash.KeyTaggingError", error);
+}
+
+void RecordKcerGeneratedKeyInfoError(kcer::Error error) {
+  base::UmaHistogramEnumeration(
+      "Enterprise.ClientCertificate.Ash.GeneratedKeyInfoError", error);
+}
+
+void RecordKcerSoftwareKeyGenerationError(kcer::Error error) {
+  base::UmaHistogramEnumeration(
+      "Enterprise.ClientCertificate.Ash.SoftwareKeyGenerationError", error);
 }
 
 void RecordKcerCertificateImportError(kcer::Error error) {

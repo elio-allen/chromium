@@ -24,8 +24,7 @@
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -45,7 +44,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/window_open_disposition.h"
 #include "ui/color/color_provider_manager.h"
-#include "ui/compositor/layer.h"
+#include "ui/compositor/layer_solid_color.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
 
@@ -71,8 +70,7 @@ class GlicBrowserTest : public InProcessBrowserTest {
   }
 
  protected:
-  virtual void InitializeFeatureList() {
-  }
+  virtual void InitializeFeatureList() {}
 
  private:
   GlicTestEnvironment glic_test_environment_{{.fre_status = std::nullopt}};
@@ -80,6 +78,13 @@ class GlicBrowserTest : public InProcessBrowserTest {
 
 class SharedGlicBrowserTest : public glic::GlicBrowserTest {
  public:
+  SharedGlicBrowserTest() {
+    // Focus trapping inside the WebUI host (#webviewContainer webview) is
+    // specific to the <webview> architecture and not applicable in NoWebview
+    // mode where Views manages focus directly.
+    scoped_feature_list_.InitAndDisableFeature(features::kGlicNoWebview);
+  }
+
   // Set up the Glic UI for testing. This runs after the browser is launched.
   void SetUpOnMainThread() override {
     glic::GlicBrowserTest::SetUpOnMainThread();
@@ -100,12 +105,15 @@ class SharedGlicBrowserTest : public glic::GlicBrowserTest {
 
  protected:
   raw_ptr<content::WebContents> web_contents_ = nullptr;
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Ensure basic incognito window doesn't cause a crash. Simply opens an
 // incognito window and navigates, test passes if it doesn't crash.
 IN_PROC_BROWSER_TEST_F(GlicBrowserTest, IncognitoModeCrash) {
-  Browser* incognito_browser = CreateIncognitoBrowser();
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser();
 
   ASSERT_TRUE(
       ui_test_utils::NavigateToURL(incognito_browser, GURL("about:blank")));
@@ -221,8 +229,12 @@ class GlicKeyedServiceSyncBrowserTest : public GlicBrowserTest {
   }
 
   void InitializeFeatureList() override {
-    scoped_feature_list_.InitAndEnableFeature(
-        features::kGlicExperimentalTriggering);
+    // The policy control exemption lets the test profile act on the web, which
+    // is required for experimental triggering to be available.
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kGlicExperimentalTriggering,
+                              features::kGlicActorPolicyControlExemption},
+        /*disabled_features=*/{});
   }
 
   void SetUpInProcessBrowserTestFixture() override {

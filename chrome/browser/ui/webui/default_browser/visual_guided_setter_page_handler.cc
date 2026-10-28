@@ -8,6 +8,10 @@
 
 #include "base/functional/bind.h"
 #include "base/path_service.h"
+#include "base/task/single_thread_task_runner.h"
+#include "base/task/task_runner.h"
+#include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
 #include "chrome/browser/default_browser/default_browser_features.h"
 #include "chrome/installer/util/shell_util.h"
 #include "content/public/browser/web_contents.h"
@@ -55,6 +59,9 @@ void VisualGuidedSetterPageHandler::SetAnchorRect(const gfx::Rect& rect) {
     controller_->SetErrorCallback(
         base::BindRepeating(&VisualGuidedSetterPageHandler::OnErrorStateChanged,
                             weak_ptr_factory_.GetWeakPtr()));
+    controller_->SetDockedBoundsCallback(base::BindRepeating(
+        &VisualGuidedSetterPageHandler::OnDockedBoundsChanged,
+        weak_ptr_factory_.GetWeakPtr()));
 
     controller_->SetAnchorRectInWebUi(validated_rect);
     controller_->Start();
@@ -64,14 +71,29 @@ void VisualGuidedSetterPageHandler::SetAnchorRect(const gfx::Rect& rect) {
 }
 
 void VisualGuidedSetterPageHandler::OpenSettings() {
-  base::FilePath chrome_exe;
-  if (base::PathService::Get(base::FILE_EXE, &chrome_exe)) {
-    ShellUtil::ShowMakeChromeDefaultSystemUI(chrome_exe);
+  base::ThreadPool::CreateCOMSTATaskRunner(
+      {base::MayBlock(), base::TaskPriority::USER_VISIBLE})
+      ->PostTaskAndReplyWithResult(
+          FROM_HERE, base::BindOnce([]() {
+            base::FilePath chrome_exe;
+            return base::PathService::Get(base::FILE_EXE, &chrome_exe) &&
+                   ShellUtil::ShowMakeChromeDefaultSystemUI(chrome_exe);
+          }),
+          base::BindOnce(&VisualGuidedSetterPageHandler::OnOpenSettingsResult,
+                         weak_ptr_factory_.GetWeakPtr()));
+}
+
+void VisualGuidedSetterPageHandler::OnOpenSettingsResult(bool succeeded) {
+  if (!succeeded) {
+    OnErrorStateChanged(true);
   }
 }
 
 void VisualGuidedSetterPageHandler::OnErrorStateChanged(bool has_error) {
-  if (page_.is_bound()) {
     page_->SetErrorState(has_error);
-  }
+}
+
+void VisualGuidedSetterPageHandler::OnDockedBoundsChanged(
+    const gfx::Rect& bounds) {
+  page_->SetDockedSettingsBounds(bounds);
 }

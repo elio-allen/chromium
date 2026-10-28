@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
@@ -28,6 +29,10 @@ class OmniboxPopupWebUIBaseContent;
 class OmniboxPopupPresenterDelegate;
 class RoundedOmniboxResultsFrame;
 class OmniboxController;
+
+namespace base {
+struct Feature;
+}  // namespace base
 
 namespace content {
 class WebContents;
@@ -60,6 +65,14 @@ class OmniboxPopupPresenterBase
       public SearchboxHandler::Delegate,
       public permissions::PermissionRequestManager::Observer {
  public:
+  // Why `GetOrCreateWebUIContent()` was called. Recorded in traces.
+  enum class CreationReason {
+    kEager,
+    kAfterWindowPresentation,
+    kShow,
+    kContextMenu,
+  };
+
   // An RAII-style helper that registers itself as a blocker upon creation and
   // unregisters itself when destroyed.
   class ScopedDeactivationBlocker : public OmniboxPopupDeactivationBlocker {
@@ -88,9 +101,9 @@ class OmniboxPopupPresenterBase
 
   // Creates and returns a new deactivation blocker. The caller is responsible
   // for managing the lifecycle of the returned blocker (typically via
-  // std::unique_ptr).
-  virtual std::unique_ptr<OmniboxPopupDeactivationBlocker>
-  CreateDeactivationBlocker();
+  // std::unique_ptr). Returns nullptr if
+  // `omnibox::kOmniboxKeepOpenOnFileSelection` is disabled.
+  std::unique_ptr<OmniboxPopupDeactivationBlocker> CreateDeactivationBlocker();
   virtual void OnFileSelectionClosed();
   virtual void NotifyEscapeKeyPressed() {}
   bool has_active_blockers() const { return deactivation_blockers_count_ > 0; }
@@ -114,15 +127,47 @@ class OmniboxPopupPresenterBase
 
   // Returns the currently "active" Popup content, whichever one is visible or
   // going to be visible within the popup.
-  OmniboxPopupWebUIBaseContent* GetWebUIContent() const;
+  OmniboxPopupWebUIBaseContent* GetWebUIContent();
+  const OmniboxPopupWebUIBaseContent* GetWebUIContent() const;
+
+  // Returns the WebUI content, first creating it with `CreateWebUIContent()`
+  // if it does not exist yet. Creating the content creates a WebContents and
+  // starts its navigation, so call this only where the content is needed,
+  // e.g. to show the popup. Use `GetWebUIContent()` to read the content
+  // without creating it. Returns null only for unit-test presenters without
+  // WebUI content.
+  OmniboxPopupWebUIBaseContent* GetOrCreateWebUIContent(CreationReason reason);
+
+  // Called when the browser window that hosts this popup presents a frame
+  // after `CreateWebUIContentAfterWindowPresentation()`. If the WebUI content
+  // does not exist yet, posts a task that creates it. Later calls do nothing.
+  void OnBrowserWindowPresented();
 
   // Returns the timeout if showing should be deferred until the WebUI has
   // painted a new frame, or std::nullopt if it should not be deferred.
   virtual std::optional<base::TimeDelta> ShouldDeferUntilVisualStateReady()
       const = 0;
 
+  // Returns whether resize events should be debounced.
+  virtual bool ShouldDebounceResize() const = 0;
+
+  // Returns whether height workarounds should be applied.
+  virtual bool ShouldApplyHeightWorkarounds() const = 0;
   // Returns if the WebContents should be detached when the popup is hidden.
   virtual bool ShouldDetachWebContentsOnHide() const = 0;
+
+  // Returns whether the popup should evict its saved compositor frame when
+  // hidden.
+  virtual bool ShouldEvictOnHide() const = 0;
+
+  // Returns if the child WebView bounds should be sized to its preferred
+  // height in RoundedOmniboxResultsFrame.
+  virtual bool ShouldSizeWebViewToPreferredHeight() const = 0;
+
+  // Returns whether the popup's drop shadow is painted by the page rather than
+  // by the results frame. When true the frame paints nothing and the WebView
+  // is expanded to cover the shadow margin.
+  virtual bool ShouldDrawShadowInWebUI() const;
 
   virtual std::string_view GetPopupMetricPrefix() const = 0;
 
@@ -137,7 +182,7 @@ class OmniboxPopupPresenterBase
                                          const gfx::Size& prompt_size) override;
   OmniboxController* GetOmniboxController() override;
 
-  views::Widget* get_widget_for_testing() { return widget_.get(); }
+  views::Widget* GetWidget() const { return widget_.get(); }
 
   void set_widget_for_testing(std::unique_ptr<views::Widget> widget) {
     widget_ = std::move(widget);
@@ -153,6 +198,9 @@ class OmniboxPopupPresenterBase
   // handlers.
   void SetPermissionPromptShowing(bool showing);
 
+  // Resets prompt showing and dismissal state flags.
+  void ResetPermissionPromptShowingState();
+
   // Handles common dismissal state updates when a permission prompt is closed.
   void HandlePermissionPromptDismissal();
 
@@ -160,7 +208,22 @@ class OmniboxPopupPresenterBase
   // which should prevent out-of-focus activation events from hiding the popup.
   bool IsPermissionPromptPreventingClose() const;
 
+  // Returns whether the WebUI content view receives focus.
+  virtual bool ShouldReceiveFocus() const;
+
  protected:
+  // When the WebUI content is created ahead of time. With every strategy,
+  // `GetOrCreateWebUIContent()` creates the content immediately if it is
+  // needed sooner.
+  enum class WebUIContentCreationStrategy {
+    // In the constructor.
+    kEager,
+    // After the browser window presents its first frame.
+    kAfterWindowPresentation,
+    // Never ahead of time.
+    kOnDemand,
+  };
+
   inline static constexpr std::string_view kWebUIPopupMetricPrefix =
       "Omnibox.Popup.WebUI";
   inline static constexpr std::string_view kAimPopupMetricPrefix =
@@ -175,10 +238,46 @@ class OmniboxPopupPresenterBase
   void SetWebUIContent(
       std::unique_ptr<OmniboxPopupWebUIBaseContent> webui_content);
 
+  // Presenters that create their WebUI content lazily override this and call
+  // `ApplyWebUIContentCreationStrategy()` from their constructor. Returns null
+  // by default.
+  virtual std::unique_ptr<OmniboxPopupWebUIBaseContent> CreateWebUIContent();
+
+  // Returns the strategy for a presenter whose deferred creation is controlled
+  // by `defer_creation_feature`, taking
+  // `omnibox::ShouldCreatePopupWebUIOnDemand()` into account.
+  static WebUIContentCreationStrategy GetWebUIContentCreationStrategy(
+      const base::Feature& defer_creation_feature);
+
+  // Creates the WebUI content now, requests its creation after the browser
+  // window's first presentation, or does nothing, according to `strategy`.
+  // Called from the constructor of presenters that override
+  // `CreateWebUIContent()`.
+  void ApplyWebUIContentCreationStrategy(WebUIContentCreationStrategy strategy);
+
   void EnsureWidgetCreated();
+
+  // Whether the widget should be torn down when the popup is hidden and rebuilt
+  // when it is shown again, rather than simply hidden and re-shown. Guards
+  // against the reshown native window presenting compositor content left over
+  // from the previous show. The base implementation applies
+  // `kOmniboxFullWebUIDestroyWidgetOnHide` to every popup when the full
+  // WebUI omnibox is enabled; subclasses may additionally enable it via a
+  // per-popup flag.
+  virtual bool ShouldDestroyWidgetOnHide() const;
+
+  // True only while `Hide()` is deliberately destroying the widget so that the
+  // next `Show()` rebuilds it. `WidgetDestroyed()` overrides must consult this
+  // before treating the destruction as external (e.g. by the OS) and tearing
+  // down popup state, which is already being torn down.
+  bool is_destroying_widget() const { return is_destroying_widget_; }
 
   // Called when the widget has just been destroyed.
   virtual void WidgetDestroyed() {}
+
+  // Called with false on show/hide, and true once the first frame after show
+  // is presented.
+  virtual void OnWidgetPresentedChanged(bool presented) {}
 
   // Hook to create the results frame view.
   virtual std::unique_ptr<RoundedOmniboxResultsFrame> CreateResultsFrame(
@@ -186,15 +285,12 @@ class OmniboxPopupPresenterBase
       LocationBar* location_bar,
       bool forward_mouse_events);
 
-  // Returns the frame view of the widget if it exists. CHECKs if no widget
-  // created.
+  // Returns the frame view of the widget, or null if there is no widget. The
+  // widget is absent while hidden when `ShouldDestroyWidgetOnHide()` is on.
   RoundedOmniboxResultsFrame* GetResultsFrame() const;
 
   // Returns whether or not the popup should include the location bar cutout.
   virtual bool ShouldShowLocationBarCutout() const;
-
-  // Returns whether the WebUI content view receive focus.
-  virtual bool ShouldReceiveFocus() const;
 
   // Returns true if the popup widget should start transparent to allow the
   // initial layout pass to complete without visual artifacts.
@@ -210,8 +306,6 @@ class OmniboxPopupPresenterBase
                                              bool is_first_show);
 
   LocationBar* location_bar() const { return location_bar_.get(); }
-
-  views::Widget* GetWidget() const { return widget_.get(); }
 
   OmniboxController* controller() const { return controller_.get(); }
 
@@ -237,6 +331,10 @@ class OmniboxPopupPresenterBase
   friend class OmniboxWebUiInteractiveTest;
   friend class OmniboxPopupPresenterBaseTest;
 
+  // Requests content creation after the next frame the browser window
+  // presents. Used by `ApplyWebUIContentCreationStrategy()`.
+  void CreateWebUIContentAfterWindowPresentation();
+
   base::ScopedObservation<permissions::PermissionRequestManager,
                           permissions::PermissionRequestManager::Observer>
       permission_observation_{this};
@@ -260,8 +358,16 @@ class OmniboxPopupPresenterBase
                           bool from_fallback,
                           bool success);
 
-  // Remove observation and reset widget, optionally requesting it to close.
+  // Closes the widget, extracting the WebUI container first so it survives.
+  // `widget_` is always cleared synchronously, but destroying the
+  // `views::Widget` object is always deferred, since a close can arrive from
+  // inside a `views::Widget` callback that still touches it after we return.
+  // The destructor drains the deferred widgets inline, so teardown there
+  // remains synchronous.
   void ReleaseWidget();
+
+  // Destroys the widgets handed off by `ReleaseWidget()`.
+  void DeletePendingWidgets();
 
   // The location bar that owns `this`.
   const raw_ptr<LocationBar> location_bar_;
@@ -275,15 +381,36 @@ class OmniboxPopupPresenterBase
   // The WebUI content WebView. Owned by the container.
   raw_ptr<OmniboxPopupWebUIBaseContent> omnibox_popup_webui_content_ = nullptr;
 
-  // The popup widget that contains this WebView. Created and closed by `this`;
-  // owned and destroyed by the OS.
+  // Whether `OnBrowserWindowPresented()` has posted the creation task.
+  bool deferred_creation_scheduled_ = false;
+
+  // The popup widget that contains this WebView. Created, closed and owned by
+  // `this`; see `ReleaseWidget()` for how it is destroyed.
   std::unique_ptr<views::Widget> widget_;
+
+  // Widgets closed by `ReleaseWidget()` whose destruction was deferred to
+  // unwind the stack first. A queue rather than a single slot so that
+  // back-to-back closes within one task cannot destroy an earlier widget
+  // synchronously from inside a later one's teardown. Owned so the widgets are
+  // still destroyed if the presenter goes away before the posted deletion runs.
+  std::vector<std::unique_ptr<views::Widget>> widgets_pending_deletion_;
 
   const raw_ptr<OmniboxController> controller_;
 
   // True if `ShowWidget()` execution is currently being deferred until the
   // WebUI has produced a new frame.
   bool is_deferred_ = false;
+
+  // Tracks whether the omnibox considers the popup open. Used by `Hide()` to
+  // detect if external window management (e.g. Ash on a user switch) hid the
+  // widget without the presenter's knowledge. In which case, the widget must be
+  // discarded rather than cached so it is not re-shown later.
+  bool is_open_ = false;
+
+  // True only for the duration of the deliberate widget teardown performed by
+  // `Hide()` when `ShouldDestroyWidgetOnHide()` holds or the widget was hidden
+  // externally. See `is_destroying_widget()`.
+  bool is_destroying_widget_ = false;
 
   // Whether the first content ready metric of the popup has been logged.
   bool has_logged_first_content_ready_ = false;

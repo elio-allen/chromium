@@ -22,6 +22,7 @@ source_set("autofill_and_passwords") {
     "shopping_mutator.h",
     "shopping_table_view_controller.h",
     "shopping_table_view_controller.mm",
+    "suggestions_from_gemini_entry_point_consumer.h",
     "travel_info_consumer.h",
     "travel_info_mutator.h",
     "travel_info_table_view_controller.h",
@@ -64,6 +65,7 @@ source_set("unit_tests") {
   sources = [
     "autofill_and_passwords_table_view_controller_unittest.mm",
     "autofill_settings_table_view_controller_unittest.mm",
+    "shopping_table_view_controller_unittest.mm",
   ]
   deps = [
     ":autofill_and_passwords",
@@ -79,6 +81,7 @@ source_set("unit_tests") {
     "//ios/chrome/browser/shared/ui/table_view/cells",
     "//ios/chrome/browser/shared/ui/table_view/content_configuration",
     "//testing/gtest",
+    "//third_party/ocmock",
     "//ui/base",
   ]
 }

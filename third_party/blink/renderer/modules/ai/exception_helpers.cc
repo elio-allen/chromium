@@ -62,9 +62,6 @@ const char kExceptionMessageInvalidTopK[] =
     "The topK value provided is invalid.";
 const char kExceptionMessageInvalidTemperature[] =
     "The temperature value provided is invalid.";
-const char kExceptionMessageSamplingModeAndParamsConflict[] =
-    "Cannot provide both 'samplingMode' and raw sampling parameters "
-    "('temperature' or 'topK').";
 const char kExceptionMessageUnableToCreateSession[] =
     "The device is unable to create a session to run the model. "
     "Please check the result of availability() first.";
@@ -88,12 +85,6 @@ const char kExceptionMessagePermissionPolicy[] =
 const char kExceptionMessageUserActivationRequired[] =
     "Requires a user gesture when availability is \"downloading\" or "
     "\"downloadable\".";
-const char kExceptionMessageSpeculativeDecodingSamplingConflict[] =
-    "Sampling modes (samplingMode) or parameters (topK, temperature) cannot be "
-    "used with speculative decoding (MTP).";
-const char kExceptionMessageSpeculativeDecodingConstraintConflict[] =
-    "Constrained decoding (responseConstraint) cannot be used with speculative "
-    "decoding (MTP).";
 
 void ThrowInvalidContextException(ExceptionState& exception_state) {
   exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
@@ -372,9 +363,6 @@ String ConvertModelAvailabilityCheckResultToDebugString(
     case mojom::blink::ModelAvailabilityCheckResult::
         kUnavailableIncompatiblePreferenceOptions:
       return kExceptionMessageIncompatiblePreferenceOptions;
-    case mojom::blink::ModelAvailabilityCheckResult::
-        kUnavailableIncompatibleSpeculativeDecodingOptions:
-      return kExceptionMessageSpeculativeDecodingSamplingConflict;
     case mojom::blink::ModelAvailabilityCheckResult::kAvailable:
     case mojom::blink::ModelAvailabilityCheckResult::kDownloadable:
     case mojom::blink::ModelAvailabilityCheckResult::kDownloading:

@@ -11,11 +11,11 @@ import '//resources/cr_elements/cr_button/cr_button.js';
 import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import '//resources/cr_elements/cr_icon/cr_icon.js';
 
+import {MojoPluralStringProxy} from '//resources/cr_components/search/mojo_plural_string_proxy.js';
 import {I18nMixinLit} from '//resources/cr_elements/i18n_mixin_lit.js';
 import {assert} from '//resources/js/assert.js';
 import {EventTracker} from '//resources/js/event_tracker.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
-import {PluralStringProxyImpl} from '//resources/js/plural_string_proxy.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {TabInfo} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
@@ -49,11 +49,9 @@ export class ContextualEntrypointButtonElement extends
       // Public properties
       // =========================================================================
       showContextMenuDescription: {type: Boolean},
-      showSuggestionLabel: {type: Boolean, reflect: true},
       inputState: {type: Object},
       glifAnimationState: {type: String, reflect: true},
-      uploadButtonDisabled: {type: Boolean},
-      hasPopupFocus: {type: Boolean, reflect: true},
+      hasVirtualFocus: {type: Boolean, reflect: true},
       applyContextButtonBackground: {type: Boolean, reflect: true},
       isOblongShape: {type: Boolean, reflect: true},
       windowWidthBelowThreshold_: {type: Boolean},
@@ -72,14 +70,12 @@ export class ContextualEntrypointButtonElement extends
   }
 
   accessor showContextMenuDescription: boolean = false;
-  accessor showSuggestionLabel: boolean = false;
   accessor inputState: InputState|null = null;
   accessor sharedTabs: TabInfo[] = [];
   accessor restoredTabs: TabInfo[] = [];
   accessor glifAnimationState: GlifAnimationState =
       GlifAnimationState.INELIGIBLE;
-  accessor uploadButtonDisabled: boolean = false;
-  accessor hasPopupFocus: boolean = false;
+  accessor hasVirtualFocus: boolean = false;
   accessor applyContextButtonBackground: boolean = false;
   accessor isOblongShape: boolean = false;
   accessor energyEffectAnimationEnabled: boolean = false;
@@ -157,7 +153,7 @@ export class ContextualEntrypointButtonElement extends
     }
 
     const sharingTabsStr =
-        await PluralStringProxyImpl.getInstance().getPluralString(
+        await MojoPluralStringProxy.getInstance().getPluralString(
             'sharingTabs', tabCount);
     this.entrypointAriaLabel_ = `${baseLabel}, ${sharingTabsStr}`;
   }

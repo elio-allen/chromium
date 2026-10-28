@@ -37,7 +37,8 @@ class CORE_EXPORT FindBuffer {
 
  public:
   explicit FindBuffer(const EphemeralRangeInFlatTree& range,
-                      RubySupport ruby_support = RubySupport::kDisabled);
+                      RubySupport ruby_support = RubySupport::kDisabled,
+                      FindOptions find_options = FindOptions());
 
   static EphemeralRangeInFlatTree FindMatchInRange(
       const EphemeralRangeInFlatTree& range,
@@ -137,8 +138,7 @@ class CORE_EXPORT FindBuffer {
                                      RubySupport ruby_support);
 
   // Replaces nodes that should be ignored with appropriate char constants.
-  static void ReplaceNodeWithCharConstants(const Node& node,
-                                           Vector<UChar>& buffer);
+  void ReplaceNodeWithCharConstants(const Node& node);
 
   const BufferNodeMapping* MappingForIndex(wtf_size_t index) const;
 
@@ -154,11 +154,13 @@ class CORE_EXPORT FindBuffer {
   // Adds text in |text_node| that are located within |range| to |buffer|.
   void AddTextToBuffer(const Text& text_node,
                        const EphemeralRangeInFlatTree& range,
+                       bool ignore_leading_space,
                        Vector<UChar>& buffer,
                        HeapVector<BufferNodeMapping>* mappings);
 
   const Node* node_after_block_ = nullptr;
   Vector<UChar> buffer_;
+  FindOptions buffer_options_;
   // buffer_list_ is usually empty. It contains items only if an element
   // with display:ruby-text exists.
   Vector<Vector<UChar>> buffer_list_;

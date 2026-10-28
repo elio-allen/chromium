@@ -139,6 +139,8 @@ class CONTENT_EXPORT WebContentsViewAura
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
                            DragDropFilesOriginateFromRenderer);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest, DragDropImageFromRenderer);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
+                           DragDropImageFromRenderer_InaccessibleImageOmitted);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest, DragDropVirtualFiles);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
                            DragDropVirtualFilesOriginateFromRenderer);
@@ -161,6 +163,10 @@ class CONTENT_EXPORT WebContentsViewAura
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
                            Drop_DropZone_DelegateBlocks);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest, StartDragging);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
+                           DragEnterFilesAppCustomTypesFromWebSource);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
+                           DragEnterFilesAppCustomTypesFromWebUISource);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest, GetDropCallback_Run);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
                            DragInProgressFinishesAfterDrop);
@@ -190,11 +196,21 @@ class CONTENT_EXPORT WebContentsViewAura
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
                            ClampTouchLocationToBrowserObservedPoint);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
+                           TouchDragRequiresTouchOnWebContents);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
+                           MouseDragRequiresPressOnWebContents);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
+                           StartDraggingMouseRequiresLeftButton);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
+                           RefusedDragDoesNotBlockSubsequentDrags);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
                            UrlInDropDataReturnsUrlInOSExchangeDataGetString);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
                            IgnoreInputs_OngoingDropGetsCleared);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
                            EndDragIsCalledAfterAsyncDrop);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
+                           StartDraggingMouseReleasedEndsDrag);
 
   class WindowObserver;
 
@@ -272,7 +288,8 @@ class CONTENT_EXPORT WebContentsViewAura
       const gfx::Rect& drag_obj_rect,
       const blink::mojom::DragEventSourceInfo& event_info) override;
   void UpdateDragOperation(ui::mojom::DragOperation operation,
-                           bool document_is_handling_drag) override;
+                           bool document_is_handling_drag,
+                           RenderWidgetHostImpl* source_rwh) override;
   void GotFocus(RenderWidgetHostImpl* render_widget_host) override;
   void LostFocus(RenderWidgetHostImpl* render_widget_host) override;
   void TakeFocus(bool reverse) override;
@@ -431,7 +448,7 @@ class CONTENT_EXPORT WebContentsViewAura
   // Holds the security info for the current drag.
   WebContentsViewDragSecurityInfo drag_security_info_;
 
-  // Responsible for handling gesture-nav and pull-to-refresh UI.
+  // Responsible for handling gesture-nav UI.
   std::unique_ptr<GestureNavSimple> gesture_nav_simple_;
 
   // This is true when the drag is in process from the perspective of this

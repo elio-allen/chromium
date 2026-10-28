@@ -69,7 +69,7 @@ TEST_F(DefaultBookmarksViewEventTest, AddBookmark) {
   ASSERT_EQ(events_.size(), 1u);
   ASSERT_TRUE(events_[0]->is_added());
   const auto& added = events_[0]->get_added();
-  ASSERT_EQ(added->parent_id, parent->uuid());
+  ASSERT_EQ(added->parent_id, view_->GetUuid(parent));
   ASSERT_EQ(added->index, 0);
   ASSERT_TRUE(added->node->is_url());
   ASSERT_TRUE(added->node->get_url()->id.has_value());
@@ -81,7 +81,7 @@ TEST_F(DefaultBookmarksViewEventTest, RemoveBookmark) {
   const bookmarks::BookmarkNode* parent = model_->bookmark_bar_node();
   const bookmarks::BookmarkNode* node =
       model_->AddURL(parent, 0, u"Title", GURL("http://example.com"));
-  base::Uuid node_uuid = node->uuid();
+  base::Uuid node_uuid = view_->GetUuid(node);
   ClearEvents();
 
   model_->Remove(node, bookmarks::metrics::BookmarkEditSource::kUser,
@@ -104,8 +104,8 @@ TEST_F(DefaultBookmarksViewEventTest, MoveBookmark) {
   ASSERT_EQ(events_.size(), 1u);
   ASSERT_TRUE(events_[0]->is_moved());
   const auto& moved = events_[0]->get_moved();
-  ASSERT_EQ(moved->old_parent_id, parent->uuid());
-  ASSERT_EQ(moved->new_parent_id, other_parent->uuid());
+  ASSERT_EQ(moved->old_parent_id, view_->GetUuid(parent));
+  ASSERT_EQ(moved->new_parent_id, view_->GetUuid(other_parent));
   ASSERT_EQ(moved->old_index, 0);
   ASSERT_EQ(moved->new_index, 0);
 }
@@ -140,8 +140,8 @@ TEST_F(DefaultBookmarksViewEventTest, ReorderChildren) {
   ASSERT_EQ(events_.size(), 1u);
   ASSERT_TRUE(events_[0]->is_moved());
   const auto& moved = events_[0]->get_moved();
-  ASSERT_EQ(moved->old_parent_id, parent->uuid());
-  ASSERT_EQ(moved->new_parent_id, parent->uuid());
+  ASSERT_EQ(moved->old_parent_id, view_->GetUuid(parent));
+  ASSERT_EQ(moved->new_parent_id, view_->GetUuid(parent));
   ASSERT_EQ(moved->old_index, 1);
   ASSERT_EQ(moved->new_index, 0);
 }
@@ -162,8 +162,8 @@ TEST_F(DefaultBookmarksViewEventTest, ReorderNestedFolderChildren) {
   ASSERT_EQ(events_.size(), 1u);
   ASSERT_TRUE(events_[0]->is_moved());
   const auto& moved = events_[0]->get_moved();
-  ASSERT_EQ(moved->old_parent_id, folder->uuid());
-  ASSERT_EQ(moved->new_parent_id, folder->uuid());
+  ASSERT_EQ(moved->old_parent_id, view_->GetUuid(folder));
+  ASSERT_EQ(moved->new_parent_id, view_->GetUuid(folder));
   ASSERT_EQ(moved->old_index, 1);
   ASSERT_EQ(moved->new_index, 0);
 }
@@ -187,8 +187,8 @@ TEST_F(DefaultBookmarksViewEventTest, ReorderAfterMoveBetweenFolders) {
   ASSERT_EQ(events_.size(), 1u);
   ASSERT_TRUE(events_[0]->is_moved());
   const auto& moved = events_[0]->get_moved();
-  ASSERT_EQ(moved->old_parent_id, folder->uuid());
-  ASSERT_EQ(moved->new_parent_id, folder->uuid());
+  ASSERT_EQ(moved->old_parent_id, view_->GetUuid(folder));
+  ASSERT_EQ(moved->new_parent_id, view_->GetUuid(folder));
   ASSERT_EQ(moved->old_index, 1);
   ASSERT_EQ(moved->new_index, 0);
 }
@@ -212,8 +212,8 @@ TEST_F(DefaultBookmarksViewEventTest, ReorderAfterSameParentMove) {
   ASSERT_EQ(events_.size(), 1u);
   ASSERT_TRUE(events_[0]->is_moved());
   const auto& moved = events_[0]->get_moved();
-  ASSERT_EQ(moved->old_parent_id, parent->uuid());
-  ASSERT_EQ(moved->new_parent_id, parent->uuid());
+  ASSERT_EQ(moved->old_parent_id, view_->GetUuid(parent));
+  ASSERT_EQ(moved->new_parent_id, view_->GetUuid(parent));
   ASSERT_EQ(moved->old_index, 2);
   ASSERT_EQ(moved->new_index, 0);
 }
@@ -242,9 +242,9 @@ TEST_F(DefaultBookmarksViewEventTest, ReorderDuringExtensiveChanges) {
   ASSERT_TRUE(events_[1]->is_added());
   ASSERT_TRUE(events_[2]->is_moved());
   const auto& moved = events_[2]->get_moved();
-  ASSERT_EQ(moved->old_parent_id, parent->uuid());
+  ASSERT_EQ(moved->old_parent_id, view_->GetUuid(parent));
   ASSERT_EQ(moved->old_index, 1);
-  ASSERT_EQ(moved->new_parent_id, parent->uuid());
+  ASSERT_EQ(moved->new_parent_id, view_->GetUuid(parent));
   ASSERT_EQ(moved->new_index, 0);
 }
 
@@ -252,7 +252,7 @@ TEST_F(DefaultBookmarksViewEventTest, RemoveAllUserBookmarks) {
   const bookmarks::BookmarkNode* parent = model_->bookmark_bar_node();
   const bookmarks::BookmarkNode* node =
       model_->AddURL(parent, 0, u"Title", GURL("http://example.com"));
-  base::Uuid node_uuid = node->uuid();
+  base::Uuid node_uuid = view_->GetUuid(node);
   ClearEvents();
 
   model_->RemoveAllUserBookmarks(FROM_HERE);
@@ -309,8 +309,8 @@ TEST_F(DefaultBookmarksViewEventAccountTest,
       model_->AddURL(local_bar, 0, u"Local", GURL("http://local.com"));
   const bookmarks::BookmarkNode* account_node =
       model_->AddURL(account_bar, 0, u"Account", GURL("http://account.com"));
-  const base::Uuid local_uuid = local_node->uuid();
-  const base::Uuid account_uuid = account_node->uuid();
+  const base::Uuid local_uuid = view_->GetUuid(local_node);
+  const base::Uuid account_uuid = view_->GetUuid(account_node);
   ClearEvents();
 
   model_->RemoveAllUserBookmarks(FROM_HERE);
@@ -320,6 +320,38 @@ TEST_F(DefaultBookmarksViewEventAccountTest,
   ASSERT_EQ(events_[0]->get_removed()->id, local_uuid);
   ASSERT_TRUE(events_[1]->is_removed());
   ASSERT_EQ(events_[1]->get_removed()->id, account_uuid);
+}
+
+// Local and account nodes that share a native UUID get distinct API UUIDs, and
+// a new view (e.g. after a browser restart) hands out the same ones.
+TEST_F(DefaultBookmarksViewEventAccountTest,
+       SharedNativeUuidsGetDistinctStableApiUuids) {
+  const bookmarks::BookmarkNode* local_bar = model_->bookmark_bar_node();
+  const bookmarks::BookmarkNode* account_bar =
+      model_->account_bookmark_bar_node();
+  ASSERT_NE(account_bar, nullptr);
+  ASSERT_EQ(local_bar->uuid(), account_bar->uuid());
+
+  const base::Uuid shared_uuid = base::Uuid::GenerateRandomV4();
+  const bookmarks::BookmarkNode* local_node = model_->AddURL(
+      local_bar, 0, u"Local", GURL("http://local.com"),
+      /*meta_info=*/nullptr, /*creation_time=*/std::nullopt, shared_uuid);
+  const bookmarks::BookmarkNode* account_node = model_->AddURL(
+      account_bar, 0, u"Account", GURL("http://account.com"),
+      /*meta_info=*/nullptr, /*creation_time=*/std::nullopt, shared_uuid);
+
+  const base::Uuid local_bar_uuid = view_->GetUuid(local_bar);
+  const base::Uuid account_bar_uuid = view_->GetUuid(account_bar);
+  const base::Uuid local_node_uuid = view_->GetUuid(local_node);
+  const base::Uuid account_node_uuid = view_->GetUuid(account_node);
+  EXPECT_NE(local_bar_uuid, account_bar_uuid);
+  EXPECT_NE(local_node_uuid, account_node_uuid);
+
+  DefaultBookmarksView new_view(model_.get());
+  EXPECT_EQ(new_view.GetUuid(local_bar), local_bar_uuid);
+  EXPECT_EQ(new_view.GetUuid(account_bar), account_bar_uuid);
+  EXPECT_EQ(new_view.GetUuid(local_node), local_node_uuid);
+  EXPECT_EQ(new_view.GetUuid(account_node), account_node_uuid);
 }
 
 TEST_F(DefaultBookmarksViewEventAccountTest,
@@ -352,8 +384,8 @@ TEST_F(DefaultBookmarksViewEventAccountTest,
   ASSERT_EQ(events_.size(), 1u);
   ASSERT_TRUE(events_[0]->is_moved());
   const auto& moved = events_[0]->get_moved();
-  ASSERT_EQ(moved->old_parent_id, folder->uuid());
-  ASSERT_EQ(moved->new_parent_id, folder->uuid());
+  ASSERT_EQ(moved->old_parent_id, view_->GetUuid(folder));
+  ASSERT_EQ(moved->new_parent_id, view_->GetUuid(folder));
   ASSERT_EQ(moved->old_index, 1);
   ASSERT_EQ(moved->new_index, 0);
 }

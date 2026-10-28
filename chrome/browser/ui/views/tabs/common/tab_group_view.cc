@@ -4,36 +4,41 @@
 
 #include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
 
+#include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/layout_constants.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_group_data.h"
-#include "chrome/browser/ui/tabs/tab_group_theme.h"
+#include "chrome/browser/ui/tabs/tab_style.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/tabs/common/dragged_tabs_container.h"
 #include "chrome/browser/ui/views/tabs/common/split_tab_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.h"
 #include "chrome/browser/ui/views/tabs/common/tab_collection_node.h"
 #include "chrome/browser/ui/views/tabs/common/tab_group_header_view.h"
-#include "chrome/browser/ui/views/tabs/common/tab_group_view_layout.h"
+#include "chrome/browser/ui/views/tabs/common/tab_group_line_view.h"
+#include "chrome/browser/ui/views/tabs/common/tab_group_unfocus_button.h"
+#include "chrome/browser/ui/views/tabs/common/tab_group_view_horizontal_layout.h"
+#include "chrome/browser/ui/views/tabs/common/tab_group_view_vertical_layout.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_utils.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_view.h"
+#include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h"
 #include "chrome/browser/ui/views/tabs/groups/tab_group_accessibility.h"
+#include "chrome/browser/ui/views/tabs/horizontal/horizontal_tab_closing_helper.h"
 #include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_controller.h"
 #include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
 #include "components/tabs/public/tab_collection_storage.h"
+#include "components/tabs/public/tab_collection_types.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_group_tab_collection.h"
+#include "content/public/browser/navigation_controller.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/list_selection_model.h"
-#include "ui/color/color_provider.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/geometry/rounded_corners_f.h"
-#include "ui/views/background.h"
+#include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/layout/delegating_layout_manager.h"
 #include "ui/views/layout/proposed_layout.h"
@@ -43,14 +48,23 @@
 #include "ui/views/widget/widget.h"
 
 namespace {
-constexpr int kGroupLineCornerRadius = 4;
 
 const TabGroup* GetTabGroupFromNode(TabCollectionNode* node) {
   CHECK(node);
   return static_cast<const tabs::TabGroupTabCollection*>(
-             std::get<const tabs::TabCollection*>(node->GetNodeData()))
+             std::get<tabs::ConstDanglingUntriagedTabCollection>(
+                 node->GetNodeData()))
       ->GetTabGroup();
 }
+
+std::unique_ptr<TabGroupView::LayoutManager> CreateTabGroupViewLayout(
+    TabStripOrientation orientation) {
+  if (orientation == TabStripOrientation::kVertical) {
+    return std::make_unique<TabGroupViewVerticalLayout>();
+  }
+  return std::make_unique<TabGroupViewHorizontalLayout>();
+}
+
 }  // namespace
 
 TabGroupView::TabGroupView(TabCollectionNode* collection_node)
@@ -65,20 +79,30 @@ TabGroupView::TabGroupView(TabCollectionNode* collection_node)
                                  TabStripOrientation::kHorizontal
               ? DragLayout::kHorizontal
               : DragLayout::kVertical),
+      orientation_(collection_node->orientation()),
       collection_node_(collection_node),
       tab_group_visual_data_(
           *GetTabGroupFromNode(collection_node_)->visual_data()),
+      is_ephemeral_(GetTabGroupFromNode(collection_node_)->is_ephemeral()),
+      unfocus_header_(AddChildView(std::make_unique<TabGroupUnfocusButton>(
+          orientation_,
+          base::BindRepeating(&TabGroupView::ExitFocusMode,
+                              base::Unretained(this))))),
       group_header_(AddChildView(std::make_unique<TabGroupHeaderView>(
           *this,
-          collection_node_->orientation(),
+          orientation_,
           collection_node_->GetController()->GetStateController(),
           &tab_group_visual_data_))),
-      group_line_(AddChildView(std::make_unique<views::View>())),
-      layout_manager_(*SetLayoutManager(
-          std::make_unique<TabCollectionAnimatingLayoutManager>(
-              std::make_unique<TabGroupViewLayout>(
-                  collection_node->orientation()),
-              *this))) {
+      group_line_(AddChildView(std::make_unique<TabGroupLineView>(*this))),
+      layout_manager_(*SetLayoutManager(std::make_unique<
+                                        TabCollectionAnimatingLayoutManager>(
+          CreateTabGroupViewLayout(orientation_),
+          *this,
+          collection_node->GetController()->animation_coordinator(),
+          orientation_ == TabStripOrientation::kHorizontal
+              ? TabCollectionAnimatingLayoutManager::AnimationAxis::kHorizontal
+              : TabCollectionAnimatingLayoutManager::AnimationAxis::kVertical,
+          /*animate_host_size=*/false))) {
   collection_node->set_remove_child_from_node(base::BindRepeating(
       &TabCollectionAnimatingLayoutManager::AnimateAndDestroyChildView,
       base::Unretained(&layout_manager_.get())));
@@ -90,6 +114,15 @@ TabGroupView::TabGroupView(TabCollectionNode* collection_node)
   node_destroyed_subscription_ =
       collection_node_->RegisterWillDestroyCallback(base::BindOnce(
           &TabGroupView::ResetCollectionNode, base::Unretained(this)));
+
+  if (orientation_ == TabStripOrientation::kVertical) {
+    auto* state_controller =
+        collection_node_->GetController()->GetStateController();
+    CHECK(state_controller);
+    collapsed_state_changed_subscription_ =
+        state_controller->RegisterOnCollapseChanged(base::BindRepeating(
+            &TabGroupView::OnCollapseStateChanged, base::Unretained(this)));
+  }
 
   TabGroup* const tab_group =
       const_cast<TabGroup*>(GetTabGroupFromNode(collection_node_));
@@ -104,6 +137,28 @@ TabGroupView::TabGroupView(TabCollectionNode* collection_node)
 }
 
 TabGroupView::~TabGroupView() = default;
+
+int TabGroupView::LayoutManager::GetCrossoverWidth() const {
+  return TabGroupView().GetMinimumSize().width();
+}
+
+void TabGroupView::LayoutManager::OnInstalled(views::View* host) {
+  CHECK(IsViewClass<class TabGroupView>(host));
+}
+
+const TabGroupView& TabGroupView::LayoutManager::TabGroupView() const {
+  return static_cast<const class TabGroupView&>(*host_view());
+}
+
+void TabGroupView::AddedToWidget() {
+  paint_as_active_subscription_ =
+      GetWidget()->RegisterPaintAsActiveChangedCallback(base::BindRepeating(
+          &TabGroupView::OnDataChanged, base::Unretained(this)));
+}
+
+void TabGroupView::RemovedFromWidget() {
+  paint_as_active_subscription_ = {};
+}
 
 void TabGroupView::OnThemeChanged() {
   views::View::OnThemeChanged();
@@ -126,8 +181,40 @@ void TabGroupView::ToggleCollapsedState(
     return;
   }
 
+  const bool is_currently_collapsed = IsCollapsed();
+  std::optional<int> new_override;
+  CloseTabSource source = CloseTabSource::kFromMouse;
+
+  // When collapsing a group via mouse or touch, lock remaining tab widths by
+  // entering tab closing mode so tabs do not expand under the cursor.
+  // Otherwise, exit closing mode when expanding or toggling via keyboard/menu.
+  if (auto* closing_helper = GetTabClosingHelper()) {
+    if (!is_currently_collapsed &&
+        (origin == ToggleTabGroupCollapsedStateOrigin::kMouse ||
+         origin == ToggleTabGroupCollapsedStateOrigin::kGesture)) {
+      source = origin == ToggleTabGroupCollapsedStateOrigin::kMouse
+                   ? CloseTabSource::kFromMouse
+                   : CloseTabSource::kFromTouch;
+      int current_override =
+          closing_helper->override_available_width_for_tabs().value_or(
+              closing_helper->GetUnpinnedContainerWidth());
+      new_override = current_override - width() +
+                     group_header_->GetPreferredSize({}).width();
+    } else {
+      closing_helper->ExitTabClosingMode();
+    }
+  }
+
+  auto allow_animation =
+      collection_node_->GetController()->ScopedAnimateLayout();
   collection_node_->GetController()->ToggleTabGroupCollapsedState(
       GetTabGroupFromNode(collection_node_), origin);
+
+  if (new_override.has_value()) {
+    if (auto* closing_helper = GetTabClosingHelper()) {
+      closing_helper->MaybeEnterTabClosingMode(new_override, source);
+    }
+  }
   InvalidateLayout();
 }
 
@@ -168,12 +255,21 @@ bool TabGroupView::IsViewDragging(const views::View& child_view) const {
 
 bool TabGroupView::ShouldAnimateOpacityForAddAndRemove(
     const views::View& child_view) const {
+  if (orientation_ == TabStripOrientation::kHorizontal) {
+    return false;
+  }
   // Only animate opacity for tab views.
   return views::IsViewClass<TabView>(&child_view);
 }
 
 bool TabGroupView::ShouldSnapToTarget(const views::View& child_view) const {
   return views::IsViewClass<SplitTabView>(&child_view);
+}
+
+int TabGroupView::GetCrossoverWidth() const {
+  return static_cast<const TabGroupView::LayoutManager*>(
+             layout_manager_->target_layout_manager())
+      ->GetCrossoverWidth();
 }
 
 void TabGroupView::OnAnimationEnded() {
@@ -184,17 +280,11 @@ void TabGroupView::OnAnimationEnded() {
   }
 }
 
-std::u16string TabGroupView::GetGroupContentString() const {
+bool TabGroupView::ShouldAnimateLayout() {
   if (!collection_node_) {
-    return std::u16string();
+    return false;
   }
-
-  const TabGroup* group = GetTabGroupFromNode(collection_node_);
-  if (group->tab_count() == 0) {
-    return std::u16string();
-  }
-
-  return tab_groups::GetGroupContentString(group);
+  return collection_node_->GetController()->ShouldAnimateLayout();
 }
 
 bool TabGroupView::IsValid() const {
@@ -210,6 +300,9 @@ void TabGroupView::AttachChildView(std::unique_ptr<views::View> child_view,
   }
   layout_manager_->AnimateAndReparentView(std::move(child_view),
                                           previous_bounds_in_screen);
+  if (IsValid() && GetTabGroup().is_ephemeral()) {
+    group_header_->OnTabCountChanged();
+  }
 }
 
 std::unique_ptr<views::View> TabGroupView::DetachChildView(
@@ -219,12 +312,17 @@ std::unique_ptr<views::View> TabGroupView::DetachChildView(
     // are detached from the group while collapsed, reset its visibility.
     child_view->SetVisible(true);
   }
-  return RemoveChildViewT(child_view);
+  auto removed = RemoveChildViewT(child_view);
+  if (IsValid() && GetTabGroup().is_ephemeral()) {
+    group_header_->OnTabCountChanged();
+  }
+  return removed;
 }
 
 void TabGroupView::ResetCollectionNode() {
   HideHoverCard(TabSlotController::HoverCardUpdateType::kTabRemoved);
   node_destroyed_subscription_ = {};
+  collapsed_state_changed_subscription_ = {};
   tab_group_data_changed_subscription_ = {};
   tab_group_data_observer_.reset();
   collection_node_ = nullptr;
@@ -238,23 +336,38 @@ void TabGroupView::OnDataChanged() {
 
   const tabs::TabGroupData& tab_group_data =
       tab_group_data_observer_->tab_group_data();
+  is_ephemeral_ = GetTabGroupFromNode(collection_node_)->is_ephemeral();
+  const bool has_collapse_state_changed =
+      tab_group_visual_data_.is_collapsed() !=
+      tab_group_data.visual_data.is_collapsed();
   tab_group_visual_data_ = tab_group_data.visual_data;
+  if (unfocus_header_) {
+    unfocus_header_->SetVisible(IsGroupFocused());
+    unfocus_header_->SetGroupColorData(tab_group_visual_data_.color(),
+                                       is_ephemeral_);
+  }
   group_header_->OnDataChanged(tab_group_data);
 
-  // If the tab group is not collapsed update child visibility immediately. This
-  // allows tabs to be visible as they are animated in.
-  if (!tab_group_visual_data_.is_collapsed()) {
-    UpdateChildVisibilityForCollapseState(false);
+  std::optional<base::AutoReset<bool>> allow_animation;
+  if (has_collapse_state_changed) {
+    allow_animation.emplace(
+        collection_node_->GetController()->ScopedAnimateLayout());
   }
 
-  if (GetColorProvider()) {
-    SkColor color = GetColorProvider()->GetColor(GetTabGroupTabStripColorId(
-        tab_group_visual_data_.color(), GetWidget()->ShouldPaintAsActive()));
-    group_line_->SetBackground(views::CreateRoundedRectBackground(
-        color, gfx::RoundedCornersF(0, kGroupLineCornerRadius,
-                                    kGroupLineCornerRadius, 0)));
+  // If the tab group is not collapsed (or if we are not animating the collapse)
+  // update child visibility immediately.
+  if (!tab_group_visual_data_.is_collapsed() || !ShouldAnimateLayout()) {
+    UpdateChildVisibilityForCollapseState(
+        tab_group_visual_data_.is_collapsed());
   }
 
+  group_line_->SchedulePaint();
+
+  InvalidateLayout();
+}
+
+void TabGroupView::OnCollapseStateChanged(
+    tabs::VerticalTabStripCollapseState state) {
   InvalidateLayout();
 }
 
@@ -282,6 +395,9 @@ bool TabGroupView::IsCollapsed() const {
 }
 
 views::ScrollView* TabGroupView::GetScrollViewForContainer() const {
+  if (!collection_node_) {
+    return nullptr;
+  }
   return views::ScrollView::GetScrollViewForContents(
       const_cast<views::View*>(parent()));
 }
@@ -310,8 +426,7 @@ std::optional<BrowserRootView::DropIndex> TabGroupView::GetLinkDropIndex(
   if (!collection_node_) {
     return std::nullopt;
   }
-  const bool is_horizontal =
-      collection_node_->orientation() == TabStripOrientation::kHorizontal;
+  const bool is_horizontal = orientation_ == TabStripOrientation::kHorizontal;
 
   // Use the position along drag axis to find the child view being dragged over.
   const int header_end = is_horizontal ? group_header_->bounds().right()
@@ -441,6 +556,19 @@ std::unique_ptr<ExpandOnHoverLock> TabGroupView::AcquireExpandOnHoverLock() {
       ExpandOnHoverLockType::kKeepCurrentState);
 }
 
+std::unique_ptr<TabHoverCardController::ScopedHideHoverCardLock>
+TabGroupView::AcquireHoverCardHideLock() {
+  if (!collection_node_ || !collection_node_->GetController()) {
+    return nullptr;
+  }
+
+  if (TabHoverCardController* hover_card_controller =
+          collection_node_->GetController()->GetHoverCardController()) {
+    return hover_card_controller->GetHoverCardHideLock();
+  }
+  return nullptr;
+}
+
 void TabGroupView::ShiftGroupUp() {
   if (!collection_node_) {
     return;
@@ -458,11 +586,44 @@ void TabGroupView::ShiftGroupDown() {
 }
 
 bool TabGroupView::IsGroupFocused() const {
+  if (is_ephemeral_) {
+    return true;
+  }
   if (!collection_node_ || !collection_node_->GetController()) {
     return false;
   }
   return collection_node_->GetController()->GetFocusedGroup() ==
          GetTabGroup().id();
+}
+
+bool TabGroupView::IsUnfocusButtonFocused() const {
+  return unfocus_header_ && unfocus_header_->HasFocus();
+}
+
+bool TabGroupView::CanShowEditorBubbleButton() const {
+  return orientation_ == TabStripOrientation::kVertical &&
+         (GetTabStripCollapseState() ==
+              tabs::VerticalTabStripCollapseState::kExpanded ||
+          width() > tabs::kVerticalTabStripCollapsedWidth);
+}
+
+HorizontalTabClosingHelper* TabGroupView::GetTabClosingHelper() const {
+  if (collection_node_ && collection_node_->GetController()) {
+    return collection_node_->GetController()->tab_closing_helper();
+  }
+  return nullptr;
+}
+
+void TabGroupView::ExitFocusMode() {
+  if (!collection_node_ || !collection_node_->GetController()) {
+    return;
+  }
+  BrowserView* browser_view =
+      collection_node_->GetController()->GetBrowserView();
+  if (browser_view) {
+    chrome::ExitFocusMode(browser_view->browser(),
+                          TabGroupFocusExitReason::kHeaderUnfocusButton);
+  }
 }
 
 BEGIN_METADATA(TabGroupView)

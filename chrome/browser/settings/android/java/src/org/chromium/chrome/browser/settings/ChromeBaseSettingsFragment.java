@@ -45,14 +45,16 @@ public abstract class ChromeBaseSettingsFragment extends PreferenceFragmentCompa
 
     @Override
     public void onAttach(Context context) {
-        if (!SettingsInTab.isEnabled()) {
+        // Fragments are created by the framework, so the value cannot be injected. Resolve it from
+        // the host. getActivity() is null during onAttach(), so pass the attach context.
+        if (!SettingsHostUtil.isShownInTab(this, context)) {
             super.onAttach(context);
             return;
         }
 
         // Ensure settings fragments inherit the same Chromium Settings theme used by
         // SettingsActivity, even though they are hosted in ChromeTabbedActivity.
-        mThemedContext = new ContextThemeWrapper(context, R.style.Theme_Chromium_Settings);
+        mThemedContext = new ContextThemeWrapper(context, R.style.ThemeOverlay_Chromium_Settings);
         super.onAttach(mThemedContext);
     }
 

@@ -49,7 +49,6 @@
 #include "ui/views/corewm/tooltip.h"
 #include "ui/views/corewm/tooltip_controller.h"
 #include "ui/views/drag_utils.h"
-#include "ui/views/view_constants_aura.h"
 #include "ui/views/views_delegate.h"
 #include "ui/views/views_features.h"
 #include "ui/views/widget/desktop_aura/desktop_capture_client.h"
@@ -60,7 +59,6 @@
 #include "ui/views/widget/desktop_aura/desktop_window_tree_host.h"
 #include "ui/views/widget/desktop_aura/desktop_window_tree_host_platform.h"
 #include "ui/views/widget/focus_manager_event_handler.h"
-#include "ui/views/widget/legacy_window_reorderer.h"
 #include "ui/views/widget/native_widget_aura.h"
 #include "ui/views/widget/root_view.h"
 #include "ui/views/widget/tooltip_manager_aura.h"
@@ -212,6 +210,12 @@ class DesktopNativeWidgetTopLevelHandler : public aura::WindowObserver {
     // the Widget::SetBounds function.
     if (top_level_widget_ && window == child_window_) {
       top_level_widget_->SetBounds(window->GetBoundsInScreen());
+    } else if (top_level_widget_ &&
+               window == top_level_widget_->GetNativeView()) {
+      // Only the origin is realigned: the widget's size is the child's size
+      // after a DIP/pixel round trip, so copying it back would feed rounding
+      // error into the child on fractional device scale factors.
+      child_window_->SetBounds(gfx::Rect(child_window_->bounds().size()));
     }
   }
 
@@ -321,7 +325,6 @@ DesktopNativeWidgetAura::~DesktopNativeWidgetAura() {
     // `native_widget_delegate_`'s root view. Reset them before deleting
     // `native_widget_delegate_` to avoid holding a briefly dangling ptr.
     drop_helper_.reset();
-    legacy_window_reorderer_.reset();
     window_reorderer_.reset();
     owned_native_widget_delegate.reset();
   } else {
@@ -381,7 +384,7 @@ void DesktopNativeWidgetAura::OnHostClosed() {
 
   host_->window()->RemovePreTargetHandler(root_window_event_filter_.get());
 
-  host_->RemoveObserver(this);
+  host_observation_.Reset();
   // |drag_drop_client_| holds a raw_ptr on |desktop_window_tree_host_|, so we
   // need to destroy it first.
   drag_drop_client_.reset();
@@ -527,6 +530,10 @@ void DesktopNativeWidgetAura::HandleActivationChanged(bool active) {
   // At this point the FocusController's state should have been appropriately
   // updated, propagate the NativeWidget activation notification.
   native_widget_delegate_->OnNativeWidgetActivationChanged(active);
+}
+
+bool DesktopNativeWidgetAura::IsHandlingHostDeactivation() const {
+  return should_activate_.has_value() && !should_activate_.value();
 }
 
 void DesktopNativeWidgetAura::OnHostWillClose() {
@@ -681,7 +688,7 @@ void DesktopNativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
   capture_client_ = std::make_unique<DesktopCaptureClient>(host_->window());
 
   wm::FocusController* focus_controller =
-      new wm::FocusController(new DesktopFocusRules(content_window_));
+      new wm::FocusController(new DesktopFocusRules(content_window_, this));
   focus_client_.reset(focus_controller);
   aura::client::SetFocusClient(host_->window(), focus_controller);
   wm::SetActivationClient(host_->window(), focus_controller);
@@ -689,23 +696,32 @@ void DesktopNativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
 
   position_client_ = desktop_window_tree_host_->CreateScreenPositionClient();
 
-  drag_drop_client_ = desktop_window_tree_host_->CreateDragDropClient();
-  // Mus returns null from CreateDragDropClient().
-  if (drag_drop_client_) {
-    aura::client::SetDragDropClient(host_->window(), drag_drop_client_.get());
+  const bool should_enable_drag_drop =
+      !base::FeatureList::IsEnabled(
+          views::features::kDisableDragDropForUnneededWidgets) ||
+      ShouldEnableDragDrop(params);
+
+  if (should_enable_drag_drop) {
+    drag_drop_client_ = desktop_window_tree_host_->CreateDragDropClient();
+    // Mus returns null from CreateDragDropClient().
+    if (drag_drop_client_) {
+      aura::client::SetDragDropClient(host_->window(), drag_drop_client_.get());
+    }
   }
 
   wm::SetActivationDelegate(content_window_, this);
 
   OnHostResized(host());
 
-  host_->AddObserver(this);
+  host_observation_.Observe(host_.get());
 
   window_parenting_client_ =
       std::make_unique<DesktopNativeWidgetAuraWindowParentingClient>(
           host_->window());
-  drop_helper_ = std::make_unique<DropHelper>(GetWidget()->GetRootView());
-  aura::client::SetDragDropDelegate(content_window_, this);
+  if (should_enable_drag_drop) {
+    drop_helper_ = std::make_unique<DropHelper>(GetWidget()->GetRootView());
+    aura::client::SetDragDropDelegate(content_window_, this);
+  }
 
   if (params.type != Widget::InitParams::TYPE_TOOLTIP) {
     tooltip_manager_ = std::make_unique<TooltipManagerAura>(this);
@@ -737,13 +753,8 @@ void DesktopNativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
 
   OnSizeConstraintsChanged();
 
-  if (base::FeatureList::IsEnabled(features::kNativeViewHostManagesLayers)) {
-    window_reorderer_ = std::make_unique<WindowReorderer>(
-        content_window_, GetWidget()->GetRootView());
-  } else {
-    legacy_window_reorderer_ = std::make_unique<legacy::WindowReorderer>(
-        content_window_, GetWidget()->GetRootView());
-  }
+  window_reorderer_ = std::make_unique<WindowReorderer>(
+      content_window_, GetWidget()->GetRootView());
 }
 
 void DesktopNativeWidgetAura::OnWidgetInitDone() {
@@ -793,7 +804,9 @@ Widget* DesktopNativeWidgetAura::GetTopLevelWidget() {
 }
 
 const ui::Compositor* DesktopNativeWidgetAura::GetCompositor() const {
-  return content_window_ ? content_window_->layer()->GetCompositor() : nullptr;
+  return content_window_ && content_window_->GetHost()
+             ? content_window_->GetHost()->compositor()
+             : nullptr;
 }
 
 const ui::Layer* DesktopNativeWidgetAura::GetLayer() const {
@@ -810,16 +823,15 @@ void DesktopNativeWidgetAura::ReorderNativeViews() {
   // scope rather than after each individual change.
   // https://crbug.com/829918
   aura::WindowOcclusionTracker::ScopedPause pause_occlusion;
-  if (legacy_window_reorderer_) {
-    legacy_window_reorderer_->ReorderChildWindows();
-  } else if (window_reorderer_) {
+  if (window_reorderer_) {
     window_reorderer_->ReorderChildWindows();
   }
 }
 
 void DesktopNativeWidgetAura::ViewRemoved(View* view) {
-  DCHECK(drop_helper_.get() != nullptr);
-  drop_helper_->ResetTargetViewIfEquals(view);
+  if (drop_helper_) {
+    drop_helper_->ResetTargetViewIfEquals(view);
+  }
 }
 
 void DesktopNativeWidgetAura::ClientDestroyedWidget() {
@@ -1256,6 +1268,19 @@ bool DesktopNativeWidgetAura::IsMoveLoopSupported() const {
              : true;
 }
 
+void DesktopNativeWidgetAura::PrepareForMoveLoop(
+    Widget::MoveLoopSource source) {
+  if (desktop_window_tree_host_) {
+    desktop_window_tree_host_->PrepareForMoveLoop(source);
+  }
+}
+
+void DesktopNativeWidgetAura::SetBypassWindowManager(bool bypass) {
+  if (desktop_window_tree_host_) {
+    desktop_window_tree_host_->SetBypassWindowManager(bypass);
+  }
+}
+
 Widget::MoveLoopResult DesktopNativeWidgetAura::RunMoveLoop(
     const gfx::Vector2d& drag_offset,
     Widget::MoveLoopSource source,
@@ -1615,14 +1640,16 @@ void DesktopNativeWidgetAura::OnWindowFocused(aura::Window* gained_focus,
 // DesktopNativeWidgetAura, aura::WindowDragDropDelegate implementation:
 
 void DesktopNativeWidgetAura::OnDragEntered(const ui::DropTargetEvent& event) {
-  DCHECK(drop_helper_.get() != nullptr);
+  // Can only be called if drag and drop is enabled for this widget.
+  CHECK(drop_helper_);
   last_drop_operation_ = drop_helper_->OnDragOver(
       event.data(), event.location(), event.source_operations());
 }
 
 aura::client::DragUpdateInfo DesktopNativeWidgetAura::OnDragUpdated(
     const ui::DropTargetEvent& event) {
-  DCHECK(drop_helper_.get() != nullptr);
+  // Can only be called if drag and drop is enabled for this widget.
+  CHECK(drop_helper_);
   last_drop_operation_ = drop_helper_->OnDragOver(
       event.data(), event.location(), event.source_operations());
 
@@ -1632,13 +1659,15 @@ aura::client::DragUpdateInfo DesktopNativeWidgetAura::OnDragUpdated(
 }
 
 void DesktopNativeWidgetAura::OnDragExited() {
-  DCHECK(drop_helper_.get() != nullptr);
+  // Can only be called if drag and drop is enabled for this widget.
+  CHECK(drop_helper_);
   drop_helper_->OnDragExit();
 }
 
 aura::client::DragDropDelegate::DropCallback
 DesktopNativeWidgetAura::GetDropCallback(const ui::DropTargetEvent& event) {
-  DCHECK(drop_helper_);
+  // Can only be called if drag and drop is enabled for this widget.
+  CHECK(drop_helper_);
   auto drop_helper_cb = drop_helper_->GetDropCallback(
       event.data(), event.location(), last_drop_operation_);
   return base::BindOnce(&DesktopNativeWidgetAura::PerformDrop,

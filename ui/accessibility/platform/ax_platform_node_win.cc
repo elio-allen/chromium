@@ -476,7 +476,7 @@ void AXPlatformNodeWin::StateToUIAAriaProperty(
 
 std::vector<AXPlatformNodeWin*>
 AXPlatformNodeWin::CreatePlatformNodeVectorFromRelationIdVector(
-    const std::vector<int32_t>& relation_id_list) {
+    base::span<const int32_t> relation_id_list) {
   std::vector<AXPlatformNodeWin*> platform_node_list;
 
   for (int32_t id : relation_id_list) {
@@ -513,7 +513,7 @@ SAFEARRAY* AXPlatformNodeWin::CreateUIAElementsSafeArray(
 }
 
 SAFEARRAY* AXPlatformNodeWin::CreateUIAControllerForArray() {
-  std::vector<int32_t> relation_id_list =
+  base::span<const int32_t> relation_id_list =
       GetIntListAttribute(ax::mojom::IntListAttribute::kControlsIds);
 
   std::vector<AXPlatformNodeWin*> platform_node_list =
@@ -531,7 +531,7 @@ SAFEARRAY* AXPlatformNodeWin::CreateUIAControllerForArray() {
   // expected to be exposed through the ControllerFor property on UIA:
   // https://w3c.github.io/core-aam/#ariaErrorMessage
   if (HasIntListAttribute(ax::mojom::IntListAttribute::kErrormessageIds)) {
-    std::vector<int32_t> error_message_node_ids =
+    base::span<const int32_t> error_message_node_ids =
         GetIntListAttribute(ax::mojom::IntListAttribute::kErrormessageIds);
     for (int32_t id : error_message_node_ids) {
       AXPlatformNodeWin* error_message_node_win =
@@ -1266,6 +1266,8 @@ AXPlatformNodeWin::UIARoleProperties AXPlatformNodeWin::GetUIARoleProperties() {
       return {UIALocalizationStrategy::kDeferToAriaRole, UIA_TextControlTypeId,
               L"marquee"};
 
+    // TODO(crbug.com/546438370): Expose mappings for MathML so the semantics
+    // are exposed as part of the tree.
     case ax::mojom::Role::kMath:
     case ax::mojom::Role::kMathMLMath:
     case ax::mojom::Role::kMathMLFraction:
@@ -5790,7 +5792,7 @@ HRESULT AXPlatformNodeWin::GetPropertyValueImpl(PROPERTYID property_id,
                  UiaRegistrarWin::GetInstance().GetAriaActionsPropertyId()) {
         if (HasState(ax::mojom::State::kHasActions) &&
             HasIntListAttribute(ax::mojom::IntListAttribute::kActionsIds)) {
-          const std::vector<int32_t>& aria_actions =
+          base::span<const int32_t> aria_actions =
               GetIntListAttribute(ax::mojom::IntListAttribute::kActionsIds);
           std::vector<AXPlatformNodeWin*> target_nodes;
           for (int32_t action_id : aria_actions) {
@@ -5805,6 +5807,12 @@ HRESULT AXPlatformNodeWin::GetPropertyValueImpl(PROPERTYID property_id,
             V_ARRAY(result) = CreateUIAElementsSafeArray(target_nodes);
           }
         }
+      } else if (property_id == UiaRegistrarWin::GetInstance()
+                                    .GetIsWebContentRootPropertyId()) {
+        V_VT(result) = VT_BOOL;
+        V_BOOL(result) = GetDelegate()->IsTopLevelWebContentRoot()
+                             ? VARIANT_TRUE
+                             : VARIANT_FALSE;
       }
       break;
   }
@@ -6521,13 +6529,13 @@ void AXPlatformNodeWin::AggregateRangesForMarkerType(
     std::vector<std::pair<int, int>>* ranges,
     const std::optional<ax::mojom::HighlightType>& highlight_type) {
   DCHECK(node->IsText());
-  const std::vector<int32_t>& marker_types =
+  base::span<const int32_t> marker_types =
       node->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerTypes);
-  const std::vector<int32_t>& highlight_types =
+  base::span<const int32_t> highlight_types =
       node->GetIntListAttribute(ax::mojom::IntListAttribute::kHighlightTypes);
-  const std::vector<int>& marker_starts =
+  base::span<const int> marker_starts =
       node->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerStarts);
-  const std::vector<int>& marker_ends =
+  base::span<const int> marker_ends =
       node->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerEnds);
 
   CHECK_EQ(marker_types.size(), marker_starts.size());
@@ -6563,7 +6571,8 @@ AXPlatformNodeWin::GetMarkerTypeFromRange(
   if (IsText()) {
     AggregateRangesForMarkerType(this, marker_type, /*offset_ranges_amount=*/0,
                                  &relevant_ranges, highlight_type);
-  } else if (IsAtomicTextField()) {
+  } else if (IsAtomicTextField() && IsWebContent()) {
+    // Native Views text fields do not have an internal AXNode tree to traverse.
     // An atomic text field (e.g. <input>, <textarea>) is exposed to the
     // platform as a leaf, so its marker-bearing static-text descendants are
     // hidden from the platform tree. Walk the INTERNAL accessibility tree to
@@ -6909,6 +6918,7 @@ int AXPlatformNodeWin::MSAARole() {
 
     // TODO(http://crbug.com/1260584): Refine this if/when a MSAA API exists for
     // properly exposing MathML content.
+    // Also see http://crbug.com/546438370
     case ax::mojom::Role::kMathMLFraction:
     case ax::mojom::Role::kMathMLIdentifier:
     case ax::mojom::Role::kMathMLMultiscripts:
@@ -7473,8 +7483,23 @@ std::wstring AXPlatformNodeWin::ComputeUIAProperties() {
   std::vector<std::wstring> properties;
   BoolAttributeToUIAAriaProperty(
       properties, ax::mojom::BoolAttribute::kLiveAtomic, "atomic");
+  StringAttributeToUIAAriaProperty(
+      properties, ax::mojom::StringAttribute::kAriaBrailleLabel,
+      "braillelabel");
+  StringAttributeToUIAAriaProperty(
+      properties, ax::mojom::StringAttribute::kAriaBrailleRoleDescription,
+      "brailleroledescription");
   BoolAttributeToUIAAriaProperty(properties, ax::mojom::BoolAttribute::kBusy,
                                  "busy");
+
+  if (IsCellOrTableHeader(GetRole())) {
+    StringAttributeToUIAAriaProperty(
+        properties, ax::mojom::StringAttribute::kAriaCellColumnIndexText,
+        "colindextext");
+    StringAttributeToUIAAriaProperty(
+        properties, ax::mojom::StringAttribute::kAriaCellRowIndexText,
+        "rowindextext");
+  }
 
   switch (GetData().GetCheckedState()) {
     case ax::mojom::CheckedState::kNone:
@@ -7587,6 +7612,10 @@ std::wstring AXPlatformNodeWin::ComputeUIAProperties() {
                                 "setsize");
   StateToUIAAriaProperty(properties, ax::mojom::State::kHasActions,
                          "hasactions");
+  // Like the has-interest-for object attribute, this is only exposed when true.
+  if (HasState(ax::mojom::State::kHasInterestFor)) {
+    properties.push_back(L"hasinterestfor=true");
+  }
 
   int32_t sort_direction;
   if (IsTableHeader(GetRole()) &&
@@ -8363,7 +8392,7 @@ AXPlatformNodeWin::Counts AXPlatformNodeWin::ResetCountsForTesting() {
 
 // static
 BSTR AXPlatformNodeWin::GetValueAttributeAsBstr(AXPlatformNodeWin* target) {
-  if (target->IsPlatformDocument()) {
+  if (ui::IsPlatformDocument(target->GetRole())) {
     std::wstring url =
         base::UTF8ToWide(target->GetDelegate()->GetTreeData().url);
     BSTR value = SysAllocString(url.c_str());

@@ -39,6 +39,7 @@
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/time/time.h"
+#include "skia/ext/color_profile.h"
 #include "third_party/blink/renderer/platform/graphics/color_behavior.h"
 #include "third_party/blink/renderer/platform/graphics/image_orientation_enum.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_image.h"
@@ -53,16 +54,14 @@
 #include "third_party/skia/include/core/SkAlphaType.h"
 #include "third_party/skia/include/core/SkColorType.h"
 #include "third_party/skia/include/core/SkImageInfo.h"
+#include "third_party/skia/include/core/SkPixmap.h"
 #include "third_party/skia/include/core/SkRect.h"
+#include "third_party/skia/include/core/SkRefCnt.h"
 #include "third_party/skia/modules/skcms/skcms.h"
 #include "ui/gfx/hdr_metadata.h"
 
 class SkColorSpace;
 class SkData;
-
-namespace SkCodecs {
-class ICCProfileChromium;
-}
 
 namespace blink {
 
@@ -109,52 +108,6 @@ class PLATFORM_EXPORT ImagePlanes final {
   bool has_complete_scan_ = false;
   HighBitDepthOutputType hbd_output_type_ =
       HighBitDepthOutputType::kScaledTo16Bits;
-};
-
-class PLATFORM_EXPORT ColorProfile final {
-  USING_FAST_MALLOC(ColorProfile);
-
- public:
-  explicit ColorProfile(const skcms_ICCProfile&);
-  explicit ColorProfile(std::unique_ptr<SkCodecs::ICCProfileChromium>);
-  ColorProfile(const ColorProfile&) = delete;
-  ColorProfile& operator=(const ColorProfile&) = delete;
-  static std::unique_ptr<ColorProfile> Create(base::span<const uint8_t> buffer);
-  ~ColorProfile();
-
-  const skcms_ICCProfile* GetProfile() const { return &profile_; }
-
-  // Query the type of color profile (1-channel greyscale, 3-channel RGB, or
-  // 4-channel CMYK). This is used to, e.g, ignore 1-channel color profiles when
-  // attached to a 3-channel image.
-  bool IsGray() const {
-    return profile_.data_color_space == skcms_Signature_Gray;
-  }
-  bool IsRGB() const {
-    return profile_.data_color_space == skcms_Signature_RGB;
-  }
-  bool IsCMYK() const {
-    return profile_.data_color_space == skcms_Signature_CMYK;
-  }
-
-  // Return the SkColorSpace that best approximates the specified profile.
-  // This will always return a valid SkColorSpace (falling back to sRGB when
-  // the profile is unusable).
-  sk_sp<SkColorSpace> GetSkColorSpace() const { return sk_color_space_; }
-
-  // Return if GetSkColorSpace returns an exact representation of the
-  // provided ICC profile (and false if the ICC profile cannot be represented
-  // as an SkColorSpace, e.g, because it is LUT-based).
-  bool IsSkColorSpaceExact() const { return is_sk_color_space_exact_; }
-
- private:
-  void ComputeSkColorSpace();
-
-  skcms_ICCProfile profile_;
-  // Retains the parsed profile data so that pointers in profile_ remain valid.
-  std::unique_ptr<SkCodecs::ICCProfileChromium> skia_profile_;
-  sk_sp<SkColorSpace> sk_color_space_;
-  bool is_sk_color_space_exact_ = false;
 };
 
 // ImageDecoder is a base for all format-specific decoders
@@ -217,7 +170,7 @@ class PLATFORM_EXPORT ImageDecoder {
       ColorBehavior,
       cc::AuxImage aux_image,
       const size_t platform_max_decoded_bytes,
-      const SkISize& desired_size = SkISize::MakeEmpty(),
+      const gfx::Size& desired_size = gfx::Size(),
       AnimationOption animation_option = AnimationOption::kUnspecified);
   static std::unique_ptr<ImageDecoder> Create(
       scoped_refptr<SharedBuffer> data,
@@ -227,7 +180,7 @@ class PLATFORM_EXPORT ImageDecoder {
       ColorBehavior color_behavior,
       cc::AuxImage aux_image,
       size_t platform_max_decoded_bytes,
-      const SkISize& desired_size = SkISize::MakeEmpty(),
+      const gfx::Size& desired_size = gfx::Size(),
       AnimationOption animation_option = AnimationOption::kUnspecified) {
     return Create(SegmentReader::CreateFromSharedBuffer(std::move(data)),
                   data_complete, alpha_option, high_bit_depth_decoding_option,
@@ -246,7 +199,7 @@ class PLATFORM_EXPORT ImageDecoder {
       ColorBehavior color_behavior,
       cc::AuxImage aux_image,
       size_t platform_max_decoded_bytes,
-      const SkISize& desired_size = SkISize::MakeEmpty(),
+      const gfx::Size& desired_size = gfx::Size(),
       AnimationOption animation_option = AnimationOption::kUnspecified);
 
   virtual String FilenameExtension() const = 0;
@@ -264,7 +217,8 @@ class PLATFORM_EXPORT ImageDecoder {
   // This is useful for callers to determine whether a decoder instantiation
   // failure is due to insufficient or bad data. If |all_data_received| is
   // true, the data is always considered sufficient, since no more data will
-  // ever arrive.
+  // ever arrive. Pass all_data_received=false to be conservative if the value
+  // of all_data_received is unknown.
   static bool HasSufficientDataToSniffMimeType(const SharedBuffer&,
                                                bool all_data_received);
 
@@ -423,7 +377,7 @@ class PLATFORM_EXPORT ImageDecoder {
   // Return the HDR metadata from the image and its color profile.
   const gfx::HDRMetadata& GetHDRMetadata() const { return hdr_metadata_; }
 
-  void SetEmbeddedColorProfile(std::unique_ptr<ColorProfile> profile);
+  void SetEmbeddedColorProfile(sk_sp<skia::ColorProfile> profile);
   bool NeedsDecodeTimeColorTransform() const {
     return needs_decode_time_color_transform_;
   }
@@ -489,7 +443,8 @@ class PLATFORM_EXPORT ImageDecoder {
                HighBitDepthDecodingOption high_bit_depth_decoding_option,
                ColorBehavior color_behavior,
                cc::AuxImage aux_image,
-               wtf_size_t max_decoded_bytes);
+               wtf_size_t max_decoded_bytes,
+               const gfx::Size& desired_size = gfx::Size());
 
   // Calculates the most recent frame whose image data may be needed in
   // order to decode frame |frame_index|, based on frame disposal methods
@@ -594,6 +549,14 @@ class PLATFORM_EXPORT ImageDecoder {
   // memory devices.
   const wtf_size_t max_decoded_bytes_;
 
+  // The desired size of the decoded image, if specified (e.g. via WebCodecs).
+  // Is empty (0, 0) if not specified. When empty, the image is decoded at its
+  // native size. Decoders that support downsampling (such as JPEGImageDecoder)
+  // use this as a target size to choose the closest supported downscale factor
+  // without failing if the requested size is smaller than the lowest supported
+  // factor.
+  const gfx::Size desired_size_;
+
   // While decoding, we may learn that there are so many animation frames that
   // we would go beyond our cache budget.
   // If that happens, purge_aggressively_ is set to true. This signals
@@ -652,7 +615,7 @@ class PLATFORM_EXPORT ImageDecoder {
   bool failed_ = false;
 
   // The precise color profile of the image.
-  std::unique_ptr<ColorProfile> embedded_color_profile_;
+  sk_sp<skia::ColorProfile> embedded_color_profile_;
 
   // The color space for the SkImage that will be produced.  If
   // `color_behavior_` is tag, then this is the SkColorSpace representation of

@@ -126,7 +126,6 @@ class CONTENT_EXPORT VideoCaptureManager
                      VideoCaptureControllerID client_id,
                      const GlobalRenderFrameHostId& render_frame_host_id,
                      VideoCaptureControllerEventHandler* client_handler,
-                     std::optional<url::Origin> origin,
                      bool is_allowed_on_lock_screen,
                      DoneCB done_cb);
 
@@ -164,6 +163,10 @@ class CONTENT_EXPORT VideoCaptureManager
   // Called by VideoCaptureHost to request a refresh frame from the video
   // capture device.
   void RequestRefreshFrameForClient(VideoCaptureController* controller);
+
+  // Called when a client disconnects to request that all buffers be dropped
+  // to prevent a compromised renderer from reusing them.
+  void InvalidateBuffersForClient(VideoCaptureController* controller);
 
   // Retrieves all capture supported formats for a particular device. Returns
   // false if the |capture_session_id| is not found. The supported formats are
@@ -332,9 +335,6 @@ class CONTENT_EXPORT VideoCaptureManager
   void DoStopDevice(VideoCaptureController* controller);
   void ProcessDeviceStartRequestQueue();
 
-  void MaybePostDesktopCaptureWindowId(
-      const media::VideoCaptureSessionId& session_id);
-
   void ReleaseDevices();
   void ResumeDevices();
 
@@ -390,10 +390,6 @@ class CONTENT_EXPORT VideoCaptureManager
   // use this list if the device is not started, otherwise it will retrieve the
   // active device capture format from the VideoCaptureController associated.
   std::vector<media::VideoCaptureDeviceInfo> devices_info_cache_;
-
-  // Map used by DesktopCapture.
-  std::map<media::VideoCaptureSessionId, gfx::NativeViewId>
-      notification_window_ids_;
 
   // Closes video device capture sessions after a timeout. Idle timeout value
   // chosen based on UMA metrics. See https://crbug.com/1163105#c28

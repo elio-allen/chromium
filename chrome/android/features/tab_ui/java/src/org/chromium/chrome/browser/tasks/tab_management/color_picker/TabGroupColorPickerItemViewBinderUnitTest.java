@@ -28,11 +28,9 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.Robolectric;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.tasks.tab_management.R;
 import org.chromium.components.tab_groups.TabGroupColorId;
 import org.chromium.components.tab_groups.TabGroupColorPickerUtils;
@@ -42,13 +40,7 @@ import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 
 /** Tests for TabGroupColorPickerItemViewBinder. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
-// TODO(crbug.com/419289558): Re-enable color surface feature flags
-@Features.DisableFeatures({
-    ChromeFeatureList.ANDROID_SURFACE_COLOR_UPDATE,
-    ChromeFeatureList.GRID_TAB_SWITCHER_SURFACE_COLOR_UPDATE,
-    TabGroupsFeatureMap.UPDATE_TAB_GROUP_COLORS
-})
+@Features.DisableFeatures(TabGroupsFeatureMap.UPDATE_TAB_GROUP_COLORS)
 public class TabGroupColorPickerItemViewBinderUnitTest {
     private Activity mActivity;
     private View mTabGroupColorPickerItemView;
@@ -70,9 +62,7 @@ public class TabGroupColorPickerItemViewBinderUnitTest {
                         TabGroupColorId.BLUE,
                         TabGroupColorPickerType.TAB_GROUP,
                         false,
-                        () -> {
-                            mModel.set(IS_SELECTED, !mModel.get(IS_SELECTED));
-                        },
+                        () -> mModel.set(IS_SELECTED, !mModel.get(IS_SELECTED)),
                         false,
                         /* itemIndex= */ 0);
 

@@ -16,8 +16,8 @@
 #include <memory>
 #include <string>
 
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/sanitized_object.h"
 #include "build/build_config.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/omnibox_client.h"
@@ -31,7 +31,7 @@ class OmniboxEditModel;
 
 class OmniboxView {
   // TODO(crbug.com/392015004): Remove this macro once it gets fixed.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   using IconFetchedCallback = base::OnceCallback<void(const gfx::Image& icon)>;
@@ -122,6 +122,12 @@ class OmniboxView {
   // current cursor position.
   virtual gfx::Range GetSelectionBounds() const = 0;
 
+  // Changes the selection (directly on the view).
+  virtual void SetSelectionBounds(gfx::Range selection) = 0;
+
+  // Returns whether the view has any selection at all.
+  virtual bool HasSelection() const = 0;
+
   // Selects all the text in the edit.  Use this in place of SetSelAll() to
   // avoid selecting the "phantom newline" at the end of the edit.
   virtual void SelectAll(bool reversed) = 0;
@@ -210,6 +216,11 @@ class OmniboxView {
   // Hides a virtual keyboard or alternate input view if enabled.
   virtual void HideImeIfNeeded();
 
+  // Whether the client has a Full WebUI Omnibox. Declared here so
+  // `OmniboxEditModel` can query this state without directly depending on
+  // Views-layer classes.
+  virtual bool IsFullWebUIOmnibox() const;
+
  protected:
   // Tracks important state that may change between OnBeforePossibleChange() and
   // OnAfterPossibleChange().
@@ -257,6 +268,21 @@ class OmniboxView {
   void UpdateTextStyle(const std::u16string& display_text,
                        const bool text_is_url,
                        const AutocompleteSchemeClassifier& classifier);
+
+  // Given display text and match info, computes text that provides more context
+  // about the completion, to be provided via accessibility API.
+  //
+  // suggestion_text_prefix_length will be set to number of added labelling
+  // characters before the original editable text.
+  std::u16string ComputeFriendlySuggestionTextForAccessibility(
+      const std::u16string& display_text,
+      const AutocompleteMatch& match,
+      int& suggestion_text_prefix_length);
+
+  // Returns true if the full WebUI popup is showing. It has its own input and
+  // narrates suggestion selections itself, so this view must not also narrate
+  // them; doing both makes the screen reader interrupt itself.
+  bool IsSuggestionNarrationOwnedByWebUIPopup() const;
 
   virtual OmniboxController* controller();
   virtual const OmniboxController* controller() const;

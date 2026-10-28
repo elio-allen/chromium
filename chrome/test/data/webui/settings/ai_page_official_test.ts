@@ -6,12 +6,14 @@ import 'chrome://settings/lazy_load.js';
 import 'chrome://settings/settings.js';
 
 import type {OnDeviceAiBrowserProxy, OnDeviceAiEnabled} from 'chrome://settings/lazy_load.js';
-import {OnDeviceAiBrowserProxyImpl} from 'chrome://settings/lazy_load.js';
-import {loadTimeData} from 'chrome://settings/settings.js';
+import {FeatureOptInState, OnDeviceAiBrowserProxyImpl, SettingsAiPageFeaturePrefName} from 'chrome://settings/lazy_load.js';
+import {PrefsBrowserProxy, PrefService} from 'chrome://settings/settings.js';
 import type {SettingsAiPageElement, SettingsToggleButtonElement} from 'chrome://settings/settings.js';
-import {assertFalse, assertNull, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 import {isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
+
+import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
 
 class TestOnDeviceAiBrowserProxy extends TestBrowserProxy implements
     OnDeviceAiBrowserProxy {
@@ -57,29 +59,32 @@ suite('settings ai page official', function() {
   }
 
   setup(function() {
+    const prefsBrowserProxy = new TestPrefsBrowserProxy([
+      {
+        key: SettingsAiPageFeaturePrefName.HISTORY_SEARCH,
+        type: chrome.settingsPrivate.PrefType.NUMBER,
+        value: FeatureOptInState.NOT_INITIALIZED,
+      },
+    ]);
+    PrefsBrowserProxy.setInstance(prefsBrowserProxy);
+    PrefService.resetInstanceForTesting();
+
     testBrowserProxy = new TestOnDeviceAiBrowserProxy();
     OnDeviceAiBrowserProxyImpl.setInstance(testBrowserProxy);
-    loadTimeData.overrideValues({
-      showOnDeviceAiSettings: false,
-    });
     createPage();
   });
 
-  function queryOnDeviceAiToggle(): SettingsToggleButtonElement|null {
-    // Toggle is conditionally rendered, so retrieve it via `querySelector`.
-    return aiPage.shadowRoot!.querySelector<SettingsToggleButtonElement>(
+  function getOnDeviceAiToggle(): SettingsToggleButtonElement {
+    const toggle = aiPage.shadowRoot.querySelector<SettingsToggleButtonElement>(
         '#onDeviceAiToggle');
+    assertTrue(!!toggle);
+    return toggle;
   }
 
   test('show onDeviceAi toggle', async function() {
-    loadTimeData.overrideValues({
-      showOnDeviceAiSettings: true,
-    });
-    createPage();
     await microtasksFinished();
 
-    const toggle = queryOnDeviceAiToggle();
-    assertTrue(!!toggle);
+    const toggle = getOnDeviceAiToggle();
     assertTrue(isVisible(toggle));
     assertTrue(toggle.checked);
 
@@ -108,9 +113,6 @@ suite('settings ai page official', function() {
   });
 
   test('onDeviceAi toggle disabled by policy', async function() {
-    loadTimeData.overrideValues({
-      showOnDeviceAiSettings: true,
-    });
     testBrowserProxy.setGetOnDeviceAiEnabledResponse({
       enabled: true,
       allowedByPolicy: false,
@@ -119,27 +121,20 @@ suite('settings ai page official', function() {
     await testBrowserProxy.whenCalled('getOnDeviceAiEnabled');
     await microtasksFinished();
 
-    const toggle = queryOnDeviceAiToggle();
-    assertTrue(!!toggle);
+    const toggle = getOnDeviceAiToggle();
     assertTrue(isVisible(toggle));
     assertTrue(toggle.$.control.disabled);
     assertFalse(toggle.checked);
     const policyIndicator =
-        toggle.shadowRoot!.querySelector('cr-policy-pref-indicator');
+        toggle.shadowRoot.querySelector('cr-policy-pref-indicator');
     assertTrue(!!policyIndicator);
     assertTrue(isVisible(policyIndicator));
   });
 
   test('onDeviceAi send feedback', async function() {
-    loadTimeData.overrideValues({
-      showOnDeviceAiSettings: true,
-    });
-    createPage();
     await microtasksFinished();
 
-    const toggle = queryOnDeviceAiToggle();
-    assertTrue(!!toggle);
-
+    const toggle = getOnDeviceAiToggle();
     const section = toggle.closest('settings-section');
     assertTrue(!!section);
 
@@ -149,10 +144,5 @@ suite('settings ai page official', function() {
 
     feedbackButton.click();
     await testBrowserProxy.whenCalled('openFeedbackDialog');
-  });
-
-  test('hide onDeviceAi toggle by default', function() {
-    assertFalse(loadTimeData.getBoolean('showOnDeviceAiSettings'));
-    assertNull(queryOnDeviceAiToggle());
   });
 });

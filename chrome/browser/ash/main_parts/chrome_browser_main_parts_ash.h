@@ -52,14 +52,11 @@ class LockToSingleUserManager;
 class QuirksPolicyController;
 }  // namespace policy
 
-namespace video_conference {
-class VideoConferenceManagerClientImpl;
-}  // namespace video_conference
-
 namespace ash {
 
 class AccessibilityEventRewriterDelegateImpl;
 class ApnMigrator;
+class AshWebUIConfigManager;
 class AudioSurveyHandler;
 class AuthEventsRecorder;
 class BluetoothLogController;
@@ -75,8 +72,21 @@ class EventRewriterDelegateImpl;
 class FastTransitionObserver;
 class FwupdDownloadClientImpl;
 class GnubbyNotification;
-class HatsBluetoothRevampTriggerImpl;
+class BookmarkModelProvider;
+class ConsentAuditorProvider;
+class DeskSyncServiceProvider;
+class FaviconServiceProvider;
+class FeatureEngagementTrackerProvider;
+class HistoryServiceProvider;
 class IdentityManagerProvider;
+class MantaServiceProvider;
+class MediaDeviceSaltServiceProvider;
+class PasswordReuseManagerProvider;
+class SupervisedUserServiceProvider;
+class SyncServiceProvider;
+class TemplateURLServiceProvider;
+class TrustedVaultServiceProvider;
+class WifiConfigurationSyncServiceProvider;
 class IdleActionWarningObserver;
 class KioskController;
 class LoginScreenExtensionsStorageCleaner;
@@ -90,6 +100,7 @@ class PowerMetricsReporter;
 class RendererFreezer;
 class ReportControllerInitializer;
 class ScreenLockerController;
+class ServicesCustomizationDocument;
 class SessionTerminationManager;
 class ShortcutMappingPrefService;
 class ShutdownPolicyForwarder;
@@ -100,6 +111,7 @@ class TokenHandleStoreFactory;
 class UserLoginPermissionTracker;
 class VideoConferenceAppServiceClient;
 class VideoConferenceAshFeatureClient;
+class VideoConferenceManagerClientImpl;
 
 #if BUILDFLAG(USE_CUPS)
 class LocalPrinter;
@@ -189,8 +201,6 @@ class ChromeBrowserMainPartsAsh : public ChromeBrowserMainPartsLinux {
   std::unique_ptr<NetworkChangeManagerClient> network_change_manager_client_;
   std::unique_ptr<LobsterClientFactoryImpl> lobster_client_factory_;
   std::unique_ptr<DebugdNotificationHandler> debugd_notification_handler_;
-  std::unique_ptr<HatsBluetoothRevampTriggerImpl>
-      hats_bluetooth_revamp_trigger_;
 
   std::unique_ptr<internal::DBusServices> dbus_services_;
 
@@ -218,7 +228,26 @@ class ChromeBrowserMainPartsAsh : public ChromeBrowserMainPartsLinux {
       doze_mode_power_status_scheduler_;
 
   std::unique_ptr<apps::AppServiceRegistry> app_service_registry_;
+  std::unique_ptr<BookmarkModelProvider> bookmark_model_provider_;
+  std::unique_ptr<ConsentAuditorProvider> consent_auditor_provider_;
+  std::unique_ptr<DeskSyncServiceProvider> desk_sync_service_provider_;
+  std::unique_ptr<FaviconServiceProvider> favicon_service_provider_;
+  std::unique_ptr<FeatureEngagementTrackerProvider>
+      feature_engagement_tracker_provider_;
+  std::unique_ptr<HistoryServiceProvider> history_service_provider_;
   std::unique_ptr<IdentityManagerProvider> identity_manager_provider_;
+  std::unique_ptr<MantaServiceProvider> manta_service_provider_;
+  std::unique_ptr<MediaDeviceSaltServiceProvider>
+      media_device_salt_service_provider_;
+  std::unique_ptr<PasswordReuseManagerProvider>
+      password_reuse_manager_provider_;
+  std::unique_ptr<SupervisedUserServiceProvider>
+      supervised_user_service_provider_;
+  std::unique_ptr<SyncServiceProvider> sync_service_provider_;
+  std::unique_ptr<TemplateURLServiceProvider> template_url_service_provider_;
+  std::unique_ptr<TrustedVaultServiceProvider> trusted_vault_service_provider_;
+  std::unique_ptr<WifiConfigurationSyncServiceProvider>
+      wifi_configuration_sync_service_provider_;
 
   std::unique_ptr<arc::ArcServiceLauncher> arc_service_launcher_;
   std::unique_ptr<arc::ArcPlatformSupportImpl> arc_platform_support_;
@@ -307,7 +336,7 @@ class ChromeBrowserMainPartsAsh : public ChromeBrowserMainPartsLinux {
   std::unique_ptr<ash::AuthEventsRecorder> auth_events_recorder_;
   std::unique_ptr<ash::ChromeAuthParts> auth_parts_;
 
-  std::unique_ptr<video_conference::VideoConferenceManagerClientImpl>
+  std::unique_ptr<VideoConferenceManagerClientImpl>
       video_conference_manager_client_;
 
   std::unique_ptr<MisconfiguredUserCleaner> misconfigured_user_cleaner_;
@@ -325,6 +354,11 @@ class ChromeBrowserMainPartsAsh : public ChromeBrowserMainPartsLinux {
 #endif
 
   std::unique_ptr<ScreenLockerController> screen_locker_controller_;
+
+  std::unique_ptr<ServicesCustomizationDocument>
+      services_customization_document_;
+
+  std::unique_ptr<AshWebUIConfigManager> ash_web_ui_config_manager_;
 
   base::WeakPtrFactory<ChromeBrowserMainPartsAsh> weak_ptr_factory_{this};
 };

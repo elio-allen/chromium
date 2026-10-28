@@ -6,7 +6,6 @@
 # See README.chromium for details.
 
 import("//components/proto_extras/proto_extras.gni")
-import("//third_party/libprotobuf-mutator/fuzzable_proto_library.gni")
 import("//third_party/protobuf/proto_library.gni")
 
 _proto_files = [
@@ -55,6 +54,7 @@ _proto_files = [
   "lens_overlay_visual_search_interaction_data.proto",
   "lens_overlay_visual_search_interaction_log_data.proto",
   "modality_chip_props.proto",
+  "search_communication.proto",
 ]
 
 proto_library("lens_overlay_proto") {
@@ -62,7 +62,11 @@ proto_library("lens_overlay_proto") {
   proto_in_dir = "."
   import_dirs = [
     "//",
+    "//components/optimization_guide/proto/features",
     "//third_party/omnibox_proto",
   ]
-  deps = [ "//third_party/omnibox_proto" ]
+  deps = [
+    "//components/optimization_guide/proto:optimization_guide_proto",
+    "//third_party/omnibox_proto",
+  ]
 }

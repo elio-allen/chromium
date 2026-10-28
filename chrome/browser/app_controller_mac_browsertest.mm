@@ -46,6 +46,7 @@
 #include "chrome/browser/prefs/incognito_mode_prefs.h"
 #include "chrome/browser/profiles/delete_profile_helper.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_attributes_init_params.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
@@ -55,7 +56,6 @@
 #include "chrome/browser/profiles/profile_test_util.h"
 #include "chrome/browser/shortcuts/chrome_webloc_file.h"
 #include "chrome/browser/signin/signin_util.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -100,6 +100,8 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #import "ui/events/test/cocoa_test_event_utils.h"
@@ -283,8 +285,12 @@ bool IsReallyVisible(NSWindow* window) {
 
 size_t CountVisibleWindows() {
   size_t count = 0;
-  for (NSWindow* w in [NSApp windows])
+  for (NSWindow* w in [NSApp windows]) {
+    if ([w isKindOfClass:NSClassFromString(@"NSStatusBarWindow")]) {
+      continue;
+    }
     count = count + (IsReallyVisible(w) ? 1 : 0);
+  }
   return count;
 }
 
@@ -545,7 +551,7 @@ IN_PROC_BROWSER_TEST_F(AppControllerProfilePickerBrowserTest,
   // in the menu.
   PrefService* local_state = g_browser_process->local_state();
   local_state->SetBoolean(prefs::kBrowserGuestModeEnabled, false);
-  NSMenuItem* about_menu_item = [[[NSApp.mainMenu itemWithTag:kMacChromeMenuId]
+  NSMenuItem* about_menu_item = [[[NSApp.mainMenu itemWithTag:IDC_CHROME_MENU]
       submenu] itemWithTag:IDC_ABOUT];
   EXPECT_FALSE([AppController.sharedController
       validateUserInterfaceItem:about_menu_item]);
@@ -618,7 +624,7 @@ IN_PROC_BROWSER_TEST_F(AppControllerProfilePickerBrowserTest,
   EXPECT_FALSE(browser()->GetProfile()->IsGuestSession());
   // "About Chrome" is not available in the menu.
   NSMenu* chrome_submenu =
-      [[NSApp.mainMenu itemWithTag:kMacChromeMenuId] submenu];
+      [[NSApp.mainMenu itemWithTag:IDC_CHROME_MENU] submenu];
   NSMenuItem* about_menu_item = [chrome_submenu itemWithTag:IDC_ABOUT];
   EXPECT_FALSE([app_controller validateUserInterfaceItem:about_menu_item]);
   [chrome_submenu update];
@@ -684,7 +690,7 @@ IN_PROC_BROWSER_TEST_F(AppControllerProfilePickerBrowserTest, MenuCommands) {
 
   // Menus are updated before they are brought onscreen. This includes a call
   // to -menuNeedsUpdate: to update the menu's items.
-  NSMenu* file_submenu = [[NSApp.mainMenu itemWithTag:kMacFileMenuId] submenu];
+  NSMenu* file_submenu = [[NSApp.mainMenu itemWithTag:IDC_FILE_MENU] submenu];
   [app_controller menuNeedsUpdate:file_submenu];
 
   // The Profiler Picker has no tabs, so Close Tab should not be present.
@@ -865,7 +871,8 @@ IN_PROC_BROWSER_TEST_F(AppControllerBrowserTest, OpenInRegularBrowser) {
   std::ignore = AppController.sharedController;
 
   // Create an incognito browser and make it the last active browser.
-  Browser* incognito_browser = CreateIncognitoBrowser(browser()->GetProfile());
+  BrowserWindowInterface* incognito_browser =
+      CreateIncognitoBrowser(browser()->GetProfile());
   EXPECT_EQ(1, browser()->tab_strip_model()->count());
   EXPECT_EQ(1, incognito_browser->tab_strip_model()->count());
   EXPECT_TRUE(incognito_browser->GetProfile()->IsIncognitoProfile());
@@ -907,7 +914,7 @@ IN_PROC_BROWSER_TEST_F(AppControllerBrowserTest,
   EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 1u);
   // Create an incognito browser.
   Profile* profile = browser()->GetProfile();
-  Browser* incognito_browser = CreateIncognitoBrowser(profile);
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser(profile);
   EXPECT_TRUE(incognito_browser->GetProfile()->IsIncognitoProfile());
   EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 2u);
 
@@ -955,7 +962,7 @@ IN_PROC_BROWSER_TEST_F(AppControllerBrowserTest, OpenUrlInGuestBrowser) {
   std::ignore = AppController.sharedController;
 
   // Create a guest browser and make it the last active browser.
-  Browser* guest_browser = CreateGuestBrowser();
+  BrowserWindowInterface* guest_browser = CreateGuestBrowser();
   EXPECT_EQ(1, browser()->tab_strip_model()->count());
   EXPECT_EQ(1, guest_browser->tab_strip_model()->count());
   EXPECT_TRUE(guest_browser->GetProfile()->IsGuestSession());
@@ -1033,7 +1040,7 @@ IN_PROC_BROWSER_TEST_F(AppControllerBrowserTest,
   IncognitoModePrefs::SetAvailability(
       profile->GetPrefs(), policy::IncognitoModeAvailability::kForced);
   // Create an incognito browser.
-  Browser* incognito_browser = CreateIncognitoBrowser(profile);
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser(profile);
   EXPECT_TRUE(incognito_browser->GetProfile()->IsIncognitoProfile());
   // Close the current non-incognito browser.
   CloseBrowserSynchronously(browser());
@@ -1096,6 +1103,8 @@ IN_PROC_BROWSER_TEST_F(AppControllerShortcutsNotAppsBrowserTest,
                         ->tab_strip_model()
                         ->GetActiveWebContents()
                         ->GetLastCommittedURL());
+  ASSERT_TRUE(event_navigation_observer.last_initiator_origin().has_value());
+  EXPECT_TRUE(event_navigation_observer.last_initiator_origin()->opaque());
 
   {
     base::ScopedAllowBlockingForTesting allow_blocking;
@@ -1185,6 +1194,8 @@ IN_PROC_BROWSER_TEST_F(AppControllerShortcutsNotAppsBrowserTest,
   EXPECT_EQ(simple, new_browser->GetTabStripModel()
                         ->GetActiveWebContents()
                         ->GetLastCommittedURL());
+  ASSERT_TRUE(event_navigation_observer.last_initiator_origin().has_value());
+  EXPECT_TRUE(event_navigation_observer.last_initiator_origin()->opaque());
 
   {
     base::ScopedAllowBlockingForTesting allow_blocking;
@@ -1528,7 +1539,7 @@ IN_PROC_BROWSER_TEST_F(AppControllerMainMenuBrowserTest,
   ASSERT_TRUE(item);
   [app_controller commandDispatch:item];
   // Check that a new incognito browser is opened.
-  Browser* new_browser = browser_created_observer.Wait();
+  BrowserWindowInterface* new_browser = browser_created_observer.Wait();
   EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 1u);
   EXPECT_TRUE(new_browser->GetProfile()->IsPrimaryOTRProfile());
   EXPECT_EQ(profile, new_browser->GetProfile()->GetOriginalProfile());
@@ -1551,7 +1562,7 @@ IN_PROC_BROWSER_TEST_F(AppControllerMainMenuBrowserTest,
   tab_strip->CloseAllTabsInGroup(group_id);
 
   // Destroy the browser that set _lastActiveBrowser.
-  Browser* browser2 = CreateBrowser(profile);
+  BrowserWindowInterface* browser2 = CreateBrowser(profile);
   CloseBrowserSynchronously(browser());
 
   // Force a HistoryMenuBridge rebuild. setLastProfile: early-returns when
@@ -1600,7 +1611,7 @@ class AppControllerHandoffBrowserTest : public InProcessBrowserTest {
 
   void TearDownInProcessBrowserTestFixture() override { swizzler_.reset(); }
   // Closes the tab, and waits for the close to finish.
-  void CloseTab(Browser* browser, int index) {
+  void CloseTab(BrowserWindowInterface* browser, int index) {
     content::WebContentsDestroyedWatcher destroyed_watcher(
         browser->tab_strip_model()->GetWebContentsAt(index));
     browser->tab_strip_model()->CloseWebContentsAt(
@@ -1629,7 +1640,7 @@ IN_PROC_BROWSER_TEST_F(AppControllerHandoffBrowserTest, TestHandoffURLs) {
   // Test that opening a new tab updates the handoff URL.
   GURL test_url2 = embedded_test_server()->GetURL("/title2.html");
   NavigateParams params(browser(), test_url2, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = WindowOpenDisposition::kNewForegroundTab;
   ui_test_utils::NavigateToURL(&params);
   EXPECT_EQ(g_handoff_url, test_url2);
 
@@ -1650,9 +1661,9 @@ IN_PROC_BROWSER_TEST_F(AppControllerHandoffBrowserTest, TestHandoffURLs) {
   auto browser_created_observer =
       std::make_optional<ui_test_utils::BrowserCreatedObserver>();
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL(test_url3), WindowOpenDisposition::NEW_WINDOW,
+      browser(), GURL(test_url3), WindowOpenDisposition::kNewWindow,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
-  Browser* const browser2 = browser_created_observer->Wait();
+  BrowserWindowInterface* const browser2 = browser_created_observer->Wait();
   EXPECT_EQ(g_handoff_url, test_url3);
   EXPECT_EQ(g_handoff_title, u"Title Of More Awesomeness");
 
@@ -1668,16 +1679,16 @@ IN_PROC_BROWSER_TEST_F(AppControllerHandoffBrowserTest, TestHandoffURLs) {
   GURL test_url4 = embedded_test_server()->GetURL("/simple.html");
   browser_created_observer.emplace();
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL(test_url4), WindowOpenDisposition::OFF_THE_RECORD,
+      browser(), GURL(test_url4), WindowOpenDisposition::kOffTheRecord,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_BROWSER);
-  Browser* const browser3 = browser_created_observer->Wait();
+  BrowserWindowInterface* const browser3 = browser_created_observer->Wait();
   EXPECT_EQ(g_handoff_url, GURL());
   EXPECT_EQ(g_handoff_title, u"");
 
   // Open a new tab in the incognito window.
   EXPECT_EQ(2u, GlobalBrowserCollection::GetInstance()->GetSize());
   ui_test_utils::NavigateToURLWithDisposition(
-      browser3, test_url4, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser3, test_url4, WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
   EXPECT_EQ(g_handoff_url, GURL());
   EXPECT_EQ(g_handoff_title, u"");

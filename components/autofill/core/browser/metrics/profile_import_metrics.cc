@@ -22,11 +22,11 @@
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile_comparator.h"
 #include "components/autofill/core/browser/data_model/transliterator.h"
-#include "components/autofill/core/browser/data_quality/addresses/address_import_requirement_utils.h"
+#include "components/autofill/core/browser/data_quality/addresses/address_import_requirement_util.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_import/addresses/autofill_profile_import_process.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
-#include "components/autofill/core/browser/metrics/autofill_metrics_utils.h"
+#include "components/autofill/core/browser/metrics/autofill_metrics_util.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
@@ -188,11 +188,11 @@ void LogAddressProfileImportUkm(
       .SetAutocompleteUnrecognizedImport(
           profile_import_metadata
               .did_import_from_unrecognized_autocomplete_field)
-      .SetImportType(static_cast<int64_t>(import_type))
+      .SetImportType(std::to_underlying(import_type))
       .SetNumberOfEditedFields(num_edited_fields)
       .SetPhoneNumberStatus(
-          static_cast<int64_t>(profile_import_metadata.phone_import_status))
-      .SetUserDecision(static_cast<int64_t>(user_decision))
+          std::to_underlying(profile_import_metadata.phone_import_status))
+      .SetUserDecision(std::to_underlying(user_decision))
       .SetUserHasExistingProfile(!existing_profiles.empty());
   if (import_type == AutofillProfileImportType::kNewProfile &&
       !existing_profiles.empty() && import_candidate) {

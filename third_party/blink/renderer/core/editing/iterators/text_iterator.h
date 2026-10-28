@@ -94,10 +94,6 @@ class TextIteratorAlgorithm {
     return text_state_.CharacterAt(index);
   }
 
-  bool BreaksAtReplacedElement() {
-    return !behavior_.DoesNotBreakAtReplacedElement();
-  }
-
   // Computes the length of the given range using a text iterator according to
   // the specified iteration behavior. The default iteration behavior is to
   // always emit object replacement characters for replaced elements.
@@ -181,10 +177,6 @@ class TextIteratorAlgorithm {
     return behavior_.ExcludeAutofilledValue();
   }
 
-  bool DoesNotBreakAtReplacedElement() const {
-    return behavior_.DoesNotBreakAtReplacedElement();
-  }
-
   // Clipboard should respect user-select style attribute
   bool SkipsUnselectableContent() const {
     return behavior_.SkipsUnselectableContent();
@@ -208,7 +200,7 @@ class TextIteratorAlgorithm {
   // Current position, not necessarily of the text being returned, but position
   // as we walk through the DOM tree.
   const Node* node_;
-  IterationProgress iteration_progress_;
+  IterationProgress iteration_progress_ = kHandledNone;
   FullyClippedStateStackAlgorithm<Strategy> fully_clipped_stack_;
   wtf_size_t shadow_depth_;
 

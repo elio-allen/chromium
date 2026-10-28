@@ -3,8 +3,10 @@
 // found in the LICENSE file.
 
 #import "ios/chrome/browser/assistant/ui/assistant_container_constants.h"
+#import "ios/chrome/browser/composebox/public/features.h"
 #import "ios/chrome/browser/composebox/shared/ui/composebox_ui_constants.h"
 #import "ios/chrome/browser/scene/ui/scene_ui_constants.h"
+#import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
@@ -68,11 +70,20 @@ void OpenAssistantFromOmnibox() {
   config.features_enabled_and_params.push_back(
       {kAssistantContainer,
        {{kAssistantContainerParam, kAssistantContainerParamDebug}}});
+  config.features_disabled.push_back(kComposeboxServerSideState);
   return config;
 }
 
 - (void)setUp {
+  [self addTeardownBlock:^{
+    [ChromeEarlGrey
+        clearUserPrefWithName:prefs::kCobrowseTabSharingConsentAccepted];
+    [ChromeEarlGrey commitPendingUserPrefsWrite];
+  }];
   [super setUp];
+  [ChromeEarlGrey setBoolValue:YES
+                   forUserPref:prefs::kCobrowseTabSharingConsentAccepted];
+  [ChromeEarlGrey commitPendingUserPrefsWrite];
   self.testServer->RegisterRequestHandler(base::BindRepeating(&SimpleResponse));
   GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
 }
@@ -121,7 +132,8 @@ void OpenAssistantFromOmnibox() {
   [[EarlGrey
       selectElementWithMatcher:grey_accessibilityID(
                                    kAssistantContainerAccessibilityIdentifier)]
-      performAction:grey_swipeFastInDirection(kGREYDirectionDown)];
+      performAction:grey_swipeFastInDirectionWithStartPoint(kGREYDirectionDown,
+                                                            0.5, 0.1)];
 
   // Verify the composebox is no longer the first responder (meaning the
   // keyboard is dismissed).
@@ -147,9 +159,6 @@ void OpenAssistantFromOmnibox() {
   config.features_enabled.push_back(kAssistantSidePanel);
   config.features_enabled.push_back(kChromeNextIa);
   config.features_enabled.push_back(kFullscreenRefactoring);
-  if (![self isRunningTest:@selector(testOmniboxVisibleInSidePanel)]) {
-    config.features_enabled.push_back(kComposeboxIpad);
-  }
 
   return config;
 }

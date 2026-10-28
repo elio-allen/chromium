@@ -8,7 +8,7 @@
 #include <string_view>
 
 #include "base/scoped_observation.h"
-#include "chrome/browser/enterprise/reporting/realtime_event_upload_helper_desktop.h"
+#include "chrome/browser/enterprise/reporting/realtime_event_upload_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager_observer.h"
 #include "components/enterprise/browser/reporting/browser_launch/browser_launch_event_uploader.h"
@@ -36,6 +36,8 @@ class BrowserLaunchEventUploaderDesktop final
   ~BrowserLaunchEventUploaderDesktop() override;
 
   // BrowserLaunchEventUploader:
+  PrefService* GetPrefService() const override;
+  const char* GetPolicyPrefName() const override;
   std::string_view GetMetricSuffix() const override;
   void UploadEvent(
       const ::chrome::cros::reporting::proto::BrowserLaunchEvent& event,

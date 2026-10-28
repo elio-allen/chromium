@@ -54,6 +54,7 @@ import org.chromium.chrome.browser.tasks.tab_management.TabGridDialogMediator.An
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorCoordinator.CreationMode;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorCoordinator.TabListEditorController;
 import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListItemOnClickListenerProvider;
+import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListLayoutType;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.UiType;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherMessageManager.MessageType;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiMetricsHelper.TabGroupColorChangeActionType;
@@ -61,6 +62,7 @@ import org.chromium.chrome.browser.tasks.tab_management.color_picker.TabGroupCol
 import org.chromium.chrome.browser.tasks.tab_management.color_picker.TabGroupColorPickerCoordinator;
 import org.chromium.chrome.browser.tasks.tab_management.color_picker.TabGroupColorPickerCoordinator.TabGroupColorPickerLayoutType;
 import org.chromium.chrome.browser.tasks.tab_management.color_picker.TabGroupColorPickerType;
+import org.chromium.chrome.browser.tasks.tab_management.labels.TabLabeller;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarThrottle;
 import org.chromium.chrome.tab_ui.R;
@@ -108,7 +110,6 @@ public class TabGridDialogCoordinator implements TabGridDialogMediator.DialogCon
             ObservableSuppliers.createNullable();
     private final TabContentManager mTabContentManager;
     private final @Nullable SnackbarManager mSnackbarManager;
-    private final @Nullable TabSwitcherResetHandler mTabSwitcherResetHandler;
     private final TabGridDialogView mDialogView;
     private final Callback<@Nullable View> mAttachViewCallback;
 
@@ -125,7 +126,6 @@ public class TabGridDialogCoordinator implements TabGridDialogMediator.DialogCon
             DataSharingTabManager dataSharingTabManager,
             NullableObservableSupplier<TabModel> currentTabModelSupplier,
             TabContentManager tabContentManager,
-            @Nullable TabSwitcherResetHandler resetHandler,
             @Nullable TabListItemOnClickListenerProvider tabListItemOnClickListenerProvider,
             @Nullable AnimationSourceViewProvider animationSourceViewProvider,
             ScrimManager scrimManager,
@@ -135,7 +135,7 @@ public class TabGridDialogCoordinator implements TabGridDialogMediator.DialogCon
             Supplier<@Nullable TabBookmarker> tabBookmarkerSupplier,
             Supplier<@Nullable ShareDelegate> shareDelegateSupplier,
             Callback<@Nullable View> attachViewCallback) {
-        try (TraceEvent e = TraceEvent.scoped("TabGridDialogCoordinator.constructor")) {
+        try (TraceEvent _ = TraceEvent.scoped("TabGridDialogCoordinator.constructor")) {
             mActivity = activity;
             int componentId =
                     animationSourceViewProvider == null
@@ -145,7 +145,6 @@ public class TabGridDialogCoordinator implements TabGridDialogMediator.DialogCon
             mModalDialogManager = modalDialogManager;
             mCurrentTabModelSupplier = currentTabModelSupplier;
             mTabContentManager = tabContentManager;
-            mTabSwitcherResetHandler = resetHandler;
             mUndoBarThrottle = undoBarThrottle;
             mAttachViewCallback = attachViewCallback;
 
@@ -209,10 +208,9 @@ public class TabGridDialogCoordinator implements TabGridDialogMediator.DialogCon
             }
 
             Runnable showTabGroupColorPickerPopupRunnable =
-                    () -> {
-                        showTabGroupColorPickerPopup(
-                                mDialogView.findViewById(R.id.tab_group_color_icon));
-                    };
+                    () ->
+                            showTabGroupColorPickerPopup(
+                                    mDialogView.findViewById(R.id.tab_group_color_icon));
 
             mMediator =
                     new TabGridDialogMediator(
@@ -220,7 +218,6 @@ public class TabGridDialogCoordinator implements TabGridDialogMediator.DialogCon
                             this,
                             mModel,
                             currentTabModelSupplier,
-                            resetHandler,
                             this::getRecyclerViewPosition,
                             animationSourceViewProvider,
                             mSnackbarManager,
@@ -244,10 +241,10 @@ public class TabGridDialogCoordinator implements TabGridDialogMediator.DialogCon
                             mModalDialogManager,
                             currentTabModelSupplier,
                             new TabContentManagerThumbnailProvider(tabContentManager),
-                            /* actionOnRelatedTabs= */ false,
+                            TabListLayoutType.FLAT,
                             dataSharingTabManager,
                             tabListItemOnClickListenerProvider,
-                            mMediator.getTabGridDialogHandler(),
+                            mMediator::updateUngroupBarStatus,
                             TabProperties.TabActionState.CLOSABLE,
                             /* selectionDelegateProvider= */ null,
                             /* priceWelcomeMessageControllerSupplier= */ null,
@@ -264,8 +261,7 @@ public class TabGridDialogCoordinator implements TabGridDialogMediator.DialogCon
                             /* tabSwitcherDragHandler= */ null,
                             /* undoBarExplicitTrigger= */ null,
                             mSnackbarManager,
-                            TabListEditorCoordinator.UNLIMITED_SELECTION,
-                            /* isSingleContextMode= */ false);
+                            TabListEditorCoordinator.UNLIMITED_SELECTION);
             mTabListCoordinator.setOnLongPressTabItemEventListener(mMediator);
             mTabListCoordinator.registerItemType(
                     UiType.COLLABORATION_ACTIVITY_MESSAGE,
@@ -306,7 +302,7 @@ public class TabGridDialogCoordinator implements TabGridDialogMediator.DialogCon
                                     toolbarView, recyclerView, mDialogView),
                             TabGridDialogViewBinder::bind);
             mBackPressChangedSupplier.set(isVisible());
-            mModel.addObserver((source, key) -> mBackPressChangedSupplier.set(isVisible()));
+            mModel.addObserver((_, _) -> mBackPressChangedSupplier.set(isVisible()));
 
             // This is always created post-native so calling these immediately is safe.
             // TODO(crbug.com/40894893): Consider inlining these behaviors in their respective
@@ -365,8 +361,7 @@ public class TabGridDialogCoordinator implements TabGridDialogMediator.DialogCon
                             mCurrentTabModelSupplier,
                             mTabContentManager,
                             mTabListCoordinator::setRecyclerViewPosition,
-                            TabListMode.GRID,
-                            /* displayGroups= */ false,
+                            TabListLayoutType.FLAT,
                             mSnackbarManager,
                             mBottomSheetController,
                             TabProperties.TabActionState.SELECTABLE,
@@ -379,8 +374,7 @@ public class TabGridDialogCoordinator implements TabGridDialogMediator.DialogCon
                             /* itemPickerSelectionHandler= */ null,
                             /* undoBarExplicitTrigger= */ null,
                             /* componentId= */ null,
-                            TabListEditorCoordinator.UNLIMITED_SELECTION,
-                            /* isSingleContextMode= */ false);
+                            TabListEditorCoordinator.UNLIMITED_SELECTION);
         }
 
         return mTabListEditorCoordinator.getController();
@@ -396,29 +390,13 @@ public class TabGridDialogCoordinator implements TabGridDialogMediator.DialogCon
 
     private void showTabGroupColorPickerPopup(View anchorView) {
         PopupWindow.OnDismissListener onDismissListener =
-                new PopupWindow.OnDismissListener() {
-                    @Override
-                    public void onDismiss() {
-                        assumeNonNull(mTabGroupColorPickerCoordinator);
-                        mMediator.setSelectedTabGroupColor(
-                                assertNonNull(
-                                        mTabGroupColorPickerCoordinator
-                                                .getSelectedColorSupplier()
-                                                .get()));
-
-                        // Only require a refresh of the tab list if accessed from the GTS,
-                        // skip if this is reached from the tab strip as the color will
-                        // refresh upon re-entering the tab switcher.
-                        if (mTabSwitcherResetHandler != null) {
-                            // Refresh the TabSwitcher's tab list to reflect the last
-                            // selected color in the color picker when it is dismissed. This
-                            // call will be invoked for both Grid and List modes on the GTS.
-                            TabModel tabModel = mCurrentTabModelSupplier.get();
-                            assumeNonNull(tabModel);
-                            mTabSwitcherResetHandler.resetWithListOfTabs(
-                                    tabModel.getRepresentativeTabList());
-                        }
-                    }
+                () -> {
+                    assumeNonNull(mTabGroupColorPickerCoordinator);
+                    mMediator.setSelectedTabGroupColor(
+                            assertNonNull(
+                                    mTabGroupColorPickerCoordinator
+                                            .getSelectedColorSupplier()
+                                            .get()));
                 };
 
         List<Integer> colors = TabGroupColorPickerUtils.getTabGroupColorIdList();
@@ -428,7 +406,6 @@ public class TabGridDialogCoordinator implements TabGridDialogMediator.DialogCon
         TabGroupColorPickerContainer container = root.findViewById(R.id.color_picker_container);
         mTabGroupColorPickerCoordinator =
                 new TabGroupColorPickerCoordinator(
-                        mActivity,
                         colors,
                         container,
                         TabGroupColorPickerType.TAB_GROUP,
@@ -461,16 +438,17 @@ public class TabGridDialogCoordinator implements TabGridDialogMediator.DialogCon
                         : R.drawable.menu_bg_tinted;
 
         mColorIconPopupWindow =
-                new AnchoredPopupWindow(
-                        mActivity,
-                        decorView,
-                        AppCompatResources.getDrawable(mActivity, bgDrawableId),
-                        root,
-                        new ViewRectProvider(anchorView));
-        mColorIconPopupWindow.addOnDismissListener(onDismissListener);
-        mColorIconPopupWindow.setFocusable(true);
-        mColorIconPopupWindow.setHorizontalOverlapAnchor(true);
-        mColorIconPopupWindow.setVerticalOverlapAnchor(true);
+                new AnchoredPopupWindow.Builder(
+                                mActivity,
+                                decorView,
+                                AppCompatResources.getDrawable(mActivity, bgDrawableId),
+                                () -> root,
+                                new ViewRectProvider(anchorView))
+                        .addOnDismissListener(onDismissListener)
+                        .setFocusable(true)
+                        .setHorizontalOverlapAnchor(true)
+                        .setVerticalOverlapAnchor(true)
+                        .build();
         mColorIconPopupWindow.show();
     }
 
@@ -518,13 +496,6 @@ public class TabGridDialogCoordinator implements TabGridDialogMediator.DialogCon
         mTabListCoordinator.waitForLayoutWithTab(tabId, r);
     }
 
-    Rect getGlobalLocationOfCurrentThumbnail() {
-        Rect thumbnail = mTabListCoordinator.getThumbnailLocationOfCurrentTab();
-        Rect recyclerViewLocation = mTabListCoordinator.getRecyclerViewLocation();
-        thumbnail.offset(recyclerViewLocation.left, recyclerViewLocation.top);
-        return thumbnail;
-    }
-
     TabGridDialogMediator.DialogController getDialogController() {
         return this;
     }
@@ -568,7 +539,12 @@ public class TabGridDialogCoordinator implements TabGridDialogMediator.DialogCon
 
     @Override
     public void prepareDialog() {
-        mTabListCoordinator.prepareTabGridView();
+        mTabListCoordinator.prepareTabListView();
+    }
+
+    @Override
+    public void prepareHiding() {
+        mTabListCoordinator.prepareHiding();
     }
 
     @Override

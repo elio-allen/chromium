@@ -20,10 +20,13 @@ import org.chromium.chrome.browser.privacy.settings.PrivacyPreferencesManager;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.signin.services.BadgeConfig;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
+import org.chromium.chrome.browser.ui.signin.ConfirmManagedSyncDataDialogCoordinator;
+import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.identitymanager.PrimaryAccountChangeEvent;
 import org.chromium.components.signin.metrics.AccountConsistencyPromoAction;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
+import org.chromium.components.signin.metrics.SigninFunnelEvent;
 import org.chromium.google_apis.gaia.CoreAccountId;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.PropertyKey;
@@ -78,6 +81,18 @@ public class FullscreenSigninCoordinator implements IdentityManager.Observer {
         void recordNativeInitializedHistogram();
 
         /**
+         * Called when the user navigates back to the fullscreen sign-in page to log the
+         * Signin.SigninFunnel promo shown event. Flows that reuse the {@link
+         * FullscreenSigninCoordinator} on back press (e.g. the FRE) should log the event, otherwise
+         * the new coordinator already logs it when it's shown.
+         *
+         * @param accessPoint The access point that initiated the sign-in flow.
+         * @param event The promo shown event, with or without an account.
+         */
+        void logPromoShownFunnelEventOnBackPress(
+                @SigninAccessPoint int accessPoint, @SigninFunnelEvent int event);
+
+        /**
          * Shows an informational web page. The page doesn't show navigation control. Only
          * implemented for the FRE.
          *
@@ -113,6 +128,20 @@ public class FullscreenSigninCoordinator implements IdentityManager.Observer {
 
         /** Returns {@code true} when the footer text should be displayed */
         boolean shouldDisplayFooterText();
+
+        /** Returns {@code true} if the preferred account prediction can be used for this flow. */
+        default boolean canUsePreferredAccount() {
+            return false;
+        }
+
+        /**
+         * Called to display the management notice for {@code account}, when {@code
+         * ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE} is enabled. The host is responsible for
+         * dismissing the notice and must report the user's decision via {@code listener}.
+         */
+        default void displayManagementNotice(
+                CoreAccountInfo account,
+                ConfirmManagedSyncDataDialogCoordinator.Listener listener) {}
     }
 
     private final FullscreenSigninMediator mMediator;
@@ -186,8 +215,10 @@ public class FullscreenSigninCoordinator implements IdentityManager.Observer {
     }
 
     /**
-     * Resets model properties in {@link FullscreenSigninMediator}. This method is called when the
-     * user advances to the next page and then presses back and returns to the FRE again.
+     * Resets model properties in {@link FullscreenSigninMediator}. Must only be called when the
+     * user advances to the next page and then presses back to return to the sign-in screen, as it
+     * also logs that the promo is shown again (see {@link
+     * Delegate#logPromoShownFunnelEventOnBackPress}).
      */
     public void reset() {
         mMediator.reset();

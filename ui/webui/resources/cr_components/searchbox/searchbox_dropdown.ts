@@ -16,6 +16,7 @@ import {getCss} from './searchbox_dropdown.css.js';
 import {getHtml} from './searchbox_dropdown.html.js';
 import {kDefaultSelection} from './searchbox_match.js';
 import type {SearchboxMatchElement} from './searchbox_match.js';
+import {selectionsEqual} from './searchbox_selection_mixin.js';
 import {renderTypeToClass, sideTypeToClass} from './utils.js';
 
 // The '%' operator in JS returns negative numbers. This workaround avoids that.
@@ -53,14 +54,6 @@ export class SearchboxDropdownElement extends CrLitElement {
        * the width available to the dropdown.
        */
       canShowSecondarySide: {type: Boolean},
-
-      /**
-       * Whether the secondary side was at any point available to be shown.
-       */
-      hadSecondarySide: {
-        type: Boolean,
-        notify: true,
-      },
 
       /*
        * Whether the secondary side is currently available to be shown.
@@ -110,7 +103,6 @@ export class SearchboxDropdownElement extends CrLitElement {
   }
 
   accessor canShowSecondarySide: boolean = false;
-  accessor hadSecondarySide: boolean = false;
   accessor hasSecondarySide: boolean = false;
   accessor hasEmptyInput: boolean = false;
   accessor result: AutocompleteResult|null = null;
@@ -123,6 +115,15 @@ export class SearchboxDropdownElement extends CrLitElement {
       loadTimeData.valueExists('realboxVirtualFocusNavigation') &&
       loadTimeData.getBoolean('realboxVirtualFocusNavigation');
   private accessor showSecondarySide_: boolean = false;
+  // Hiding duplicate descriptions is only needed when the
+  // Omnibox_AskGSuggestionSidePanelDescription param is on, since that's when
+  // the AskG action match and contextual suggestions share a description.
+  private hideDuplicateDescriptions_: boolean =
+      loadTimeData.valueExists('askGSuggestionSidePanelDescription') &&
+      loadTimeData.getBoolean('askGSuggestionSidePanelDescription');
+  // Descriptions shown both by a match that only shows its description on
+  // selection (e.g. a contextual suggestion) and by one that always shows it.
+  private duplicateDescriptions_: Set<string> = new Set();
 
   /** The list of selectable match elements. */
   private selectableMatchElements_: SearchboxMatchElement[] = [];
@@ -134,11 +135,24 @@ export class SearchboxDropdownElement extends CrLitElement {
     if (changedProperties.has('result')) {
       this.hasSecondarySide = this.computeHasSecondarySide_();
       this.hasEmptyInput = this.computeHasEmptyInput_();
+      this.duplicateDescriptions_ = this.computeDuplicateDescriptions_();
     }
 
     if (changedProperties.has('result') ||
         changedProperties.has('canShowSecondarySide')) {
       this.showSecondarySide_ = this.computeShowSecondarySide_();
+    }
+
+    if (changedProperties.has('result') && this.virtualFocusEnabled) {
+      if (this.selection.state !== SelectionLineState.kNormal &&
+          this.selection.state !== SelectionLineState.kFocusedButtonAim) {
+        this.selection = {
+          line: this.selection.line,
+          state: SelectionLineState.kNormal,
+          actionIndex: 0,
+        };
+        this.fire('selection-changed', {value: this.selection});
+      }
     }
   }
 
@@ -167,6 +181,9 @@ export class SearchboxDropdownElement extends CrLitElement {
   unselect() {
     this.selectedMatchIndex = -1;
     this.selection = kDefaultSelection;
+    if (this.virtualFocusEnabled) {
+      this.fire('selection-changed', {value: this.selection});
+    }
   }
 
   /** Focuses the selected match, if any. */
@@ -182,16 +199,19 @@ export class SearchboxDropdownElement extends CrLitElement {
   /** Selects the match at the given index. */
   selectIndex(index: number) {
     this.selectedMatchIndex = index;
-    if (this.virtualFocusEnabled && this.selection.line !== index) {
+    if (this.virtualFocusEnabled) {
       const match = this.result?.matches[index];
-      if (match && (!match.isHidden || match.allowedToBeDefaultMatch)) {
-        this.selection = {
-          line: index,
-          state: SelectionLineState.kNormal,
-          actionIndex: 0,
-        };
-      } else {
-        this.selection = kDefaultSelection;
+      const newSelection: OmniboxPopupSelection =
+          match && (!match.isHidden || match.allowedToBeDefaultMatch) ?
+          {
+            line: index,
+            state: SelectionLineState.kNormal,
+            actionIndex: 0,
+          } :
+          kDefaultSelection;
+      if (!selectionsEqual(this.selection, newSelection)) {
+        this.selection = newSelection;
+        this.fire('selection-changed', {value: this.selection});
       }
     }
     return this.updateComplete;
@@ -284,20 +304,42 @@ export class SearchboxDropdownElement extends CrLitElement {
   }
 
   private computeHasSecondarySide_(): boolean {
-    const hasSecondarySide =
-        !!this.groupIdsForSideType_(SideType.kSecondary).length;
-    if (!this.hadSecondarySide) {
-      this.hadSecondarySide = hasSecondarySide;
-    }
-    return hasSecondarySide;
+    return !!this.groupIdsForSideType_(SideType.kSecondary).length;
   }
 
   private computeHasEmptyInput_(): boolean {
     return !!this.result && this.result.input === '';
   }
 
+  private computeDuplicateDescriptions_(): Set<string> {
+    const onSelection = new Set<string>();
+    const always = new Set<string>();
+    if (this.hideDuplicateDescriptions_) {
+      for (const match of this.result?.matches ?? []) {
+        const description = match.suggestTemplate.secondaryText?.text;
+        if (description) {
+          (match.showSecondaryTextOnlyOnSelection ? onSelection : always)
+              .add(description);
+        }
+      }
+    }
+    return new Set([...onSelection].filter(d => always.has(d)));
+  }
+
   protected isSelected_(match: AutocompleteMatch): boolean {
-    return this.matchIndex_(match) === this.selectedMatchIndex;
+    const selectedIndex = this.virtualFocusEnabled ? this.selection.line :
+                                                     this.selectedMatchIndex;
+    return this.matchIndex_(match) === selectedIndex;
+  }
+
+  /**
+   * Whether a match of the other kind (showing its description only on
+   * selection or always) has the same description as the match. The CSS uses
+   * this to show only one copy at a time.
+   */
+  protected hasDuplicateDescription_(match: AutocompleteMatch): boolean {
+    return this.duplicateDescriptions_.has(
+        match.suggestTemplate.secondaryText?.text ?? '');
   }
 
   /**

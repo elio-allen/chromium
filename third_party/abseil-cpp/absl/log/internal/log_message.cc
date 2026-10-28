@@ -20,10 +20,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef _WIN32
-#include <unistd.h>
-#endif
-
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -58,6 +54,10 @@
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "absl/types/span.h"
+
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 extern "C" ABSL_ATTRIBUTE_WEAK void ABSL_INTERNAL_C_SYMBOL(
     AbslInternalOnFatalLogMessage)(const absl::LogEntry&) {
@@ -219,7 +219,8 @@ LogMessage::LogMessageData::LogMessageData(absl::string_view file,
 void LogMessage::LogMessageData::InitializeEncodingAndFormat() {
   EncodeStringTruncate(EventTag::kFileName, entry.source_filename(),
                        &encoded_remaining());
-  EncodeVarint(EventTag::kFileLine, entry.source_line(), &encoded_remaining());
+  EncodeVarint(EventTag::kFileLine, static_cast<int32_t>(entry.source_line()),
+               &encoded_remaining());
   EncodeVarint(EventTag::kTimeNsecs, absl::ToUnixNanos(entry.timestamp()),
                &encoded_remaining());
   EncodeVarint(EventTag::kSeverity,
@@ -604,7 +605,8 @@ void LogMessage::LogBacktraceIfNeeded() {
 // `str_type`.  Truncates `str` if necessary, but emits nothing and marks the
 // buffer full if  even the field headers do not fit.
 template <LogMessage::StringType str_type>
-void LogMessage::CopyToEncodedBuffer(absl::string_view str) {
+ABSL_ATTRIBUTE_NOINLINE void LogMessage::CopyToEncodedBuffer(
+    absl::string_view str) {
   auto encoded_remaining_copy = data_->encoded_remaining();
   constexpr uint8_t tag_value = str_type == StringType::kLiteral
                                     ? ValueTag::kStringLiteral
@@ -631,7 +633,8 @@ template void LogMessage::CopyToEncodedBuffer<LogMessage::StringType::kLiteral>(
 template void LogMessage::CopyToEncodedBuffer<
     LogMessage::StringType::kNotLiteral>(absl::string_view str);
 template <LogMessage::StringType str_type>
-void LogMessage::CopyToEncodedBuffer(char ch, size_t num) {
+ABSL_ATTRIBUTE_NOINLINE void LogMessage::CopyToEncodedBuffer(char ch,
+                                                             size_t num) {
   auto encoded_remaining_copy = data_->encoded_remaining();
   constexpr uint8_t tag_value = str_type == StringType::kLiteral
                                     ? ValueTag::kStringLiteral
@@ -659,7 +662,8 @@ template void LogMessage::CopyToEncodedBuffer<
     LogMessage::StringType::kNotLiteral>(char ch, size_t num);
 
 template <LogMessage::StringType str_type>
-void LogMessage::CopyToEncodedBuffer(std::wstring_view str) {
+ABSL_ATTRIBUTE_NOINLINE void LogMessage::CopyToEncodedBuffer(
+    std::wstring_view str) {
   auto encoded_remaining_copy = data_->encoded_remaining();
   constexpr uint8_t tag_value = str_type == StringType::kLiteral
                                     ? ValueTag::kStringLiteral
@@ -697,7 +701,8 @@ template void LogMessage::CopyToEncodedBufferWithStructuredProtoField<
                                          absl::string_view str);
 
 template <LogMessage::StringType str_type>
-void LogMessage::CopyToEncodedBufferWithStructuredProtoField(
+ABSL_ATTRIBUTE_NOINLINE void
+LogMessage::CopyToEncodedBufferWithStructuredProtoField(
     StructuredProtoField field, absl::string_view str) {
   auto encoded_remaining_copy = data_->encoded_remaining();
   size_t encoded_field_size = BufferSizeForStructuredProtoField(field);

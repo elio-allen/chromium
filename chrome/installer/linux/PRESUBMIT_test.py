@@ -13,23 +13,25 @@ import PRESUBMIT
 
 file_dir_path = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(file_dir_path, "..", "..", ".."))
-from PRESUBMIT_test_mocks import MockAffectedFile
-from PRESUBMIT_test_mocks import MockInputApi, MockOutputApi
+from PRESUBMIT_test_mocks import MockAffectedFile  # noqa: E402
+from PRESUBMIT_test_mocks import MockInputApi, MockOutputApi  # noqa: E402
 
 sys.path.insert(0, os.path.join(file_dir_path, "common"))
-import installer
+import installer  # noqa: E402
 
 
-@unittest.skipIf(not shutil.which("fakeroot") or not shutil.which("dpkg-deb"),
-                 "fakeroot or dpkg-deb not available")
+@unittest.skipIf(
+    not shutil.which("fakeroot") or not shutil.which("dpkg-deb"),
+    "fakeroot or dpkg-deb not available",
+)
 class CheckRepoPackageVersionBumpTest(unittest.TestCase):
-
     def testRepoPackageHashMatches(self):
         mock_input_api = MockInputApi()
         mock_input_api.files = []
         mock_output_api = MockOutputApi()
-        errors = PRESUBMIT._CheckRepoPackageVersionBump(mock_input_api,
-                                                        mock_output_api)
+        errors = PRESUBMIT._CheckRepoPackageVersionBump(
+            mock_input_api, mock_output_api
+        )
         self.assertEqual(0, len(errors))
 
     def testRepoPackageHashMismatch(self):
@@ -45,8 +47,9 @@ class CheckRepoPackageVersionBumpTest(unittest.TestCase):
             )
         ]
         mock_output_api = MockOutputApi()
-        errors = PRESUBMIT._CheckRepoPackageVersionBump(mock_input_api,
-                                                        mock_output_api)
+        errors = PRESUBMIT._CheckRepoPackageVersionBump(
+            mock_input_api, mock_output_api
+        )
         self.assertEqual(1, len(errors))
         self.assertIn("does not match REPO_PACKAGE_HASH in", errors[0].message)
 
@@ -62,24 +65,29 @@ class CheckRepoPackageVersionBumpTest(unittest.TestCase):
             )
         ]
         mock_output_api = MockOutputApi()
-        errors = PRESUBMIT._CheckRepoPackageVersionBump(mock_input_api,
-                                                        mock_output_api)
+        errors = PRESUBMIT._CheckRepoPackageVersionBump(
+            mock_input_api, mock_output_api
+        )
         self.assertEqual(1, len(errors))
         self.assertIn("REPO_PACKAGE_HASH not found in", errors[0].message)
 
     @mock.patch.object(
         installer,
         "compute_repo_package_hash_for_presubmit",
-        side_effect=RuntimeError("mocked failure"))
+        side_effect=RuntimeError("mocked failure"),
+    )
     def testBuildDebFailure(self, _mock_build):
         mock_input_api = MockInputApi()
         mock_input_api.files = []
         mock_output_api = MockOutputApi()
-        errors = PRESUBMIT._CheckRepoPackageVersionBump(mock_input_api,
-                                                        mock_output_api)
+        errors = PRESUBMIT._CheckRepoPackageVersionBump(
+            mock_input_api, mock_output_api
+        )
         self.assertEqual(1, len(errors))
-        self.assertIn("Failed to build repo package for presubmit check",
-                      errors[0].message)
+        self.assertIn(
+            "Failed to build repo package for presubmit check",
+            errors[0].message,
+        )
 
 
 if __name__ == "__main__":

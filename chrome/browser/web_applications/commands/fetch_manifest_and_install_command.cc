@@ -191,6 +191,7 @@ FetchManifestAndInstallCommand::FetchManifestAndInstallCommand(
                              base::ToString(install_surface_));
   GetMutableDebugValue().Set("fallback_behavior",
                              base::ToString(fallback_behavior_));
+  GetMutableDebugValue().Set("dialog_shown", dialog_shown_);
 }
 
 FetchManifestAndInstallCommand::~FetchManifestAndInstallCommand() = default;
@@ -312,10 +313,18 @@ void FetchManifestAndInstallCommand::OnVisibilityChanged(
     return;
   }
 
-  // This prevents us from closing the dialog if the visibility of the window
-  // itself changes but the tab doesn't. A more thorough fix here is to listen
-  // to the tab strip changing (AKA a different tab being opened / changed to),
-  // but due to needing to use code in `ui`, this is a bit hard to do.
+  // Once the install dialog is shown, `WebAppModalDialogDelegate` owns
+  // visibility-driven closure (`CloseDialogAsIgnored()`) while pre-acceptance,
+  // and accepted installs should finish in the background without aborting.
+  if (dialog_shown_) {
+    return;
+  }
+
+  // This prevents us from cancelling the installation before the dialog is
+  // shown if the visibility of the window itself changes but the tab doesn't.
+  // A more thorough fix here is to listen to the tab strip changing (AKA a
+  // different tab being opened / changed to), but due to needing to use code in
+  // `ui`, this is a bit hard to do.
   if (ui_manager_->IsWebContentsActiveTabInBrowser(web_contents())) {
     return;
   }
@@ -344,7 +353,7 @@ bool FetchManifestAndInstallCommand::IsWebContentsDestroyed() {
 
 void FetchManifestAndInstallCommand::OnGetWebAppInstallInfo(
     std::unique_ptr<WebAppInstallInfo> fallback_web_app_info) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (IsWebContentsDestroyed()) {
     Abort(webapps::InstallResultCode::kWebContentsDestroyed);
     return;
@@ -638,6 +647,8 @@ void FetchManifestAndInstallCommand::ShowInstallDialog() {
               }
             }));
   } else {
+    dialog_shown_ = true;
+    GetMutableDebugValue().Set("dialog_shown", dialog_shown_);
     std::move(dialog_callback_)
         .Run((!screenshot_sizes_.empty() ? weak_ptr_factory_.GetWeakPtr()
                                          : nullptr),
@@ -676,7 +687,7 @@ void FetchManifestAndInstallCommand::OnDialogCompleted(
       web_app_info_->add_to_quick_launch_bar.value_or(
           kAddAppsToQuickLaunchBarByDefault);
 
-  DCHECK(app_lock_);
+  CHECK(app_lock_, base::NotFatalUntil::M162);
   auto* profile =
       Profile::FromBrowserContext(web_contents()->GetBrowserContext());
 

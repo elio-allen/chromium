@@ -3,19 +3,21 @@
 // found in the LICENSE file.
 
 import {getDeepActiveElement} from 'chrome://resources/js/util.js';
-import type {ProfileData, TabSearchPageElement} from 'chrome://tab-search.top-chrome/tab_search.js';
-import {TabSearchApiProxyImpl} from 'chrome://tab-search.top-chrome/tab_search.js';
+import type {PageRemote, ProfileData, TabSearchPageElement} from 'chrome://tab-search.top-chrome/tab_search.js';
+import {browserProxyFactory, SearchApiProxyImpl, TabSearchApiProxyImpl} from 'chrome://tab-search.top-chrome/tab_search.js';
 import {assertEquals, assertGT, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {keyDownOn} from 'chrome://webui-test/keyboard_mock_interactions.js';
 import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {createProfileData, generateSampleDataFromSiteNames, generateSampleRecentlyClosedTabs, generateSampleTabsFromSiteNames, sampleSiteNames, sampleToken} from './tab_search_test_data.js';
 import {assertTabItemAndNeighborsInViewBounds, assertTabItemInViewBounds, getStylePropertyPixelValue, initLoadTimeDataWithDefaults} from './tab_search_test_helper.js';
+import {TestSearchApiProxy} from './test_search_api_proxy.js';
 import {TestTabSearchApiProxy} from './test_tab_search_api_proxy.js';
 
 suite('TabSearchAppFocusTest', () => {
   let tabSearchPage: TabSearchPageElement;
   let testProxy: TestTabSearchApiProxy;
+  let callbackRouterRemote: PageRemote;
 
   async function setupTest(
       sampleData: ProfileData,
@@ -23,7 +25,11 @@ suite('TabSearchAppFocusTest', () => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     testProxy = new TestTabSearchApiProxy();
     testProxy.setProfileData(sampleData);
+    const {instance, remote} = browserProxyFactory.createForTest(testProxy);
+    browserProxyFactory.setInstance(instance);
+    callbackRouterRemote = remote;
     TabSearchApiProxyImpl.setInstance(testProxy);
+    SearchApiProxyImpl.setInstance(new TestSearchApiProxy());
 
     initLoadTimeDataWithDefaults(loadTimeOverriddenData);
 
@@ -116,7 +122,7 @@ suite('TabSearchAppFocusTest', () => {
     closeButton.focus();
 
     for (let i = 0; i < numTabItems - 1; i++) {
-      testProxy.getCallbackRouterRemote().tabsRemoved({
+      callbackRouterRemote.tabsRemoved({
         tabIds: [(i + 1)],
         recentlyClosedTabs: [],
       });

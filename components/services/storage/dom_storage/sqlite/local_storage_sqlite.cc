@@ -6,6 +6,7 @@
 
 #include "base/byte_size.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/sequenced_task_runner.h"
@@ -98,6 +99,10 @@ void BindOptionalByteSize(sql::Statement& statement,
   }
 }
 
+void OnSqlError(int error, sql::Statement*) {
+  base::UmaHistogramSparse("Storage.LocalStorage.Database.Error", error);
+}
+
 }  // namespace
 
 LocalStorageSqlite::LocalStorageSqlite(PassKey) {}
@@ -129,9 +134,7 @@ DbStatus LocalStorageSqlite::Open(
           database_path,
           database_path.empty() ? kLocalStorageTag : kLocalStorageTagInMemory,
           kCurrentSchemaVersion, kCompatibleSchemaVersion,
-          base::BindOnce(&CreateSchema),
-          base::BindRepeating(&LocalStorageSqlite::OnSqlError,
-                              base::Unretained(this))));
+          base::BindOnce(&CreateSchema), base::BindRepeating(&OnSqlError)));
 
   map_entries_table_ = std::make_unique<MapEntriesTable>(*database_);
 
@@ -334,6 +337,21 @@ DbStatus LocalStorageSqlite::CleanUpStaleData() {
   return DbStatus::OK();
 }
 
+void LocalStorageSqlite::Close() {
+  NOTREACHED();
+}
+
+void LocalStorageSqlite::DetachFromSequence() {
+  // The dump provider was registered on the sequence this database was opened
+  // on, which is not the one that will use it. Unregister rather than leave it
+  // bound to the wrong sequence.
+  // TODO(crbug.com/377242771): Re-register the dump provider on the adopting
+  // sequence so memory usage reporting resumes.
+  base::trace_event::MemoryDumpManager::GetInstance()->UnregisterDumpProvider(
+      this);
+  database_->DetachFromSequence();
+}
+
 void LocalStorageSqlite::MakeAllCommitsFailForTesting() {
   should_fail_commits_for_testing_ = true;
 }
@@ -435,8 +453,6 @@ DbStatus LocalStorageSqlite::DeleteMapMetadata(
     RETURN_STATUS_ON_ERROR(delete_statement.Run());
     delete_statement.Reset(/*clear_bound_vars=*/true);
   }
-
-  RETURN_STATUS_ON_ERROR(delete_statement.Run());
   return DbStatus::OK();
 }
 
@@ -448,10 +464,6 @@ bool LocalStorageSqlite::OnMemoryDump(
       base::StringPrintf("site_storage/localstorage/sqlite/db_0x%" PRIXPTR,
                          reinterpret_cast<uintptr_t>(this)));
   return true;
-}
-
-void LocalStorageSqlite::OnSqlError(int error, sql::Statement* statement) {
-  base::UmaHistogramSparse("Storage.LocalStorage.Database.Error", error);
 }
 
 }  // namespace storage

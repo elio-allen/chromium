@@ -8,7 +8,7 @@
 #include <optional>
 
 #include "android_webview/browser/aw_browser_context.h"
-#include "android_webview/browser/aw_origin_matched_header.h"
+#include "android_webview/browser/http_headers/aw_origin_matched_header.h"
 #include "android_webview/browser/metrics/aw_metrics_service_accessor.h"
 #include "android_webview/browser/metrics/aw_metrics_service_client.h"
 #include "android_webview/browser/network_service/aw_proxying_url_loader_factory.h"
@@ -68,9 +68,6 @@ void NotifyStartFailedDuplicate(
 }
 
 }  // namespace
-
-BASE_FEATURE(kWebViewPrefetchDisableBlockUntilHeadTimeout,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Listens to the status of a prefetch request and propagates it to Java
 // callbacks.
@@ -153,6 +150,12 @@ static PrefService* g_pref_service_for_testing = nullptr;
 // thread.
 network::HttpRequestHeadersUpdateParams GetAwPrefetchHeadersOnNonUIThread(
     const network::ResourceRequest& request) {
+  if (::features::kPrefetchOffTheMainThreadCheckWillCreateURLLoaderFactory
+          .Get()) {
+    // The headers below will be added via `AwProxyingURLLoaderFactory`.
+    return {};
+  }
+
   network::HttpRequestHeadersUpdateParams headers_update_params;
   // We can safely ignore any processing handled in
   // `shouldInterceptRequest`, because prefetch intentionally bypasses it.
@@ -171,6 +174,8 @@ std::unique_ptr<content::PrePrefetchService> CreatePrePrefetchService(
     content::BrowserContext* browser_context,
     std::optional<AwPrefetchLatestInfoPref> initial_prefetch_hints,
     AwPrefetchManagerData& prefetch_manager_data) {
+  TRACE_EVENT("android_webview",
+              "AwPrefetchManager::CreatePrePrefetchService");
   if (initial_prefetch_hints.has_value()) {
     prefetch_manager_data.UpdateLatestPrefetchInfo(
         initial_prefetch_hints.value());
@@ -203,8 +208,7 @@ AwPrefetchManager::AwPrefetchManager(content::BrowserContext* browser_context)
                                          aw_prefetch_manager_data_)
               : nullptr) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  TRACE_EVENT_INSTANT("android_webview",
-                      "AwPrefetchManager::AwPrefetchManager");
+  TRACE_EVENT("android_webview", "AwPrefetchManager::AwPrefetchManager");
 }
 
 AwPrefetchManager::~AwPrefetchManager() = default;
@@ -433,8 +437,7 @@ int AwPrefetchManager::StartRequest(
         additional_headers, std::move(request_status_listener),
         base::Seconds(aw_prefetch_manager_data_.GetTtlInSec()),
         /*should_append_variations_header=*/false,
-        base::FeatureList::IsEnabled(
-            kWebViewPrefetchDisableBlockUntilHeadTimeout),
+        /*should_disable_block_until_head_timeout=*/true,
         should_bypass_http_cache);
   } else {
     DCHECK_CURRENTLY_ON(BrowserThread::UI);
@@ -452,8 +455,7 @@ int AwPrefetchManager::StartRequest(
         std::move(request_status_listener),
         base::Seconds(aw_prefetch_manager_data_.GetTtlInSec()),
         /*should_append_variations_header=*/false,
-        base::FeatureList::IsEnabled(
-            kWebViewPrefetchDisableBlockUntilHeadTimeout),
+        /*should_disable_block_until_head_timeout=*/true,
         should_bypass_http_cache);
     AwBrowserContext::RecordNetworkContextInitializationBlocking(
         "Prefetch", timer.Elapsed(), was_blocked);

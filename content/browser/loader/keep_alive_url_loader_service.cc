@@ -19,6 +19,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/runtime_feature_state/runtime_feature_state_document_data.h"
 #include "content/public/browser/url_loader_throttles.h"
 #include "content/public/browser/web_contents.h"
 #include "mojo/public/cpp/bindings/associated_receiver_set.h"
@@ -73,6 +74,13 @@ void KeepAliveURLLoaderService::FactoryContext::OnDidCommitNavigation(
   ukm_source_id = navigation_handle->GetNextPageUkmSourceId();
   policy_container_host = rfh->policy_container_host();
   CHECK(policy_container_host);
+
+  cached_is_fetch_retry_enabled.reset();
+  // Cache the feature flag for the newly committed document while
+  // `RenderFrameHostImpl` is guaranteed valid. This preserves feature
+  // state for requests dispatched during document unload whose IPCs arrive
+  // post-destruction.
+  std::ignore = IsFetchRetryEnabled();
 }
 
 bool KeepAliveURLLoaderService::FactoryContext::WasInitiatorDocumentDestroyed()
@@ -93,6 +101,30 @@ void KeepAliveURLLoaderService::FactoryContext::
 void KeepAliveURLLoaderService::FactoryContext::UpdateFactory(
     scoped_refptr<network::SharedURLLoaderFactory> new_factory) {
   factory = new_factory;
+}
+
+bool KeepAliveURLLoaderService::FactoryContext::IsFetchRetryEnabled() const {
+  if (!base::FeatureList::IsEnabled(blink::features::kFetchRetry)) {
+    return false;
+  }
+  std::optional<bool> overridden_state =
+      base::FeatureList::GetStateIfOverridden(blink::features::kFetchRetry);
+  if (overridden_state == std::make_optional(true)) {
+    return true;
+  }
+  if (cached_is_fetch_retry_enabled.has_value()) {
+    return *cached_is_fetch_retry_enabled;
+  }
+  if (auto* rfh = static_cast<RenderFrameHostImpl*>(
+          weak_document_ptr.AsRenderFrameHostIfValid())) {
+    if (auto* document_data =
+            RuntimeFeatureStateDocumentData::GetForCurrentDocument(rfh)) {
+      cached_is_fetch_retry_enabled =
+          document_data->runtime_feature_state_read_context()
+              .IsFetchRetryEnabled();
+    }
+  }
+  return cached_is_fetch_retry_enabled.value_or(false);
 }
 
 // KeepAliveURLLoaderFactoriesBase is an abstract base class for creating and
@@ -224,6 +256,15 @@ class KeepAliveURLLoaderService::KeepAliveURLLoaderFactoriesBase {
           "resource_request.trusted_params must not be set");
       return nullptr;
     }
+    if (resource_request.fetch_retry_options.has_value() &&
+        !context->IsFetchRetryEnabled()) {
+      mojo::ReportBadMessage(
+          "Unexpected `resource_request` in "
+          "KeepAliveURLLoaderFactoriesBase::CreateLoaderAndStart(): "
+          "resource_request.fetch_retry_options must not be set when "
+          "FetchRetry is disabled");
+      return nullptr;
+    }
 
     // Notifies RenderFrameHostImpl (if any) that a fetch keepalive request is
     // created.
@@ -293,7 +334,7 @@ class KeepAliveURLLoaderService::KeepAliveURLLoaderFactoriesBase {
   }
 
   void OnLoaderDisconnected() {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
     auto disconnected_loader_receiver_id = loader_receivers_.current_receiver();
 
     // The context of `disconnected_loader_receiver_id`, an KeepAliveURLLoader
@@ -311,7 +352,7 @@ class KeepAliveURLLoaderService::KeepAliveURLLoaderFactoriesBase {
   }
 
   void RemoveLoader(mojo::ReceiverId loader_receiver_id) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
     TRACE_EVENT("loading", "KeepAliveURLLoaderFactoriesBase::RemoveLoader",
                 "loader_id", loader_receiver_id);
 
@@ -397,7 +438,7 @@ class KeepAliveURLLoaderService::KeepAliveURLLoaderFactories final
       scoped_refptr<network::SharedURLLoaderFactory>
           subresource_proxying_factory_bundle,
       scoped_refptr<PolicyContainerHost> policy_container_host) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
     CHECK(policy_container_host);
     TRACE_EVENT("loading", "KeepAliveURLLoaderFactories::BindFactory");
 
@@ -422,7 +463,7 @@ class KeepAliveURLLoaderService::KeepAliveURLLoaderFactories final
       mojo::PendingRemote<network::mojom::URLLoaderClient> client,
       const net::MutableNetworkTrafficAnnotationTag& traffic_annotation)
       override {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
     TRACE_EVENT("loading", "KeepAliveURLLoaderFactories::CreateLoaderAndStart",
                 "request_id", request_id);
     if (!base::FeatureList::IsEnabled(
@@ -454,7 +495,7 @@ class KeepAliveURLLoaderService::KeepAliveURLLoaderFactories final
   }
   void Clone(mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver)
       override {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
     loader_factory_receivers_.Add(this, std::move(receiver),
                                   loader_factory_receivers_.current_context());
@@ -496,7 +537,7 @@ class KeepAliveURLLoaderService::FetchLaterLoaderFactories final
           receiver,
       scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
       scoped_refptr<PolicyContainerHost> policy_container_host) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
     CHECK(policy_container_host);
     TRACE_EVENT("loading", "FetchLaterLoaderFactories::BindFactory");
 
@@ -519,7 +560,7 @@ class KeepAliveURLLoaderService::FetchLaterLoaderFactories final
       const network::ResourceRequest& resource_request,
       const net::MutableNetworkTrafficAnnotationTag& traffic_annotation)
       override {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
     TRACE_EVENT("loading", "FetchLaterLoaderFactories::CreateLoader",
                 "request_id", request_id);
     if (!base::FeatureList::IsEnabled(blink::features::kFetchLaterAPI)) {
@@ -545,7 +586,7 @@ class KeepAliveURLLoaderService::FetchLaterLoaderFactories final
   void Clone(
       mojo::PendingAssociatedReceiver<blink::mojom::FetchLaterLoaderFactory>
           receiver) override {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
     loader_factory_receivers_.Add(this, std::move(receiver),
                                   loader_factory_receivers_.current_context());
@@ -565,7 +606,7 @@ KeepAliveURLLoaderService::KeepAliveURLLoaderService(
     StoragePartitionImpl* storage_partition)
     : storage_partition_(storage_partition),
       retry_counts_(kMaxRetryCountsCacheSize) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   CHECK(storage_partition_);
 
   url_loader_factories_ = std::make_unique<KeepAliveURLLoaderFactories>(this);
@@ -581,7 +622,7 @@ KeepAliveURLLoaderService::BindFactory(
     scoped_refptr<network::SharedURLLoaderFactory>
         subresource_proxying_factory_bundle,
     scoped_refptr<PolicyContainerHost> policy_container_host) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   CHECK(subresource_proxying_factory_bundle);
   CHECK(policy_container_host);
 
@@ -597,7 +638,7 @@ KeepAliveURLLoaderService::BindFetchLaterLoaderFactory(
     scoped_refptr<network::SharedURLLoaderFactory>
         subresource_proxying_factory_bundle,
     scoped_refptr<PolicyContainerHost> policy_container_host) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   CHECK(subresource_proxying_factory_bundle);
   CHECK(policy_container_host);
 

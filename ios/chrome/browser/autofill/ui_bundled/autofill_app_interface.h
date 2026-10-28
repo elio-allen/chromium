@@ -64,6 +64,18 @@ enum CreditCardSaveManagerObserverEvent : int {
 // Returns the name of the sample profile.
 + (NSString*)exampleProfileName;
 
+// Returns the street address of the sample profile.
++ (NSString*)exampleProfileAddress;
+
+// Returns the city of the sample profile.
++ (NSString*)exampleProfileCity;
+
+// Returns the state of the sample profile.
++ (NSString*)exampleProfileState;
+
+// Returns the zip code of the sample profile.
++ (NSString*)exampleProfileZip;
+
 // Removes the locally stored credit cards.
 + (void)clearCreditCardStore;
 
@@ -81,8 +93,11 @@ enum CreditCardSaveManagerObserverEvent : int {
 // Returns the number of credit cards in the local store.
 + (NSInteger)localCreditCount;
 
-// Returns the CVC of the first saved local credit card.
-+ (NSString*)firstLocalCreditCardCvc;
+// Returns the cardholder name of the sample local credit card.
++ (NSString*)exampleCreditCardName;
+
+// Returns the credit card number of the sample local credit card.
++ (NSString*)exampleCreditCardNumber;
 
 // Saves a masked credit card that requires CVC to be used.
 // Returns the `card.NetworkAndLastFourDigits` of the card used in the UIs.
@@ -154,10 +169,6 @@ enum CreditCardSaveManagerObserverEvent : int {
 // Triggers the Autofill AI save entity bubble.
 + (void)showAutofillAiSaveEntityBubble;
 
-// TODO(crbug.com/538242036): Remove showAtMemoryUI once the
-// SuggestionType::kAutocompleteAtMemoryButton can be received.
-// Triggers the AtMemory UI.
-+ (void)showAtMemoryUI;
 
 // Saves a Redress Number entity with the given name and number. Returns the
 // UUID of the created entity. Because entities are saved asynchronously, it is
@@ -168,9 +179,6 @@ enum CreditCardSaveManagerObserverEvent : int {
 // Removes the entity with the given UUID.
 + (void)removeEntityWithUUID:(NSString*)uuid;
 
-// Deletes all entities modified since the given time.
-+ (void)removeEntityModifiedSince:(NSDate*)time;
-
 // Saves a Passport entity with test data.
 + (BOOL)savePassportEntity;
 
@@ -180,11 +188,11 @@ enum CreditCardSaveManagerObserverEvent : int {
 // Saves a Vehicle entity with test data.
 + (BOOL)saveVehicleEntity;
 
-// Returns YES if there is at least one form cached in the AutofillManager.
-+ (BOOL)isFormCachedInMainFrame;
-
 // Wait until a form is cached in the AutofillManager.
 + (BOOL)waitForFormToBeCachedInMainFrame;
+
+// Sets the network connection type to offline (CONNECTION_NONE) or resets it.
++ (void)setNetworkConnectionOffline:(BOOL)offline;
 
 @end
 

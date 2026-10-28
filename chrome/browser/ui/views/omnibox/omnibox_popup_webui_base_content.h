@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_UI_VIEWS_OMNIBOX_OMNIBOX_POPUP_WEBUI_BASE_CONTENT_H_
 
 #include <string_view>
+#include <utility>
 
 #include "base/memory/raw_ptr.h"
 #include "base/timer/timer.h"
@@ -54,6 +55,10 @@ class OmniboxPopupWebUIBaseContent : public views::WebView,
   ~OmniboxPopupWebUIBaseContent() override;
 
   WebUIContentsWrapperT<OmniboxPopupUI>* contents_wrapper() {
+    return const_cast<WebUIContentsWrapperT<OmniboxPopupUI>*>(
+        std::as_const(*this).contents_wrapper());
+  }
+  const WebUIContentsWrapperT<OmniboxPopupUI>* contents_wrapper() const {
     return contents_wrapper_.get();
   }
 
@@ -101,6 +106,22 @@ class OmniboxPopupWebUIBaseContent : public views::WebView,
 
   virtual bool EscClosesUI() const;
 
+  bool ShouldApplyHeightWorkarounds() const;
+  bool ShouldSizeWebViewToPreferredHeight() const;
+
+  // True when the WebUI, rather than the Views frame, is responsible for
+  // painting the popup's background, rounded corners and drop shadow.
+  bool ShouldDrawShadowInWebUI() const;
+
+  bool is_full_webui_omnibox() const;
+
+  bool IsShown() { return is_shown_; }
+  void set_is_shown(bool is_shown) { is_shown_ = is_shown; }
+
+  // Advances keyboard focus out of the WebUI popup into the browser window's
+  // focus chain.
+  void AdvanceFocus(bool reverse);
+
  protected:
   // Callback for cleaning up the `context_menu_` field.
   void OnMenuClosed();
@@ -112,12 +133,24 @@ class OmniboxPopupWebUIBaseContent : public views::WebView,
 
   virtual std::string_view GetMetricPrefix() const = 0;
 
-  OmniboxController* controller() { return controller_.get(); }
+  OmniboxController* controller() {
+    return const_cast<OmniboxController*>(std::as_const(*this).controller());
+  }
+  const OmniboxController* controller() const { return controller_.get(); }
 
-  LocationBar* location_bar() { return location_bar_.get(); }
+  LocationBar* location_bar() {
+    return const_cast<LocationBar*>(std::as_const(*this).location_bar());
+  }
+  const LocationBar* location_bar() const { return location_bar_.get(); }
 
   // Returns the presenter associated with this popup content.
-  OmniboxPopupPresenterBase* popup_presenter() { return popup_presenter_; }
+  OmniboxPopupPresenterBase* popup_presenter() {
+    return const_cast<OmniboxPopupPresenterBase*>(
+        std::as_const(*this).popup_presenter());
+  }
+  const OmniboxPopupPresenterBase* popup_presenter() const {
+    return popup_presenter_;
+  }
 
   // Detaches the WebContents and cleans up.
   void Detach();

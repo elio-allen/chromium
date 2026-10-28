@@ -27,7 +27,6 @@
 #include "chrome/browser/ash/child_accounts/time_limits/app_time_limits_policy_builder.h"
 #include "chrome/browser/ash/child_accounts/time_limits/app_types.h"
 #include "chrome/browser/prefs/browser_prefs.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/experiences/arc/test/fake_app_instance.h"
 #include "components/prefs/scoped_user_pref_update.h"
@@ -36,6 +35,7 @@
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/message_center/message_center.h"
 
 namespace ash {
 
@@ -45,7 +45,7 @@ constexpr base::TimeDelta kOneHour = base::Hours(1);
 constexpr base::TimeDelta kOneDay = base::Days(1);
 constexpr char kStartTime[] = "1 Jan 2020 21:15";
 
-const app_time::AppId kArcApp(apps::AppType::kArc, "packageName");
+constexpr char kArcPackageName[] = "packageName";
 
 }  // namespace
 
@@ -59,6 +59,8 @@ class FamilyUserParentalControlMetricsTest : public testing::Test {
     base::TimeDelta forward_by = start_time - base::Time::Now();
     EXPECT_LT(base::TimeDelta(), forward_by);
     task_environment_.AdvanceClock(forward_by);
+
+    message_center::MessageCenter::Initialize();
 
     // Build a child profile.
     std::unique_ptr<sync_preferences::TestingPrefServiceSyncable> prefs =
@@ -76,6 +78,7 @@ class FamilyUserParentalControlMetricsTest : public testing::Test {
   void TearDown() override {
     parental_control_metrics_.reset();
     profile_.reset();
+    message_center::MessageCenter::Shutdown();
   }
 
  protected:
@@ -90,6 +93,8 @@ class FamilyUserParentalControlMetricsTest : public testing::Test {
   void OnNewDay() { parental_control_metrics_->OnNewDay(); }
 
   PrefService* GetPrefs() { return profile_->GetPrefs(); }
+
+  const app_time::AppId arc_app_{apps::AppType::kArc, kArcPackageName};
 
   std::unique_ptr<TestingProfile> profile_;
   content::BrowserTaskEnvironment task_environment_{
@@ -227,8 +232,8 @@ TEST_F(FamilyUserParentalControlMetricsTest, AppTimeLimitMetrics) {
   arc_app_test_.PostProfileSetUp(profile_.get());
   arc_app_test_.app_instance()->set_icon_response_type(
       arc::FakeAppInstance::IconResponseType::ICON_RESPONSE_SKIP);
-  EXPECT_EQ(apps::AppType::kArc, kArcApp.app_type());
-  std::string package_name = kArcApp.app_id();
+  EXPECT_EQ(apps::AppType::kArc, arc_app_.app_type());
+  std::string package_name = arc_app_.app_id();
   arc_app_test_.AddPackage(CreateArcAppPackage(package_name)->Clone());
   std::vector<arc::mojom::AppInfoPtr> apps;
   apps.emplace_back(CreateArcAppInfo(package_name, package_name));
@@ -237,7 +242,7 @@ TEST_F(FamilyUserParentalControlMetricsTest, AppTimeLimitMetrics) {
   // Add limit policy to the Chrome and the Arc app.
   {
     app_time::AppTimeLimitsPolicyBuilder builder;
-    builder.AddAppLimit(kArcApp,
+    builder.AddAppLimit(arc_app_,
                         app_time::AppLimit(app_time::AppRestriction::kTimeLimit,
                                            base::Hours(1), base::Time::Now()));
     builder.AddAppLimit(app_time::GetChromeAppId(),

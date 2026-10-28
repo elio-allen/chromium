@@ -8,13 +8,16 @@
 #include <utility>
 
 #include "build/build_config.h"
+#include "chrome/common/request_header_integrity/buildflags.h"
+#include "chrome/services/file_util/buildflags.h"
 #include "chrome/services/speech/buildflags/buildflags.h"
 #include "components/on_device_translation/buildflags/buildflags.h"
 #include "components/paint_preview/buildflags/buildflags.h"
 #include "components/password_manager/core/common/password_manager_features.h"
 #include "components/password_manager/services/csv_password/csv_password_parser_impl.h"
 #include "components/password_manager/services/csv_password/public/mojom/csv_password_parser.mojom.h"
-#include "components/private_ai/oak_session_service/oak_session_service.h"  // nogncheck
+#include "components/private_ai/oak_session_service/oak_session_service.h"
+#include "components/private_ai/oak_session_service/oak_tls_session_service.h"
 #include "components/safe_browsing/buildflags.h"
 #include "components/services/patch/file_patcher_impl.h"
 #include "components/services/patch/public/mojom/file_patcher.mojom.h"
@@ -46,14 +49,14 @@
 #include "components/device_signals/core/common/mojom/system_signals.mojom.h"  // nogncheck
 #include "components/services/quarantine/public/mojom/quarantine.mojom.h"  // nogncheck
 #include "components/services/quarantine/quarantine_impl.h"  // nogncheck
-#include "services/proxy_resolver/public/mojom/proxy_resolver.mojom.h"
+#include "services/proxy_resolver/public/mojom/system_proxy_resolver.mojom.h"
 #include "services/proxy_resolver_win/windows_system_proxy_resolver_impl.h"
 #endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(IS_MAC)
 #include "chrome/services/mac_notifications/mac_notification_provider_impl.h"
 #include "chrome/services/system_signals/mac/mac_system_signals_service.h"
-#include "services/proxy_resolver/public/mojom/proxy_resolver.mojom.h"
+#include "services/proxy_resolver/public/mojom/system_proxy_resolver.mojom.h"
 #include "services/proxy_resolver_mac/mac_system_proxy_resolver_impl.h"
 #endif  // BUILDFLAG(IS_MAC)
 
@@ -83,7 +86,7 @@
 
 #if (BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION) && \
      !BUILDFLAG(IS_ANDROID)) ||                      \
-    BUILDFLAG(IS_CHROMEOS)
+    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(ENABLE_EXTRACTORS)
 #include "chrome/services/file_util/file_util_service.h"  // nogncheck
 #endif
 
@@ -95,6 +98,11 @@
 #if BUILDFLAG(ENABLE_EXTENSIONS) || BUILDFLAG(IS_ANDROID)
 #include "chrome/services/media_gallery_util/media_parser_factory.h"
 #include "components/media_gallery_util/public/mojom/media_parser.mojom.h"
+#endif
+
+#if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY) && !BUILDFLAG(IS_ANDROID)
+#include "chrome/common/request_header_integrity/platform_runtime.mojom.h"  // nogncheck
+#include "chrome/services/platform_runtime/platform_runtime_service_impl.h"  // nogncheck
 #endif
 
 #if BUILDFLAG(ENABLE_PRINT_PREVIEW) || \
@@ -242,6 +250,12 @@ auto RunOakSessionService(
   return std::make_unique<private_ai::OakSessionService>(std::move(receiver));
 }
 
+auto RunOakTlsSessionService(
+    mojo::PendingReceiver<private_ai::mojom::OakTlsSession> receiver) {
+  return std::make_unique<private_ai::OakTlsSessionService>(
+      std::move(receiver));
+}
+
 #if !BUILDFLAG(IS_ANDROID)
 auto RunProxyResolver(
     mojo::PendingReceiver<proxy_resolver::mojom::ProxyResolverFactory>
@@ -302,7 +316,7 @@ auto RunScreenAIServiceFactory(
 
 #if (BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION) && \
      !BUILDFLAG(IS_ANDROID)) ||                      \
-    BUILDFLAG(IS_CHROMEOS)
+    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(ENABLE_EXTRACTORS)
 auto RunFileUtil(
     mojo::PendingReceiver<chrome::mojom::FileUtilService> receiver) {
   return std::make_unique<FileUtilService>(std::move(receiver));
@@ -326,6 +340,15 @@ auto RunMediaParserFactory(
 #if BUILDFLAG(IS_CHROMEOS)
 auto RunPdfService(mojo::PendingReceiver<pdf::mojom::PdfService> receiver) {
   return std::make_unique<pdf::PdfService>(std::move(receiver));
+}
+#endif
+
+#if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY) && !BUILDFLAG(IS_ANDROID)
+auto RunPlatformRuntimeService(
+    mojo::PendingReceiver<
+        request_header_integrity::mojom::PlatformRuntimeService> receiver) {
+  return std::make_unique<platform_runtime::PlatformRuntimeServiceImpl>(
+      std::move(receiver));
 }
 #endif
 
@@ -487,6 +510,7 @@ void RegisterMainThreadServices(mojo::ServiceFactory& services) {
   services.Add(ContentBookmarkParser);
   services.Add(RunPassageEmbeddingsService);
   services.Add(RunOakSessionService);
+  services.Add(RunOakTlsSessionService);
 
 #if BUILDFLAG(IS_ANDROID)
   services.Add(RunReadAloudPlaybackControllerFactory);
@@ -524,7 +548,7 @@ void RegisterMainThreadServices(mojo::ServiceFactory& services) {
 
 #if (BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION) && \
      !BUILDFLAG(IS_ANDROID)) ||                      \
-    BUILDFLAG(IS_CHROMEOS)
+    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(ENABLE_EXTRACTORS)
   services.Add(RunFileUtil);
 #endif
 
@@ -539,6 +563,10 @@ void RegisterMainThreadServices(mojo::ServiceFactory& services) {
 
 #if BUILDFLAG(IS_CHROMEOS)
   services.Add(RunPdfService);
+#endif
+
+#if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY) && !BUILDFLAG(IS_ANDROID)
+  services.Add(RunPlatformRuntimeService);
 #endif
 
 #if BUILDFLAG(ENABLE_PRINT_PREVIEW) || \

@@ -16,6 +16,7 @@
 #include "net/url_request/url_request.h"
 #include "remoting/base/certificate_helpers.h"
 #include "remoting/base/logging.h"
+#include "remoting/base/ssl_private_key_wrapper.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "url/gurl.h"
@@ -25,39 +26,6 @@ namespace remoting {
 namespace {
 
 constexpr char kCertIssuerWildCard[] = "*";
-
-class SSLPrivateKeyWrapper : public network::mojom::SSLPrivateKey {
- public:
-  explicit SSLPrivateKeyWrapper(
-      scoped_refptr<net::SSLPrivateKey> ssl_private_key)
-      : ssl_private_key_(std::move(ssl_private_key)) {}
-
-  SSLPrivateKeyWrapper(const SSLPrivateKeyWrapper&) = delete;
-  SSLPrivateKeyWrapper& operator=(const SSLPrivateKeyWrapper&) = delete;
-
-  ~SSLPrivateKeyWrapper() override = default;
-
-  // network::mojom::SSLPrivateKey implementation.
-  void Sign(uint16_t algorithm,
-            const std::vector<uint8_t>& input,
-            network::mojom::SSLPrivateKey::SignCallback callback) override {
-    base::span<const uint8_t> input_span(input);
-    ssl_private_key_->Sign(
-        algorithm, input_span,
-        base::BindOnce(&SSLPrivateKeyWrapper::Callback,
-                       weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
-  }
-
- private:
-  void Callback(network::mojom::SSLPrivateKey::SignCallback callback,
-                net::Error net_error,
-                const std::vector<uint8_t>& signature) {
-    std::move(callback).Run(static_cast<int32_t>(net_error), signature);
-  }
-
-  scoped_refptr<net::SSLPrivateKey> ssl_private_key_;
-  base::WeakPtrFactory<SSLPrivateKeyWrapper> weak_ptr_factory_{this};
-};
 
 void PrintCertificateDetails(const net::X509Certificate& cert) {
   // Formatted to make log output more readable.
@@ -114,6 +82,7 @@ void UrlLoaderNetworkServiceObserver::OnAuthRequired(
     int32_t request_id,
     const GURL& url,
     bool first_auth_attempt,
+    bool do_not_prompt_for_login,
     const net::AuthChallengeInfo& auth_info,
     const scoped_refptr<net::HttpResponseHeaders>& head_headers,
     mojo::PendingRemote<network::mojom::AuthChallengeResponder>
@@ -131,6 +100,8 @@ void UrlLoaderNetworkServiceObserver::OnPlatformLocalNetworkPermissionRequired(
 
 void UrlLoaderNetworkServiceObserver::OnClearSiteData(
     const GURL& url,
+    const std::optional<net::SchemefulSite>& top_level_site,
+    const std::optional<base::UnguessableToken>& nonce,
     const std::string& header_value,
     int32_t load_flags,
     const std::optional<net::CookiePartitionKey>& cookie_partition_key,

@@ -937,7 +937,7 @@ void CloudPolicyClient::FetchPolicyInternal(
     if (type_to_fetch.policy_type() ==
         dm_protocol::kChromeMachineLevelUserCloudPolicyType) {
 #if BUILDFLAG(IS_WIN)
-        cbcm_policy_fetch_request = fetch_request;
+      cbcm_policy_fetch_request = fetch_request;
 #else
       fetch_request->set_allocated_browser_device_identifier(
           GetBrowserDeviceIdentifier().release());
@@ -956,11 +956,11 @@ void CloudPolicyClient::FetchPolicyInternal(
   if (!state_keys_to_upload_.empty()) {
     em::DeviceStateKeyUpdateRequest* key_update_request =
         request->mutable_device_state_key_update_request();
-    for (std::vector<std::string>::const_iterator key(
-             state_keys_to_upload_.begin());
-         key != state_keys_to_upload_.end(); ++key) {
-      key_update_request->add_server_backed_state_keys(*key);
+    for (const auto& key : state_keys_to_upload_) {
+      key_update_request->add_server_backed_state_keys(key);
     }
+    key_update_request->set_current_time_quantum_index(
+        current_time_quantum_index_to_upload_);
   }
 
   policy_request->set_reason(TranslateFetchReason(reason));
@@ -1286,15 +1286,13 @@ void CloudPolicyClient::UploadChromeProfileReport(
   request_jobs_.push_back(service_->CreateJob(std::move(config)));
 }
 
-void CloudPolicyClient::UploadSecurityEvent(bool include_device_info,
-                                            UploadEventsRequest request,
-                                            ResultCallback callback) {
-  DCHECK(base::FeatureList::IsEnabled(
-      policy::kUploadRealtimeReportingEventsUsingProto));
-
+void CloudPolicyClient::UploadSecurityEvent(
+    bool include_device_info,
+    ::chrome::cros::reporting::proto::UploadEventsRequest request,
+    ResultCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  if (!is_registered()) {
+  if (!is_registered() || !service() || !service()->configuration()) {
     std::move(callback).Run(CloudPolicyClient::Result::CreateForRealtimeUpload(
         NotRegistered(), std::move(request)));
     return;
@@ -1305,25 +1303,6 @@ void CloudPolicyClient::UploadSecurityEvent(bool include_device_info,
       service()->configuration()->GetRealtimeReportingServerUrl(),
       include_device_info, std::move(callback));
 }
-
-// TODO(crbug.com/478929452): Delete this method after the proto-based reporting
-// launch.
-void CloudPolicyClient::UploadSecurityEventReport(bool include_device_info,
-                                                  base::DictValue report,
-                                                  ResultCallback callback) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  if (!is_registered()) {
-    std::move(callback).Run(CloudPolicyClient::Result(NotRegistered()));
-    return;
-  }
-
-  CreateNewRealtimeReportingJobDeprecated(
-      std::move(report),
-      service()->configuration()->GetRealtimeReportingServerUrl(),
-      include_device_info, std::move(callback));
-}
-
 
 void CloudPolicyClient::FetchRemoteCommands(
     std::unique_ptr<RemoteCommandJob::UniqueIDType> last_command_id,
@@ -1379,24 +1358,6 @@ DeviceManagementService::Job* CloudPolicyClient::CreateNewRealtimeReportingJob(
                          weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
 
   config->AddRequest(std::move(request));
-  request_jobs_.push_back(service_->CreateJob(std::move(config)));
-  return request_jobs_.back().get();
-}
-
-DeviceManagementService::Job*
-CloudPolicyClient::CreateNewRealtimeReportingJobDeprecated(
-    base::DictValue report,
-    const std::string& server_url,
-    bool include_device_info,
-    ResultCallback callback) {
-  std::unique_ptr<RealtimeReportingJobConfiguration> config =
-      std::make_unique<RealtimeReportingJobConfiguration>(
-          this, server_url, include_device_info,
-          base::BindOnce(
-              &CloudPolicyClient::OnRealtimeReportUploadCompletedDeprecated,
-              weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
-
-  config->AddReportDeprecated(std::move(report));
   request_jobs_.push_back(service_->CreateJob(std::move(config)));
   return request_jobs_.back().get();
 }
@@ -1628,10 +1589,12 @@ void CloudPolicyClient::RemovePolicyTypeToFetch(
 }
 
 void CloudPolicyClient::SetStateKeysToUpload(
-    const std::vector<std::string>& keys) {
+    const std::vector<std::string>& keys,
+    int64_t current_time_quantum_index) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   state_keys_to_upload_ = keys;
+  current_time_quantum_index_to_upload_ = current_time_quantum_index;
 }
 
 const em::PolicyFetchResponse* CloudPolicyClient::GetPolicyFor(
@@ -1783,8 +1746,7 @@ void CloudPolicyClient::ProcessDeviceRegisterResponse(
           << "Failed to parse configuration seed";
     }
   }
-  DVLOG_POLICY(1, CBCM_ENROLLMENT)
-      << "Client registration complete - DMToken = " << dm_token_;
+  DVLOG_POLICY(1, CBCM_ENROLLMENT) << "Client registration complete";
 
   // Device mode is only relevant for device policy really, it's the
   // responsibility of the consumer of the field to check validity.
@@ -1873,7 +1835,6 @@ void CloudPolicyClient::OnPolicyFetchCompleted(base::Time start_time,
   if (result.dm_status == DM_STATUS_SUCCESS) {
     const em::DevicePolicyResponse& policy_response =
         result.response.policy_response();
-    bool is_first_response = last_policy_fetch_responses_.empty();
     last_policy_fetch_responses_.clear();
     for (int i = 0; i < policy_response.responses_size(); ++i) {
       const em::PolicyFetchResponse& fetch_response =
@@ -1886,13 +1847,6 @@ void CloudPolicyClient::OnPolicyFetchCompleted(base::Time start_time,
         continue;
       }
       const std::string& type = policy_data.policy_type();
-      if (is_first_response && type == dm_protocol::kChromeDevicePolicyType) {
-        // Log histogram on first device policy fetch response to check the
-        // state keys. No need to worry about possibility of multiple responses
-        // of this type. There's only one device policy possible.
-        base::UmaHistogramBoolean("Ash.StateKeysPresent2",
-                                  !state_keys_to_upload_.empty());
-      }
       std::string entity_id;
       if (policy_data.has_settings_entity_id()) {
         entity_id = policy_data.settings_entity_id();
@@ -1907,6 +1861,7 @@ void CloudPolicyClient::OnPolicyFetchCompleted(base::Time start_time,
       last_policy_fetch_responses_[key] = fetch_response;
     }
     state_keys_to_upload_.clear();
+    current_time_quantum_index_to_upload_ = 0;
     NotifyPolicyFetched();
 
     VLOG_POLICY(2, CBCM_ENROLLMENT) << "Policy fetch succeeded";
@@ -2042,27 +1997,6 @@ void CloudPolicyClient::OnRealtimeReportUploadCompleted(
   } else {
     std::move(callback).Run(CloudPolicyClient::Result::CreateForRealtimeUpload(
         status, response_code, upload_request));
-  }
-
-  RemoveJob(job);
-}
-
-void CloudPolicyClient::OnRealtimeReportUploadCompletedDeprecated(
-    ResultCallback callback,
-    DeviceManagementService::Job* job,
-    DeviceManagementStatus status,
-    int response_code,
-    std::optional<base::DictValue> response) {
-  last_dm_status_ = status;
-  if (status != DM_STATUS_SUCCESS) {
-    NotifyClientError();
-  }
-
-  if (response.has_value()) {
-    std::move(callback).Run(CloudPolicyClient::Result(
-        status, response_code, std::move(response.value())));
-  } else {
-    std::move(callback).Run(CloudPolicyClient::Result(status, response_code));
   }
 
   RemoveJob(job);

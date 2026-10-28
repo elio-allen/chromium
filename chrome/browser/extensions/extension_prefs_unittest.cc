@@ -15,6 +15,7 @@
 #include "base/scoped_observation.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/install_tracker_factory.h"
@@ -23,9 +24,12 @@
 #include "chrome/test/base/testing_profile.h"
 #include "components/content_settings/core/browser/content_settings_registry.h"
 #include "components/content_settings/core/common/content_settings.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
+#include "components/enterprise/isolated_mode/prefs.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/mock_pref_change_callback.h"
 #include "components/prefs/pref_change_registrar.h"
+#include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/sync/model/string_ordinal.h"
 #include "components/sync_preferences/pref_service_syncable.h"
@@ -659,53 +663,6 @@ class ExtensionPrefsPopulatesInstallTimePrefs : public ExtensionPrefsTest {
 };
 TEST_F(ExtensionPrefsPopulatesInstallTimePrefs,
        ExtensionPrefsPopulatesInstallTimePrefs) {}
-
-class ExtensionPrefsMigratesToLastUpdateTime : public ExtensionPrefsTest {
- public:
-  void Initialize() override {
-    extension_ = prefs_.AddExtension("test1");
-    // Re-create migration scenario by removing the new first_install_time,
-    // last_update_time pref keys and adding back the legacy install_time key.
-    prefs()->UpdateExtensionPref(extension_->id(), kLastUpdateTimePrefKey,
-                                 std::nullopt);
-    prefs()->UpdateExtensionPref(extension_->id(), kFirstInstallTimePrefKey,
-                                 std::nullopt);
-    time_str_ = base::NumberToString(
-        base::Time::Now().ToDeltaSinceWindowsEpoch().InMicroseconds());
-    prefs()->SetStringPref(extension_->id(), kOldInstallTimePrefMap, time_str_);
-
-    // Run the migration routine.
-    prefs()->BackfillAndMigrateInstallTimePrefs();
-  }
-
-  void Verify() override {
-    auto* dict = prefs()->GetExtensionPref(extension_->id());
-
-    // Verify the legacy install_time key has been removed and replaced by
-    // the last_update_time key. Also verify that the first_install_time key
-    // has been added and has the same value as the last_update_time key.
-    EXPECT_FALSE(dict->FindString(kOldInstallTimePrefKey));
-    const std::string* first_install_time =
-        dict->FindString(kFirstInstallTimePrefKey);
-    ASSERT_TRUE(first_install_time);
-    EXPECT_EQ(*first_install_time, time_str_);
-    const std::string* last_update_time =
-        dict->FindString(kLastUpdateTimePrefKey);
-    ASSERT_TRUE(last_update_time);
-    EXPECT_EQ(*last_update_time, time_str_);
-  }
-
- private:
-  scoped_refptr<Extension> extension_;
-  std::string time_str_;
-  static constexpr char kFirstInstallTimePrefKey[] = "first_install_time";
-  static constexpr char kLastUpdateTimePrefKey[] = "last_update_time";
-  static constexpr char kOldInstallTimePrefKey[] = "install_time";
-  static constexpr PrefMap kOldInstallTimePrefMap = {
-      kOldInstallTimePrefKey, PrefType::kString, PrefScope::kExtensionSpecific};
-};
-TEST_F(ExtensionPrefsMigratesToLastUpdateTime,
-       ExtensionPrefsMigratesToLastUpdateTime) {}
 
 // Tests that the bit map pref value is cleared if the value matches the default
 // bit.
@@ -1354,6 +1311,80 @@ TEST_F(ExtensionPrefsSimpleTest, CleanUpDuplicateSubEventFilters) {
   }
 }
 
+// Tests that ExtensionPrefs initialization prunes empty filter lists and
+// malformed non-list values from preferences, preserves non-empty lists, and
+// removes the preference dictionary entirely when no valid entries remain (for
+// both installed and stale extensions).
+// Regression test for crbug.com/526929792.
+// TODO(andreaorru): Remove this after M157 alongside
+// CleanUpEmptyFilteredEventLists().
+TEST_F(ExtensionPrefsSimpleTest, CleanUpEmptyFilteredEventLists) {
+  content::BrowserTaskEnvironment task_environment;
+  TestExtensionPrefs prefs(base::SingleThreadTaskRunner::GetCurrentDefault(),
+                           std::make_unique<TestingProfile>());
+  const std::string installed_id = prefs.AddExtension("Test Extension")->id();
+  // A valid ID with no installed extension to test cleanup of stale entries.
+  const std::string stale_id(32, 'a');
+  ExtensionPrefs* extension_prefs = prefs.prefs();
+
+  for (const char* pref_key : {EventRouter::kFilteredEvents,
+                               EventRouter::kFilteredServiceWorkerEvents}) {
+    // Populate the installed extension with two empty filter lists, one
+    // non-empty list, and one malformed non-list value; populate the stale
+    // entry with only an empty list.
+    {
+      ExtensionPrefs::ScopedDictionaryUpdate update(extension_prefs,
+                                                    installed_id, pref_key);
+      auto filtered_events = update.Create();
+      filtered_events->SetKey("webRequest.onBeforeRequest/s0",
+                              base::Value(base::ListValue()));
+      base::ListValue filter_list;
+      base::DictValue filter;
+      filter.Set("hostSuffix", "foo.com");
+      filter_list.Append(std::move(filter));
+      filtered_events->SetKey("webRequest.onBeforeRequest/s1",
+                              base::Value(std::move(filter_list)));
+      filtered_events->SetKey("webNavigation.onCommitted",
+                              base::Value(base::ListValue()));
+      filtered_events->SetKey("webRequest.onCompleted/s2", base::Value(42));
+    }
+    {
+      ExtensionPrefs::ScopedDictionaryUpdate update(extension_prefs, stale_id,
+                                                    pref_key);
+      update.Create()->SetKey("webRequest.onBeforeRequest/s0",
+                              base::Value(base::ListValue()));
+    }
+  }
+
+  // Recreating ExtensionPrefs triggers cleanup in the constructor.
+  prefs.RecreateExtensionPrefs();
+  extension_prefs = prefs.prefs();
+
+  for (const char* pref_key : {EventRouter::kFilteredEvents,
+                               EventRouter::kFilteredServiceWorkerEvents}) {
+    // Only the non-empty list of the installed extension remains.
+    const base::DictValue* dict =
+        extension_prefs->ReadPrefAsDict(installed_id, pref_key);
+    ASSERT_TRUE(dict);
+    EXPECT_FALSE(dict->contains("webRequest.onBeforeRequest/s0"));
+    EXPECT_FALSE(dict->contains("webNavigation.onCommitted"));
+    EXPECT_FALSE(dict->contains("webRequest.onCompleted/s2"));
+    const base::ListValue* filter_list =
+        dict->FindList("webRequest.onBeforeRequest/s1");
+    ASSERT_TRUE(filter_list);
+    ASSERT_EQ(1u, filter_list->size());
+    const std::string* host_suffix =
+        (*filter_list)[0].GetDict().FindString("hostSuffix");
+    ASSERT_TRUE(host_suffix);
+    EXPECT_EQ("foo.com", *host_suffix);
+
+    // The stale entry had only an empty list, so its preference was deleted.
+    EXPECT_FALSE(extension_prefs->ReadPrefAsDict(stale_id, pref_key));
+  }
+  // Unrelated preferences should remain intact.
+  EXPECT_TRUE(extension_prefs->HasPrefForExtension(installed_id));
+}
+
 // Tests the generic Get/Set functions for profile wide extension prefs.
 TEST_F(ExtensionPrefsSimpleTest, ProfileExtensionPrefsMapTest) {
   constexpr PrefMap kTestBooleanPref = {"test.boolean", PrefType::kBool,
@@ -1615,6 +1646,83 @@ TEST_F(ExtensionPrefsSimpleTest, RemoveDisableReasons) {
       extension_id, {disable_reason::DISABLE_EXTERNAL_EXTENSION,
                      disable_reason::DISABLE_CORRUPTED});
   EXPECT_TRUE(extension_prefs->GetDisableReasons(extension_id).empty());
+}
+
+// Tests that IsIncognitoEnabled/SetIsIncognitoEnabled read and write the
+// "incognito" pref, and that ExtensionPrefValueMap uses the Incognito setting
+// when Enterprise Isolated Mode does not replace Incognito.
+TEST_F(ExtensionPrefsSimpleTest, IncognitoSettingStoredInIncognitoPref) {
+  content::BrowserTaskEnvironment task_environment;
+  TestExtensionPrefs prefs(base::SingleThreadTaskRunner::GetCurrentDefault(),
+                           std::make_unique<TestingProfile>());
+  std::string extension_id = prefs.AddExtension("Test Extension")->id();
+
+  EXPECT_FALSE(prefs.prefs()->IsIncognitoEnabled(extension_id));
+  EXPECT_FALSE(prefs.prefs()->IsIsolatedModeEnabled(extension_id));
+  EXPECT_FALSE(prefs.extension_pref_value_map()->CanExtensionControlPref(
+      extension_id, "a_pref", /*incognito=*/true));
+
+  prefs.prefs()->SetIsIncognitoEnabled(extension_id, true);
+  EXPECT_TRUE(prefs.prefs()->IsIncognitoEnabled(extension_id));
+  EXPECT_FALSE(prefs.prefs()->IsIsolatedModeEnabled(extension_id));
+  EXPECT_TRUE(prefs.extension_pref_value_map()->CanExtensionControlPref(
+      extension_id, "a_pref", /*incognito=*/true));
+
+  // Verify the startup path (InitExtensionControlledPrefs).
+  prefs.RecreateExtensionPrefs();
+  EXPECT_TRUE(prefs.extension_pref_value_map()->CanExtensionControlPref(
+      extension_id, "a_pref", /*incognito=*/true));
+
+  // Changing the Isolated Mode setting does not affect ExtensionPrefValueMap
+  // when Incognito is active.
+  prefs.prefs()->SetIsIncognitoEnabled(extension_id, false);
+  prefs.prefs()->SetIsIsolatedModeEnabled(extension_id, true);
+  EXPECT_FALSE(prefs.prefs()->IsIncognitoEnabled(extension_id));
+  EXPECT_TRUE(prefs.prefs()->IsIsolatedModeEnabled(extension_id));
+  EXPECT_FALSE(prefs.extension_pref_value_map()->CanExtensionControlPref(
+      extension_id, "a_pref", /*incognito=*/true));
+}
+
+// Tests that IsIsolatedModeEnabled/SetIsIsolatedModeEnabled read and write
+// the "isolated_mode" pref, and that ExtensionPrefValueMap uses the Isolated
+// Mode setting when Enterprise Isolated Mode replaces Incognito.
+TEST_F(ExtensionPrefsSimpleTest, IsolatedModeSettingStoredInIsolatedModePref) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      enterprise_isolated_mode::kEnableEnterpriseIsolatedMode);
+  content::BrowserTaskEnvironment task_environment;
+  auto profile = std::make_unique<TestingProfile>();
+  profile->GetPrefs()->SetInteger(
+      enterprise_isolated_mode::kEnterpriseIsolatedModeSettings,
+      static_cast<int>(
+          enterprise_isolated_mode::IsolatedModeSetting::kEnabled));
+  TestExtensionPrefs prefs(base::SingleThreadTaskRunner::GetCurrentDefault(),
+                           std::move(profile));
+  std::string extension_id = prefs.AddExtension("Test Extension")->id();
+
+  EXPECT_FALSE(prefs.prefs()->IsIncognitoEnabled(extension_id));
+  EXPECT_FALSE(prefs.prefs()->IsIsolatedModeEnabled(extension_id));
+  EXPECT_FALSE(prefs.extension_pref_value_map()->CanExtensionControlPref(
+      extension_id, "a_pref", /*incognito=*/true));
+
+  prefs.prefs()->SetIsIsolatedModeEnabled(extension_id, true);
+  EXPECT_TRUE(prefs.prefs()->IsIsolatedModeEnabled(extension_id));
+  EXPECT_FALSE(prefs.prefs()->IsIncognitoEnabled(extension_id));
+  EXPECT_TRUE(prefs.extension_pref_value_map()->CanExtensionControlPref(
+      extension_id, "a_pref", /*incognito=*/true));
+
+  // Verify the startup path (InitExtensionControlledPrefs).
+  prefs.RecreateExtensionPrefs();
+  EXPECT_TRUE(prefs.extension_pref_value_map()->CanExtensionControlPref(
+      extension_id, "a_pref", /*incognito=*/true));
+
+  // Changing the Incognito setting does not affect ExtensionPrefValueMap when
+  // Isolated Mode is active.
+  prefs.prefs()->SetIsIsolatedModeEnabled(extension_id, false);
+  prefs.prefs()->SetIsIncognitoEnabled(extension_id, true);
+  EXPECT_FALSE(prefs.prefs()->IsIsolatedModeEnabled(extension_id));
+  EXPECT_TRUE(prefs.prefs()->IsIncognitoEnabled(extension_id));
+  EXPECT_FALSE(prefs.extension_pref_value_map()->CanExtensionControlPref(
+      extension_id, "a_pref", /*incognito=*/true));
 }
 
 }  // namespace extensions

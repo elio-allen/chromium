@@ -10,6 +10,10 @@
 
 #import "components/optimization_guide/proto/features/actions_data.pb.h"
 
+namespace base {
+class DictValue;
+}  // namespace base
+
 namespace actor {
 
 // Represents a local representation of an ActionTarget proto.
@@ -61,6 +65,12 @@ class ActionTarget {
 
   // Updates the coordinate values. Expects `coordinate_` to be set.
   void UpdateCoordinate(int x, int y);
+
+  // Converts the target to a dictionary value for JavaScript execution.
+  base::DictValue ToDictValue() const;
+
+  // Returns a human-readable string representation of the target for logging.
+  std::string DebugString() const;
 
   bool operator==(const ActionTarget& other) const = default;
 

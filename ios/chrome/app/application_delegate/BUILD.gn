@@ -45,7 +45,9 @@ source_set("unit_tests") {
     "//components/crash/core/app",
     "//components/crash/core/common:reporter_running_ios",
     "//components/metrics",
+    "//components/password_manager/core/common:browser_assisted_login_type",
     "//components/previous_session_info",
+    "//components/signin/public/identity_manager:tribool",
     "//ios/chrome/app",
     "//ios/chrome/app:enterprise_app_agent",
     "//ios/chrome/app:safe_mode_app_state_agent",
@@ -57,11 +59,13 @@ source_set("unit_tests") {
     "//ios/chrome/browser/geolocation/model",
     "//ios/chrome/browser/main/ui_bundled",
     "//ios/chrome/browser/metrics/model",
+    "//ios/chrome/browser/metrics/model:startup_metrics",
     "//ios/chrome/browser/safe_mode/ui_bundled",
     "//ios/chrome/browser/settings/ui_bundled",
     "//ios/chrome/browser/settings/ui_bundled:settings_root",
     "//ios/chrome/browser/shared/coordinator/scene",
     "//ios/chrome/browser/shared/coordinator/scene/test",
+    "//ios/chrome/browser/shared/model/browser",
     "//ios/chrome/browser/shared/model/browser/test:test_support",
     "//ios/chrome/browser/shared/model/profile/test",
     "//ios/chrome/browser/shared/model/url:constants",
@@ -71,6 +75,7 @@ source_set("unit_tests") {
     "//ios/chrome/browser/shared/public/features:system_flags",
     "//ios/chrome/browser/signin/model:authentication_service",
     "//ios/chrome/browser/signin/model:authentication_service_factory",
+    "//ios/chrome/browser/signin/model:signin_util",
     "//ios/chrome/browser/signin/model:test_support",
     "//ios/chrome/browser/tabs/model",
     "//ios/chrome/browser/url_loading/model",
@@ -101,7 +106,6 @@ source_set("tab_opening") {
     "//base",
     "//ios/chrome/app",
     "//ios/chrome/app:mode",
-    "//ios/chrome/browser/shared/model/browser",
     "//ui/base",
   ]
   frameworks = [ "UIKit.framework" ]
@@ -128,6 +132,7 @@ source_set("metric_kit_subscriber") {
     "//components/previous_session_info",
     "//components/version_info",
     "//ios/chrome/browser/crash_report/model",
+    "//ios/chrome/browser/metrics/model:activity_reporter",
   ]
 }
 
@@ -161,6 +166,7 @@ source_set("app_state") {
     "//ios/chrome/browser/shared/coordinator/scene:scene_state_header",
     "//ios/chrome/browser/shared/coordinator/scene/state",
     "//ios/chrome/browser/shared/model/application_context",
+    "//ios/chrome/browser/shared/model/browser",
     "//ios/chrome/browser/shared/public/commands",
     "//ios/chrome/browser/shared/public/features",
   ]
@@ -223,6 +229,7 @@ source_set("metrics_mediator") {
     "//components/crash/core/common",
     "//components/metrics",
     "//components/metrics:metrics_pref_names",
+    "//components/password_manager/core/common:browser_assisted_login_type",
     "//components/prefs",
     "//components/previous_session_info",
     "//components/signin/public/identity_manager:tribool",
@@ -232,7 +239,9 @@ source_set("metrics_mediator") {
     "//ios/chrome/browser/crash_report/model",
     "//ios/chrome/browser/default_browser/model:default_browser_interest_signals",
     "//ios/chrome/browser/metrics/model:metrics_internal",
+    "//ios/chrome/browser/metrics/model:startup_metrics",
     "//ios/chrome/browser/ntp/model:util",
+    "//ios/chrome/browser/safe_mode/ui_bundled",
     "//ios/chrome/browser/shared/coordinator/scene:scene_state_header",
     "//ios/chrome/browser/shared/model/application_context",
     "//ios/chrome/browser/shared/model/browser",

@@ -62,7 +62,7 @@
           {
             "builder_id": {
               "bucket": "ci",
-              "builder": "Linux Wayland FYI Release (Intel)",
+              "builder": "Linux Wayland FYI Release (NVIDIA RTX 4070 Super)",
               "project": "chromium"
             },
             "builder_spec": {
@@ -106,7 +106,7 @@
         },
         {
           "bucket": "ci",
-          "builder": "Linux Wayland FYI Release (Intel)",
+          "builder": "Linux Wayland FYI Release (NVIDIA RTX 4070 Super)",
           "project": "chromium"
         }
       ],
@@ -116,7 +116,7 @@
           "group": "tryserver.chromium.linux"
         },
         {
-          "builder": "gpu-fyi-try-linux-wayland-intel-rel",
+          "builder": "gpu-fyi-try-linux-wayland-nvidia-rtx-4070-super-rel",
           "group": "tryserver.chromium.linux"
         }
       ],

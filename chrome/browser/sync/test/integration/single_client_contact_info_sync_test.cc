@@ -19,7 +19,7 @@
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_i18n_api.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile_test_api.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/webdata/addresses/contact_info_sync_util.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/signin/public/base/signin_switches.h"
@@ -104,6 +104,7 @@ class ContactInfoActiveChecker : public SingleClientStatusChangeChecker {
 
   // StatusChangeChecker implementation.
   bool IsExitConditionSatisfied(std::ostream* os) override {
+    *os << "Waiting for CONTACT_INFO active state to become " << expect_active_;
     return service()->GetActiveDataTypes().Has(syncer::CONTACT_INFO) ==
            expect_active_;
   }
@@ -126,6 +127,7 @@ class FakeServerSpecificsChecker
 
   // StatusChangeChecker implementation.
   bool IsExitConditionSatisfied(std::ostream* os) override {
+    *os << "Waiting for server CONTACT_INFO specifics to match: ";
     std::vector<std::string> specifics;
     for (const sync_pb::SyncEntity& entity :
          fake_server()->GetSyncEntitiesByDataType(syncer::CONTACT_INFO)) {
@@ -302,9 +304,11 @@ class SingleClientContactInfoPassphraseSyncTest
  public:
   SingleClientContactInfoPassphraseSyncTest()
       : SingleClientContactInfoSyncTestBase(GetSetupSyncMode()) {
+#if BUILDFLAG(IS_CHROMEOS)
     passphrase_feature_.InitWithFeatureState(
         syncer::kSyncEnableContactInfoDataTypeForCustomPassphraseUsers,
         EnabledForPassphraseUsersTestParam());
+#endif  // BUILDFLAG(IS_CHROMEOS)
   }
 
   SyncTest::SetupSyncMode GetSetupSyncMode() const override {
@@ -316,13 +320,21 @@ class SingleClientContactInfoPassphraseSyncTest
   }
 
  private:
+#if BUILDFLAG(IS_CHROMEOS)
   base::test::ScopedFeatureList passphrase_feature_;
+#endif  // BUILDFLAG(IS_CHROMEOS)
 };
 
 INSTANTIATE_TEST_SUITE_P(
     ,
     SingleClientContactInfoPassphraseSyncTest,
-    testing::Combine(GetSyncTestModes(), testing::Bool()),
+    testing::Combine(GetSyncTestModes(),
+#if BUILDFLAG(IS_CHROMEOS)
+                     testing::Bool()
+#else
+                     testing::Values(true)
+#endif
+                         ),
     [](const testing::TestParamInfo<std::tuple<SyncTest::SetupSyncMode, bool>>&
            info) {
       return testing::PrintToString(std::get<0>(info.param)) +

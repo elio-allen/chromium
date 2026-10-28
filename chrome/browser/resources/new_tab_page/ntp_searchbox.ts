@@ -9,8 +9,8 @@ import '//resources/cr_components/searchbox/searchbox_dropdown.js';
 import '//resources/cr_components/search/animated_glow.js';
 import '//resources/cr_components/searchbox/searchbox_input.js';
 
-import type {ComposeboxState, ContextualUpload, DriveUpload, TabUpload, TabUploadOrigin} from '//resources/cr_components/composebox/common.js';
-import {ContextType, getLoadTimeBoolean, GlifAnimationState, recordContextAdditionMethod, recordContextualElementClickedMetric, recordInputTypeShown, recordModelModeSelection, recordModelModeShown, recordToolModeSelection, recordToolModeShown, TabSuggestionsState} from '//resources/cr_components/composebox/common.js';
+import type {ComposeboxState, ContextualUpload, DriveUpload, TabUpload} from '//resources/cr_components/composebox/common.js';
+import {ContextType, getLoadTimeBoolean, GlifAnimationState, recordBoolean, recordContextAdditionMethod, recordContextualElementClickedMetric, recordCount, recordEnumerationValue, recordInputTypeShown, recordModelModeSelection, recordModelModeShown, recordToolModeSelection, recordToolModeShown, recordUserAction, TabSuggestionsState} from '//resources/cr_components/composebox/common.js';
 import type {ContextualEntrypointAndMenuElement} from '//resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
 import {ComposeboxContextAddedMethod, GlowAnimationState} from '//resources/cr_components/search/constants.js';
 import {DragAndDropHandler} from '//resources/cr_components/search/drag_drop_handler.js';
@@ -28,8 +28,10 @@ import {assert} from '//resources/js/assert.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
+import type {FuseboxAction} from '//resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
+import {InputSource} from '//resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
 import {DriveDisclaimerStatus, SideType} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
-import type {DriveUploadError, PageCallbackRouter, PageHandlerInterface, TabInfo} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import type {DriveUploadError, PageCallbackRouter, PageHandlerInterface, TabAttachmentSource, TabInfo} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import type {InputState} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 import {InputType, ModelMode, ToolMode} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 import type {Url} from '//resources/mojo/url/mojom/url.mojom-webui.js';
@@ -53,12 +55,22 @@ export interface NtpSearchboxElement {
   };
 }
 
-const NtpSearchboxElementBase =
-    SearchboxMixin(I18nMixinLit(WebUiListenerMixinLit(CrLitElement)));
+import {SearchboxSelectionMixin} from '//resources/cr_components/searchbox/searchbox_selection_mixin.js';
+
+const NtpSearchboxElementBase = SearchboxMixin(
+    SearchboxSelectionMixin(I18nMixinLit(WebUiListenerMixinLit(CrLitElement))));
 
 /** A search box for the NTP that behaves like the Omnibox. */
 export class NtpSearchboxElement extends NtpSearchboxElementBase implements
     DragAndDropHost, SearchboxMixinInterface {
+  override get isAimButtonVisible(): boolean {
+    return this.showComposeButton_;
+  }
+
+  override get showContextEntrypoint(): boolean {
+    return false;
+  }
+
   static get is() {
     return 'ntp-searchbox';
   }
@@ -81,6 +93,8 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
         reflect: true,
       },
 
+      virtualFocusEnabled: {type: Boolean},
+
       composeboxEnabled: {type: Boolean},
 
       composeButtonEnabled: {type: Boolean},
@@ -88,6 +102,8 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
       showComposeButton_: {type: Boolean},
 
       cyclingPlaceholders: {type: Boolean},
+
+      shareTabsFlyoutOpen: {type: Boolean},
 
       isDraggingFile: {
         reflect: true,
@@ -132,15 +148,6 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
       inVoiceSearchMode: {
         type: Boolean,
         reflect: true,
-      },
-
-      /**
-       * Whether the secondary side was at any point available to be shown.
-       */
-      hadSecondarySide: {
-        type: Boolean,
-        reflect: true,
-        notify: true,
       },
 
       /*
@@ -202,6 +209,7 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
       hasUserInput_: {type: Boolean},
       ntpRealboxDynamicAiModeButtonEnabled_: {type: Boolean},
       contextManagementInComposeboxEnabled: {type: Boolean},
+      composeboxContextMenuTooltipsEnabled: {type: Boolean},
       keepMenuOpenOnTabSelectForRealbox: {type: Boolean},
       smartTabSharingVisible: {type: Boolean},
       smartTabSharingActive: {type: Boolean},
@@ -217,6 +225,7 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
   accessor composeButtonEnabled: boolean = false;
   protected accessor showComposeButton_: boolean = false;
   accessor cyclingPlaceholders: boolean = false;
+  accessor shareTabsFlyoutOpen: boolean = false;
   accessor isDraggingFile: boolean = false;
   accessor contextMenuGlifAnimationState: GlifAnimationState =
       GlifAnimationState.INELIGIBLE;
@@ -225,16 +234,20 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
   accessor isDark: boolean = false;
   accessor searchboxLayoutMode: string = '';
   accessor canShowSecondarySide: boolean = false;
-  accessor hadSecondarySide: boolean = false;
   accessor hasSecondarySide: boolean = false;
   accessor searchboxChromeRefreshTheming: boolean =
       loadTimeData.getBoolean('searchboxCr23Theming');
   accessor searchboxSteadyStateShadow: boolean =
       loadTimeData.getBoolean('searchboxCr23SteadyStateShadow');
+  override accessor virtualFocusEnabled: boolean =
+      loadTimeData.valueExists('realboxVirtualFocusNavigation') &&
+      loadTimeData.getBoolean('realboxVirtualFocusNavigation');
   // `contextManagementInComposeboxEnabled` is also passed in from parent, but
   // adding as a backup for tests.
   accessor contextManagementInComposeboxEnabled: boolean =
       getLoadTimeBoolean('contextManagementInComposeboxEnabled', false);
+  accessor composeboxContextMenuTooltipsEnabled: boolean =
+      getLoadTimeBoolean('composeboxContextMenuTooltipsEnabled', false);
   accessor keepMenuOpenOnTabSelectForRealbox: boolean =
       getLoadTimeBoolean('keepMenuOpenOnTabSelectForRealbox', false);
   accessor placeholderText: string = '';
@@ -385,6 +398,18 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
     }
   }
 
+  async handleFuseboxAction(action?: FuseboxAction) {
+    if (action?.preselectedInputSource) {
+      switch (action.preselectedInputSource) {
+        case InputSource.kInputSourceTabPicker:
+          await this.openTabPicker();
+          break;
+        default:
+          break;
+      }
+    }
+  }
+
   protected shouldShowVoiceLens_(isEnabled: boolean): boolean {
     return isEnabled && this.isInputEmpty() &&
         !(this.dropdownIsVisible && this.composeButtonEnabled);
@@ -392,23 +417,8 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
 
   override handleKeyNavigation(e: KeyboardEvent) {
     if (this.composeButtonEnabled && e.key === 'Tab' &&
-        this.$.input?.lastInput()?.inline &&
-        this.$.input === this.shadowRoot.activeElement) {
-      if (e.shiftKey) {
-        this.$.input.setInput({inline: ''});
-        return;
-      }
-
-      const newText =
-          this.$.input.lastInput()!.text + this.$.input.lastInput()!.inline;
-      this.$.input.setInput({
-        text: newText,
-        inline: '',
-        moveCursorToEnd: true,
-      });
-      this.queryAutocomplete(
-          newText, /*preventInlineAutocomplete=*/ false, /*isOnFocus=*/ false);
-      e.preventDefault();
+        this.$.input === this.shadowRoot.activeElement &&
+        this.acceptInlineAutocomplete(e)) {
       return;
     }
 
@@ -487,17 +497,12 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
   // Public API (ported from SearchboxElement)
   //============================================================================
 
-  isInputEmpty(): boolean {
-    // If this is called before first render, the input element will not exist.
-    if (!this.shadowRoot?.querySelector('#input') || !this.$.input ||
-        !this.$.input.lastInput()) {
-      return true;
-    }
-    return !this.$.input.lastInput()!.text.trim();
-  }
-
   setInputText(text: string) {
     this.$.input.setInputText(text);
+    // Setting the text programmatically (e.g. with the voice search transcript)
+    // does not fire `searchbox-input-text-updated`, so update the state here to
+    // keep the dynamic AI Mode button in sync with the input.
+    this.hasUserInput_ = !!text.trim();
   }
 
   focusInput() {
@@ -555,12 +560,16 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
     // </if>
   }
 
+  protected onShareTabsFlyoutOpenChanged_(e: CustomEvent<{open: boolean}>) {
+    this.shareTabsFlyoutOpen = e.detail.open;
+  }
+
   protected onAddTabContext_(e: CustomEvent<{
     id: number,
     title: string,
     url: Url,
     delayUpload: boolean,
-    origin: TabUploadOrigin,
+    origin: TabAttachmentSource,
   }>) {
     const attachment: TabUpload = {
       tabId: e.detail.id,
@@ -623,6 +632,15 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
 
   protected onRequestTabSuggestionsLoad() {
     this.refreshTabSuggestions_(/*forceRefresh=*/ true);
+  }
+
+  closeContextMenu() {
+    const context =
+        this.shadowRoot?.querySelector<ContextualEntrypointAndMenuElement>(
+            '#context');
+    if (context) {
+      context.closeMenu();
+    }
   }
 
   protected onContextMenuOpened_() {
@@ -717,10 +735,8 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
     // now a `ContextualSearchboxHandler`.
     this.pageHandler().activateMetricsFunnel('AiModeButton');
 
-    chrome.histograms.recordUserAction(
-        'ContextualSearch.AiModeButtonClick.NtpRealbox');
-    chrome.histograms.recordBoolean(
-        'ContextualSearch.AiModeButtonClick.NtpRealbox', true);
+    recordUserAction('ContextualSearch.AiModeButtonClick.NtpRealbox');
+    recordBoolean('ContextualSearch.AiModeButtonClick.NtpRealbox', true);
 
     const isSearch = this.selectedMatch?.isSearchType ?? true;
     if (!isSearch) {
@@ -732,14 +748,14 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
       const histogramName =
           'ContextualSearch.UserAction.SubmitQueryV2.NewTabPage';
       // LINT.IfChange(ContextualSearchContextState)
-      chrome.histograms.recordEnumerationValue(
+      recordEnumerationValue(
           histogramName, /*WithoutContext */ 0,
           /*ContextualSearchContextState.Size + 1*/ 5);
       // LINT.ThenChange(//tools/metrics/histograms/metadata/contextual_search/enums.xml:ContextualSearchContextState)
 
       const userActionName =
           'ContextualSearch.UserAction.SubmitQueryV2.WithoutContext.NewTabPage';
-      chrome.histograms.recordUserAction(userActionName);
+      recordUserAction(userActionName);
     }
 
     if (!this.composeboxEnabled || queryText) {
@@ -752,7 +768,7 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
       this.openComposebox_();
     }
 
-    chrome.histograms.recordBoolean(
+    recordBoolean(
         'NewTabPage.ComposeEntrypoint.Click.UserTextPresent',
         !this.isInputEmpty());
   }
@@ -796,8 +812,8 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
   }
 
   protected onSearchboxInputPasted_() {
-    chrome.histograms.recordCount('NewTabPage.Realbox.Paste', 1);
-    chrome.histograms.recordUserAction('NewTabPage.Realbox.Paste');
+    recordCount('NewTabPage.Realbox.Paste', 1);
+    recordUserAction('NewTabPage.Realbox.Paste');
   }
 
   protected onSearchboxInputFilesPasted_(e: CustomEvent<{files: FileList}>) {
@@ -837,10 +853,6 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
     this.dispatchEvent(new Event('open-lens-search'));
   }
 
-  protected onHadSecondarySideChanged_(e: CustomEvent<{value: boolean}>) {
-    this.hadSecondarySide = e.detail.value;
-  }
-
   protected onHasSecondarySideChanged_(e: CustomEvent<{value: boolean}>) {
     this.hasSecondarySide = e.detail.value;
   }
@@ -876,6 +888,26 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
 
   protected computePlaceholderText_(placeholderText: string): string {
     return placeholderText || '';
+  }
+
+  protected async openTabPicker() {
+    this.shareTabsFlyoutOpen = true;
+    await this.refreshTabSuggestions_(/*forceRefresh=*/ true);
+    await this.updateComplete;
+
+    const context =
+        this.shadowRoot?.querySelector<ContextualEntrypointAndMenuElement>(
+            '#context');
+    if (context) {
+      await context.updateComplete;
+      const entrypointButton =
+          context.shadowRoot?.querySelector<CrLitElement>('#entrypointButton');
+      if (entrypointButton) {
+        await entrypointButton.updateComplete;
+      }
+      entrypointButton?.shadowRoot?.querySelector<HTMLElement>('#entrypoint')
+          ?.click();
+    }
   }
 }
 

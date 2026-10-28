@@ -28,8 +28,8 @@
 #include "components/autofill/core/browser/payments/test_credit_card_save_manager.h"
 #include "components/autofill/core/browser/payments/test_payments_autofill_client.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
-#include "components/autofill/core/browser/test_utils/autofill_form_test_utils.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/ui/test_autofill_external_delegate.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service_test_helper.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
@@ -70,6 +70,7 @@ class MockCreditCardAccessManager : public CreditCardAccessManager {
   MOCK_METHOD(void,
               FetchCreditCard,
               (const CreditCard* card,
+               bool require_user_confirmation,
                OnCreditCardFetchedCallback on_credit_card_fetched),
               (override));
 };
@@ -89,8 +90,7 @@ class MockAutofillDriver : public TestAutofillDriver {
                const FillId& fill_id,
                bool supports_refill,
                const url::Origin& triggered_origin,
-               (const absl::flat_hash_map<FieldGlobalId, FieldType>&),
-               (const Section&)),
+               (const absl::flat_hash_map<FieldGlobalId, FieldType>&)),
               (override));
 };
 
@@ -141,12 +141,6 @@ class AutofillMetricsBaseTest : public WithTestAutofillClientDriverManager<
   // Creates a local card and then a duplicate server card with the same
   // credentials/info.
   void CreateLocalAndDuplicateServerCreditCard();
-
-  void AddMaskedServerCreditCardWithOffer(std::string guid,
-                                          std::string offer_reward_amount,
-                                          GURL url,
-                                          int64_t id,
-                                          bool offer_expired = false);
 
   // If set to true, then user is capable of using FIDO authentication for
   // card unmasking.
@@ -258,7 +252,7 @@ class AutofillMetricsBaseTest : public WithTestAutofillClientDriverManager<
       SuggestionType suggestion_type = SuggestionType::kAddressEntry) {
     Suggestion suggestion(suggestion_type);
     autofill_manager().DidShowSuggestions(
-        {suggestion}, std::nullopt, form.global_id(),
+        {suggestion}, /*metadata=*/{}, form.global_id(),
         form.fields()[field_index].global_id(), {});
   }
 
@@ -273,7 +267,8 @@ class AutofillMetricsBaseTest : public WithTestAutofillClientDriverManager<
         mojom::ActionPersistence::kFill, form.global_id(),
         form.fields()[field_index].global_id(),
         personal_data().address_data_manager().GetProfileByGUID(profile_guid),
-        AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+        AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+        /*blocked_fields=*/{});
   }
 
   void FillLoyaltyCard(const FormData& form,

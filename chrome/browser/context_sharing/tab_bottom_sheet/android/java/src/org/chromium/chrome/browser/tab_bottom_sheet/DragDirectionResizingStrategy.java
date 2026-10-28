@@ -54,9 +54,7 @@ public class DragDirectionResizingStrategy implements ResizingStrategy {
         mHalfHeightPx = halfHeightPx;
         mFullHeightPx = fullHeightPx;
         updateLockState();
-        if (mResizeLock != null) {
-            mHelper.updatePlaceholderHeight((int) offsetPx);
-        }
+        mHelper.updatePlaceholderHeight((int) offsetPx);
     }
 
     @Override
@@ -65,11 +63,6 @@ public class DragDirectionResizingStrategy implements ResizingStrategy {
         if (!isResizing) {
             mPreviousOffsetPx = INVALID_OFFSET;
             mHasDraggedDownward = false;
-            if (mResizeLock != null) {
-                mResizeLock.unlock();
-                mResizeLock = null;
-            }
-            return;
         }
         updateLockState();
     }

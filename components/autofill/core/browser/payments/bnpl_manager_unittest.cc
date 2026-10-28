@@ -44,7 +44,7 @@
 #include "components/autofill/core/browser/payments/test_legal_message_line.h"
 #include "components/autofill/core/browser/payments/test_payments_autofill_client.h"
 #include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/ui/payments/autofill_progress_ui_type.h"
 #include "components/autofill/core/browser/ui/payments/bnpl_tos_controller.h"
 #include "components/autofill/core/browser/ui/payments/bnpl_ui_delegate.h"
@@ -83,7 +83,7 @@ class MockCreditCardFormEventLogger
     : public autofill_metrics::CreditCardFormEventLogger {
  public:
   using autofill_metrics::CreditCardFormEventLogger::CreditCardFormEventLogger;
-  MOCK_METHOD(void, OnBnplSuggestionShown, (), (override));
+  MOCK_METHOD(void, OnBnplSuggestionShown, (bool), (override));
 };
 
 class MockAutofillClient : public TestAutofillClient {
@@ -1060,10 +1060,8 @@ TEST_F(BnplManagerTest,
   EXPECT_EQ(test_api(*bnpl_manager_).GetOngoingFlowState()->context_token,
             kContextToken);
 
-  const LegalMessageLines& legal_message_lines =
-      bnpl_tos_model.legal_message_lines;
-  ASSERT_FALSE(legal_message_lines.empty());
-  EXPECT_EQ(legal_message_lines[0].text(), kLegalMessage);
+  EXPECT_THAT(bnpl_tos_model.legal_message_lines,
+              ElementsAre(Property(&LegalMessageLine::text, kLegalMessage)));
 
   EXPECT_EQ(bnpl_tos_model.issuer, unlinked_issuer);
 
@@ -2109,7 +2107,9 @@ TEST_F(BnplManagerTest,
       Suggestion(SuggestionType::kManageCreditCard)};
 
   EXPECT_CALL(callback, Run);
-  EXPECT_CALL(*credit_card_form_event_logger_, OnBnplSuggestionShown());
+  EXPECT_CALL(*credit_card_form_event_logger_,
+              OnBnplSuggestionShown(
+                  /*pay_later_tab_shown=*/false));
 
   bnpl_manager_->NotifyOfSuggestionGeneration(
       AutofillSuggestionTriggerSource::kUnspecified);
@@ -2136,7 +2136,9 @@ TEST_F(
       Suggestion(SuggestionType::kManageCreditCard)};
 
   EXPECT_CALL(callback, Run).Times(0);
-  EXPECT_CALL(*credit_card_form_event_logger_, OnBnplSuggestionShown())
+  EXPECT_CALL(*credit_card_form_event_logger_,
+              OnBnplSuggestionShown(
+                  /*pay_later_tab_shown=*/false))
       .Times(0);
 
   bnpl_manager_->NotifyOfSuggestionGeneration(
@@ -2295,7 +2297,9 @@ TEST_F(BnplManagerTest,
       Suggestion(SuggestionType::kCreditCardEntry),
       Suggestion(SuggestionType::kBnplEntry)};
 
-  EXPECT_CALL(*credit_card_form_event_logger_, OnBnplSuggestionShown());
+  EXPECT_CALL(*credit_card_form_event_logger_,
+              OnBnplSuggestionShown(
+                  /*pay_later_tab_shown=*/false));
   bnpl_manager_->OnCreditCardSuggestionsShown(suggestions, base::DoNothing());
 }
 
@@ -3222,6 +3226,123 @@ TEST_F(BnplManagerTest, OnAmountExtractionReturnedFromAi_Failure_PayLaterTabs) {
                   BnplIssuerEligibilityForPage::
                       kNotEligibleAmountExtractionErrorNegativeAmount)));
 }
+
+TEST_F(BnplManagerTest,
+       OnAmountExtractionReturnedFromAi_Failure_PreservesIssuerOrderOnAndroid) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kAutofillEnableBuyNowPayLater,
+                            features::kAutofillEnableAiBasedAmountExtraction,
+                            features::kAutofillEnablePayNowPayLaterTabs},
+      /*disabled_features=*/{});
+
+  SetUpLinkedBnplIssuer(/*price_lower_bound_in_micros=*/10'000'000,
+                        /*price_higher_bound_in_micros=*/3'000'000'000,
+                        IssuerId::kBnplAffirm,
+                        /*instrument_id=*/1);
+  SetUpLinkedBnplIssuer(/*price_lower_bound_in_micros=*/10'000'000,
+                        /*price_higher_bound_in_micros=*/3'000'000'000,
+                        IssuerId::kBnplZip,
+                        /*instrument_id=*/2);
+  ON_CALL(*static_cast<MockAutofillOptimizationGuideDecider*>(
+              autofill_client().GetAutofillOptimizationGuideDecider()),
+          IsUrlEligibleForBnplIssuer(_, _))
+      .WillByDefault(Return(true));
+
+  std::vector<IssuerId> initial_order;
+  EXPECT_CALL(GetBnplUiDelegate(), ShowSelectBnplIssuerUi(_, _, _, _, _))
+      .WillOnce([&](base::span<const BnplIssuerContext> contexts, auto, auto,
+                    auto, auto) {
+        for (const auto& context : contexts) {
+          initial_order.push_back(context.issuer.issuer_id());
+        }
+      });
+
+  bnpl_manager_->OnUserDecisionToUseBnpl(
+      /*final_checkout_amount=*/std::nullopt,
+      /*on_bnpl_vcn_fetched_callback=*/base::DoNothing());
+
+  ASSERT_EQ(initial_order.size(), 2u);
+
+  std::vector<IssuerId> error_order;
+  EXPECT_CALL(
+      payments_autofill_client(),
+      OnPurchaseAmountExtracted(_, Eq(std::nullopt),
+                                /*is_amount_supported_by_any_issuer=*/false,
+                                Optional(Eq(kAppLocale)), _, _))
+      .WillOnce([&](base::span<const BnplIssuerContext> contexts, auto, auto,
+                    auto, auto, auto) {
+        for (const auto& context : contexts) {
+          error_order.push_back(context.issuer.issuer_id());
+        }
+        return true;
+      });
+
+  bnpl_manager_->OnAmountExtractionReturnedFromAi(
+      base::unexpected(AiAmountExtractionResult::Error::kNegativeAmount));
+
+  EXPECT_EQ(initial_order, error_order);
+}
+
+TEST_F(BnplManagerTest,
+       OnAmountExtractionReturnedFromAi_Success_SortsEligibleFirstOnAndroid) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kAutofillEnableBuyNowPayLater,
+                            features::kAutofillEnableAiBasedAmountExtraction,
+                            features::kAutofillEnablePayNowPayLaterTabs},
+      /*disabled_features=*/{});
+
+  // Affirm requires at least $50.
+  SetUpLinkedBnplIssuer(/*price_lower_bound_in_micros=*/50'000'000,
+                        /*price_higher_bound_in_micros=*/3'000'000'000,
+                        IssuerId::kBnplAffirm,
+                        /*instrument_id=*/1);
+  // Zip requires at least $30.
+  SetUpLinkedBnplIssuer(/*price_lower_bound_in_micros=*/30'000'000,
+                        /*price_higher_bound_in_micros=*/3'000'000'000,
+                        IssuerId::kBnplZip,
+                        /*instrument_id=*/2);
+  ON_CALL(*static_cast<MockAutofillOptimizationGuideDecider*>(
+              autofill_client().GetAutofillOptimizationGuideDecider()),
+          IsUrlEligibleForBnplIssuer(_, _))
+      .WillByDefault(Return(true));
+
+  base::RepeatingCallback<void(BnplIssuer)> on_issuer_accepted;
+  EXPECT_CALL(GetBnplUiDelegate(), ShowSelectBnplIssuerUi(_, _, _, _, _))
+      .WillOnce([&](base::span<const BnplIssuerContext> contexts, auto,
+                    base::RepeatingCallback<void(BnplIssuer)> callback, auto,
+                    auto) { on_issuer_accepted = callback; });
+
+  bnpl_manager_->OnUserDecisionToUseBnpl(
+      /*final_checkout_amount=*/std::nullopt,
+      /*on_bnpl_vcn_fetched_callback=*/base::DoNothing());
+
+  // User selects Affirm.
+  on_issuer_accepted.Run(test::GetTestLinkedBnplIssuer(IssuerId::kBnplAffirm));
+
+  // Amount extraction returns $40 (ineligible for Affirm, eligible for Zip).
+  std::vector<IssuerId> returned_order;
+  EXPECT_CALL(
+      payments_autofill_client(),
+      OnPurchaseAmountExtracted(_, Optional(Eq(40'000'000)),
+                                /*is_amount_supported_by_any_issuer=*/true,
+                                Optional(Eq(kAppLocale)), _, _))
+      .WillOnce([&](base::span<const BnplIssuerContext> contexts, auto, auto,
+                    auto, auto, auto) {
+        for (const auto& context : contexts) {
+          returned_order.push_back(context.issuer.issuer_id());
+        }
+        return true;
+      });
+
+  bnpl_manager_->OnAmountExtractionReturnedFromAi(
+      std::make_pair(40'000'000, "USD"));
+
+  // Zip is eligible and must be sorted first.
+  EXPECT_THAT(returned_order,
+              ElementsAre(IssuerId::kBnplZip, IssuerId::kBnplAffirm));
+}
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if !BUILDFLAG(IS_IOS)
@@ -3430,7 +3551,9 @@ TEST_F(BnplManagerPayLaterTabTest,
                    .payments_data_manager()
                    .IsAutofillHasSeenBnplPrefEnabled());
   EXPECT_CALL(callback, Run).Times(0);
-  EXPECT_CALL(*credit_card_form_event_logger_, OnBnplSuggestionShown())
+  EXPECT_CALL(*credit_card_form_event_logger_,
+              OnBnplSuggestionShown(
+                  /*pay_later_tab_shown=*/false))
       .Times(0);
 
   bnpl_manager_->NotifyOfSuggestionGeneration(

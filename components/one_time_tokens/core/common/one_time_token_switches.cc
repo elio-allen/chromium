@@ -6,10 +6,16 @@
 
 namespace one_time_tokens::switches {
 
-const char kOneTimeTokenFetchEmailEndpointUrl[] =
-    "one-time-token-fetch-email-endpoint-url";
+const char kOneTimeTokenServiceBaseUrl[] = "one-time-token-service-base-url";
 
-const char kDefaultOneTimeTokenFetchEmailEndpointUrl[] =
-    "https://onetimetoken.pa.googleapis.com/v1/onetimetokens:fetchEmail";
+const char kDefaultOneTimeTokenServiceBaseUrl[] =
+    "https://onetimetoken.pa.googleapis.com";
+
+// Returns the specified mock OTP string value when retrieving OTP tokens.
+// Note: In Actor OTP flows (AttemptOtpFillingTool), if
+// actor::switches::kAttemptOtpFillingToolMockValueSkipsChecks is also present,
+// it takes precedence and additionally bypasses consent and confirmation
+// checks.
+const char kMockOtpValue[] = "mock-otp-value";
 
 }  // namespace one_time_tokens::switches

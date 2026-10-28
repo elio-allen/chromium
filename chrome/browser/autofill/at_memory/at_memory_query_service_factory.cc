@@ -5,21 +5,23 @@
 #include "chrome/browser/autofill/at_memory/at_memory_query_service_factory.h"
 
 #include <memory>
-#include <vector>
+#include <utility>
 
+#include "base/feature_list.h"
 #include "base/no_destructor.h"
 #include "chrome/browser/autofill/autofill_entity_data_manager_factory.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
+#include "chrome/browser/autofill/valuables_data_manager_factory.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/metrics/variations/google_groups_manager_factory.h"
+#include "chrome/browser/personal_context/personal_context_eligibility_service_factory.h"
 #include "chrome/browser/personal_context/personal_context_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "components/autofill/core/browser/at_memory/at_memory_enablement_utils.h"
+#include "chrome/browser/subscription_eligibility/subscription_eligibility_service_factory.h"
+#include "components/autofill/content/browser/autofill_log_router_factory.h"
 #include "components/autofill/core/browser/at_memory/autofill_data_provider.h"
 #include "components/autofill/core/browser/integrators/at_memory/at_memory_query_service.h"
+#include "components/autofill/core/common/autofill_features.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "content/public/browser/storage_partition.h"
-#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 // static
 AtMemoryQueryServiceFactory* AtMemoryQueryServiceFactory::GetInstance() {
@@ -37,10 +39,14 @@ autofill::AtMemoryQueryService* AtMemoryQueryServiceFactory::GetForProfile(
 AtMemoryQueryServiceFactory::AtMemoryQueryServiceFactory()
     : ProfileKeyedServiceFactory("AtMemoryQueryService",
                                  ProfileSelections::BuildForRegularProfile()) {
+  DependsOn(autofill::AutofillLogRouterFactory::GetInstance());
   DependsOn(autofill::PersonalDataManagerFactory::GetInstance());
   DependsOn(autofill::AutofillEntityDataManagerFactory::GetInstance());
-  DependsOn(GoogleGroupsManagerFactory::GetInstance());
+  DependsOn(autofill::ValuablesDataManagerFactory::GetInstance());
   DependsOn(PersonalContextServiceFactory::GetInstance());
+  DependsOn(PersonalContextEligibilityServiceFactory::GetInstance());
+  DependsOn(subscription_eligibility::SubscriptionEligibilityServiceFactory::
+                GetInstance());
 }
 
 AtMemoryQueryServiceFactory::~AtMemoryQueryServiceFactory() = default;
@@ -48,24 +54,33 @@ AtMemoryQueryServiceFactory::~AtMemoryQueryServiceFactory() = default;
 std::unique_ptr<KeyedService>
 AtMemoryQueryServiceFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
-  if (!autofill::IsAtMemoryFeatureEnabled(
-          GoogleGroupsManagerFactory::GetForBrowserContext(context))) {
+  if (!base::FeatureList::IsEnabled(autofill::features::kAutofillAtMemory)) {
     return nullptr;
   }
 
   Profile* profile = Profile::FromBrowserContext(context);
   auto data_provider = std::make_unique<autofill::AutofillDataProvider>(
       autofill::PersonalDataManagerFactory::GetForBrowserContext(context),
-      autofill::AutofillEntityDataManagerFactory::GetForProfile(profile));
+      autofill::AutofillEntityDataManagerFactory::GetForProfile(profile),
+      autofill::ValuablesDataManagerFactory::GetForProfile(profile));
 
   personal_context::PersonalContextService* personal_context_service =
       PersonalContextServiceFactory::GetForProfile(profile);
+  personal_context::PersonalContextEligibilityService*
+      personal_context_eligibility_service =
+          PersonalContextEligibilityServiceFactory::GetForProfile(profile);
+  subscription_eligibility::SubscriptionEligibilityService*
+      subscription_eligibility_service = subscription_eligibility::
+          SubscriptionEligibilityServiceFactory::GetForProfile(profile);
 
   return std::make_unique<autofill::AtMemoryQueryService>(
       std::move(data_provider), personal_context_service,
-      g_browser_process->GetApplicationLocale());
+      g_browser_process->GetApplicationLocale(),
+      personal_context_eligibility_service, subscription_eligibility_service,
+      profile->GetPrefs(),
+      autofill::AutofillLogRouterFactory::GetForBrowserContext(context));
 }
 
 bool AtMemoryQueryServiceFactory::ServiceIsCreatedWithBrowserContext() const {
-  return false;
+  return true;
 }

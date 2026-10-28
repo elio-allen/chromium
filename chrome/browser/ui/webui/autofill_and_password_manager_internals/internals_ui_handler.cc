@@ -19,20 +19,23 @@
 #include "chrome/browser/autofill/autofill_ai_model_cache_factory.h"
 #include "chrome/browser/autofill/autofill_ai_personal_context_access_manager_factory.h"
 #include "chrome/browser/autofill/autofill_entity_data_manager_factory.h"
+#include "chrome/browser/autofill/entity_suppression_manager_factory.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/channel_info.h"
 #include "components/autofill/content/browser/content_autofill_client.h"
-#include "components/autofill/core/browser/at_memory/at_memory_enablement_utils.h"
+#include "components/autofill/core/browser/at_memory/at_memory_enablement_util.h"
 #include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
+#include "components/autofill/core/browser/data_manager/autofill_ai/entity_suppression_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/logging/log_router.h"
 #include "components/autofill/core/browser/ml_model/autofill_ai/autofill_ai_model_cache.h"
-#include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_utils.h"
+#include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_util.h"
+#include "components/autofill/core/common/autofill_prefs.h"
 #include "components/autofill/core/common/logging/log_buffer.h"
 #include "components/device_reauth/device_authenticator.h"
 #include "components/embedder_support/user_agent_utils.h"
@@ -62,8 +65,9 @@
 
 namespace autofill {
 
-void CreateAndAddInternalsHTMLSource(Profile* profile,
-                                     const std::string& source_name) {
+content::WebUIDataSource& CreateAndAddInternalsHTMLSource(
+    Profile* profile,
+    const std::string& source_name) {
   content::WebUIDataSource* source =
       content::WebUIDataSource::CreateAndAdd(profile, source_name);
   source->OverrideContentSecurityPolicy(
@@ -83,6 +87,7 @@ void CreateAndAddInternalsHTMLSource(Profile* profile,
   source->AddString(version_ui::kCL, version_info::GetLastChange());
   source->AddString(version_ui::kUserAgent, embedder_support::GetUserAgent());
   source->AddString("app_locale", g_browser_process->GetApplicationLocale());
+  return CHECK_DEREF(source);
 }
 
 AutofillCacheResetter::AutofillCacheResetter(
@@ -139,6 +144,15 @@ void InternalsUIHandler::RegisterMessages() {
   web_ui()->RegisterMessageCallback(
       "resetCache", base::BindRepeating(&InternalsUIHandler::OnResetCache,
                                         base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "clearAutofillAiEntitySuppressions",
+      base::BindRepeating(
+          &InternalsUIHandler::OnClearAutofillAiEntitySuppressions,
+          base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "clearGmailOtpOptInPrefs",
+      base::BindRepeating(&InternalsUIHandler::OnClearGmailOtpOptInPrefs,
+                          base::Unretained(this)));
   web_ui()->RegisterMessageCallback(
       "dumpAddresses", base::BindRepeating(&InternalsUIHandler::OnDumpAddresses,
                                            base::Unretained(this)));
@@ -442,6 +456,26 @@ void InternalsUIHandler::OnResetCacheDone(const std::string& message) {
   FireWebUIListener("notify-reset-done", base::Value(message));
 }
 
+void InternalsUIHandler::OnClearAutofillAiEntitySuppressions(
+    const base::ListValue& args) {
+  if (EntitySuppressionManager* suppression_manager =
+          EntitySuppressionManagerFactory::GetForProfile(
+              Profile::FromWebUI(web_ui()))) {
+    suppression_manager->ClearSuppressions(base::Time(), base::Time::Max());
+  }
+  FireWebUIListener("notify-reset-done",
+                    base::Value(kClearAutofillAiEntitySuppressionsDone));
+}
+
+void InternalsUIHandler::OnClearGmailOtpOptInPrefs(
+    const base::ListValue& args) {
+  if (PrefService* prefs = Profile::FromWebUI(web_ui())->GetPrefs()) {
+    prefs->ClearPref(autofill::prefs::kAutofillGmailOtpFillingEnabled);
+    prefs->ClearPref(
+        autofill::prefs::kAutofillGmailOtpFillingActivationDismissalTimestamp);
+  }
+}
+
 void InternalsUIHandler::OnDumpAddresses(const base::ListValue& args) {
   Profile* profile = Profile::FromWebUI(web_ui());
   PersonalDataManager* pdm =
@@ -487,7 +521,7 @@ void InternalsUIHandler::CheckAtMemoryPermissions(const base::ListValue& args) {
   } else if (action_str == "kRetrieveShoppingDataForFilling") {
     action = AtMemoryAction::kRetrieveShoppingDataForFilling;
   }
-  // LINT.ThenChange(/components/autofill/core/browser/at_memory/at_memory_enablement_utils.h:AtMemoryAction)
+  // LINT.ThenChange(/components/autofill/core/browser/at_memory/at_memory_enablement_util.h:AtMemoryAction)
   if (!action.has_value()) {
     return;
   }

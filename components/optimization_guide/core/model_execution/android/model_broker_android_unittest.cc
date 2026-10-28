@@ -4,20 +4,29 @@
 
 #include "components/optimization_guide/core/model_execution/android/model_broker_android.h"
 
+#include <memory>
 #include <optional>
+#include <utility>
 
 #include "base/task/current_thread.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
+#include "components/optimization_guide/core/model_execution/android/android_manifest.h"
+#include "components/optimization_guide/core/model_execution/configs/summarize_solution_config.h"
 #include "components/optimization_guide/core/model_execution/on_device_features.h"
+#include "components/optimization_guide/core/model_execution/on_device_model_adaptation_loader.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_download_progress_manager.h"
+#include "components/optimization_guide/core/model_execution/on_device_prefs.h"
+#include "components/optimization_guide/core/model_execution/test/fake_android_manifest_asset.h"
 #include "components/optimization_guide/core/model_execution/test/fake_model_assets.h"
 #include "components/optimization_guide/core/model_execution/test/fake_model_broker_android.h"
 #include "components/optimization_guide/core/model_execution/test/feature_config_builder.h"
 #include "components/optimization_guide/core/model_execution/test/mock_download_progress_observer.h"
 #include "components/optimization_guide/core/model_execution/test/request_builder.h"
 #include "components/optimization_guide/core/model_execution/test/response_holder.h"
+#include "components/optimization_guide/core/model_execution/usage_tracker.h"
+#include "components/optimization_guide/core/optimization_guide_features.h"
+#include "components/optimization_guide/proto/feature_configs.pb.h"
 #include "components/optimization_guide/proto/model_execution.pb.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom-shared.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -34,13 +43,24 @@ proto::OnDeviceBaseModelMetadata MatchingMetadata(
                                          {spec.selected_performance_hint});
 }
 
-// TODO: crbug.com/442914748 - Support text safety.
 proto::OnDeviceModelExecutionFeatureConfig UnsafeFeatureConfig(
     mojom::OnDeviceFeature feature) {
   proto::OnDeviceModelExecutionFeatureConfig cfg = SimpleTestFeatureConfig();
   cfg.set_feature(ToModelExecutionFeatureProto(feature));
-  cfg.set_can_skip_text_safety(true);
   return cfg;
+}
+
+std::unique_ptr<FakeAndroidManifestAsset> MakeSummarizerManifestAsset(
+    uint32_t max_tokens) {
+  proto::SolutionConfig config;
+  *config.mutable_feature() =
+      UnsafeFeatureConfig(mojom::OnDeviceFeature::kSummarize);
+  config.mutable_feature()->mutable_input_config()->set_max_execute_tokens(
+      max_tokens);
+  auto asset = std::make_unique<FakeAndroidManifestAsset>();
+  asset->AddSolutionConfig(ToUseCaseName(mojom::OnDeviceFeature::kSummarize),
+                           std::move(config));
+  return asset;
 }
 
 class ModelBrokerAndroidFeatureDisabledList {
@@ -49,7 +69,6 @@ class ModelBrokerAndroidFeatureDisabledList {
     feature_list_.InitWithFeaturesAndParameters(
         {}, {
                 {features::kOptimizationGuideModelExecution},
-                {features::kOptimizationGuideOnDeviceModel},
             });
   }
   ~ModelBrokerAndroidFeatureDisabledList() = default;
@@ -64,7 +83,6 @@ class RequirePersistentModeForScamDetectionEnabledFeatureList {
     feature_list_.InitWithFeaturesAndParameters(
         {
             {features::kOptimizationGuideModelExecution, {}},
-            {features::kOptimizationGuideOnDeviceModel, {}},
             {features::kAICorePrompt, {}},
             {features::kAICoreScamDetection, {}},
             {features::kAICoreTest, {}},
@@ -80,7 +98,13 @@ class RequirePersistentModeForScamDetectionEnabledFeatureList {
 
 class ModelBrokerAndroidTest : public testing::Test {
  public:
-  ModelBrokerAndroidTest() = default;
+  ModelBrokerAndroidTest() {
+    // Most tests explicitly drive a single feature download. Avoid creating
+    // metadata downloaders for every installed AICore model unless a status
+    // test opts into that behavior.
+    fake_broker_.java_helper().settings().SetDefaultStatusCheckResult(
+        ModelStatus::kApiNotAvailable);
+  }
   ~ModelBrokerAndroidTest() override = default;
 
   void InstallTestFeatureConfig() {
@@ -293,11 +317,10 @@ TEST_F(ModelBrokerAndroidTest, EnterprisePolicyDisallowsModel) {
 // been used.
 TEST_F(ModelBrokerAndroidTest, DownloadSuccessForAlreadyUsedFeature) {
   InstallTestFeatureConfig();
-  model_execution::prefs::RecordFeatureUsage(&fake_broker_.local_state(),
-                                             mojom::OnDeviceFeature::kTest);
-  task_environment_.FastForwardBy(
-      features::GetOnDeviceEligibleModelFeatureRecentUsePeriod() -
-      base::Days(1));
+  UsageTracker(&fake_broker_.local_state())
+      .RaisePriority(ToUseCaseName(mojom::OnDeviceFeature::kTest),
+                     UsageTracker::Priority::kBestEffort);
+  task_environment_.FastForwardBy(kRecentUsePeriod.Get() - base::Days(1));
 
   ModelBrokerClient client(fake_broker_.BindAndPassRemote(), nullptr);
   auto session =
@@ -356,6 +379,234 @@ TEST_F(ModelBrokerAndroidTest, DownloadProgressObserverAfterDownloadComplete) {
   observer.ExpectReceivedUpdate(0, kNormalizedDownloadProgressMax);
   observer.ExpectReceivedUpdate(kNormalizedDownloadProgressMax,
                                 kNormalizedDownloadProgressMax);
+}
+
+TEST_F(ModelBrokerAndroidTest, BuiltinConfigProvidesExpectedTokenLimits) {
+  ModelBrokerClient client(fake_broker_.BindAndPassRemote(), nullptr);
+  auto session =
+      DownloadModelAndCreateSession(client, mojom::OnDeviceFeature::kSummarize);
+  ASSERT_TRUE(session);
+  EXPECT_EQ(session->GetTokenLimits().min_context_tokens, 0u);
+  EXPECT_EQ(session->GetTokenLimits().max_context_tokens,
+            kAndroidMaxExecuteTokens);
+  EXPECT_EQ(session->GetTokenLimits().max_execute_tokens,
+            kAndroidMaxExecuteTokens);
+  EXPECT_EQ(session->GetTokenLimits().max_output_tokens,
+            kAndroidMaxOutputTokens);
+}
+
+TEST_F(ModelBrokerAndroidTest, ManifestConfigDoesNotWaitForAdaptation) {
+  ModelBrokerClient client(fake_broker_.BindAndPassRemote(), nullptr);
+  base::test::TestFuture<ModelBrokerClient::CreateSessionResult> future;
+  client.CreateSession(mojom::OnDeviceFeature::kSummarize,
+                       SessionConfigParams{}, future.GetCallback());
+
+  fake_broker_.java_helper().TriggerDownloaderOnAvailable(spec_.model_name,
+                                                          spec_.model_version);
+  const auto target =
+      GetOptimizationTargetForFeature(mojom::OnDeviceFeature::kSummarize);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return fake_broker_.model_provider()
+        .GetRegistrationMetadata(target)
+        .has_value();
+  }));
+
+  EXPECT_TRUE(future.Wait());
+  EXPECT_TRUE(future.Get());
+}
+
+TEST_F(ModelBrokerAndroidTest, ComponentConfigAppliesBeforeFirstUse) {
+  // Storing a config before first use should not start AICore status checks.
+  fake_broker_.java_helper().settings().SetDefaultStatusCheckResult(
+      std::nullopt);
+  fake_broker_.UpdateManifest(MakeSummarizerManifestAsset(1234));
+  ASSERT_EQ(fake_broker_.java_helper().GetStatusCheckerCount(), 0);
+
+  // The first session should use the stored component config when the solution
+  // factory is initialized.
+  fake_broker_.java_helper().settings().SetDefaultStatusCheckResult(
+      ModelStatus::kDownloadable);
+  ModelBrokerClient client(fake_broker_.BindAndPassRemote(), nullptr);
+  base::test::TestFuture<ModelBrokerClient::CreateSessionResult> future;
+  client.CreateSession(mojom::OnDeviceFeature::kSummarize,
+                       SessionConfigParams{}, future.GetCallback());
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return client.GetSubscriber(mojom::OnDeviceFeature::kSummarize)
+               .unavailable_reason() ==
+           mojom::ModelUnavailableReason::kPendingUsage;
+  }));
+  fake_broker_.java_helper().TriggerDownloaderOnAvailable(spec_.model_name,
+                                                          spec_.model_version);
+  auto session = future.Take();
+  ASSERT_TRUE(session);
+  EXPECT_EQ(session->GetTokenLimits().max_execute_tokens, 1234u);
+}
+
+TEST_F(ModelBrokerAndroidTest, FailedManifestLoadPreservesCurrentSolution) {
+  ModelBrokerClient client(fake_broker_.BindAndPassRemote(), nullptr);
+  auto session =
+      DownloadModelAndCreateSession(client, mojom::OnDeviceFeature::kSummarize);
+  ASSERT_TRUE(session);
+  auto& subscriber = client.GetSubscriber(mojom::OnDeviceFeature::kSummarize);
+  auto original_client = subscriber.client()->GetWeakPtr();
+
+  fake_broker_.broker().OnManifestLoaded(
+      base::unexpected(AndroidManifest::ParseError::kInvalidConfig));
+
+  // Verify the existing session still works.
+  base::test::TestFuture<std::optional<uint32_t>> token_count;
+  session->GetSizeInTokens("input", token_count.GetCallback());
+  ASSERT_EQ(token_count.Get(), 5u);
+  ASSERT_TRUE(original_client);
+  ASSERT_TRUE(subscriber.client().has_value());
+  EXPECT_EQ(subscriber.client()->GetWeakPtr().get(), original_client.get());
+  EXPECT_EQ(subscriber.client()->token_limits().max_execute_tokens,
+            kAndroidMaxExecuteTokens);
+}
+
+TEST_F(ModelBrokerAndroidTest,
+       ManifestReplacementPreservesAdaptationBackedSession) {
+  // Scam Detection gets its config from an adaptation, not the manifest.
+  // Replacing the manifest must preserve its client and allow the same session
+  // to execute again using the original adaptation.
+  InstallScamDetectionFeatureConfig();
+  ModelBrokerClient client(fake_broker_.BindAndPassRemote(), nullptr);
+  auto session = DownloadModelAndCreateSession(
+      client, mojom::OnDeviceFeature::kScamDetection);
+  ASSERT_TRUE(session);
+  auto& subscriber =
+      client.GetSubscriber(mojom::OnDeviceFeature::kScamDetection);
+  auto original_client = subscriber.client()->GetWeakPtr();
+  ASSERT_TRUE(original_client);
+
+  proto::ExampleForTestingRequest request;
+  request.set_string_value("legacy response");
+  ResponseHolder initial_response;
+  session->ExecuteModel(request, initial_response.GetStreamingCallback());
+  ASSERT_TRUE(initial_response.GetFinalStatus());
+  EXPECT_EQ(initial_response.value(), "legacy response");
+
+  fake_broker_.UpdateManifest(MakeSummarizerManifestAsset(1234));
+
+  // Unlike manifest-backed sessions, the existing adaptation-backed session
+  // can start another execution after the snapshot is replaced.
+  ResponseHolder response;
+  session->ExecuteModel(request, response.GetStreamingCallback());
+  ASSERT_TRUE(response.GetFinalStatus());
+  EXPECT_EQ(response.value(), "legacy response");
+  ASSERT_TRUE(original_client);
+  ASSERT_TRUE(subscriber.client().has_value());
+  EXPECT_EQ(subscriber.client()->GetWeakPtr().get(), original_client.get());
+  ASSERT_TRUE(response.model_execution_info());
+  EXPECT_EQ(response.model_execution_info()
+                ->on_device_model_execution_info()
+                .model_versions()
+                .on_device_model_service_version()
+                .model_adaptation_version(),
+            scam_detection_asset_.version());
+}
+
+TEST_F(ModelBrokerAndroidTest, ComponentConfigReplacesBuiltinForNewSessions) {
+  constexpr uint32_t kComponentMaxExecuteTokens = 1234;
+
+  ModelBrokerClient client(fake_broker_.BindAndPassRemote(), nullptr);
+  auto builtin_session =
+      DownloadModelAndCreateSession(client, mojom::OnDeviceFeature::kSummarize);
+  ASSERT_TRUE(builtin_session);
+  EXPECT_EQ(builtin_session->GetTokenLimits().max_execute_tokens,
+            kAndroidMaxExecuteTokens);
+  auto& subscriber = client.GetSubscriber(mojom::OnDeviceFeature::kSummarize);
+
+  fake_broker_.UpdateManifest(
+      MakeSummarizerManifestAsset(kComponentMaxExecuteTokens));
+
+  // Wait for the replacement to reach the subscriber through Mojo. Its token
+  // limit distinguishes the component config from the previous built-in config.
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return subscriber.client().has_value() &&
+           subscriber.client()->token_limits().max_execute_tokens ==
+               kComponentMaxExecuteTokens;
+  }));
+
+  base::test::TestFuture<ModelBrokerClient::CreateSessionResult> future;
+  client.CreateSession(mojom::OnDeviceFeature::kSummarize,
+                       SessionConfigParams{}, future.GetCallback());
+  auto component_session = future.Take();
+  // The new component session is ready and should reflect the component
+  // manifest's token limits.
+  ASSERT_TRUE(component_session);
+  EXPECT_EQ(component_session->GetTokenLimits().max_execute_tokens,
+            kComponentMaxExecuteTokens);
+
+  // The old builtin session should not be able to execute successfully because
+  // it is tied to the replaced built-in client.
+  proto::ExampleForTestingRequest request;
+  request.set_string_value("component input");
+  ResponseHolder stale_response;
+  builtin_session->ExecuteModel(request, stale_response.GetStreamingCallback());
+  EXPECT_FALSE(stale_response.GetFinalStatus());
+  EXPECT_EQ(stale_response.error(), OnDeviceError::kGenericFailure);
+
+  // The new component session should execute successfully.
+  ResponseHolder response;
+  component_session->ExecuteModel(request, response.GetStreamingCallback());
+  ASSERT_TRUE(response.GetFinalStatus());
+  EXPECT_EQ(response.value(), "component input");
+}
+
+// When a new component snapshot omits the Summarizer override, new sessions
+// should use the built-in config for the omitted feature.
+TEST_F(ModelBrokerAndroidTest,
+       OmittedComponentConfigFallsBackToBuiltinForNewSessions) {
+  fake_broker_.UpdateManifest(MakeSummarizerManifestAsset(1234));
+  ModelBrokerClient client(fake_broker_.BindAndPassRemote(), nullptr);
+  auto component_session =
+      DownloadModelAndCreateSession(client, mojom::OnDeviceFeature::kSummarize);
+  ASSERT_TRUE(component_session);
+  ASSERT_EQ(component_session->GetTokenLimits().max_execute_tokens, 1234u);
+  auto& subscriber = client.GetSubscriber(mojom::OnDeviceFeature::kSummarize);
+  auto old_client = subscriber.client()->GetWeakPtr();
+  ASSERT_TRUE(old_client);
+
+  // The next component snapshot still has configs, but no Summarizer override.
+  auto asset = std::make_unique<FakeAndroidManifestAsset>();
+  proto::SolutionConfig config;
+  *config.mutable_feature() =
+      UnsafeFeatureConfig(mojom::OnDeviceFeature::kTest);
+  asset->AddSolutionConfig(ToUseCaseName(mojom::OnDeviceFeature::kTest),
+                           std::move(config));
+  fake_broker_.UpdateManifest(std::move(asset));
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return subscriber.client().has_value() &&
+           subscriber.client()->token_limits().max_execute_tokens ==
+               kAndroidMaxExecuteTokens;
+  }));
+  EXPECT_FALSE(old_client);
+
+  base::test::TestFuture<ModelBrokerClient::CreateSessionResult> future;
+  client.CreateSession(mojom::OnDeviceFeature::kSummarize,
+                       SessionConfigParams{}, future.GetCallback());
+  auto builtin_session = future.Take();
+  ASSERT_TRUE(builtin_session);
+  EXPECT_EQ(builtin_session->GetTokenLimits().max_execute_tokens,
+            kAndroidMaxExecuteTokens);
+}
+
+TEST_F(ModelBrokerAndroidTest, ProvidesSummarizerFeatureRoutingConfig) {
+  ModelBrokerClient client(fake_broker_.BindAndPassRemote(), nullptr);
+
+  base::test::TestFuture<std::optional<mojo_base::ProtoWrapper>>
+      summarizer_future;
+  client.GetConfig(mojom::OnDeviceFeature::kSummarize,
+                   summarizer_future.GetCallback());
+  auto summarizer_wrapper = summarizer_future.Take();
+  ASSERT_TRUE(summarizer_wrapper);
+  auto summarizer_any = summarizer_wrapper->As<proto::Any>();
+  ASSERT_TRUE(summarizer_any);
+  proto::SummarizerFeatureConfig summarizer_config;
+  ASSERT_TRUE(summarizer_config.ParseFromString(summarizer_any->value()));
+  EXPECT_EQ(summarizer_config.default_use_case(),
+            ToUseCaseName(mojom::OnDeviceFeature::kSummarize));
 }
 
 // Test fixture for verifying model status check behavior with specific
@@ -478,6 +729,23 @@ TEST_F(ModelBrokerAndroidStatusCheckTest, BarrierWaitsForAllStatusChecks) {
            mojom::ModelUnavailableReason::kPendingAssets;
   });
   EXPECT_FALSE(future.IsReady());
+}
+
+TEST_F(ModelBrokerAndroidStatusCheckTest,
+       AvailableStatusFetchesModelSpecWithoutPriorUsage) {
+  fake_broker_.java_helper().settings().SetDefaultStatusCheckResult(
+      ModelStatus::kAvailable);
+  ModelBrokerClient client(fake_broker_.BindAndPassRemote(), nullptr);
+  // Subscribing does not raise usage priority, so only the kAvailable status
+  // path can start the metadata request that retrieves the model spec.
+  auto& subscriber = client.GetSubscriber(mojom::OnDeviceFeature::kSummarize);
+
+  fake_broker_.java_helper().TriggerDownloaderOnAvailable(spec_.model_name,
+                                                          spec_.model_version);
+
+  // The returned BaseModelSpec makes the summarize solution available.
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return !subscriber.unavailable_reason().has_value(); }));
 }
 
 class ModelBrokerAndroidRequirePersistentModeEnabledTest

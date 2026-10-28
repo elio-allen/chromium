@@ -56,10 +56,12 @@ BrowserCompositorMac::BrowserCompositorMac(
       weak_factory_(this) {
   GetBrowserCompositors().insert(this);
 
-  root_layer_ = std::make_unique<ui::LayerSolidColor>();
+  root_layer_ = std::make_unique<ui::LayerSurface>();
+  root_layer_->SetName("BrowserCompositorMac:Root");
   // Ensure that this layer draws nothing when it does not not have delegated
   // content (otherwise this solid color will be flashed during navigation).
-  root_layer_->SetColor(SkColors::kTransparent);
+  root_layer_->SetFallbackBackgroundColor(SkColors::kTransparent);
+  root_layer_->SetFillsBoundsOpaquely(false);
   delegated_frame_host_ = std::make_unique<DelegatedFrameHost>(
       frame_sink_id, this, true /* should_register_frame_sink_id */);
 
@@ -139,7 +141,8 @@ void BrowserCompositorMac::UpdateSurfaceFromNSView(
   if (recyclable_compositor_) {
     recyclable_compositor_->UpdateSurface(
         dfh_size_pixels_, current.device_scale_factor,
-        current.display_color_spaces, current.display_id);
+        current.display_color_spaces, current.display_id,
+        current.display_frequency);
   }
 }
 
@@ -161,7 +164,8 @@ void BrowserCompositorMac::UpdateSurfaceFromChild(
       if (recyclable_compositor_) {
         recyclable_compositor_->UpdateSurface(
             dfh_size_pixels_, current.device_scale_factor,
-            current.display_color_spaces, current.display_id);
+            current.display_color_spaces, current.display_id,
+            current.display_frequency);
       }
     }
     delegated_frame_host_->EmbedSurface(
@@ -189,7 +193,13 @@ void BrowserCompositorMac::SetRenderWidgetHostIsHidden(bool hidden) {
       // UseParentLayerCompositor which is a no-op, skipping WasHidden(). We
       // must explicitly call it here to ensure the frame is unlocked from the
       // compositor cache.
-      if (base::FeatureList::IsEnabled(features::kHideDelegatedFrameHostMac)) {
+      //
+      // If the view is still visible, the window is only occluded (ex: on
+      // another space). Keep the frame locked in that case so that it isn't
+      // evicted and can be displayed immediately when the window is revealed.
+      const bool only_occluded = root_layer_->visible();
+      if (base::FeatureList::IsEnabled(features::kHideDelegatedFrameHostMac) &&
+          !only_occluded) {
         delegated_frame_host_->WasHidden(
             DelegatedFrameHost::HiddenCause::kOther);
       }
@@ -267,7 +277,8 @@ void BrowserCompositorMac::TransitionToState(State new_state) {
     display::ScreenInfo current = client_->GetCurrentScreenInfo();
     recyclable_compositor_->UpdateSurface(
         dfh_size_pixels_, current.device_scale_factor,
-        current.display_color_spaces, current.display_id);
+        current.display_color_spaces, current.display_id,
+        current.display_frequency);
     recyclable_compositor_->compositor()->SetRootLayer(root_layer_.get());
     recyclable_compositor_->compositor()->SetBackgroundColor(background_color_);
     recyclable_compositor_->widget()->SetNSView(
@@ -301,7 +312,7 @@ void BrowserCompositorMac::TakeFallbackContentFrom(
 ////////////////////////////////////////////////////////////////////////////////
 // DelegatedFrameHost, public:
 
-ui::Layer* BrowserCompositorMac::DelegatedFrameHostGetLayer() const {
+ui::LayerSurface* BrowserCompositorMac::GetDelegatedFrameHostLayer() const {
   return root_layer_.get();
 }
 
@@ -445,6 +456,12 @@ ui::Compositor* BrowserCompositorMac::GetCompositor() const {
 void BrowserCompositorMac::InvalidateSurfaceAllocationGroup() {
   dfh_local_surface_id_allocator_.Invalidate(
       /*also_invalidate_allocation_group=*/true);
+}
+
+void BrowserCompositorMac::SetEvictOnHide(bool evict_on_hide) {
+  if (delegated_frame_host_) {
+    delegated_frame_host_->SetEvictOnHide(evict_on_hide);
+  }
 }
 
 }  // namespace content

@@ -8,8 +8,6 @@
 namespace signin {
 
 namespace oauth_consumer_name {
-inline extern const char kEnterprisePlusAddressName[] =
-    "enterprise_plus_address";
 inline extern const char kGlicUserStatusName[] = "glic_user_status";
 inline extern const char kIndigoName[] = "indigo";
 inline extern const char kDrivePickerHostName[] = "drive_picker_host";
@@ -19,6 +17,7 @@ inline extern const char kContextualTasksName[] = "contextual_tasks";
 inline extern const char kBrowserActuatorName[] = "browser_actuator";
 inline extern const char kTabContextContainersServiceName[] =
     "tab_context_containers_service";
+inline extern const char kSiteTokenProviderName[] = "site_token_provider";
 }  // namespace oauth_consumer_name
 
 // LINT.IfChange(OAuthConsumerId)
@@ -84,9 +83,9 @@ enum class OAuthConsumerId {
   kArcBackgroundAuthCodeFetcher = 55,
   kGcmAccountTracker = 56,
   kPolicyTokenForwarder = 57,
-  kPluginVmLicenseChecker = 58,  // Deprecated. Do not reuse.
+  // kPluginVmLicenseChecker = 58,  // Removed due to deprecation.
   kDrivefsAuth = 59,
-  kNearbyPresenceServerClient = 60,
+  // kNearbyPresenceServerClient = 60,  // Removed due to deprecation.
   kCryptAuthClient = 61,
   kAmbientMode = 62,
   kProfileDownloader = 63,
@@ -105,7 +104,7 @@ enum class OAuthConsumerId {
   kAuthServiceTasksClient = 76,
   kYouTubeMusic = 77,
   kContextualTasks = 78,
-  kEnterprisePlusAddress = 79,
+  // kEnterprisePlusAddress = 79,  // Removed due to deprecation.
   kGlicUserStatus = 80,
   kDevtoolsGdp = 81,
   kAshDriveIntegration = 82,
@@ -117,7 +116,7 @@ enum class OAuthConsumerId {
   kWalletPasses = 88,
   kAimEligibilityService = 89,
   kDevtoolsAiCode = 90,
-  kAccessibilityAnnotator = 91,
+  // kAccessibilityAnnotator = 91, // Removed due to deprecation.
   kActorLoginPermissionService = 92,
   kGapisService = 93,
   kOneTimeTokenService = 94,
@@ -134,7 +133,10 @@ enum class OAuthConsumerId {
   kRemoteActorLoginCredentialsService = 105,
   kBrowserActuator = 106,
   kTabContextContainersService = 107,
-  kMaxValue = kTabContextContainersService,
+  kSiteTokenProvider = 108,
+  kDeviceAuthorizationRequest = 109,
+  kCmtgDeviceKeyProvider = 110,
+  kMaxValue = kCmtgDeviceKeyProvider,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:OAuthConsumerId)
 

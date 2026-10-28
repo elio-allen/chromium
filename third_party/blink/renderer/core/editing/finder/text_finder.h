@@ -44,6 +44,7 @@
 
 namespace blink {
 
+class FindOptions;
 class FindTaskController;
 class LocalFrame;
 class Range;
@@ -56,7 +57,7 @@ class CORE_EXPORT TextFinder final : public GarbageCollected<TextFinder> {
             const mojom::blink::FindOptions& options,
             bool wrap_within_frame,
             bool* active_now = nullptr);
-  void InitNewSession(const mojom::blink::FindOptions&  options);
+  void InitNewSession(const mojom::blink::FindOptions& options);
   void ClearActiveFindMatch();
   void SetFindEndstateFocusAndSelection();
   void StopFindingAndClearSelection();
@@ -98,6 +99,8 @@ class CORE_EXPORT TextFinder final : public GarbageCollected<TextFinder> {
   // the local frame has no active match.
   Range* ActiveMatch() const { return active_match_.Get(); }
 
+  int ActiveMatchIndexForTesting() const { return active_match_index_; }
+
   void FlushCurrentScoping();
 
   // A match has been found by the current finding effort, so we should
@@ -106,7 +109,10 @@ class CORE_EXPORT TextFinder final : public GarbageCollected<TextFinder> {
                     int current_total_matches,
                     Range* result_range);
 
-  void ResetActiveMatch() { active_match_ = nullptr; }
+  void ResetActiveMatch() {
+    active_match_ = nullptr;
+    skip_viewport_fallback_match_ = nullptr;
+  }
 
   bool FrameScoping() const { return frame_scoping_; }
   int TotalMatchCount() const { return total_match_count_; }
@@ -173,6 +179,18 @@ class CORE_EXPORT TextFinder final : public GarbageCollected<TextFinder> {
                     bool wrapped_around,
                     bool* active_now);
 
+  // Advances `active_match_` past matches that are currently visible in the
+  // viewport when `options.skip_viewport` is set. Returns false when reaching
+  // the end of the frame with `wrap_within_frame = false` so the browser
+  // process can search other frames.
+  bool SkipMatchesInViewport(const String& search_text,
+                             const mojom::blink::FindOptions& options,
+                             const FindOptions& find_options,
+                             Range* previous_active_match,
+                             bool wrap_within_frame,
+                             bool& wrapped_around,
+                             int& matches_advanced);
+
   // Notifies the delegate about a new selection rect.
   void ReportFindInPageSelection(const gfx::Rect& selection_rect,
                                  int active_match_ordinal,
@@ -236,33 +254,42 @@ class CORE_EXPORT TextFinder final : public GarbageCollected<TextFinder> {
   Member<FindTaskController> find_task_controller_;
 
   // Indicates whether this frame currently has the active match.
-  bool current_active_match_frame_;
+  bool current_active_match_frame_ = false;
 
   // The range of the active match for the current frame.
   Member<Range> active_match_;
 
   // The index of the active match for the current frame.
-  int active_match_index_;
+  int active_match_index_ = -1;
+
+  // Fallback match saved when a `skip_viewport` search with
+  // `wrap_within_frame = false` reaches the end of the frame with all remaining
+  // matches visible. If the browser process wraps around and calls `Find` on
+  // this frame a second time because no other frame has an off-screen match,
+  // this match is used if every match in the frame is visible in the viewport.
+  // (Otherwise an infinite loop might result when continually attempting to
+  // find matches not in the viewport.)
+  Member<Range> skip_viewport_fallback_match_;
 
   // This variable keeps a cumulative total of matches found so far in this
   // frame, and is only incremented by calling IncreaseMatchCount.
-  int total_match_count_;
+  int total_match_count_ = -1;
 
   // Keeps track of whether the frame is currently scoping (being searched for
   // matches).
-  bool frame_scoping_;
+  bool frame_scoping_ = false;
 
   // Identifier of the latest find-in-page request. Required to be stored in
   // the frame in order to reply if required in case the frame is detached.
-  int find_request_identifier_;
+  int find_request_identifier_ = -1;
 
   // Keeps track of when the scoping effort should next invalidate the scrollbar
   // and the frame area.
-  int next_invalidate_after_;
+  int next_invalidate_after_ = 0;
 
   // Version number incremented whenever this frame's find-in-page match
   // markers change.
-  int find_match_markers_version_;
+  int find_match_markers_version_ = 0;
 
   // Local cache of the find match markers currently displayed for this frame.
   HeapVector<FindMatch> find_matches_cache_;
@@ -274,14 +301,14 @@ class CORE_EXPORT TextFinder final : public GarbageCollected<TextFinder> {
   // This flag is used by the scoping effort to determine if we need to figure
   // out which rectangle is the active match. Once we find the active
   // rectangle we clear this flag.
-  bool should_locate_active_rect_;
+  bool should_locate_active_rect_ = false;
 
   // Keeps track of whether there is an scoping effort ongoing in the frame.
-  bool scoping_in_progress_;
+  bool scoping_in_progress_ = false;
 
   // Determines if the rects in the find-in-page matches cache of this frame
   // are invalid and should be recomputed.
-  bool find_match_rects_are_valid_;
+  bool find_match_rects_are_valid_ = false;
 
   base::CancelableOnceClosure scroll_task_;
 };

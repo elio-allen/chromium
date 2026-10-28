@@ -8,8 +8,9 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
 import android.app.ActivityOptions;
-import android.content.Context;
 import android.graphics.Rect;
+import android.os.Build.VERSION;
+import android.os.Build.VERSION_CODES;
 import android.os.Bundle;
 import android.util.ArrayMap;
 
@@ -24,11 +25,12 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.customtabs.PopupCreatorFactory;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager.NewWindowAppSource;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestratorFactory;
-import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask.PendingTaskInfo;
 import org.chromium.chrome.browser.util.WindowFeatures;
+import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.ActivityWindowAndroid;
 import org.chromium.ui.display.DisplayAndroid;
 import org.chromium.ui.display.DisplayUtil;
+import org.chromium.ui.mojom.WindowShowState;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -57,13 +59,13 @@ final class ChromeAndroidTaskTrackerImpl implements ChromeAndroidTaskTracker {
      * Maps {@link ChromeAndroidTask} IDs to their instances. This reflects the {@link
      * ChromeAndroidTask}'s ID when it is alive, and is different from its ID in the pending state.
      */
-    private final Map<Integer, ChromeAndroidTask> mTasks = new ArrayMap<>();
+    private final Map<Integer, ChromeAndroidTaskImpl> mTasks = new ArrayMap<>();
 
     /**
      * Maps pending {@link ChromeAndroidTask} IDs to their instances. This reflects the {@link
      * ChromeAndroidTask}'s ID when it is pending, and is different from its ID in the alive state.
      */
-    private final Map<Integer, ChromeAndroidTask> mPendingTasks = new ArrayMap<>();
+    private final Map<Integer, ChromeAndroidTaskImpl> mPendingTasks = new ArrayMap<>();
 
     /** List of observers currently observing this instance. */
     private final ObserverList<ChromeAndroidTaskTrackerObserver> mObservers = new ObserverList<>();
@@ -94,7 +96,7 @@ final class ChromeAndroidTaskTrackerImpl implements ChromeAndroidTaskTracker {
         }
 
         if (pendingId != null) {
-            ChromeAndroidTask pendingTask = mPendingTasks.remove(pendingId);
+            ChromeAndroidTaskImpl pendingTask = mPendingTasks.remove(pendingId);
             assert pendingTask != null : "Invalid pendingId provided.";
             pendingTask.addActivityScopedObjects(activityScopedObjects);
             mTasks.put(taskId, pendingTask);
@@ -112,9 +114,23 @@ final class ChromeAndroidTaskTrackerImpl implements ChromeAndroidTaskTracker {
         return newTask;
     }
 
-    @Override
-    @Nullable
-    public ChromeAndroidTask createPendingTask(
+    /**
+     * Creates a pending {@link ChromeAndroidTask} that is not yet associated with an {@code
+     * Activity}.
+     *
+     * @param createParams The {@link AndroidBrowserWindowCreateParams} that will determine the
+     *     newly created {@code Activity}'s startup state.
+     * @param callback The callback to be invoked when the pending {@link ChromeAndroidTask} is
+     *     fully initialized (i.e., when it's associated with an {@code Activity}). The callback's
+     *     parameter is a pointer to the native {@code AndroidBrowserWindow}. If a pending Task
+     *     can't be created, the callback will be invoked with 0 (value of a null pointer). If we
+     *     don't need to wait for the full initialization of the pending Task, pass {@code null} as
+     *     the callback.
+     * @return The pending {@link ChromeAndroidTask}, or {@code null} if a pending Task can't be
+     *     created.
+     * @see BrowserWindowCreatorBridge
+     */
+    @Nullable ChromeAndroidTaskImpl createPendingTask(
             AndroidBrowserWindowCreateParams createParams,
             @Nullable JniOnceCallback<Long> callback) {
         ThreadUtils.assertOnUiThread();
@@ -123,6 +139,7 @@ final class ChromeAndroidTaskTrackerImpl implements ChromeAndroidTaskTracker {
         // Only the "NORMAL" browser window requires a source Activity. See
         // MultiInstanceOrchestrator for the reason.
         if (createParams.getWindowType() == BrowserWindowType.NORMAL && sourceActivity == null) {
+            createParams.destroyWebContents();
             if (callback != null) {
                 callback.onResult(0L);
             }
@@ -141,6 +158,7 @@ final class ChromeAndroidTaskTrackerImpl implements ChromeAndroidTaskTracker {
                 if (callback != null) {
                     callback.onResult(0L);
                 }
+                pendingTask.destroy();
                 return null;
             }
         } else {
@@ -267,7 +285,7 @@ final class ChromeAndroidTaskTrackerImpl implements ChromeAndroidTaskTracker {
         return mObservers.hasObserver(observer);
     }
 
-    @Nullable ChromeAndroidTask getPendingTaskForTesting(int pendingId) {
+    @Nullable ChromeAndroidTaskImpl getPendingTaskForTesting(int pendingId) {
         ThreadUtils.assertOnUiThread();
         return mPendingTasks.get(pendingId);
     }
@@ -377,15 +395,15 @@ final class ChromeAndroidTaskTrackerImpl implements ChromeAndroidTaskTracker {
             int pendingId, AndroidBrowserWindowCreateParams createParams, Activity sourceActivity) {
         Bundle extrasBundle = new Bundle();
         extrasBundle.putInt(EXTRA_PENDING_BROWSER_WINDOW_TASK_ID, pendingId);
-        ActivityOptions options =
-                getStartActivityOptions(sourceActivity, createParams.getInitialBoundsInDp());
+        ActivityOptions options = getStartActivityOptions(sourceActivity, createParams);
 
-        if (createParams.getWebContents() != null) {
+        WebContents webContents = createParams.takeWebContents();
+        if (webContents != null) {
             return MultiInstanceOrchestratorFactory.getInstance()
                     .createNewWindowFromWebContents(
                             sourceActivity,
                             createParams.getProfile(),
-                            createParams.getWebContents(),
+                            webContents,
                             extrasBundle,
                             options != null ? options.toBundle() : null,
                             NewWindowAppSource.BROWSER_WINDOW_CREATOR);
@@ -411,45 +429,61 @@ final class ChromeAndroidTaskTrackerImpl implements ChromeAndroidTaskTracker {
         var context = ContextUtils.getApplicationContext();
         Rect bounds = createParams.getInitialBoundsInDp();
         WindowFeatures features =
-                new WindowFeatures(bounds.left, bounds.top, bounds.width(), bounds.height());
+                bounds.isEmpty()
+                        ? new WindowFeatures()
+                        : new WindowFeatures(
+                                bounds.left, bounds.top, bounds.width(), bounds.height());
 
         Bundle extrasBundle = new Bundle();
         extrasBundle.putInt(EXTRA_PENDING_BROWSER_WINDOW_TASK_ID, pendingId);
 
-        ActivityOptions options = getStartActivityOptions(context, bounds);
-
-        if (createParams.getWebContents() != null) {
+        WebContents webContents = createParams.takeWebContents();
+        if (webContents != null) {
             return PopupCreatorFactory.getInstance()
                     .createNewPopupFromWebContents(
                             context,
                             createParams.getProfile(),
-                            createParams.getWebContents(),
+                            webContents,
                             features,
-                            extrasBundle,
-                            options != null ? options.toBundle() : null);
+                            extrasBundle);
         }
         return PopupCreatorFactory.getInstance()
                 .createNewPopup(
                         context,
                         createParams.getProfile().isIncognitoBranded(),
                         features,
-                        extrasBundle,
-                        options != null ? options.toBundle() : null);
+                        extrasBundle);
     }
 
+    /** Returns the {@link ActivityOptions} to launch a normal window with, or null if none. */
     private static @Nullable ActivityOptions getStartActivityOptions(
-            Context context, Rect initialBoundsInDp) {
-        if (initialBoundsInDp.isEmpty()) return null;
+            Activity sourceActivity, AndroidBrowserWindowCreateParams createParams) {
+        DisplayAndroid display = DisplayAndroid.getNonMultiDisplay(sourceActivity);
+        Rect launchBoundsInPx;
+        // For MAXIMIZED, launch with the source display's maximized bounds (initial bounds are
+        // ignored) so that the window shows up maximized right away. The OS only honors launch
+        // bounds in freeform, and the bounds may not match if the window ends up on another
+        // display, so ChromeAndroidTaskImpl#applyInitialShowState still maximizes the window
+        // after launch if needed.
+        if (createParams.getInitialShowState() == WindowShowState.MAXIMIZED
+                && VERSION.SDK_INT >= VERSION_CODES.R) {
+            launchBoundsInPx =
+                    ChromeAndroidTaskBoundsConstraints.getMaxBoundsInPx(
+                            sourceActivity.getWindowManager());
+        } else {
+            Rect initialBoundsInDp = createParams.getInitialBoundsInDp();
+            if (initialBoundsInDp.isEmpty()) return null;
+            launchBoundsInPx =
+                    new Rect(
+                            DisplayUtil.dpToPx(display, initialBoundsInDp.left),
+                            DisplayUtil.dpToPx(display, initialBoundsInDp.top),
+                            DisplayUtil.dpToPx(display, initialBoundsInDp.right),
+                            DisplayUtil.dpToPx(display, initialBoundsInDp.bottom));
+        }
 
         ActivityOptions options = ActivityOptions.makeBasic();
-        DisplayAndroid display = DisplayAndroid.getNonMultiDisplay(context);
         options.setLaunchDisplayId(display.getDisplayId());
-        options.setLaunchBounds(
-                new Rect(
-                        DisplayUtil.dpToPx(display, initialBoundsInDp.left),
-                        DisplayUtil.dpToPx(display, initialBoundsInDp.top),
-                        DisplayUtil.dpToPx(display, initialBoundsInDp.right),
-                        DisplayUtil.dpToPx(display, initialBoundsInDp.bottom)));
+        options.setLaunchBounds(launchBoundsInPx);
         return options;
     }
 }

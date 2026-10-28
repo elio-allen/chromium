@@ -10,6 +10,7 @@
 #include "base/system/sys_info.h"
 #include "chrome/browser/autocomplete/aim_eligibility_service_factory.h"
 #include "chrome/browser/command_updater.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_utils.h"
 #include "chrome/browser/lens/region_search/lens_region_search_controller.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
@@ -21,6 +22,7 @@
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
@@ -46,6 +48,7 @@
 #include "components/omnibox/browser/omnibox_prefs.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 
 namespace {
@@ -186,12 +189,16 @@ bool LensOverlayEntryPointController::IsEnabled() const {
   }
 
   // Disable in fullscreen without top-chrome.
-  if (!lens::features::GetLensOverlayEnableInFullscreen() &&
-      ExclusiveAccessManager::From(browser_window_interface_)
-          ->context()
-          ->IsFullscreen() &&
-      !browser_window_interface_->IsTabStripVisible()) {
-    return false;
+  if (!lens::features::GetLensOverlayEnableInFullscreen()) {
+    auto* const exclusive_access_manager =
+        ExclusiveAccessManager::From(browser_window_interface_);
+    if (exclusive_access_manager &&
+        exclusive_access_manager->context()->IsFullscreen() &&
+        (!browser_window_interface_->IsTabStripVisible() ||
+         exclusive_access_manager->fullscreen_controller()
+             ->IsWindowFullscreenForTabOrPending())) {
+      return false;
+    }
   }
 
   return true;
@@ -208,6 +215,8 @@ void LensOverlayEntryPointController::UpdateEntryPointsState(
 
   // Update the 3 dot menu entry point.
   command_updater_->UpdateCommandEnabled(IDC_CONTENT_CONTEXT_LENS_OVERLAY,
+                                         visible);
+  command_updater_->UpdateCommandEnabled(IDC_ASK_GOOGLE_ABOUT_THIS_PAGE,
                                          visible);
 
   // Update the pinnable toolbar entry point. Toolbar entry point is always
@@ -270,9 +279,8 @@ void LensOverlayEntryPointController::InvokeAction(
     if (static_cast<page_actions::PageActionTrigger>(page_action_trigger) ==
             page_actions::PageActionTrigger::kKeyboard &&
         !lens::features::IsLensOverlayKeyboardSelectionEnabled()) {
-      active_tab->GetBrowserWindowInterface()
-          ->GetFeatures()
-          .lens_region_search_controller()
+      lens::LensRegionSearchController::From(
+          active_tab->GetBrowserWindowInterface())
           ->Start(active_tab->GetContents(), /*use_fullscreen_capture=*/true,
                   /*is_google_default_search_provider=*/true,
                   lens::AmbientSearchEntryPoint::
@@ -301,7 +309,10 @@ void LensOverlayEntryPointController::InvokeAction(
         lens::LensOverlayDismissalSource::kToolbar);
   } else {
     search_controller->OpenLensOverlay(
-        lens::LensOverlayInvocationSource::kToolbar);
+        lens::LensOverlayInvocationSource::kToolbar,
+        /*should_show_csb=*/!contextual_tasks::
+            AreContextualTasksUpdatedEntryPointsEnabled(
+                active_tab->GetBrowserWindowInterface()->GetProfile()));
   }
 }
 

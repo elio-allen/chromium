@@ -4,26 +4,44 @@
 
 #include "chrome/browser/ui/views/location_bar/webui_location_bar.h"
 
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+
+#include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
-#include "build/build_config.h"
+#include "chrome/browser/autocomplete/chrome_autocomplete_scheme_classifier.h"
+#include "chrome/browser/bookmarks/bookmark_model_factory.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/find_bar/find_bar_controller.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/layout_constants.h"
+#include "chrome/browser/ui/omnibox/omnibox_controller.h"
+#include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
 #include "chrome/browser/ui/page_action/action_ids.h"
 #include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/views/bookmarks/bookmark_bubble_view.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_page_action_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/page_action/test_support/page_action_test_accessor.h"
 #include "chrome/browser/ui/views/page_action/webui_page_action_control.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
@@ -31,14 +49,31 @@
 #include "chrome/browser/ui/waap/initial_web_ui_manager.h"
 #include "chrome/browser/ui/webui/webui_toolbar/utils/toolbar_button_utils.h"
 #include "chrome/common/chrome_features.h"
+#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/bookmarks/browser/bookmark_model.h"
+#include "components/bookmarks/test/bookmark_test_helpers.h"
 #include "components/content_settings/browser/page_specific_content_settings.h"
+#include "components/find_in_page/find_types.h"
+#include "components/omnibox/browser/autocomplete_input.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/vector_icons/vector_icons.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/test_navigation_observer.h"
+#include "net/test/embedded_test_server/embedded_test_server.h"
+#include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/metrics_proto/omnibox_event.pb.h"
+#include "ui/base/clipboard/clipboard.h"
+#include "ui/base/clipboard/clipboard_buffer.h"
+#include "ui/base/clipboard/scoped_clipboard_writer.h"
+#include "ui/base/clipboard/test/test_clipboard.h"
+#include "ui/base/data_transfer_policy/data_transfer_endpoint.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider_manager.h"
@@ -62,6 +97,32 @@ class TestLocationBarObserver : public LocationBar::Observer {
  private:
   base::OnceClosure on_bounds_changed_;
 };
+
+constexpr char kCheckContentSettingIconShowingLabelScript[] = R"(
+      (() => {
+        const icons = Array.from(
+          document.querySelector('toolbar-app')?.
+            shadowRoot?.querySelector('location-bar')?.
+            shadowRoot?.querySelector('content-settings-icons')?.
+            shadowRoot?.querySelectorAll('content-setting-icon') || []
+        );
+        return icons.length > 0 && icons.some(icon => {
+          return icon.hasAttribute('should-show-label');
+        });
+      })()
+)";
+
+constexpr char kCheckHasContentSettingIconScript[] = R"(
+      (() => {
+        const icons = Array.from(
+          document.querySelector('toolbar-app')?.
+            shadowRoot?.querySelector('location-bar')?.
+            shadowRoot?.querySelector('content-settings-icons')?.
+            shadowRoot?.querySelectorAll('content-setting-icon') || []
+        );
+        return icons.length > 0;
+      })()
+)";
 
 class WebUILocationBarBrowserTest : public InProcessBrowserTest {
  public:
@@ -165,7 +226,7 @@ IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest, Bounds) {
 IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest, BasicOmniboxState) {
   WaitForInitialWebUIToolbar(browser());
   LocationBar* location_bar = GetLocationBar();
-  auto* tab_strip_model = browser()->tab_strip_model();
+  auto* tab_strip_model = browser()->GetTabStripModel();
 
   auto* omnibox = location_bar->GetOmniboxView();
   ASSERT_TRUE(omnibox);
@@ -188,31 +249,67 @@ IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest, BasicOmniboxState) {
   EXPECT_EQ("chrome://version", base::UTF16ToUTF8(omnibox->GetText()));
 }
 
+IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest, OmniboxPopupOpenClose) {
+  WaitForInitialWebUIToolbar(browser());
+  auto* omnibox_controller = BrowserWindow::FromBrowser(browser())
+                                 ->GetLocationBar()
+                                 ->GetOmniboxController();
+  ASSERT_TRUE(omnibox_controller);
+  EXPECT_FALSE(omnibox_controller->IsPopupOpen());
+
+  // Open the popup.
+  omnibox_controller->edit_model()->SetUserText(u"example");
+  AutocompleteInput input(
+      u"example", metrics::OmniboxEventProto::BLANK,
+      ChromeAutocompleteSchemeClassifier(browser()->GetProfile()));
+  input.set_omit_asynchronous_matches(true);
+  omnibox_controller->StartAutocomplete(input);
+  EXPECT_TRUE(omnibox_controller->IsPopupOpen());
+
+  // Close the popup.
+  omnibox_controller->StopAutocomplete(/*clear_result=*/true);
+  EXPECT_FALSE(omnibox_controller->IsPopupOpen());
+}
+
 IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest, LocationIcon) {
   WaitForInitialWebUIToolbar(browser());
   LocationBar* location_bar = GetLocationBar();
+  location_bar->UpdateWithoutTabRestore();
   auto* omnibox = location_bar->GetOmniboxView();
   ASSERT_TRUE(omnibox);
   EXPECT_EQ("about:blank", base::UTF16ToUTF8(omnibox->GetText()));
 
   const char kGetIcon[] = R"(
-      document.querySelector('toolbar-app')?.
-        shadowRoot?.querySelector('location-bar')?.
-        shadowRoot?.querySelector('location-icon')?.
-        shadowRoot?.querySelector('icon-from-table')?.
-        shadowRoot?.querySelector('cr-icon')?.
-        icon;
+      (() => {
+        const locIcon = document.querySelector('toolbar-app')?.
+          shadowRoot?.querySelector('location-bar')?.
+          shadowRoot?.querySelector('location-icon');
+        if (!locIcon) return "";
+        if (locIcon.hasAttribute('glow-up-active')) {
+          return locIcon.shadowRoot?.querySelector('cr-icon#icon')?.icon || "";
+        }
+        return locIcon.shadowRoot?.querySelector('icon-from-table')?.
+          shadowRoot?.querySelector('cr-icon')?.
+          icon || "";
+      })()
     )";
 
-  EXPECT_EQ("webui-toolbar:info",
-            content::EvalJs(GetWebUIToolbarWebContents(), kGetIcon));
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    std::string icon =
+        content::EvalJs(GetWebUIToolbarWebContents(), kGetIcon).ExtractString();
+    return icon == "webui-toolbar:info" ||
+           icon == "webui-toolbar:info_glow_up_forward" ||
+           icon == "webui-toolbar:info_glow_up_reverse";
+  }));
 
   ASSERT_TRUE(
       ui_test_utils::NavigateToURL(browser(), GURL("chrome://version")));
   EXPECT_EQ("chrome://version", base::UTF16ToUTF8(omnibox->GetText()));
 
-  EXPECT_EQ("webui-toolbar:chrome_product",
-            content::EvalJs(GetWebUIToolbarWebContents(), kGetIcon));
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(GetWebUIToolbarWebContents(), kGetIcon)
+               .ExtractString() == "webui-toolbar:chrome_product";
+  }));
 }
 
 IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest, PageActionNavigation) {
@@ -221,7 +318,7 @@ IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest, PageActionNavigation) {
   auto& control = location_bar->page_action_control();
 
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   tabs::TabInterface* tab = tabs::TabInterface::GetFromContents(web_contents);
   auto* controller = tab->GetTabFeatures()->page_action_controller();
 
@@ -231,12 +328,53 @@ IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest, PageActionNavigation) {
   ASSERT_TRUE(
       ui_test_utils::NavigateToURL(browser(), GURL("chrome://version")));
 
-  web_contents = browser()->tab_strip_model()->GetActiveWebContents();
+  web_contents = browser()->GetTabStripModel()->GetActiveWebContents();
   tab = tabs::TabInterface::GetFromContents(web_contents);
   controller = tab->GetTabFeatures()->page_action_controller();
 
   controller->Show(kActionAiMode);
   EXPECT_FALSE(control.GetPageActionStates().empty());
+}
+
+IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest,
+                       PageActionTestAccessorChipVisibility) {
+  WaitForInitialWebUIToolbar(browser());
+  content::WebContents* web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  tabs::TabInterface* tab = tabs::TabInterface::GetFromContents(web_contents);
+  auto* controller = tab->GetTabFeatures()->page_action_controller();
+
+  actions::ActionId action_id = kActionAiMode;
+  page_actions::PageActionTestAccessor accessor(browser(), action_id);
+
+  // Initially, the page action is not visible.
+  EXPECT_FALSE(accessor.GetVisible());
+  EXPECT_FALSE(accessor.ShouldShowSuggestionChip());
+  EXPECT_FALSE(accessor.IsIconVisible());
+
+  // Show as an icon (not a chip).
+  controller->Show(action_id);
+  EXPECT_TRUE(accessor.GetVisible());
+  EXPECT_FALSE(accessor.ShouldShowSuggestionChip());
+  EXPECT_TRUE(accessor.IsIconVisible());
+
+  // Show suggestion chip.
+  controller->ShowSuggestionChip(action_id);
+  EXPECT_TRUE(accessor.GetVisible());
+  EXPECT_TRUE(accessor.ShouldShowSuggestionChip());
+  EXPECT_FALSE(accessor.IsIconVisible());
+
+  // Hide the suggestion chip back to icon mode.
+  controller->HideSuggestionChip(action_id);
+  EXPECT_TRUE(accessor.GetVisible());
+  EXPECT_FALSE(accessor.ShouldShowSuggestionChip());
+  EXPECT_TRUE(accessor.IsIconVisible());
+
+  // Hide the page action completely.
+  controller->Hide(action_id);
+  EXPECT_FALSE(accessor.GetVisible());
+  EXPECT_FALSE(accessor.ShouldShowSuggestionChip());
+  EXPECT_FALSE(accessor.IsIconVisible());
 }
 
 // Display all available page actions and check that a button is rendered.
@@ -246,7 +384,7 @@ IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest, AllPageActionsPresent) {
   auto& control = location_bar->page_action_control();
 
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   tabs::TabInterface* tab = tabs::TabInterface::GetFromContents(web_contents);
   auto* controller = tab->GetTabFeatures()->page_action_controller();
 
@@ -289,26 +427,32 @@ IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest, AllPageActionsPresent) {
               if (!icon.state || icon.state.pageActionId !== $1) {
                 return false;
               }
-              const button = icon.shadowRoot?.querySelector('cr-icon-button');
+              const button = icon.shadowRoot?.querySelector(
+                  'toolbar-chip-button');
               if (!button) {
                 return false;
               }
-              if (icon.state.icon.handleId == 0) {
-                return $2;
+              if ($2) {
+                return true;
               }
-              if (!button.hasAttribute('iron-icon')) {
+              const iconFromTable = icon.shadowRoot?.querySelector(
+                  'icon-from-table');
+              if (!iconFromTable) {
                 return false;
               }
-              const crIcons =
-                  button.shadowRoot?.querySelectorAll('#icon cr-icon') || [];
-              if (crIcons.length === 0) {
-                return false;
+              const container = iconFromTable.shadowRoot?.querySelector(
+                  '#container');
+              if (!container) return false;
+
+              // Ensure the icon properly resolved and rendered its SVG
+              // contents. If an SVG is missing from the WebUI iconset
+              // bundle, this will fail.
+              const crIcon = container.querySelector('cr-icon');
+              if (crIcon) {
+                return !!crIcon.shadowRoot?.querySelector('svg');
               }
-              for (const crIcon of crIcons) {
-                if (!crIcon.shadowRoot?.querySelector('svg')) {
-                  return false;
-                }
-              }
+
+              // Fallback for non-vector icons.
               return true;
             });
         )"}),
@@ -343,16 +487,13 @@ IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest,
                        ContentSettingIconAnimation) {
   WaitForInitialWebUIToolbar(browser());
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
 
   // Block content on active WebContents to trigger content setting icons.
   auto* content_settings =
       content_settings::PageSpecificContentSettings::GetForFrame(
           web_contents->GetPrimaryMainFrame());
   content_settings->BlockAllContentForTesting();
-
-  // Update location bar so state is propagated to WebUI.
-  GetLocationBar()->Update(web_contents);
 
   constexpr char kCheckIconScript[] = R"(
       (() => {
@@ -372,7 +513,7 @@ IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest,
         .ExtractBool();
   }));
 
-  // Trigger a second update on the same web contents.
+  // Trigger an additional update on the same web contents to ensure stability.
   GetLocationBar()->Update(web_contents);
 
   // Verify that icons exist and animation state is stable.
@@ -384,21 +525,21 @@ IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest,
                        StarredPageActionIconColor) {
   WaitForInitialWebUIToolbar(browser());
 
-  auto* tab = browser()->tab_strip_model()->GetActiveTab();
+  auto* tab = browser()->GetTabStripModel()->GetActiveTab();
   ASSERT_TRUE(tab);
 
   page_actions::WebUIPageActionControl control(
       BrowserActions::From(browser())->root_action_item());
   control.Init(GetWebUIToolbarWebView());
   control.UpdateController(
-      browser()->tab_strip_model()->GetActiveWebContents());
+      browser()->GetTabStripModel()->GetActiveWebContents());
 
   auto* bookmark_controller = BookmarkPageActionController::From(tab);
   ASSERT_TRUE(bookmark_controller);
 
   // Set unstarred:
   bookmark_controller->URLStarredChanged(
-      browser()->tab_strip_model()->GetActiveWebContents(), /*starred=*/false);
+      browser()->GetTabStripModel()->GetActiveWebContents(), /*starred=*/false);
   auto states_unstarred = control.GetPageActionStates();
   auto it_unstarred = std::find_if(
       states_unstarred.begin(), states_unstarred.end(), [](const auto& state) {
@@ -418,7 +559,7 @@ IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest,
 
   // Set starred:
   bookmark_controller->URLStarredChanged(
-      browser()->tab_strip_model()->GetActiveWebContents(), /*starred=*/true);
+      browser()->GetTabStripModel()->GetActiveWebContents(), /*starred=*/true);
   auto states_starred = control.GetPageActionStates();
   auto it_starred = std::find_if(
       states_starred.begin(), states_starred.end(), [](const auto& state) {
@@ -458,16 +599,16 @@ IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest,
           }));
   BrowserView::GetBrowserViewForBrowser(browser())->GetWidget()->ThemeChanged();
 
-  auto* tab = browser()->tab_strip_model()->GetActiveTab();
+  auto* tab = browser()->GetTabStripModel()->GetActiveTab();
   ASSERT_TRUE(tab);
   BookmarkPageActionController::From(tab)->URLStarredChanged(
-      browser()->tab_strip_model()->GetActiveWebContents(), /*starred=*/true);
+      browser()->GetTabStripModel()->GetActiveWebContents(), /*starred=*/true);
 
   page_actions::WebUIPageActionControl control(
       BrowserActions::From(browser())->root_action_item());
   control.Init(GetWebUIToolbarWebView());
   control.UpdateController(
-      browser()->tab_strip_model()->GetActiveWebContents());
+      browser()->GetTabStripModel()->GetActiveWebContents());
 
   auto states = control.GetPageActionStates();
   auto it = std::find_if(states.begin(), states.end(), [](const auto& state) {
@@ -494,6 +635,563 @@ IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest,
   EXPECT_NE(actual_color, SK_ColorBLUE);
   EXPECT_GE(color_utils::GetContrastRatio(actual_color, SK_ColorBLUE),
             color_utils::kMinimumVisibleContrastRatio);
+}
+
+IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest,
+                       ContentSettingIconNoReanimateOnBookmarkClick) {
+  WaitForInitialWebUIToolbar(browser());
+  content::WebContents* web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+
+  tabs::TabInterface* tab = tabs::TabInterface::GetFromContents(web_contents);
+  auto* controller = tab->GetTabFeatures()->page_action_controller();
+  actions::ActionItem* action_item = actions::ActionManager::Get().FindAction(
+      kActionBookmarkThisTab,
+      BrowserActions::From(browser())->root_action_item());
+  if (action_item) {
+    action_item->SetVisible(true);
+    action_item->SetEnabled(true);
+    if (action_item->GetImage().IsEmpty()) {
+      action_item->SetImage(
+          ui::ImageModel::FromVectorIcon(vector_icons::kFeedbackIcon));
+    }
+  }
+  controller->Show(kActionBookmarkThisTab);
+  GetLocationBar()->Update(web_contents);
+
+  // Block popups on active WebContents to trigger the content setting icon.
+  auto* content_settings =
+      content_settings::PageSpecificContentSettings::GetForFrame(
+          web_contents->GetPrimaryMainFrame());
+  content_settings->OnContentBlocked(ContentSettingsType::POPUPS);
+
+  // Wait until the popup icon is animating.
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(GetWebUIToolbarWebContents(),
+                           kCheckContentSettingIconShowingLabelScript)
+        .ExtractBool();
+  }));
+
+  auto* location_bar = static_cast<WebUILocationBar*>(GetLocationBar());
+  auto* model = location_bar->content_setting_image_control().GetModel(
+      toolbar_ui_api::mojom::ContentSettingImageType::kPopups);
+  ASSERT_TRUE(model);
+  EXPECT_FALSE(model->ShouldRunAnimation(web_contents));
+
+  // Click the bookmark star button in WebUI.
+  const int kBookmarkMojomId = std::to_underlying(
+      webui_toolbar::ActionIdToMojomPageActionId(kActionBookmarkThisTab));
+  const std::string kClickBookmarkScript = content::JsReplace(R"(
+      (() => {
+        const bookmarkIcon = Array.from(
+          document.querySelector('toolbar-app')?.
+            shadowRoot?.querySelector('location-bar')?.
+            shadowRoot?.querySelector('page-action-icons')?.
+            shadowRoot?.querySelectorAll('page-action-icon') || []
+        ).find(icon => icon.state && icon.state.pageActionId === $1);
+        if (!bookmarkIcon) {
+          return false;
+        }
+        bookmarkIcon.$$.button.click();
+        return true;
+      })()
+  )",
+                                                              kBookmarkMojomId);
+
+  // Run this in a loop since the button may not be loaded yet.
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(GetWebUIToolbarWebContents(), kClickBookmarkScript)
+        .ExtractBool();
+  }));
+
+  const std::string kCheckBookmarkedScript = content::JsReplace(
+      R"(
+      (() => {
+        const bookmarkIcon = Array.from(
+          document.querySelector('toolbar-app')?.
+            shadowRoot?.querySelector('location-bar')?.
+            shadowRoot?.querySelector('page-action-icons')?.
+            shadowRoot?.querySelectorAll('page-action-icon') || []
+        ).find(icon => icon.state && icon.state.pageActionId === $1);
+        return bookmarkIcon &&
+               bookmarkIcon.state.tooltipText === $2;
+      })()
+  )",
+      kBookmarkMojomId, l10n_util::GetStringUTF8(IDS_TOOLTIP_STARRED));
+
+  // Wait for the bookmark star to be marked bookmarked in WebUI.
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(GetWebUIToolbarWebContents(), kCheckBookmarkedScript)
+        .ExtractBool();
+  }));
+
+  GetLocationBar()->Update(web_contents);
+
+  // Verify that icons exist and are NOT reanimating.
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(GetWebUIToolbarWebContents(),
+                           kCheckHasContentSettingIconScript)
+        .ExtractBool();
+  }));
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return !content::EvalJs(GetWebUIToolbarWebContents(),
+                            kCheckContentSettingIconShowingLabelScript)
+                .ExtractBool();
+  }));
+
+  BookmarkBubbleView::Hide();
+}
+
+IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest,
+                       ContentSettingIconNoReanimateOnGeolocationBlocked) {
+  WaitForInitialWebUIToolbar(browser());
+  content::WebContents* web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+
+  // Block popups on active WebContents to trigger the popup icon animation.
+  auto* content_settings =
+      content_settings::PageSpecificContentSettings::GetForFrame(
+          web_contents->GetPrimaryMainFrame());
+  content_settings->OnContentBlocked(ContentSettingsType::POPUPS);
+
+  // Wait until the popup icon is animating.
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(GetWebUIToolbarWebContents(),
+                           kCheckContentSettingIconShowingLabelScript)
+        .ExtractBool();
+  }));
+
+  // While the popup icon is animating, block geolocation so a second content
+  // setting icon appears (sending a state update where kPopups now has
+  // should_run_animation=false).
+  content_settings->OnContentBlocked(ContentSettingsType::GEOLOCATION);
+
+  constexpr char kCheckTwoContentSettingIconsScript[] = R"(
+      (() => {
+        const icons = Array.from(
+          document.querySelector('toolbar-app')?.
+            shadowRoot?.querySelector('location-bar')?.
+            shadowRoot?.querySelector('content-settings-icons')?.
+            shadowRoot?.querySelectorAll('content-setting-icon') || []
+        );
+        return icons.length === 2;
+      })()
+  )";
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(GetWebUIToolbarWebContents(),
+                           kCheckTwoContentSettingIconsScript)
+        .ExtractBool();
+  }));
+
+  // Verify that the geolocation state update did NOT prematurely abort the
+  // in-progress popup label animation.
+  EXPECT_TRUE(content::EvalJs(GetWebUIToolbarWebContents(),
+                              kCheckContentSettingIconShowingLabelScript)
+                  .ExtractBool());
+
+  // Wait for the popup animation to finish collapsing.
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return !content::EvalJs(GetWebUIToolbarWebContents(),
+                            kCheckContentSettingIconShowingLabelScript)
+                .ExtractBool();
+  }));
+
+  // Trigger another geolocation state update and verify the popup icon does not
+  // reanimate.
+  content_settings->OnContentAllowed(ContentSettingsType::GEOLOCATION);
+  GetLocationBar()->Update(web_contents);
+
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(GetWebUIToolbarWebContents(),
+                           kCheckTwoContentSettingIconsScript)
+        .ExtractBool();
+  }));
+  EXPECT_FALSE(content::EvalJs(GetWebUIToolbarWebContents(),
+                               kCheckContentSettingIconShowingLabelScript)
+                   .ExtractBool());
+}
+
+IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest,
+                       ContentSettingIconNoReanimateOnTabSwitch) {
+  WaitForInitialWebUIToolbar(browser());
+  content::WebContents* web_contents1 =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+
+  // Block popups on active WebContents (tab 0) to trigger the content setting
+  // icon.
+  auto* content_settings =
+      content_settings::PageSpecificContentSettings::GetForFrame(
+          web_contents1->GetPrimaryMainFrame());
+  content_settings->OnContentBlocked(ContentSettingsType::POPUPS);
+
+  // Wait until the popup icon is animating.
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(GetWebUIToolbarWebContents(),
+                           kCheckContentSettingIconShowingLabelScript)
+        .ExtractBool();
+  }));
+
+  auto* location_bar = static_cast<WebUILocationBar*>(GetLocationBar());
+  auto* model = location_bar->content_setting_image_control().GetModel(
+      toolbar_ui_api::mojom::ContentSettingImageType::kPopups);
+  ASSERT_TRUE(model);
+  EXPECT_FALSE(model->ShouldRunAnimation(web_contents1));
+
+  // Open a new tab (tab 1) and activate it.
+  chrome::AddTabAt(browser(), GURL(url::kAboutBlankURL), /*index=*/1,
+                   /*foreground=*/true);
+  content::WebContents* web_contents2 =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  EXPECT_NE(web_contents1, web_contents2);
+  GetLocationBar()->Update(web_contents2);
+
+  // Switch back to tab 0.
+  browser()->GetTabStripModel()->ActivateTabAt(0);
+  GetLocationBar()->Update(web_contents1);
+
+  // Wait until icons are present again for tab 0.
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(GetWebUIToolbarWebContents(),
+                           kCheckHasContentSettingIconScript)
+        .ExtractBool();
+  }));
+
+  // Verify that icons exist and are NOT reanimating.
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return !content::EvalJs(GetWebUIToolbarWebContents(),
+                            kCheckContentSettingIconShowingLabelScript)
+                .ExtractBool();
+  }));
+}
+
+IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest, MiddleClickPasteAndGo) {
+  if (!ui::Clipboard::IsMiddleClickPasteEnabled() ||
+      !ui::Clipboard::IsSupportedClipboardBuffer(
+          ui::ClipboardBuffer::kSelection)) {
+    return;
+  }
+
+  ASSERT_TRUE(embedded_test_server()->Start());
+  GURL paste_url = embedded_test_server()->GetURL("/title1.html");
+
+  // Set some text in the selection clipboard.
+  const std::u16string kPasteText = base::UTF8ToUTF16(paste_url.spec());
+  {
+    ui::ScopedClipboardWriter writer(ui::ClipboardBuffer::kSelection);
+    writer.WriteText(kPasteText);
+  }
+
+  // Set up an observer to wait for the navigation.
+  content::TestNavigationObserver observer(
+      browser()->tab_strip_model()->GetActiveWebContents());
+
+  // Wait until the WebUI is loaded.
+  WaitForInitialWebUIToolbar(browser());
+
+  // Simulate a middle-click on the location icon in WebUI.
+  constexpr char kSimulateMiddleClickScript[] = R"(
+      (() => {
+        const locationIcon = document.querySelector('toolbar-app')?.
+            shadowRoot?.querySelector('location-bar')?.
+            shadowRoot?.querySelector('location-icon');
+        const container = locationIcon?.shadowRoot?.querySelector('#button');
+        if (!container) {
+          return false;
+        }
+
+        // Native middle-click uses pointer events.
+        const eventInit = {
+          button: 1,
+          buttons: 4,
+          bubbles: true,
+          composed: true,
+          cancelable: true
+        };
+        container.dispatchEvent(new PointerEvent('pointerdown', eventInit));
+        return true;
+      })()
+  )";
+
+  EXPECT_TRUE(
+      content::EvalJs(GetWebUIToolbarWebContents(), kSimulateMiddleClickScript)
+          .ExtractBool());
+
+  // Wait for the navigation to finish.
+  observer.Wait();
+
+  EXPECT_EQ(paste_url, browser()
+                           ->tab_strip_model()
+                           ->GetActiveWebContents()
+                           ->GetLastCommittedURL());
+}
+
+class ObservingTestClipboard : public ui::TestClipboard {
+ public:
+  int read_text_count() const { return read_text_count_; }
+
+  // ui::TestClipboard:
+  void ReadText(ui::ClipboardBuffer buffer,
+                const std::optional<ui::DataTransferEndpoint>& data_dst,
+                ReadTextCallback callback) const override {
+    ui::TestClipboard::ReadText(buffer, data_dst, std::move(callback));
+    ++read_text_count_;
+  }
+
+ private:
+  mutable int read_text_count_ = 0;
+};
+
+struct BlockedClipboardUrlTestCase {
+  std::string_view test_name;
+  std::u16string_view clipboard_text;
+};
+
+class WebUILocationBarBlockedClipboardUrlBrowserTest
+    : public WebUILocationBarBrowserTest,
+      public testing::WithParamInterface<BlockedClipboardUrlTestCase> {
+ public:
+  void SetUpOnMainThread() override {
+    WebUILocationBarBrowserTest::SetUpOnMainThread();
+    ui::Clipboard::DestroyClipboardForCurrentThread();
+    auto clipboard = std::make_unique<ObservingTestClipboard>();
+    clipboard_ = clipboard.get();
+    ui::Clipboard::SetClipboardForCurrentThread(std::move(clipboard));
+  }
+
+  void TearDownOnMainThread() override {
+    clipboard_ = nullptr;
+    ui::Clipboard::DestroyClipboardForCurrentThread();
+    WebUILocationBarBrowserTest::TearDownOnMainThread();
+  }
+
+ protected:
+  raw_ptr<ObservingTestClipboard> clipboard_ = nullptr;
+};
+
+// Tests that non-HTTP(S) schemes (including web-safe schemes such as
+// filesystem:, blob:, data:, chrome-extension:, and ws:) are not allowed to be
+// opened from middle clicks.
+IN_PROC_BROWSER_TEST_P(WebUILocationBarBlockedClipboardUrlBrowserTest,
+                       MiddleClickPasteAndGoBlocksUnsafeScheme) {
+  if (!ui::Clipboard::IsMiddleClickPasteEnabled() ||
+      !ui::Clipboard::IsSupportedClipboardBuffer(
+          ui::ClipboardBuffer::kSelection)) {
+    return;
+  }
+
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL start_url = embedded_test_server()->GetURL("/title1.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), start_url));
+
+  WaitForInitialWebUIToolbar(browser());
+
+  {
+    ui::ScopedClipboardWriter writer(ui::ClipboardBuffer::kSelection);
+    writer.WriteText(GetParam().clipboard_text);
+  }
+
+  constexpr char kSimulateMiddleClickScript[] = R"(
+      (() => {
+        const locationIcon = document.querySelector('toolbar-app')?.
+            shadowRoot?.querySelector('location-bar')?.
+            shadowRoot?.querySelector('location-icon');
+        const container = locationIcon?.shadowRoot?.querySelector('#button');
+        if (!container) {
+          return false;
+        }
+
+        const eventInit = {
+          button: 1,
+          buttons: 4,
+          bubbles: true,
+          composed: true,
+          cancelable: true
+        };
+        container.dispatchEvent(new PointerEvent('pointerdown', eventInit));
+        return true;
+      })()
+  )";
+
+  const int initial_read_count = clipboard_->read_text_count();
+  EXPECT_TRUE(
+      content::EvalJs(GetWebUIToolbarWebContents(), kSimulateMiddleClickScript)
+          .ExtractBool());
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return clipboard_->read_text_count() == initial_read_count + 1;
+  }));
+
+  content::WebContents* const web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  EXPECT_EQ(nullptr, web_contents->GetController().GetPendingEntry());
+  EXPECT_EQ(start_url, web_contents->GetVisibleURL());
+  EXPECT_EQ(start_url, web_contents->GetLastCommittedURL());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    WebUILocationBarBlockedClipboardUrlBrowserTest,
+    testing::Values(
+        BlockedClipboardUrlTestCase{"File", u"file:///etc/passwd"},
+        BlockedClipboardUrlTestCase{"ChromeUI", u"chrome://version"},
+        BlockedClipboardUrlTestCase{"ChromeUntrusted",
+                                    u"chrome-untrusted://terminal"},
+        BlockedClipboardUrlTestCase{
+            "ChromeExtension",
+            u"chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"
+            u"manifest.json"},
+        BlockedClipboardUrlTestCase{
+            "ChromeSearch", u"chrome-search://local-ntp/local-ntp.html"},
+        BlockedClipboardUrlTestCase{
+            "Filesystem", u"filesystem:http://127.0.0.1/temporary/test.html"},
+        BlockedClipboardUrlTestCase{
+            "Blob",
+            u"blob:http://127.0.0.1/550e8400-e29b-41d4-a716-446655440000"},
+        BlockedClipboardUrlTestCase{"Data", u"data:text/html,<h1>hi</h1>"},
+        BlockedClipboardUrlTestCase{
+            "JavascriptFilesystem",
+            u"javascript:filesystem:http://127.0.0.1/temporary/test.html"},
+        BlockedClipboardUrlTestCase{"JavascriptEmpty", u"javascript:"},
+        BlockedClipboardUrlTestCase{"AboutBlank", u"about:blank"},
+        BlockedClipboardUrlTestCase{
+            "ViewSource", u"view-source:http://127.0.0.1/title1.html"},
+        BlockedClipboardUrlTestCase{"Ws", u"ws://127.0.0.1/socket"},
+        BlockedClipboardUrlTestCase{"Wss", u"wss://127.0.0.1/socket"},
+        BlockedClipboardUrlTestCase{
+            "DevTools", u"devtools://devtools/bundled/inspector.html"},
+        BlockedClipboardUrlTestCase{"Whitespace", u"   "}),
+    [](const testing::TestParamInfo<BlockedClipboardUrlTestCase>& info) {
+      return std::string(info.param.test_name);
+    });
+
+IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest,
+                       PageActionBookmarkBubbleHighlight) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL url = embedded_test_server()->GetURL("/title1.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+
+  auto* bookmark_model =
+      BookmarkModelFactory::GetForBrowserContext(browser()->GetProfile());
+  bookmarks::test::WaitForBookmarkModelToLoad(bookmark_model);
+  bookmark_model->AddNewURL(bookmark_model->other_node(), 0, u"Title", url);
+
+  WaitForInitialWebUIToolbar(browser());
+  content::WebContents* web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+
+  auto* tab = browser()->GetTabStripModel()->GetActiveTab();
+  ASSERT_TRUE(tab);
+  auto* bookmark_controller = BookmarkPageActionController::From(tab);
+  ASSERT_TRUE(bookmark_controller);
+  bookmark_controller->URLStarredChanged(web_contents, /*starred=*/true);
+  GetLocationBar()->Update(web_contents);
+
+  constexpr int kBookmarkMojomId = std::to_underlying(
+      toolbar_ui_api::mojom::PageActionId::kActionBookmarkThisTab);
+
+  const std::string check_bookmark_exists_script =
+      content::JsReplace(R"(
+      (() => {
+        const pageActions = Array.from(
+          document.querySelector('toolbar-app')?.
+            shadowRoot?.querySelector('location-bar')?.
+            shadowRoot?.querySelector('page-action-icons')?.
+            shadowRoot?.querySelectorAll('page-action-icon') || []
+        );
+        return pageActions.some(
+          icon => icon.state.pageActionId === $1);
+      })()
+  )",
+                         kBookmarkMojomId);
+
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(GetWebUIToolbarWebContents(),
+                           check_bookmark_exists_script)
+        .ExtractBool();
+  }));
+
+  const std::string check_bookmark_is_menu_open_script =
+      content::JsReplace(R"(
+      (() => {
+        const pageActions = Array.from(
+          document.querySelector('toolbar-app')?.
+            shadowRoot?.querySelector('location-bar')?.
+            shadowRoot?.querySelector('page-action-icons')?.
+            shadowRoot?.querySelectorAll('page-action-icon') || []
+        );
+        const bookmarkIcon = pageActions.find(
+          icon => icon.state && icon.state.pageActionId === $1);
+        if (!bookmarkIcon) {
+          return false;
+        }
+        return bookmarkIcon.$$.button.hasAttribute('is-menu-open');
+      })()
+  )",
+                         kBookmarkMojomId);
+
+  EXPECT_FALSE(content::EvalJs(GetWebUIToolbarWebContents(),
+                               check_bookmark_is_menu_open_script)
+                   .ExtractBool());
+
+  // Show bookmark bubble.
+  BrowserView::GetBrowserViewForBrowser(browser())->ShowBookmarkBubble(
+      url, /*already_bookmarked=*/true);
+
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(GetWebUIToolbarWebContents(),
+                           check_bookmark_is_menu_open_script)
+               .ExtractBool() == true;
+  }));
+}
+
+IN_PROC_BROWSER_TEST_F(WebUILocationBarBrowserTest,
+                       PageActionFindBarHighlight) {
+  WaitForInitialWebUIToolbar(browser());
+
+  const int find_mojom_id =
+      std::to_underlying(toolbar_ui_api::mojom::PageActionId::kActionFind);
+
+  const std::string check_find_is_menu_open_script =
+      content::JsReplace(R"(
+      (() => {
+        const pageActions = Array.from(
+          document.querySelector('toolbar-app')?.
+            shadowRoot?.querySelector('location-bar')?.
+            shadowRoot?.querySelector('page-action-icons')?.
+            shadowRoot?.querySelectorAll('page-action-icon') || []
+        );
+        const findIcon = pageActions.find(
+          icon => icon.state && icon.state.pageActionId === $1);
+        if (!findIcon) {
+          return false;
+        }
+        return findIcon.$$.button.hasAttribute('is-menu-open');
+      })()
+  )",
+                         find_mojom_id);
+
+  EXPECT_FALSE(content::EvalJs(GetWebUIToolbarWebContents(),
+                               check_find_is_menu_open_script)
+                   .ExtractBool());
+
+  // Show find bar.
+  auto* find_bar_controller = FindBarController::From(browser());
+  find_bar_controller->Show();
+
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(GetWebUIToolbarWebContents(),
+                           check_find_is_menu_open_script)
+               .ExtractBool() == true;
+  }));
+
+  // Hide find bar.
+  find_bar_controller->EndFindSession(find_in_page::SelectionAction::kKeep,
+                                      find_in_page::ResultAction::kKeep);
+
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(GetWebUIToolbarWebContents(),
+                           check_find_is_menu_open_script)
+               .ExtractBool() == false;
+  }));
 }
 
 }  // namespace

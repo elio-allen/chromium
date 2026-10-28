@@ -5,9 +5,7 @@
 #ifndef CHROME_BROWSER_CONTEXTUAL_TASKS_CONTEXTUAL_TASKS_EXTENSION_BRIDGE_H_
 #define CHROME_BROWSER_CONTEXTUAL_TASKS_CONTEXTUAL_TASKS_EXTENSION_BRIDGE_H_
 
-#include "base/functional/callback_helpers.h"
-#include "base/memory/raw_ref.h"
-#include "base/values.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_extension_service_worker_handler.h"
 #include "components/keyed_service/core/keyed_service.h"
 
 class Profile;
@@ -15,8 +13,8 @@ class Profile;
 namespace contextual_tasks {
 
 // Profile-keyed service that manages the Contextual Tasks component extension's
-// integration with the browser, specifically providing loadTimeData.
-// There is one instance of this service per Profile.
+// integration with the browser, specifically initializing extension
+// configuration and Mojo binder providers.
 class ContextualTasksExtensionBridge : public KeyedService {
  public:
   explicit ContextualTasksExtensionBridge(Profile* profile);
@@ -26,15 +24,17 @@ class ContextualTasksExtensionBridge : public KeyedService {
       const ContextualTasksExtensionBridge&) = delete;
   ~ContextualTasksExtensionBridge() override;
 
+  // KeyedService:
+  void Shutdown() override;
+
   static ContextualTasksExtensionBridge* Get(Profile* profile);
 
+  ContextualTasksExtensionServiceWorkerHandler& service_worker_handler() {
+    return service_worker_handler_;
+  }
+
  private:
-  base::DictValue GetLoadTimeData();
-
-  const raw_ref<Profile> profile_;
-
-  // Subscription for the template data provider.
-  base::ScopedClosureRunner load_time_data_subscription_;
+  ContextualTasksExtensionServiceWorkerHandler service_worker_handler_;
 };
 
 }  // namespace contextual_tasks

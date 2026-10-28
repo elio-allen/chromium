@@ -8,8 +8,6 @@
 #import <UIKit/UIKit.h>
 
 #import "components/policy/core/browser/signin/profile_separation_policies.h"
-#import "ios/chrome/browser/signin/model/capabilities_dict.h"
-#import "url/gurl.h"
 
 @class FakeSystemIdentity;
 @protocol GREYMatcher;
@@ -32,6 +30,11 @@ enum class UserSelectableType;
 // notification.
 + (void)addFakeIdentity:(FakeSystemIdentity*)fakeIdentity
        withCapabilities:(NSDictionary<NSString*, NSNumber*>*)capabilities;
+
+// Updates the `capabilities` of an already added `fakeIdentity`, and makes them
+// visible to the browser, simulating a capabilities fetch.
++ (void)setCapabilities:(NSDictionary<NSString*, NSNumber*>*)capabilities
+            forIdentity:(FakeSystemIdentity*)fakeIdentity;
 
 // Adds `fakeIdentity` to the fake system identity interaction manager, with
 // capabilities set or unset. This is used to simulate adding the `fakeIdentity`
@@ -59,9 +62,6 @@ enum class UserSelectableType;
 // Returns the email of the primary account.
 // If there is no signed-in account returns an empty string.
 + (NSString*)primaryAccountEmail;
-
-// Returns the gaia IDs of all accounts in the current profile.
-+ (NSSet<NSString*>*)accountsInProfileGaiaIDs;
 
 // Checks that no identity is signed in.
 + (BOOL)isSignedOut;
@@ -115,11 +115,25 @@ enum class UserSelectableType;
     (policy::ProfileSeparationDataMigrationSettings)
         profileSeparationDataMigrationSettings;
 
-// Returns whether the feature to put each managed account into its own separate
-// profile is enabled. This depends on the `kSeparateProfilesForManagedAccounts`
-// feature flag, plus some additional conditions which can't be directly checked
-// in the test app.
-+ (BOOL)areSeparateProfilesForManagedAccountsEnabled;
+// Triggers a persistent MDM error for the provided identity.
++ (void)setMDMErrorForIdentity:(FakeSystemIdentity*)fakeIdentity
+                userActionable:(BOOL)userActionable;
+
+// Clears the persistent MDM error for the provided identity.
++ (void)clearMDMErrorForIdentity:(FakeSystemIdentity*)fakeIdentity;
+
+// Resets the recorded MDM notification display status in
+// `FakeSystemIdentityManager`.
++ (void)resetMDMNotificationDisplayed;
+
+// Returns YES if `DisplayMDMNotification()` was called on
+// `FakeSystemIdentityManager`.
++ (BOOL)wasMDMNotificationDisplayed;
+
+// Sets the preferred account in `TestAccountPreviewDataService` when offering
+// signed-out users to sign in. If `fakeIdentity` is nil, clears the preferred
+// account.
++ (void)setPreferredAccountForSignin:(FakeSystemIdentity*)fakeIdentity;
 
 @end
 

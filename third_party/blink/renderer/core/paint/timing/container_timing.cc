@@ -25,37 +25,6 @@ uint64_t GetRegionSize(const cc::Region& region) {
   return size;
 }
 
-// static
-Element* ContainerRootFallback(Element* element) {
-  // Check if the element itself is a container root (e.g., <img
-  // containertiming> where the painted element and the root are the same
-  // element).
-  if (element->FastHasAttribute(html_names::kContainertimingAttr)) {
-    return element;
-  }
-  // Walk up the DOM looking for a container root. Stops at
-  // containertimingignore (unless that element also has containertiming).
-  while ((element = element->parentElement())) {
-    if (element->FastHasAttribute(html_names::kContainertimingAttr)) {
-      return element;
-    }
-    if (element->HasContainerTimingIgnoreAttribute()) {
-      return nullptr;
-    }
-  }
-  return nullptr;
-}
-
-// static
-Element* ParentContainerRootFallback(Element* element) {
-  auto* parent = element->parentElement();
-  if (!parent || !parent->SelfOrAncestorHasContainerTiming()) {
-    return nullptr;
-  }
-
-  return ContainerRootFallback(parent);
-}
-
 }  // namespace
 
 // static
@@ -71,12 +40,29 @@ ContainerTiming& ContainerTiming::From(LocalDOMWindow& window) {
 
 ContainerTiming::ContainerTiming(LocalDOMWindow& window)
     : Supplement<LocalDOMWindow>(window),
-      performance_(DOMWindowPerformance::performance(window)) {
-  if (RuntimeEnabledFeatures::ContainerTimingPrepaintTraversalEnabled(
-          &window)) {
-    paint_attribution_tracker_ =
-        MakeGarbageCollected<ContainerTimingPaintAttributionTracker>();
+      performance_(DOMWindowPerformance::performance(window)),
+      paint_attribution_tracker_(
+          MakeGarbageCollected<ContainerTimingPaintAttributionTracker>()) {
+  CHECK(RuntimeEnabledFeatures::ContainerTimingEnabled(&window));
+}
+
+// static
+bool ContainerTiming::ContributesToContainerTiming(Element* element) {
+  if (!element || element->IsInShadowTree()) {
+    return false;
   }
+  // Check the feature before From(), which would create the supplement: this
+  // runs for every text record considered for timing.
+  LocalDOMWindow* window = element->GetDocument().domWindow();
+  if (!window || !RuntimeEnabledFeatures::ContainerTimingEnabled(window)) {
+    return false;
+  }
+  // The paint attribution tracker, populated during the pre-paint walk (which
+  // runs before paint), keys images by their generating node and text by its
+  // aggregation node, which is exactly `element` either way.
+  ContainerTimingPaintAttributionTracker* tracker =
+      From(*window).PaintAttributionTracker();
+  return tracker->GetContainerRootFor(element) != nullptr;
 }
 
 bool ContainerTiming::CanReportToContainerTiming() const {
@@ -93,15 +79,28 @@ void ContainerTiming::Record::MaybeUpdateLastNewPaintedArea(
     const DOMPaintTimingInfo& paint_timing_info,
     Element* element,
     const gfx::Rect& enclosing_rect) {
+  // Nominate the element by its own clipped area, the way LCP selects its
+  // candidates, rather than by the area it newly contributed to the container.
+  // Selecting by the contributed area would hand the overlap between two
+  // elements to whichever happened to paint first, both within a frame and
+  // across loads of the same page. Ties keep the earlier element.
+  //
+  // This runs before the containment check below: content painting entirely
+  // inside the region painted so far is still a contentful paint, it just does
+  // not grow the container. Nothing re-nominates on a repaint, because each
+  // element reaches container timing only once per content it paints.
+  const uint64_t own_painted_area = enclosing_rect.size().Area64();
+  if (own_painted_area > largest_painted_area_) {
+    largest_painted_area_ = own_painted_area;
+    largest_painted_area_element_ = element;
+  }
+
   if (painted_region_.Contains(enclosing_rect)) {
     return;
   }
 
   painted_region_.Union(enclosing_rect);
-
   last_new_painted_area_paint_timing_info_ = paint_timing_info;
-  last_new_painted_area_element_ = element;
-
   has_pending_changes_ = true;
 }
 
@@ -114,12 +113,16 @@ void ContainerTiming::Record::MaybeEmitPerformanceEntry(
   performance->AddContainerTiming(
       last_new_painted_area_paint_timing_info_, painted_region_.bounds(),
       GetRegionSize(painted_region_), container_root, identifier_,
-      last_new_painted_area_element_, first_paint_timing_info_);
+      largest_painted_area_element_, first_paint_timing_info_);
   has_pending_changes_ = false;
+  // Start the comparison over, so the next entry reports the largest element
+  // painted since this one.
+  largest_painted_area_ = 0;
+  largest_painted_area_element_ = nullptr;
 }
 
 void ContainerTiming::Record::Trace(Visitor* visitor) const {
-  visitor->Trace(last_new_painted_area_element_);
+  visitor->Trace(largest_painted_area_element_);
 }
 
 ContainerTiming::Record* ContainerTiming::GetOrCreateRecord(
@@ -160,33 +163,37 @@ void ContainerTiming::OnElementPainted(
     const DOMPaintTimingInfo& paint_timing_info,
     Element* element,
     const gfx::RectF& intersection_rect) {
-  if (!ContributesToContainerTiming(element)) {
+  if (!element) {
     return;
   }
-
+  // The tracker only maps elements that are actually attributed to a container
+  // root. A null result means this paint (e.g. a text record that only exists
+  // for LCP) is not under any container root and must be ignored.
+  //
   // This runs at presentation time, not during paint, so we deliberately don't
   // assert that ContainerTimingChanged() is clean: an attribute change between
   // paint and now marks the layout object for re-attribution on a future
   // pre-paint, which doesn't affect this callback. We report the paint that
-  // already happened using the attribution captured at the last pre-paint. The
-  // fallback is only for the feature-off case (no tracker).
+  // already happened using the attribution captured at the last pre-paint.
   Element* container_root =
-      paint_attribution_tracker_
-          ? paint_attribution_tracker_->GetContainerRootFor(element)
-          : ContainerRootFallback(element);
+      paint_attribution_tracker_->GetContainerRootFor(element);
   if (!container_root) {
-    // This runs at presentation time, so the element may have been detached
-    // since paint, leaving no reachable container root. Don't report it.
-    // TODO(crbug.com/535107494): attributing at paint time would let this
-    // become a CHECK.
+    // ElementTiming sends elements that contribute to either element timing or
+    // container timing, so `container_root` will be null if the `element`
+    // doesn't contribute to container timing. The element may have also been
+    // detached since paint, leaving no reachable container root.
+    //
+    // TODO(crbug.com/535107494, crbug.com/559075199): decoupling
+    // ContainerTiming from ElementTiming and attributing at paint time would
+    // let this become a CHECK.
     return;
   }
 
   const gfx::Rect enclosing_rect = gfx::ToEnclosingRect(intersection_rect);
   // The attribute re-check is not redundant: this runs at presentation time, so
-  // the tracker (or fallback chain) can be stale relative to the live DOM if
-  // the containertiming attribute was removed since the last pre-paint. Skip
-  // roots that are no longer roots. See StaleTrackerGuard_* tests.
+  // the tracker can be stale relative to the live DOM if the containertiming
+  // attribute was removed since the last pre-paint. Skip roots that are no
+  // longer roots. See StaleTrackerGuard_* tests.
   while (container_root &&
          container_root->FastHasAttribute(html_names::kContainertimingAttr)) {
     Record* record = GetOrCreateRecord(paint_timing_info, container_root);
@@ -198,10 +205,7 @@ void ContainerTiming::OnElementPainted(
       break;
     }
     container_root =
-        paint_attribution_tracker_
-            ? paint_attribution_tracker_->GetParentContainerRootFor(
-                  container_root)
-            : ParentContainerRootFallback(container_root);
+        paint_attribution_tracker_->GetParentContainerRootFor(container_root);
   }
   performance_->SetHasContainerTimingChanges();
 }

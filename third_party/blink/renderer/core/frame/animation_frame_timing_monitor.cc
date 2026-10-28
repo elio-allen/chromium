@@ -20,7 +20,6 @@
 #include "third_party/blink/renderer/core/script/script.h"
 #include "third_party/blink/renderer/core/timing/animation_frame_timing_info.h"
 #include "third_party/blink/renderer/core/timing/dom_window_performance.h"
-#include "third_party/blink/renderer/core/timing/performance_mark_conditional.h"
 #include "third_party/blink/renderer/core/timing/third_party_script_detector.h"
 #include "third_party/blink/renderer/core/timing/timing_utils.h"
 #include "third_party/blink/renderer/platform/bindings/source_location.h"
@@ -30,6 +29,7 @@
 #include "third_party/blink/renderer/platform/scheduler/public/event_loop.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
 #include "v8-local-handle.h"
 #include "v8-message.h"
@@ -66,18 +66,28 @@ constexpr base::TimeDelta kCongestionIdleGap = base::Milliseconds(5);
 
 AnimationFrameTimingMonitor::AnimationFrameTimingMonitor(Client& client,
                                                          CoreProbeSink* sink)
-    : client_(client) {
+    : client_(&client), probe_sink_(sink) {
   Thread::Current()->AddTaskTimeObserver(this);
   if (!IsMainThread()) {
     CHECK(RuntimeEnabledFeatures::LongAnimationFrameWorkerEnabled());
   }
-  sink->AddAnimationFrameTimingMonitor(this);
+  if (probe_sink_) {
+    probe_sink_->AddAnimationFrameTimingMonitor(this);
+  }
   enabled_ = true;
 }
 
 void AnimationFrameTimingMonitor::Shutdown() {
   enabled_ = false;
+  current_frame_timing_info_.Clear();
+  current_scripts_.clear();
+  congestion_scripts_.clear();
   frame_handling_input_ = nullptr;
+  task_attributed_window_ = nullptr;
+  if (probe_sink_) {
+    probe_sink_->RemoveAnimationFrameTimingMonitor(this);
+    probe_sink_ = nullptr;
+  }
   Thread::Current()->RemoveTaskTimeObserver(this);
 }
 
@@ -96,9 +106,43 @@ void AnimationFrameTimingMonitor::WillHandleInput(LocalFrame* frame) {
 
 void AnimationFrameTimingMonitor::MarkConditional(const AtomicString& name,
                                                   base::TimeTicks start_time) {
-  if (conditional_marks_.size() < kConditionalUserTimingBufferSize) {
-    conditional_marks_.push_back(ConditionalMarkInfo(name, start_time));
+  if (conditional_marks_.size() + conditional_measures_.size() >=
+      kConditionalUserTimingBufferSize) {
+    return;
   }
+  conditional_marks_.push_back(ConditionalMarkInfo(name, start_time));
+  conditional_mark_names_to_timestamps_.Set(name, start_time);
+}
+
+void AnimationFrameTimingMonitor::MeasureConditional(
+    const AtomicString& name,
+    const AtomicString& start_mark,
+    const AtomicString& end_mark,
+    base::TimeTicks end_time) {
+  if (conditional_marks_.size() + conditional_measures_.size() >=
+      kConditionalUserTimingBufferSize) {
+    return;
+  }
+
+  // Eagerly resolve mark names to timestamps using the map.
+  base::TimeTicks resolved_start_time;
+  if (!start_mark.IsNull()) {
+    auto it = conditional_mark_names_to_timestamps_.find(start_mark);
+    if (it != conditional_mark_names_to_timestamps_.end()) {
+      resolved_start_time = it->value;
+    }
+  }
+
+  base::TimeTicks resolved_end_time = end_time;
+  if (!end_mark.IsNull()) {
+    auto it = conditional_mark_names_to_timestamps_.find(end_mark);
+    if (it != conditional_mark_names_to_timestamps_.end()) {
+      resolved_end_time = it->value;
+    }
+  }
+
+  conditional_measures_.push_back(
+      ConditionalMeasureInfo(name, resolved_start_time, resolved_end_time));
 }
 
 void AnimationFrameTimingMonitor::BeginMainFrame(
@@ -160,6 +204,11 @@ AnimationFrameTimingMonitor::RecordRenderingUpdateEndTime(
     current_frame_timing_info_->SetConditionalMarks(conditional_marks_);
   }
 
+  if (!conditional_measures_.empty()) {
+    CHECK(RuntimeEnabledFeatures::ConditionalTracingLoAFEnabled());
+    current_frame_timing_info_->SetConditionalMeasures(conditional_measures_);
+  }
+
   current_frame_timing_info_->SetStyleDuration(render_style_duration_);
   current_frame_timing_info_->SetLayoutDuration(render_layout_duration_);
 
@@ -200,6 +249,11 @@ AnimationFrameTimingMonitor::RecordRenderingUpdateEndTime(
   if (!conditional_marks_.empty()) {
     CHECK(RuntimeEnabledFeatures::ConditionalTracingLoAFEnabled());
     conditional_marks_.clear();
+    conditional_mark_names_to_timestamps_.clear();
+  }
+  if (!conditional_measures_.empty()) {
+    CHECK(RuntimeEnabledFeatures::ConditionalTracingLoAFEnabled());
+    conditional_measures_.clear();
   }
   longest_task_duration_ = total_blocking_time_excluding_longest_task_ =
       base::TimeDelta();
@@ -260,6 +314,9 @@ void AnimationFrameTimingMonitor::OnWorkerTaskCompleted(
     base::TimeTicks start_time,
     base::TimeTicks end_time,
     base::TimeTicks desired_execution_time) {
+  if (!enabled_) {
+    return;
+  }
   entry_point_depth_ = 0;
   pending_script_info_ = std::nullopt;
   current_task_start_ = base::TimeTicks();
@@ -333,7 +390,7 @@ void AnimationFrameTimingMonitor::FinalizeCongestedMoment() {
     info->SetScripts(congestion_scripts_);
     info->SetScriptCount(congestion_script_count_);
     info->SetTotalBlockingDuration(span - kCongestionThreshold);
-    client_.ReportCongestedMoment(info);
+    client_->ReportCongestedMoment(info);
   }
 
   congestion_run_start_ = base::TimeTicks();
@@ -346,6 +403,9 @@ void AnimationFrameTimingMonitor::OnMainThreadTaskCompleted(
     base::TimeTicks start_time,
     base::TimeTicks end_time,
     LocalFrame* frame) {
+  if (!enabled_) {
+    return;
+  }
   HeapVector<Member<ScriptTimingInfo>> scripts;
 
   bool did_pause = false;
@@ -390,7 +450,7 @@ void AnimationFrameTimingMonitor::OnMainThreadTaskCompleted(
       attributed_window = task_attributed_window_.Get();
     }
     if (attributed_window) {
-      client_.ReportLongTaskTiming(start_time, end_time, attributed_window);
+      client_->ReportLongTaskTiming(start_time, end_time, attributed_window);
       task_longtask_reported_ = true;
     }
   }
@@ -405,7 +465,7 @@ void AnimationFrameTimingMonitor::OnMainThreadTaskCompleted(
     return;
   }
 
-  bool should_report = client_.ShouldReportLongAnimationFrameTiming();
+  bool should_report = client_->ShouldReportLongAnimationFrameTiming();
 
   // Changing the focused frame mid-task should also schedule rendering.
   // Marking as DUMP_WILL_BE_CHECK because failing this assumption is not
@@ -413,9 +473,9 @@ void AnimationFrameTimingMonitor::OnMainThreadTaskCompleted(
   // TODO(crbug/352077677): Verify this assumption if no dumps are created and
   // turn into a CHECK.
   DUMP_WILL_BE_CHECK(!multiple_focused_frames_in_same_task_ ||
-                     client_.RequestedMainFramePending());
+                     client_->RequestedMainFramePending());
 
-  if (client_.RequestedMainFramePending() && should_report) {
+  if (client_->RequestedMainFramePending() && should_report) {
     current_frame_timing_info_ =
         MakeGarbageCollected<AnimationFrameTimingInfo>(start_time);
     state_ = State::kPendingFrame;
@@ -434,6 +494,13 @@ void AnimationFrameTimingMonitor::OnMainThreadTaskCompleted(
   if (!conditional_marks_.empty()) {
     CHECK(RuntimeEnabledFeatures::ConditionalTracingLoAFEnabled());
     std::swap(conditional_marks, conditional_marks_);
+    conditional_mark_names_to_timestamps_.clear();
+  }
+
+  Vector<ConditionalMeasureInfo> conditional_measures;
+  if (!conditional_measures_.empty()) {
+    CHECK(RuntimeEnabledFeatures::ConditionalTracingLoAFEnabled());
+    std::swap(conditional_measures, conditional_measures_);
   }
 
   longest_task_duration_ = total_blocking_time_excluding_longest_task_ =
@@ -469,6 +536,11 @@ void AnimationFrameTimingMonitor::OnMainThreadTaskCompleted(
   if (!conditional_marks.empty()) {
     CHECK(RuntimeEnabledFeatures::ConditionalTracingLoAFEnabled());
     timing_info->SetConditionalMarks(conditional_marks);
+  }
+
+  if (!conditional_measures.empty()) {
+    CHECK(RuntimeEnabledFeatures::ConditionalTracingLoAFEnabled());
+    timing_info->SetConditionalMeasures(conditional_measures);
   }
 
   DOMWindowPerformance::performance(*frame->DomWindow())
@@ -530,7 +602,7 @@ void AnimationFrameTimingMonitor::ReportPresentationTimeToTrace(
   TRACE_EVENT_INSTANT(
       "devtools.timeline", "AnimationFrame::Presentation", track_id,
       presentation_details.presentation_feedback.timestamp, flow_id, "id",
-      String::Format("%016" PRIx64, trace_id), [&](perfetto::EventContext ctx) {
+      Format("{:016x}", trace_id), [&](perfetto::EventContext ctx) {
         auto* event = ctx.event<perfetto::protos::pbzero::ChromeTrackEvent>();
         auto* begin_frame_id = event->set_begin_frame_id();
         begin_frame_id->set_source_id(presentation_details.frame_id.source_id);
@@ -555,7 +627,7 @@ void AnimationFrameTimingMonitor::RecordLongAnimationFrameTrace(
   }
   TRACE_EVENT_BEGIN(
       "devtools.timeline", "AnimationFrame", track_id, info.FrameStartTime(),
-      flow_id, "id", String::Format("%016" PRIx64, trace_id),
+      flow_id, "id", Format("{:016x}", trace_id),
       [&](perfetto::EventContext ctx) {
         auto* event = ctx.event<perfetto::protos::pbzero::ChromeTrackEvent>();
         auto* data = event->set_animation_frame_timing_info();
@@ -623,8 +695,8 @@ void AnimationFrameTimingMonitor::RecordLongAnimationFrameUKMAndTrace(
     return;
   }
 
-  ukm::UkmRecorder* recorder = client_.MainFrameUkmRecorder();
-  ukm::SourceId source_id = client_.MainFrameUkmSourceId();
+  ukm::UkmRecorder* recorder = client_->MainFrameUkmRecorder();
+  ukm::SourceId source_id = client_->MainFrameUkmSourceId();
   if (!recorder || source_id == ukm::kInvalidSourceId) {
     return;
   }
@@ -707,6 +779,8 @@ void AnimationFrameTimingMonitor::Trace(Visitor* visitor) const {
   visitor->Trace(frame_handling_input_);
   visitor->Trace(task_attributed_window_);
   visitor->Trace(congestion_scripts_);
+  visitor->Trace(client_);
+  visitor->Trace(probe_sink_);
 }
 
 BASE_FEATURE(kAlwaysLogLOAFURL, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -744,7 +818,7 @@ bool AnimationFrameTimingMonitor::PushScriptEntryPoint(
   // script (entry_point_depth is 1), and the client wants long animation frame
   // timing reported.
   if (!enabled_ || entry_point_depth_ != 1 ||
-      !client_.ShouldReportLongAnimationFrameTiming()) {
+      !client_->ShouldReportLongAnimationFrameTiming()) {
     return false;
   }
 
@@ -795,7 +869,7 @@ ScriptTimingInfo* AnimationFrameTimingMonitor::PopScriptEntryPointInternal(
     const PendingScriptInfo& script_info) {
   // Worker contexts are not windows; allow them through in worker mode.
   if (!enabled_ || !context || (!context->IsWindow() && IsMainThread()) ||
-      !client_.ShouldReportLongAnimationFrameTiming()) {
+      !client_->ShouldReportLongAnimationFrameTiming()) {
     return nullptr;
   }
 
@@ -888,14 +962,9 @@ void AnimationFrameTimingMonitor::WillHandlePromise(
       .class_like_name = class_like_name,
       .property_like_name = property_like_name,
       .source_location = {.url = location->Url(script_state->GetIsolate()),
-                          .char_position = location->CharPosition()}};
-
-  if (RuntimeEnabledFeatures::LongAnimationFrameSourceLineColumnEnabled()) {
-    pending_script_info_->source_location.line_number =
-        location->LineNumber() + 1;
-    pending_script_info_->source_location.column_number =
-        location->ColumnNumber() + 1;
-  }
+                          .char_position = location->CharPosition(),
+                          .line_number = location->LineNumber(),
+                          .column_number = location->ColumnNumber()}};
 }
 
 void AnimationFrameTimingMonitor::Will(
@@ -928,7 +997,7 @@ void AnimationFrameTimingMonitor::Will(const probe::ExecuteScript& probe_data) {
   // executing an imported module script.
   // This is true for both imported and element-created scripts.
   v8::Isolate* isolate = probe_data.context->GetIsolate();
-  ScriptState* script_state = ScriptState::From(isolate, probe_data.v8_context);
+  ScriptState* script_state = ScriptState::ForCurrentRealm(isolate);
   if (PushScriptEntryPoint(script_state)) {
     pending_script_info_ = PendingScriptInfo{
         .invoker_type = ScriptTimingInfo::InvokerType::kModuleScript,

@@ -10,7 +10,7 @@
 #include <memory>
 #include <optional>
 
-#include "base/test/scoped_feature_list.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_mock_clock_override.h"
 #include "base/time/time.h"
 #include "cc/base/features.h"
@@ -18,16 +18,22 @@
 #include "cc/layers/layer_impl.h"
 #include "cc/test/fake_impl_task_runner_provider.h"
 #include "cc/test/fake_layer_tree_host_impl.h"
+#include "cc/test/scoped_browser_controls_linear_animation.h"
 #include "cc/test/test_task_graph_runner.h"
 #include "cc/trees/browser_controls_params.h"
 #include "cc/trees/layer_tree_impl.h"
+#include "components/viz/common/quads/offset_tag.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 
 namespace cc {
 namespace {
 
-constexpr int kDeviceFramesPerSecond = 60;
+// Use the linear animation to avoid flakiness in tests that control the
+// browser controls position by scrolling.
+class BrowserControlsOffsetManagerTest
+    : public ::testing::Test,
+      private test::ScopedBrowserControlsLinearAnimation {};
 
 class MockBrowserControlsOffsetManagerClient
     : public BrowserControlsOffsetManagerClient {
@@ -57,7 +63,10 @@ class MockBrowserControlsOffsetManagerClient
     update_draw_properties_needed_ = true;
   }
 
-  bool HaveRootScrollNode() const override { return true; }
+  bool HaveRootScrollNode() const override { return have_root_scroll_node_; }
+  void SetHaveRootScrollNode(bool have_root_scroll_node) {
+    have_root_scroll_node_ = have_root_scroll_node;
+  }
 
   float BottomControlsHeight() const override {
     return browser_controls_params_.bottom_controls_height;
@@ -147,10 +156,6 @@ class MockBrowserControlsOffsetManagerClient
         std::min(viewport_scroll_offset_.y(), max_viewport_scroll_offset_y_));
   }
 
-  base::TimeDelta CurrentFrameInterval() const override {
-    return base::Seconds(1) / kDeviceFramesPerSecond;
-  }
-
   float DeviceScaleFactor() const override { return 1.0f; }
 
  private:
@@ -170,9 +175,10 @@ class MockBrowserControlsOffsetManagerClient
   float browser_controls_hide_threshold_;
   gfx::PointF viewport_scroll_offset_;
   float max_viewport_scroll_offset_y_ = 10000.0f;
+  bool have_root_scroll_node_ = true;
 };
 
-TEST(BrowserControlsOffsetManagerTest, EnsureScrollThresholdApplied) {
+TEST_F(BrowserControlsOffsetManagerTest, EnsureScrollThresholdApplied) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -216,8 +222,8 @@ TEST(BrowserControlsOffsetManagerTest, EnsureScrollThresholdApplied) {
   manager->ScrollEnd();
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     EnsureScrollThresholdAppliedWithMinHeight) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       EnsureScrollThresholdAppliedWithMinHeight) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -265,7 +271,7 @@ TEST(BrowserControlsOffsetManagerTest,
   manager->ScrollEnd();
 }
 
-TEST(BrowserControlsOffsetManagerTest, PartialShownHideAnimation) {
+TEST_F(BrowserControlsOffsetManagerTest, PartialShownHideAnimation) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
   manager->ScrollBegin();
@@ -300,8 +306,8 @@ TEST(BrowserControlsOffsetManagerTest, PartialShownHideAnimation) {
   EXPECT_FLOAT_EQ(0.0f, manager->ContentTopOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     BottomControlsPartialShownHideAnimation) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       BottomControlsPartialShownHideAnimation) {
   MockBrowserControlsOffsetManagerClient client(0.0f, 0.5f, 0.5f);
   client.SetBrowserControlsParams({0, 0, 100, 0, false, false});
   BrowserControlsOffsetManager* manager = client.manager();
@@ -337,7 +343,7 @@ TEST(BrowserControlsOffsetManagerTest,
   EXPECT_FLOAT_EQ(0.0f, manager->ContentTopOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest, PartialShownShowAnimation) {
+TEST_F(BrowserControlsOffsetManagerTest, PartialShownShowAnimation) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
   manager->ScrollBegin();
@@ -372,8 +378,8 @@ TEST(BrowserControlsOffsetManagerTest, PartialShownShowAnimation) {
   EXPECT_FLOAT_EQ(100.0f, manager->ContentTopOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     BottomControlsPartialShownShowAnimation) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       BottomControlsPartialShownShowAnimation) {
   MockBrowserControlsOffsetManagerClient client(0.0f, 0.5f, 0.5f);
   client.SetBrowserControlsParams({0, 0, 100, 0, false, false});
   BrowserControlsOffsetManager* manager = client.manager();
@@ -404,8 +410,8 @@ TEST(BrowserControlsOffsetManagerTest,
   EXPECT_FLOAT_EQ(0.0f, manager->ContentTopOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     PartialHiddenWithAmbiguousThresholdShows) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       PartialHiddenWithAmbiguousThresholdShows) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.25f, 0.25f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -436,8 +442,8 @@ TEST(BrowserControlsOffsetManagerTest,
   EXPECT_FLOAT_EQ(100.0f, manager->ContentTopOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     PartialHiddenWithAmbiguousThresholdHides) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       PartialHiddenWithAmbiguousThresholdHides) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.25f, 0.25f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -468,8 +474,8 @@ TEST(BrowserControlsOffsetManagerTest,
   EXPECT_FLOAT_EQ(0.0f, manager->ContentTopOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     PartialShownWithAmbiguousThresholdHides) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       PartialShownWithAmbiguousThresholdHides) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.25f, 0.25f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -504,8 +510,8 @@ TEST(BrowserControlsOffsetManagerTest,
   EXPECT_FLOAT_EQ(0.0f, manager->ContentTopOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     PartialShownWithAmbiguousThresholdShows) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       PartialShownWithAmbiguousThresholdShows) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.25f, 0.25f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -540,7 +546,7 @@ TEST(BrowserControlsOffsetManagerTest,
   EXPECT_FLOAT_EQ(100.0f, manager->ContentTopOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest, PinchIgnoresScroll) {
+TEST_F(BrowserControlsOffsetManagerTest, PinchIgnoresScroll) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -569,7 +575,7 @@ TEST(BrowserControlsOffsetManagerTest, PinchIgnoresScroll) {
   EXPECT_TRUE(manager->HasAnimation());
 }
 
-TEST(BrowserControlsOffsetManagerTest, PinchBeginStartsAnimationIfNecessary) {
+TEST_F(BrowserControlsOffsetManagerTest, PinchBeginStartsAnimationIfNecessary) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -633,7 +639,8 @@ TEST(BrowserControlsOffsetManagerTest, PinchBeginStartsAnimationIfNecessary) {
   EXPECT_FLOAT_EQ(0.0f, manager->ControlsTopOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest, HeightIncreaseWhenFullyShownAnimation) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       HeightIncreaseWhenFullyShownAnimation) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -668,7 +675,8 @@ TEST(BrowserControlsOffsetManagerTest, HeightIncreaseWhenFullyShownAnimation) {
   EXPECT_FLOAT_EQ(0.0f, manager->TopControlsMinHeightOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest, HeightDecreaseWhenFullyShownAnimation) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       HeightDecreaseWhenFullyShownAnimation) {
   MockBrowserControlsOffsetManagerClient client(150.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -700,7 +708,7 @@ TEST(BrowserControlsOffsetManagerTest, HeightDecreaseWhenFullyShownAnimation) {
   EXPECT_FLOAT_EQ(100.0f, manager->ContentTopOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest, MinHeightIncreaseWhenHiddenAnimation) {
+TEST_F(BrowserControlsOffsetManagerTest, MinHeightIncreaseWhenHiddenAnimation) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -745,8 +753,8 @@ TEST(BrowserControlsOffsetManagerTest, MinHeightIncreaseWhenHiddenAnimation) {
   EXPECT_FLOAT_EQ(20.0f, manager->TopControlsMinHeightOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     MinHeightSetToZeroWhenAtMinHeightAnimation) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       MinHeightSetToZeroWhenAtMinHeightAnimation) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -794,7 +802,7 @@ TEST(BrowserControlsOffsetManagerTest,
   EXPECT_FLOAT_EQ(0.0f, manager->TopControlsMinHeightOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest, EnsureNoAnimationCases) {
+TEST_F(BrowserControlsOffsetManagerTest, EnsureNoAnimationCases) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -824,8 +832,8 @@ TEST(BrowserControlsOffsetManagerTest, EnsureNoAnimationCases) {
   EXPECT_FALSE(manager->HasAnimation());
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     HeightChangeAnimationJumpsToEndOnScroll) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       HeightChangeAnimationJumpsToEndOnScroll) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -862,8 +870,8 @@ TEST(BrowserControlsOffsetManagerTest,
   manager->ScrollEnd();
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     HeightChangeMaintainsFullyVisibleControls) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       HeightChangeMaintainsFullyVisibleControls) {
   MockBrowserControlsOffsetManagerClient client(0.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -880,8 +888,28 @@ TEST(BrowserControlsOffsetManagerTest,
   EXPECT_FLOAT_EQ(0.0f, manager->ControlsTopOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     ShrinkingHeightKeepsBrowserControlsHidden) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       MetadataShownRatioClampedDuringHeightChangeAnimation) {
+  MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
+  BrowserControlsOffsetManager* manager = client.manager();
+
+  EXPECT_FLOAT_EQ(100.0f, manager->ContentTopOffset());
+  EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
+
+  // Shrinking the height with animation initiates an animation where
+  // the initial shown ratio exceeds 1.0f (old_height / new_height = 2.0f).
+  client.SetBrowserControlsParams({50, 0, 0, 0, true, false});
+  EXPECT_TRUE(manager->HasAnimation());
+
+  // GetMetadata() must clamp the ratio to [0.0f, 1.0f].
+  BrowserControlsMetadata metadata = manager->GetMetadata();
+  EXPECT_GE(metadata.top_controls_shown_ratio, 0.0f);
+  EXPECT_LE(metadata.top_controls_shown_ratio, 1.0f);
+  EXPECT_FLOAT_EQ(1.0f, metadata.top_controls_shown_ratio);
+}
+
+TEST_F(BrowserControlsOffsetManagerTest,
+       ShrinkingHeightKeepsBrowserControlsHidden) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -902,8 +930,8 @@ TEST(BrowserControlsOffsetManagerTest,
   EXPECT_FLOAT_EQ(0.0f, manager->ContentTopOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     HeightChangeWithAnimateFalseDoesNotTriggerAnimation) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       HeightChangeWithAnimateFalseDoesNotTriggerAnimation) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -918,8 +946,8 @@ TEST(BrowserControlsOffsetManagerTest,
   EXPECT_FLOAT_EQ(0.0f, manager->ControlsTopOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     MinHeightChangeWithAnimateFalseSnapsToNewMinHeight) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       MinHeightChangeWithAnimateFalseSnapsToNewMinHeight) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -953,8 +981,8 @@ TEST(BrowserControlsOffsetManagerTest,
   EXPECT_FLOAT_EQ(0.0f, manager->TopControlsMinHeightOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     MinHeightChangeInHiddenStateSnapsToNewMinHeight) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       MinHeightChangeInHiddenStateSnapsToNewMinHeight) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -979,8 +1007,8 @@ TEST(BrowserControlsOffsetManagerTest,
   EXPECT_FLOAT_EQ(-100.0f, manager->ControlsTopOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     MinHeightChangeInHiddenStateAnimatesToNewMinHeight) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       MinHeightChangeInHiddenStateAnimatesToNewMinHeight) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -1021,7 +1049,8 @@ TEST(BrowserControlsOffsetManagerTest,
   EXPECT_FLOAT_EQ(-100.0f, manager->ControlsTopOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest, ControlsStayAtMinHeightOnHeightChange) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       ControlsStayAtMinHeightOnHeightChange) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -1053,8 +1082,8 @@ TEST(BrowserControlsOffsetManagerTest, ControlsStayAtMinHeightOnHeightChange) {
   EXPECT_FLOAT_EQ(20.0f, manager->ContentTopOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     ControlsStayAtFullHeightWhenPreviousMinHeightEqualledFullHeight) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       ControlsStayAtFullHeightWhenPreviousMinHeightEqualledFullHeight) {
   MockBrowserControlsOffsetManagerClient client(20.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -1081,7 +1110,7 @@ TEST(BrowserControlsOffsetManagerTest,
   EXPECT_FLOAT_EQ(100.0f, manager->ContentBottomOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest, ControlsAdjustToNewHeight) {
+TEST_F(BrowserControlsOffsetManagerTest, ControlsAdjustToNewHeight) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -1099,7 +1128,7 @@ TEST(BrowserControlsOffsetManagerTest, ControlsAdjustToNewHeight) {
   manager->ScrollEnd();
 }
 
-TEST(BrowserControlsOffsetManagerTest, ScrollByWithZeroHeightControlsIsNoop) {
+TEST_F(BrowserControlsOffsetManagerTest, ScrollByWithZeroHeightControlsIsNoop) {
   MockBrowserControlsOffsetManagerClient client(0.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
   manager->UpdateBrowserControlsState(BrowserControlsState::kBoth,
@@ -1115,7 +1144,7 @@ TEST(BrowserControlsOffsetManagerTest, ScrollByWithZeroHeightControlsIsNoop) {
   manager->ScrollEnd();
 }
 
-TEST(BrowserControlsOffsetManagerTest, ScrollThenRestoreBottomControls) {
+TEST_F(BrowserControlsOffsetManagerTest, ScrollThenRestoreBottomControls) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   client.SetBrowserControlsParams({0, 0, 100, 0, false, false});
   BrowserControlsOffsetManager* manager = client.manager();
@@ -1132,8 +1161,8 @@ TEST(BrowserControlsOffsetManagerTest, ScrollThenRestoreBottomControls) {
   manager->ScrollEnd();
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     ScrollThenRestoreBottomControlsNoTopControls) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       ScrollThenRestoreBottomControlsNoTopControls) {
   MockBrowserControlsOffsetManagerClient client(0.0f, 0.5f, 0.5f);
   client.SetBrowserControlsParams({0, 0, 100, 0, false, false});
   BrowserControlsOffsetManager* manager = client.manager();
@@ -1150,7 +1179,7 @@ TEST(BrowserControlsOffsetManagerTest,
   manager->ScrollEnd();
 }
 
-TEST(BrowserControlsOffsetManagerTest, HideAndPeekBottomControls) {
+TEST_F(BrowserControlsOffsetManagerTest, HideAndPeekBottomControls) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   client.SetBrowserControlsParams({0, 0, 100, 0, false, false});
   BrowserControlsOffsetManager* manager = client.manager();
@@ -1167,8 +1196,8 @@ TEST(BrowserControlsOffsetManagerTest, HideAndPeekBottomControls) {
   manager->ScrollEnd();
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     HideAndImmediateShowKeepsControlsVisible) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       HideAndImmediateShowKeepsControlsVisible) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   client.SetBrowserControlsParams({0, 0, 100, 0, false, false});
   BrowserControlsOffsetManager* manager = client.manager();
@@ -1187,8 +1216,8 @@ TEST(BrowserControlsOffsetManagerTest,
   EXPECT_FLOAT_EQ(1.0f, client.CurrentBottomControlsShownRatio());
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     ScrollWithMinHeightSetForTopControlsOnly) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       ScrollWithMinHeightSetForTopControlsOnly) {
   MockBrowserControlsOffsetManagerClient client(100, 0.5f, 0.5f);
   client.SetBrowserControlsParams({100, 30, 100, 0, false, false});
   BrowserControlsOffsetManager* manager = client.manager();
@@ -1210,7 +1239,8 @@ TEST(BrowserControlsOffsetManagerTest,
   manager->ScrollEnd();
 }
 
-TEST(BrowserControlsOffsetManagerTest, ScrollWithMinHeightSetForBothControls) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       ScrollWithMinHeightSetForBothControls) {
   MockBrowserControlsOffsetManagerClient client(100, 0.5f, 0.5f);
   client.SetBrowserControlsParams({100, 30, 100, 20, false, false});
   BrowserControlsOffsetManager* manager = client.manager();
@@ -1231,7 +1261,7 @@ TEST(BrowserControlsOffsetManagerTest, ScrollWithMinHeightSetForBothControls) {
   manager->ScrollEnd();
 }
 
-TEST(BrowserControlsOffsetManagerTest, ChangingBottomHeightFromZeroAnimates) {
+TEST_F(BrowserControlsOffsetManagerTest, ChangingBottomHeightFromZeroAnimates) {
   MockBrowserControlsOffsetManagerClient client(100, 0.5f, 0.5f);
   client.SetBrowserControlsParams({100, 30, 0, 0, false, false});
   BrowserControlsOffsetManager* manager = client.manager();
@@ -1264,8 +1294,8 @@ TEST(BrowserControlsOffsetManagerTest, ChangingBottomHeightFromZeroAnimates) {
   EXPECT_FLOAT_EQ(1.0f, client.CurrentBottomControlsShownRatio());
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     ChangingControlsHeightToZeroWithAnimationIsNoop) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       ChangingControlsHeightToZeroWithAnimationIsNoop) {
   MockBrowserControlsOffsetManagerClient client(100, 0.5f, 0.5f);
   client.SetBrowserControlsParams({100, 20, 80, 10, false, false});
   BrowserControlsOffsetManager* manager = client.manager();
@@ -1287,7 +1317,7 @@ TEST(BrowserControlsOffsetManagerTest,
   EXPECT_FLOAT_EQ(1.0f, client.CurrentBottomControlsShownRatio());
 }
 
-TEST(BrowserControlsOffsetManagerTest, OnlyExpandTopControlsAtPageTop) {
+TEST_F(BrowserControlsOffsetManagerTest, OnlyExpandTopControlsAtPageTop) {
   MockBrowserControlsOffsetManagerClient client(0.0f, 0.5f, 0.5f);
   client.SetBrowserControlsParams(
       {/*top_controls_height=*/100.0f, 0, 0, 0, false, false,
@@ -1328,7 +1358,7 @@ TEST(BrowserControlsOffsetManagerTest, OnlyExpandTopControlsAtPageTop) {
 
 // Tests that if the min-height changes while we're animating to the previous
 // min-height, the animation gets updated to end at the new value.
-TEST(BrowserControlsOffsetManagerTest, MinHeightChangeUpdatesAnimation) {
+TEST_F(BrowserControlsOffsetManagerTest, MinHeightChangeUpdatesAnimation) {
   MockBrowserControlsOffsetManagerClient client(100, 0.5f, 0.5f);
   client.SetBrowserControlsParams(
       {/*top_controls_height=*/100, /*top_controls_min_height=*/50, 0, 0,
@@ -1362,8 +1392,8 @@ TEST(BrowserControlsOffsetManagerTest, MinHeightChangeUpdatesAnimation) {
 // Tests that setting a top height and min-height with animation when both were
 // 0 doesn't cause invalid |TopControlsMinHeightOffset| values.
 // See: https://crbug.com/1184902.
-TEST(BrowserControlsOffsetManagerTest,
-     ChangingTopMinHeightFromInitialZeroAnimatesCorrectly) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       ChangingTopMinHeightFromInitialZeroAnimatesCorrectly) {
   MockBrowserControlsOffsetManagerClient client(0, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -1393,8 +1423,8 @@ TEST(BrowserControlsOffsetManagerTest,
 
 // Tests that reducing both height and min-height with animation doesn't cause
 // invalid |TopControlsMinHeightOffset| values.
-TEST(BrowserControlsOffsetManagerTest,
-     ReducingTopHeightAndMinHeightAnimatesCorrectly) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       ReducingTopHeightAndMinHeightAnimatesCorrectly) {
   MockBrowserControlsOffsetManagerClient client(0, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -1426,8 +1456,8 @@ TEST(BrowserControlsOffsetManagerTest,
 
 // Tests that a "show" animation that's interrupted by a scroll is restarted
 // when the gesture completes.
-TEST(BrowserControlsOffsetManagerTest,
-     InterruptedShowAnimationsAreRestartedAfterScroll) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       InterruptedShowAnimationsAreRestartedAfterScroll) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
   // Start off with the controls mostly hidden, so that they will, by default,
@@ -1456,8 +1486,8 @@ TEST(BrowserControlsOffsetManagerTest,
 
 // If chrome tries to animate in browser controls during a scroll gesture, it
 // should animate them in after the scroll completes.
-TEST(BrowserControlsOffsetManagerTest,
-     ShowingControlsDuringScrollStartsAnimationAfterScroll) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       ShowingControlsDuringScrollStartsAnimationAfterScroll) {
   MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
   // Start off with the controls mostly hidden, so that they will, by default,
@@ -1486,7 +1516,7 @@ TEST(BrowserControlsOffsetManagerTest,
   EXPECT_TRUE(manager->IsAnimatingToShowControls());
 }
 
-TEST(BrowserControlsOffsetManagerTest, MinHeightIncreasedByMoreThanHeight) {
+TEST_F(BrowserControlsOffsetManagerTest, MinHeightIncreasedByMoreThanHeight) {
   MockBrowserControlsOffsetManagerClient client(150.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -1549,7 +1579,7 @@ TEST(BrowserControlsOffsetManagerTest, MinHeightIncreasedByMoreThanHeight) {
   EXPECT_FLOAT_EQ(1.0f, manager->BottomControlsShownRatio());
 }
 
-TEST(BrowserControlsOffsetManagerTest, MinHeightDecreasedByMoreThanHeight) {
+TEST_F(BrowserControlsOffsetManagerTest, MinHeightDecreasedByMoreThanHeight) {
   MockBrowserControlsOffsetManagerClient client(150.0f, 0.5f, 0.5f);
   BrowserControlsOffsetManager* manager = client.manager();
 
@@ -1607,7 +1637,7 @@ TEST(BrowserControlsOffsetManagerTest, MinHeightDecreasedByMoreThanHeight) {
   EXPECT_FLOAT_EQ(0.0f, manager->BottomControlsMinHeightOffset());
 }
 
-TEST(BrowserControlsOffsetManagerTest, ShowAnimateToleratesTopAlreadyShown) {
+TEST_F(BrowserControlsOffsetManagerTest, ShowAnimateToleratesTopAlreadyShown) {
   MockBrowserControlsOffsetManagerClient client(
       /*top_controls_height=*/100.0f,
       /*browser_controls_show_threshold=*/0.5f,
@@ -1634,8 +1664,8 @@ TEST(BrowserControlsOffsetManagerTest, ShowAnimateToleratesTopAlreadyShown) {
   EXPECT_FALSE(manager->HasAnimation());
 }
 
-TEST(BrowserControlsOffsetManagerTest,
-     ScrollWithMinBottomHeightEqualToTotalBottomHeight) {
+TEST_F(BrowserControlsOffsetManagerTest,
+       ScrollWithMinBottomHeightEqualToTotalBottomHeight) {
   MockBrowserControlsOffsetManagerClient client(
       /*top_controls_height=*/100.0f,
       /*browser_controls_show_threshold=*/0.5f,
@@ -1657,41 +1687,7 @@ TEST(BrowserControlsOffsetManagerTest,
   EXPECT_FLOAT_EQ(30.0f, client.ViewportScrollOffset().y());
 }
 
-TEST(BrowserControlsOffsetManagerTest, SmoothScrollPreventsInstantJump) {
-  constexpr float kControlsHeight = 100.0f;
-  MockBrowserControlsOffsetManagerClient client(
-      /*top_controls_height=*/kControlsHeight,
-      /*browser_controls_show_threshold=*/0.5f,
-      /*browser_controls_hide_threshold=*/0.5f);
-  BrowserControlsOffsetManager* manager = client.manager();
-
-  EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio());
-
-  manager->ScrollBegin();
-  manager->ScrollBy(gfx::Vector2dF(0.0f, 2 * kControlsHeight));
-  manager->ScrollEnd();
-
-  EXPECT_FLOAT_EQ(0.0f, manager->TopControlsShownRatio());
-
-  base::test::ScopedFeatureList feature_list(
-      features::kBrowserControlsSmoothScroll);
-
-  const int kNumAnimationFrames =
-      std::ceil(1 / manager->MaximumShownRatioDeltaPerFrame(0.0f));
-  manager->ScrollBegin();
-  for (int i = 0; i < kNumAnimationFrames; i++) {
-    manager->ScrollBy(gfx::Vector2dF(0.0f, -kControlsHeight));
-    if (i < kNumAnimationFrames - 1) {
-      EXPECT_LT(manager->TopControlsShownRatio(), 1.0f) << "Frame #" << i + 1;
-    } else {
-      EXPECT_FLOAT_EQ(1.0f, manager->TopControlsShownRatio())
-          << "Frame #" << i + 1;
-    }
-  }
-  manager->ScrollEnd();
-}
-
-TEST(BrowserControlsOffsetManagerTest, ScrollWithLatencyCompensation) {
+TEST_F(BrowserControlsOffsetManagerTest, ScrollWithLatencyCompensation) {
   constexpr float kControlsHeight = 100.0f;
   MockBrowserControlsOffsetManagerClient client(
       /*top_controls_height=*/kControlsHeight,
@@ -1722,6 +1718,173 @@ TEST(BrowserControlsOffsetManagerTest, ScrollWithLatencyCompensation) {
   }
   EXPECT_FALSE(manager->HasAnimation());
   EXPECT_FLOAT_EQ(manager->TopControlsShownRatio(), 1.0f);
+}
+
+TEST_F(BrowserControlsOffsetManagerTest, GetOffsetTagValues) {
+  MockBrowserControlsOffsetManagerClient client(100.0f, 0.5f, 0.5f);
+  client.SetBrowserControlsParams({100.0f, 0.0f, 50.0f, 0.0f, false, false});
+  BrowserControlsOffsetManager* manager = client.manager();
+
+  viz::OffsetTag top_tag = viz::OffsetTag::CreateRandom();
+  viz::OffsetTag content_tag = viz::OffsetTag::CreateRandom();
+  viz::OffsetTag bottom_tag = viz::OffsetTag::CreateRandom();
+
+  BrowserControlsOffsetTagModifications modifications;
+  modifications.tags.top_controls_offset_tag = top_tag;
+  modifications.tags.content_offset_tag = content_tag;
+  modifications.tags.bottom_controls_offset_tag = bottom_tag;
+  modifications.top_controls_additional_height = 5;
+  modifications.bottom_controls_additional_height = 10;
+
+  manager->SetOffsetTagModifications(modifications);
+
+  // 1. Fully shown controls (top_ratio = 1.0, bottom_ratio = 1.0)
+  client.SetCurrentBrowserControlsShownRatio(1.0f, 1.0f);
+  {
+    std::vector<viz::OffsetTagValue> values = manager->GetOffsetTagValues();
+    ASSERT_EQ(3u, values.size());
+    EXPECT_EQ(top_tag, values[0].tag);
+    EXPECT_EQ(gfx::Vector2dF(0.0f, 0.0f), values[0].offset);
+    EXPECT_EQ(content_tag, values[1].tag);
+    EXPECT_EQ(gfx::Vector2dF(0.0f, 0.0f), values[1].offset);
+    EXPECT_EQ(bottom_tag, values[2].tag);
+    EXPECT_EQ(gfx::Vector2dF(0.0f, 0.0f), values[2].offset);
+  }
+
+  // 2. Partially shown controls (top_ratio = 0.5, bottom_ratio = 0.5)
+  // Top: visible_height = 50, offset = 100 - 50 = 50 -> offset2d = (0, -50)
+  // Content: offset = 100 - 50 = 50 -> offset2d = (0, -50)
+  // Bottom: visible_height = 25, offset = 50 - 25 = 25 -> offset2d = (0, 25)
+  client.SetCurrentBrowserControlsShownRatio(0.5f, 0.5f);
+  {
+    std::vector<viz::OffsetTagValue> values = manager->GetOffsetTagValues();
+    ASSERT_EQ(3u, values.size());
+    EXPECT_EQ(top_tag, values[0].tag);
+    EXPECT_EQ(gfx::Vector2dF(0.0f, -50.0f), values[0].offset);
+    EXPECT_EQ(content_tag, values[1].tag);
+    EXPECT_EQ(gfx::Vector2dF(0.0f, -50.0f), values[1].offset);
+    EXPECT_EQ(bottom_tag, values[2].tag);
+    EXPECT_EQ(gfx::Vector2dF(0.0f, 25.0f), values[2].offset);
+  }
+
+  // 3. Fully hidden controls (top_ratio = 0.0, bottom_ratio = 0.0)
+  // Top: visible_height = 0, offset = 100 - 0 + 5 = 105 -> offset2d = (0, -105)
+  // Content: offset = 100 - 0 = 100 -> offset2d = (0, -100)
+  // Bottom: visible_height = 0, offset = 50 - 0 + 10 = 60 -> offset2d = (0, 60)
+  client.SetCurrentBrowserControlsShownRatio(0.0f, 0.0f);
+  {
+    std::vector<viz::OffsetTagValue> values = manager->GetOffsetTagValues();
+    ASSERT_EQ(3u, values.size());
+    EXPECT_EQ(top_tag, values[0].tag);
+    EXPECT_EQ(gfx::Vector2dF(0.0f, -105.0f), values[0].offset);
+    EXPECT_EQ(content_tag, values[1].tag);
+    EXPECT_EQ(gfx::Vector2dF(0.0f, -100.0f), values[1].offset);
+    EXPECT_EQ(bottom_tag, values[2].tag);
+    EXPECT_EQ(gfx::Vector2dF(0.0f, 60.0f), values[2].offset);
+  }
+}
+
+TEST_F(BrowserControlsOffsetManagerTest, AnimateWithoutRootScrollNode) {
+  MockBrowserControlsOffsetManagerClient client(50.0f, 0.5f, 0.5f);
+  client.SetBrowserControlsParams({50.0f, 0.0f, 50.0f, 0.0f, false, false});
+  BrowserControlsOffsetManager* manager = client.manager();
+
+  client.SetCurrentBrowserControlsShownRatio(0.0f, 0.0f);
+  EXPECT_FLOAT_EQ(0.0f, client.CurrentTopControlsShownRatio());
+  EXPECT_FLOAT_EQ(0.0f, client.CurrentBottomControlsShownRatio());
+
+  manager->UpdateBrowserControlsState(BrowserControlsState::kBoth,
+                                      BrowserControlsState::kShown,
+                                      /*animate=*/true, std::nullopt);
+  EXPECT_TRUE(manager->HasAnimation());
+
+  client.SetHaveRootScrollNode(false);
+
+  base::TimeTicks time = base::TimeTicks::Now();
+  // First Animate() initializes the animation start and stop times.
+  EXPECT_EQ(gfx::Vector2dF(), manager->Animate(time));
+  EXPECT_FLOAT_EQ(0.0f, client.CurrentTopControlsShownRatio());
+  EXPECT_FLOAT_EQ(0.0f, client.CurrentBottomControlsShownRatio());
+
+  bool saw_intermediate_ratio = false;
+  float previous_top_ratio = client.CurrentTopControlsShownRatio();
+  float previous_bottom_ratio = client.CurrentBottomControlsShownRatio();
+  while (manager->HasAnimation()) {
+    time += base::Milliseconds(16);
+    gfx::Vector2dF scroll_delta = manager->Animate(time);
+    EXPECT_EQ(gfx::Vector2dF(), scroll_delta);
+    EXPECT_GE(client.CurrentTopControlsShownRatio(), previous_top_ratio);
+    EXPECT_GE(client.CurrentBottomControlsShownRatio(), previous_bottom_ratio);
+    if (client.CurrentTopControlsShownRatio() > 0.0f &&
+        client.CurrentTopControlsShownRatio() < 1.0f) {
+      saw_intermediate_ratio = true;
+    }
+    previous_top_ratio = client.CurrentTopControlsShownRatio();
+    previous_bottom_ratio = client.CurrentBottomControlsShownRatio();
+  }
+
+  EXPECT_TRUE(saw_intermediate_ratio);
+  EXPECT_FALSE(manager->HasAnimation());
+  EXPECT_FLOAT_EQ(1.0f, client.CurrentTopControlsShownRatio());
+  EXPECT_FLOAT_EQ(1.0f, client.CurrentBottomControlsShownRatio());
+}
+
+TEST_F(BrowserControlsOffsetManagerTest,
+       AnimateWithoutRootScrollNodeTicksHeightChangeAnimation) {
+  constexpr float kControlsHeight = 100.0f;
+  MockBrowserControlsOffsetManagerClient client(kControlsHeight, 0.5f, 0.5f);
+  client.SetBrowserControlsParams(
+      {kControlsHeight, 0.0f, 50.0f, 50.0f, false, false});
+  BrowserControlsOffsetManager* manager = client.manager();
+
+  client.SetHaveRootScrollNode(false);
+  client.SetBrowserControlsParams(
+      {kControlsHeight, 0.0f, 100.0f, 50.0f,
+       /*animate_browser_controls_height_changes=*/true, false});
+  EXPECT_TRUE(manager->HasAnimation());
+  base::TimeTicks time = base::TimeTicks::Now();
+  while (manager->HasAnimation()) {
+    time += base::Milliseconds(16);
+    EXPECT_EQ(gfx::Vector2dF(), manager->Animate(time));
+  }
+  EXPECT_FALSE(manager->HasAnimation());
+  EXPECT_FLOAT_EQ(1.0f, client.CurrentBottomControlsShownRatio());
+}
+
+TEST_F(BrowserControlsOffsetManagerTest,
+       AnimateWithoutRootScrollNodeSnapAnimationReshowsInAlwaysShownRegion) {
+  base::test::ScopedFeatureList feature_list(
+      features::kBrowserControlsScrollSnapAnimation);
+  MockBrowserControlsOffsetManagerClient client(50.0f, 0.5f, 0.5f);
+  client.SetBrowserControlsParams({50.0f, 0.0f, 50.0f, 0.0f, false, false});
+  BrowserControlsOffsetManager* manager = client.manager();
+
+  EXPECT_FLOAT_EQ(1.0f, client.CurrentTopControlsShownRatio());
+  EXPECT_FLOAT_EQ(1.0f, client.CurrentBottomControlsShownRatio());
+
+  client.SetHaveRootScrollNode(false);
+  manager->UpdateBrowserControlsState(BrowserControlsState::kBoth,
+                                      BrowserControlsState::kHidden,
+                                      /*animate=*/true, std::nullopt);
+  EXPECT_TRUE(manager->HasAnimation());
+
+  // With no root scroll node the viewport scroll offset is 0, which is in the
+  // always-shown region, so the completed hide is followed by a show snap. This
+  // errs on the side of showing the controls during navigation.
+  bool hide_completed = false;
+  base::TimeTicks time = base::TimeTicks::Now();
+  while (manager->HasAnimation()) {
+    time += base::Milliseconds(16);
+    EXPECT_EQ(gfx::Vector2dF(), manager->Animate(time));
+    if (client.CurrentTopControlsShownRatio() == 0.0f) {
+      hide_completed = true;
+    }
+  }
+
+  EXPECT_TRUE(hide_completed);
+  EXPECT_FALSE(manager->HasAnimation());
+  EXPECT_FLOAT_EQ(1.0f, client.CurrentTopControlsShownRatio());
+  EXPECT_FLOAT_EQ(1.0f, client.CurrentBottomControlsShownRatio());
 }
 
 class BrowserControlsOffsetManagerCancelAnimationTest : public testing::Test {
@@ -1798,8 +1961,10 @@ TEST_F(BrowserControlsOffsetManagerCancelAnimationTest,
 #if !(BUILDFLAG(IS_LINUX) && defined(THREAD_SANITIZER))
 class BrowserControlsOffsetManagerSnapAnimationTest : public testing::Test {
  public:
-  BrowserControlsOffsetManagerSnapAnimationTest()
-      : client_(kControlsHeight, 0.5f, 0.5f) {
+  explicit BrowserControlsOffsetManagerSnapAnimationTest(
+      const std::vector<base::test::FeatureRef>& enabled_features =
+          {features::kBrowserControlsScrollSnapAnimation})
+      : feature_list_(enabled_features), client_(kControlsHeight, 0.5f, 0.5f) {
     client_.SetMaxViewportScrollOffsetY(kMaxScrollY);
   }
 
@@ -1952,26 +2117,30 @@ class BrowserControlsOffsetManagerSnapAnimationTest : public testing::Test {
     return did_animate;
   }
 
+  const BrowserControlsSnapAnimationController& snap_controller() {
+    return client_.manager()->snap_controller_for_testing();
+  }
+
   float MinimumTopCanHideRegionHeight() {
-    return client_.manager()->SnapAnimationCanHideRegionHeights(0.0f).first;
+    return snap_controller().CanHideRegionHeights(0.0f).first;
   }
 
   float MaximumTopCanHideRegionHeight() {
-    return client_.manager()->SnapAnimationCanHideRegionHeights(1.0f).first;
+    return snap_controller().CanHideRegionHeights(1.0f).first;
   }
 
   float MinimumBottomCanHideRegionHeight() {
-    return client_.manager()->SnapAnimationCanHideRegionHeights(0.0f).second;
+    return snap_controller().CanHideRegionHeights(0.0f).second;
   }
 
   float MaximumBottomCanHideRegionHeight() {
-    return client_.manager()->SnapAnimationCanHideRegionHeights(1.0f).second;
+    return snap_controller().CanHideRegionHeights(1.0f).second;
   }
 
   // Returns a large scroll delta that is guaranteed to trigger the snap
   // animation when the top of the page is in the can-hide region.
   float LargeScrollDelta() {
-    return client_.manager()->SnapAnimationThreshold(/*slowness=*/1.0f);
+    return snap_controller().TriggerThreshold(/*slowness=*/1.0f);
   }
 
   constexpr static float kControlsHeight = 100.0f;
@@ -1979,8 +2148,7 @@ class BrowserControlsOffsetManagerSnapAnimationTest : public testing::Test {
   // Initialize the feature list before the client is created to avoid
   // other threads from being created before the feature list is initialized,
   // which can cause crashes (see crbug.com/487287578 for details).
-  base::test::ScopedFeatureList feature_list_{
-      features::kBrowserControlsScrollSnapAnimation};
+  base::test::ScopedFeatureList feature_list_;
   MockBrowserControlsOffsetManagerClient client_;
   base::ScopedMockClockOverride mock_clock_;
 };
@@ -2290,8 +2458,6 @@ TEST_F(BrowserControlsOffsetManagerSnapAnimationTest,
 
 TEST_F(BrowserControlsOffsetManagerSnapAnimationTest,
        ControlsShowInAlwaysShownRegion) {
-  BrowserControlsOffsetManager* manager = client_.manager();
-
   client_.SetViewportScrollOffset(
       0.0f, MaximumTopCanHideRegionHeight() + LargeScrollDelta());
   {
@@ -2302,9 +2468,9 @@ TEST_F(BrowserControlsOffsetManagerSnapAnimationTest,
 
   // Scroll up in discrete scrolls until the top of the page is just outside the
   // always-shown region, lest the scroll-end processing should trigger the show
-  // animation..
+  // animation.
   while (client_.ViewportScrollOffset().y() >
-         manager->SnapAnimationAlwaysShownRegionHeight() + 1.0f) {
+         snap_controller().AlwaysShownRegionHeight() + 1.0f) {
     ScrollSequence scroll_sequence(this);
     EXPECT_TRUE(ScrollDidNotAnimate(-1.0f));
   }
@@ -2386,6 +2552,246 @@ TEST_F(BrowserControlsOffsetManagerSnapAnimationTest,
   }
   EXPECT_TRUE(hide_animation_completed);
   EXPECT_EQ(manager->TopControlsShownRatio(), 1.0f);
+}
+
+TEST_F(BrowserControlsOffsetManagerSnapAnimationTest,
+       HasExistingAnimationHistogram) {
+  constexpr std::string_view kHistogramName =
+      "Android.BrowserControlsAnimationUpdate.HasExistingAnimation";
+  BrowserControlsOffsetManager* manager = client_.manager();
+
+  ASSERT_EQ(manager->TopControlsShownRatio(), 1.0f);
+  ASSERT_FALSE(manager->HasAnimation());
+
+  // 1. ResetAnimations() when no animation is running records false.
+  {
+    base::HistogramTester histogram_tester;
+    manager->ResetAnimations();
+    histogram_tester.ExpectUniqueSample(kHistogramName, /*sample=*/false, 1);
+  }
+
+  // 2. Start a snap hide animation via scroll when no animation is running.
+  {
+    base::HistogramTester histogram_tester;
+    client_.SetViewportScrollOffset(
+        0.0f, MaximumTopCanHideRegionHeight() + 2 * LargeScrollDelta());
+    // ScrollBegin() calls ResetAnimations() internally when idle (false).
+    manager->ScrollBegin();
+    // ScrollBy triggers SetupAnimation(kHidingControls) with no existing
+    // animation (false).
+    ScrollBy(LargeScrollDelta());
+    ASSERT_TRUE(manager->HasAnimation());
+    histogram_tester.ExpectUniqueSample(kHistogramName, /*sample=*/false, 2);
+  }
+
+  // 3. ResetAnimations() while snap animation is running records true.
+  {
+    base::HistogramTester histogram_tester;
+    manager->ResetAnimations();
+    ASSERT_FALSE(manager->HasAnimation());
+    histogram_tester.ExpectUniqueSample(kHistogramName, /*sample=*/true, 1);
+  }
+
+  // 4. Trigger height change animation when no animation is running records
+  // false.
+  {
+    base::HistogramTester histogram_tester;
+    BrowserControlsParams params;
+    params.top_controls_height = 150.0f;
+    params.animate_browser_controls_height_changes = true;
+    client_.SetBrowserControlsParams(params);
+    ASSERT_TRUE(manager->HasAnimation());
+    histogram_tester.ExpectUniqueSample(kHistogramName, /*sample=*/false, 1);
+  }
+
+  // 5. ResetAnimations() while height change animation is running records true.
+  {
+    base::HistogramTester histogram_tester;
+    manager->ResetAnimations();
+    ASSERT_FALSE(manager->HasAnimation());
+    histogram_tester.ExpectUniqueSample(kHistogramName, /*sample=*/true, 1);
+  }
+
+  // 6. Trigger a height change animation while another height change animation
+  // is already in progress.
+  // Position controls at min-height (ratio 0.0f) with min-height = 0.
+  BrowserControlsParams params;
+  params.top_controls_height = kControlsHeight;
+  params.top_controls_min_height = 0.0f;
+  params.animate_browser_controls_height_changes = false;
+  client_.SetBrowserControlsParams(params);
+  client_.SetCurrentBrowserControlsShownRatio(0.0f, 0.0f);
+  ASSERT_EQ(manager->TopControlsShownRatio(), 0.0f);
+  ASSERT_FALSE(manager->HasAnimation());
+
+  // Start min-height animation from 0 to 50 when no animation is running
+  // (records false).
+  {
+    base::HistogramTester histogram_tester;
+    params.top_controls_min_height = 50.0f;
+    params.animate_browser_controls_height_changes = true;
+    client_.SetBrowserControlsParams(params);
+    ASSERT_TRUE(manager->HasAnimation());
+    histogram_tester.ExpectUniqueSample(kHistogramName, /*sample=*/false, 1);
+  }
+
+  // Update min-height from 50 to 10 while the previous min-height animation is
+  // still active (records true).
+  {
+    base::HistogramTester histogram_tester;
+    params.top_controls_min_height = 10.0f;
+    client_.SetBrowserControlsParams(params);
+    ASSERT_TRUE(manager->HasAnimation());
+    histogram_tester.ExpectUniqueSample(kHistogramName, /*sample=*/true, 1);
+  }
+
+  // ResetAnimations() while min-height animation is active records true.
+  {
+    base::HistogramTester histogram_tester;
+    manager->ResetAnimations();
+    ASSERT_FALSE(manager->HasAnimation());
+    histogram_tester.ExpectUniqueSample(kHistogramName, /*sample=*/true, 1);
+  }
+}
+
+class BrowserControlsOffsetManagerExtraHideGesturesSnapTest
+    : public BrowserControlsOffsetManagerSnapAnimationTest {
+ public:
+  BrowserControlsOffsetManagerExtraHideGesturesSnapTest()
+      : BrowserControlsOffsetManagerSnapAnimationTest(
+            {features::kBrowserControlsScrollSnapAnimation,
+             features::kBrowserControlsExtraHideGestures}) {}
+};
+
+TEST_F(BrowserControlsOffsetManagerExtraHideGesturesSnapTest,
+       ExplicitHideInAlwaysShownRegionStaysHidden) {
+  BrowserControlsOffsetManager* manager = client_.manager();
+
+  // Start at the top of the page (inside the always-shown region).
+  client_.SetViewportScrollOffset(0.0f, 0.0f);
+  ASSERT_EQ(manager->TopControlsShownRatio(), 1.0f);
+
+  // Explicitly hide the browser controls (e.g. via toolbar swipe-to-hide).
+  manager->UpdateBrowserControlsState(BrowserControlsState::kBoth,
+                                      BrowserControlsState::kHidden,
+                                      /*animate=*/true, std::nullopt);
+  ASSERT_TRUE(manager->HasAnimation());
+  ASSERT_FALSE(manager->IsAnimatingToShowControls());
+
+  // Completing the explicit hide animation in the always-shown region must not
+  // immediately trigger a snap animation to re-show the controls.
+  AnimateToCompletion(/*animate_to_show=*/false);
+  EXPECT_FALSE(manager->HasAnimation());
+  EXPECT_EQ(manager->TopControlsShownRatio(), 0.0f);
+
+  // A zero-velocity ScrollBegin/ScrollEnd sequence at the page top must also
+  // not re-show the controls.
+  manager->ScrollBegin();
+  manager->ScrollEnd();
+  EXPECT_FALSE(manager->HasAnimation());
+  EXPECT_EQ(manager->TopControlsShownRatio(), 0.0f);
+
+  // A single-gesture down-then-up scroll starting at the page top should
+  // reveal the controls once the scroll reverses upward.
+  {
+    ScrollSequence scroll_sequence(this);
+    EXPECT_TRUE(ScrollDidNotAnimate(10.0f));
+    EXPECT_TRUE(ScrollDidAnimate(-5.0f, AnimationDirection::kShowingControls));
+  }
+  EXPECT_EQ(manager->TopControlsShownRatio(), 1.0f);
+}
+
+TEST_F(BrowserControlsOffsetManagerExtraHideGesturesSnapTest,
+       ScrollInitiatedHideCompletingInAlwaysShownRegionStillShowsControls) {
+  BrowserControlsOffsetManager* manager = client_.manager();
+
+  // Start well inside the can-hide region and trigger a scroll-initiated hide
+  // animation.
+  client_.SetViewportScrollOffset(
+      0.0f, MaximumTopCanHideRegionHeight() + 2 * LargeScrollDelta());
+  manager->ScrollBegin();
+  ScrollBy(LargeScrollDelta(), base::Milliseconds(1), /*is_inertial=*/false);
+  manager->ScrollEnd();
+  ASSERT_TRUE(manager->HasAnimation());
+  ASSERT_FALSE(manager->IsAnimatingToShowControls());
+
+  // Scroll to the top of the page while the hide animation is running.
+  manager->ScrollBegin();
+  ScrollBy(-client_.ViewportScrollOffset().y(), base::Microseconds(10),
+           /*is_inertial=*/false);
+  manager->ScrollEnd();
+
+  // Only explicit (non-snap) hide animations are exempt from the snap-back to
+  // the shown state; a scroll-initiated one must still be undone.
+  while (manager->HasAnimation()) {
+    mock_clock_.Advance(base::Milliseconds(1));
+    manager->Animate(base::TimeTicks::Now());
+  }
+  EXPECT_EQ(manager->TopControlsShownRatio(), 1.0f);
+}
+
+TEST_F(BrowserControlsOffsetManagerExtraHideGesturesSnapTest,
+       ExplicitHideWithBottomControlsOnlyStaysHiddenAtPageTop) {
+  BrowserControlsOffsetManager* manager = client_.manager();
+
+  // Bottom toolbar: there are no top controls, so there is no always-shown
+  // region even at the page top.
+  BrowserControlsParams params;
+  params.bottom_controls_height = kControlsHeight;
+  client_.SetBrowserControlsParams(params);
+  client_.SetViewportScrollOffset(0.0f, 0.0f);
+  ASSERT_EQ(manager->BottomControlsShownRatio(), 1.0f);
+
+  manager->UpdateBrowserControlsState(BrowserControlsState::kBoth,
+                                      BrowserControlsState::kHidden,
+                                      /*animate=*/true, std::nullopt);
+  ASSERT_TRUE(manager->HasAnimation());
+  AnimateToCompletion(/*animate_to_show=*/false);
+  EXPECT_FALSE(manager->HasAnimation());
+  EXPECT_EQ(manager->BottomControlsShownRatio(), 0.0f);
+
+  // A zero-velocity scroll at the page top must not re-show the controls.
+  manager->ScrollBegin();
+  manager->ScrollEnd();
+  EXPECT_FALSE(manager->HasAnimation());
+  EXPECT_EQ(manager->BottomControlsShownRatio(), 0.0f);
+}
+
+TEST_F(BrowserControlsOffsetManagerExtraHideGesturesSnapTest,
+       ExplicitHideReplacingSnapShowAtPageTopStaysHidden) {
+  BrowserControlsOffsetManager* manager = client_.manager();
+
+  // Scroll-initiated hide, well inside the can-hide region.
+  client_.SetViewportScrollOffset(
+      0.0f, MaximumTopCanHideRegionHeight() + 2 * LargeScrollDelta());
+  {
+    ScrollSequence scroll_sequence(this);
+    EXPECT_TRUE(ScrollDidAnimate(LargeScrollDelta(),
+                                 AnimationDirection::kHidingControls));
+  }
+  ASSERT_EQ(manager->TopControlsShownRatio(), 0.0f);
+
+  // Scroll up so that a scroll-initiated show animation starts, and advance it
+  // part-way.
+  manager->ScrollBegin();
+  ScrollBy(-2 * LargeScrollDelta());
+  manager->ScrollEnd();
+  ASSERT_TRUE(manager->IsAnimatingToShowControls());
+  base::TimeTicks time = base::TimeTicks::Now();
+  manager->Animate(time);
+  manager->Animate(time + base::Milliseconds(30));
+  ASSERT_GT(manager->TopControlsShownRatio(), 0.0f);
+  ASSERT_LT(manager->TopControlsShownRatio(), 1.0f);
+
+  // An explicit hide at the page top replaces the snap animation. It must not
+  // inherit its snap state, which would re-show the controls on completion.
+  client_.SetViewportScrollOffset(0.0f, 0.0f);
+  manager->UpdateBrowserControlsState(BrowserControlsState::kBoth,
+                                      BrowserControlsState::kHidden,
+                                      /*animate=*/true, std::nullopt);
+  ASSERT_FALSE(manager->IsAnimatingToShowControls());
+  AnimateToCompletion(/*animate_to_show=*/false);
+  EXPECT_EQ(manager->TopControlsShownRatio(), 0.0f);
 }
 
 class BrowserControlsOffsetManagerScrollSpeedTest

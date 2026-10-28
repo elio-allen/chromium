@@ -17,7 +17,7 @@
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/view_ids.h"
-#include "chrome/browser/ui/waap/initial_webui_window_metrics_manager.h"
+#include "chrome/browser/ui/waap/initial_webui_metrics_dispatcher.h"
 #include "chrome/browser/ui/waap/waap_ui_metrics_recorder.h"
 #include "chrome/grit/browser_resources.h"
 #include "chrome/grit/generated_resources.h"
@@ -55,15 +55,15 @@ static constexpr gfx::Tween::Type kIconAnimationTween =
 
 // ReloadButton ---------------------------------------------------------------
 
-ReloadButton::ReloadButton(
-    Profile* profile,
-    CommandUpdater* command_updater,
-    InitialWebUIWindowMetricsManager* window_metrics_manager)
+ReloadButton::ReloadButton(Profile* profile,
+                           CommandUpdater* command_updater,
+                           InitialWebUIMetricsDispatcher* metrics_dispatcher)
     : ToolbarButton(base::BindRepeating(&ReloadButton::ButtonPressed,
                                         base::Unretained(this)),
                     CreateMenuModel(),
                     nullptr),
-      metrics_recorder_(std::make_unique<WaapUIMetricsRecorder>(profile)),
+      metrics_recorder_(
+          profile ? std::make_unique<WaapUIMetricsRecorder>(profile) : nullptr),
       command_updater_(command_updater),
       reload_icon_(features::IsRoundedIconsEnabled()
                        ? vector_icons::kRefreshIcon
@@ -79,9 +79,9 @@ ReloadButton::ReloadButton(
                            : kNavigateStopTouchOldIcon),
       double_click_timer_delay_(views::GetDoubleClickInterval()),
       mode_switch_timer_delay_(base::Milliseconds(1350)),
-      window_metrics_manager_(window_metrics_manager) {
-  if (window_metrics_manager_) {
-    window_metrics_manager_->OnReloadButtonCreated();
+      metrics_dispatcher_(metrics_dispatcher) {
+  if (metrics_dispatcher_) {
+    metrics_dispatcher_->OnCreated();
   }
   SetVisibleMode(Mode::kReload);
   SetTriggerableEventFlags(ui::EF_LEFT_MOUSE_BUTTON |
@@ -169,18 +169,6 @@ bool ReloadButton::ShouldShowMenu() {
 void ReloadButton::ShowDropDownMenu(ui::mojom::MenuSourceType source_type) {
   ToolbarButton::ShowDropDownMenu(source_type);  // Blocks.
   ChangeMode(intended_mode_, true);
-}
-
-bool ReloadButton::IsCommandIdChecked(int command_id) const {
-  return false;
-}
-
-bool ReloadButton::IsCommandIdEnabled(int command_id) const {
-  return true;
-}
-
-bool ReloadButton::IsCommandIdVisible(int command_id) const {
-  return true;
 }
 
 bool ReloadButton::GetAcceleratorForCommandId(
@@ -322,12 +310,14 @@ void ReloadButton::ButtonPressed(const ui::Event& event) {
 
   ClearPendingMenu();
 
-  metrics_recorder_->OnButtonPressedStart(event);
+  if (metrics_recorder_) {
+    metrics_recorder_->OnButtonPressedStart(event);
+  }
 
   if (visible_mode_ == Mode::kStop) {
     if (command_updater_) {
       command_updater_->ExecuteCommandWithDisposition(
-          IDC_STOP, WindowOpenDisposition::CURRENT_TAB);
+          IDC_STOP, WindowOpenDisposition::kCurrentTab);
     }
     // The user has clicked, so we can feel free to update the button, even if
     // the mouse is still hovering.
@@ -359,7 +349,9 @@ void ReloadButton::ButtonPressed(const ui::Event& event) {
     animate_transitions_ = true;
 
     ExecuteBrowserCommand(command, flags);
-    metrics_recorder_->DidExecuteReloadCommand(base::TimeTicks::Now());
+    if (metrics_recorder_) {
+      metrics_recorder_->DidExecuteReloadCommand(base::TimeTicks::Now());
+    }
     ++testing_reload_count_;
   }
 }
@@ -393,10 +385,10 @@ void ReloadButton::UpdateAccessibleHasPopup() {
 
 void ReloadButton::OnNextPresentation(
     const viz::FrameTimingDetails& frame_timing_details) {
-  if (window_metrics_manager_) {
-    window_metrics_manager_->OnReloadButtonFirstPaint(
+  if (metrics_dispatcher_) {
+    metrics_dispatcher_->OnFirstPaint(
         frame_timing_details.presentation_feedback.timestamp);
-    window_metrics_manager_->OnReloadButtonFirstContentfulPaint(
+    metrics_dispatcher_->OnFirstContentfulPaint(
         frame_timing_details.presentation_feedback.timestamp);
   }
 }

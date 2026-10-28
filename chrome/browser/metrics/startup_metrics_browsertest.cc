@@ -20,7 +20,7 @@
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
 #include "base/command_line.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -40,6 +40,7 @@ constexpr const char* kStartupMetrics[] = {
 // Desktop specific metrics
 #if !BUILDFLAG(IS_ANDROID)
     "Startup.BrowserMessageLoopStart.To.NonEmptyPaint2",
+    "Startup.BrowserMessageLoopStart.To.NonEmptyPaint2.NoSleep",
     "Startup.BrowserWindow.FirstPaint",
     "Startup.BrowserWindowDisplay",
     "Startup.FirstWebContents.MainNavigationFinished",
@@ -173,7 +174,7 @@ class StartupMetricsContentfulPaintTest : public PlatformBrowserTest {
 IN_PROC_BROWSER_TEST_F(StartupMetricsContentfulPaintTest,
                        RecordsFirstAndLargestContentfulPaint) {
   content::WebContents* const web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   ASSERT_TRUE(web_contents);
 
   // The first contentful paint is recorded during startup once the contentful

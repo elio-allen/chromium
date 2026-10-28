@@ -5,31 +5,11 @@
 #ifndef CHROME_BROWSER_UI_READ_ANYTHING_READ_ANYTHING_ENUMS_H_
 #define CHROME_BROWSER_UI_READ_ANYTHING_READ_ANYTHING_ENUMS_H_
 
-#include <optional>
-
 #include "base/notreached.h"
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
+#include "chrome/common/read_anything/read_anything.mojom.h"
 
-// TODO (crbug.com/533115262): Replace ReadAnythingOpenTrigger type with
-// read_anything::mojom::ReadAnythingOpenTrigger type.
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-// LINT.IfChange(ReadAnythingOpenTrigger)
-enum class ReadAnythingOpenTrigger {
-  kAppMenu = 0,
-  kMinValue = kAppMenu,
-  kReadAnythingContextMenu = 1,
-  kReadAnythingNavigationThrottle = 2,
-  kPinnedSidePanelEntryToolbarButton = 3,
-  kOmniboxChip = 4,
-  kTabSwitch = 5,
-  kReadAnythingTogglePresentationButton = 6,
-  kKeyboardShortcut = 7,
-  kListenToThisPageContextMenu = 8,
-  kUnknown = 9,
-  kMaxValue = kUnknown,
-};
-// LINT.ThenChange(//tools/metrics/histograms/enums.xml:ReadAnythingOpenTrigger)
+using read_anything::mojom::ReadAnythingOpenTrigger;
 
 enum class ReadAnythingCloseReason {
   kClosedByUser = 0,
@@ -40,7 +20,9 @@ enum class ReadAnythingCloseReason {
   kControllerDestroyed = 5,
   kPageChangedSoftNavigation = 6,  // When Single Page Application "soft
                                    // navigation" page change is detected
-  kMaxValue = kPageChangedSoftNavigation,
+  kClosedByPdfTranslation = 7,     // When PDF translation closes Reading Mode
+                                   // that it opened
+  kMaxValue = kClosedByPdfTranslation,
 };
 
 // These values are persisted to logs. Entries should not be renumbered and
@@ -85,6 +67,8 @@ inline SidePanelOpenTrigger ReadAnythingToSidePanelOpenTrigger(
       return SidePanelOpenTrigger::kReadAnythingListenToThisPageContextMenu;
     case ReadAnythingOpenTrigger::kUnknown:
       return SidePanelOpenTrigger::kReadAnythingUnknown;
+    case ReadAnythingOpenTrigger::kPdfTranslation:
+      return SidePanelOpenTrigger::kPdfTranslation;
   }
 }
 
@@ -111,6 +95,8 @@ inline ReadAnythingOpenTrigger SidePanelToReadAnythingOpenTrigger(
       return ReadAnythingOpenTrigger::kKeyboardShortcut;
     case SidePanelOpenTrigger::kReadAnythingListenToThisPageContextMenu:
       return ReadAnythingOpenTrigger::kListenToThisPageContextMenu;
+    case SidePanelOpenTrigger::kPdfTranslation:
+      return ReadAnythingOpenTrigger::kPdfTranslation;
     case SidePanelOpenTrigger::kReadAnythingUnknown:
     case SidePanelOpenTrigger::kSideSearchPageAction:
     case SidePanelOpenTrigger::kNotesInPageContextMenu:

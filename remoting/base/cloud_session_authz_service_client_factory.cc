@@ -25,6 +25,8 @@ namespace remoting {
 
 namespace {
 
+using CloudSessionPolicies =
+    google::internal::remoting::cloud::v1alpha::SessionPolicies;
 using Duration = google::internal::remoting::cloud::v1alpha::Duration;
 using GenerateHostTokenResponse =
     google::internal::remoting::cloud::v1alpha::GenerateHostTokenResponse;
@@ -36,6 +38,24 @@ using VerifySessionTokenResponse =
 base::TimeDelta fromProtoDuration(const Duration& duration) {
   return base::Seconds(duration.seconds()) +
          base::Nanoseconds(duration.nanos());
+}
+
+SessionPolicies::AudioMode FromProtoAudioMode(
+    CloudSessionPolicies::AudioMode audio_mode) {
+  switch (audio_mode) {
+    case CloudSessionPolicies::AUDIO_MODE_UNSPECIFIED:
+      return SessionPolicies::AudioMode::kUnspecified;
+    case CloudSessionPolicies::AUDIO_MODE_NONE:
+      return SessionPolicies::AudioMode::kNone;
+    case CloudSessionPolicies::AUDIO_MODE_CLIENT_TO_HOST:
+      return SessionPolicies::AudioMode::kClientToHost;
+    case CloudSessionPolicies::AUDIO_MODE_HOST_TO_CLIENT:
+      return SessionPolicies::AudioMode::kHostToClient;
+    case CloudSessionPolicies::AUDIO_MODE_BOTH:
+      return SessionPolicies::AudioMode::kBoth;
+    default:
+      return SessionPolicies::AudioMode::kUnspecified;
+  }
 }
 
 class CloudSessionAuthzServiceClient : public SessionAuthzServiceClient {
@@ -185,7 +205,6 @@ void CloudSessionAuthzServiceClient::OnVerifySessionTokenResponse(
   response_struct->session_id = response->session_id();
   response_struct->shared_secret = response->shared_secret();
   response_struct->session_reauth_token = response->session_reauth_token();
-  auto token_lifetime = response->session_reauth_token_lifetime();
   response_struct->session_reauth_token_lifetime =
       fromProtoDuration(response->session_reauth_token_lifetime());
   if (response->has_session_policies()) {
@@ -214,6 +233,14 @@ void CloudSessionAuthzServiceClient::OnVerifySessionTokenResponse(
       session_policies.allow_gnubby_forwarding =
           response->session_policies().allow_gnubby_forwarding();
     }
+    if (response->session_policies().has_allow_terminal_remoting()) {
+      session_policies.allow_terminal_mode =
+          response->session_policies().allow_terminal_remoting();
+    }
+    if (response->session_policies().has_audio_mode()) {
+      session_policies.audio_mode =
+          FromProtoAudioMode(response->session_policies().audio_mode());
+    }
     if (response->session_policies().has_clipboard_size_bytes()) {
       session_policies.clipboard_size_bytes =
           response->session_policies().clipboard_size_bytes();
@@ -229,20 +256,17 @@ void CloudSessionAuthzServiceClient::OnVerifySessionTokenResponse(
           proto_port_range.has_start() ? proto_port_range.start() : 1;
       int max_port =
           proto_port_range.has_end() ? proto_port_range.end() : USHRT_MAX;
-      if (min_port < 1 || min_port > max_port || max_port > USHRT_MAX) {
+      auto port_range = PortRange::Create(min_port, max_port);
+      if (!port_range) {
         LOG(ERROR) << "Invalid port range: [" << min_port << ", " << max_port
                    << "]";
       } else {
-        session_policies.host_udp_port_range.min_port = min_port;
-        session_policies.host_udp_port_range.max_port = max_port;
+        session_policies.host_udp_port_range = *std::move(port_range);
       }
     }
     if (response->session_policies().has_maximum_session_duration()) {
-      auto maximum_session_duration = base::Seconds(
+      session_policies.maximum_session_duration = base::Seconds(
           response->session_policies().maximum_session_duration().seconds());
-      session_policies.maximum_session_duration =
-          std::max(maximum_session_duration,
-                   SessionPolicies::kMinMaximumSessionDuration);
     }
     response_struct->session_policies.emplace(std::move(session_policies));
   }

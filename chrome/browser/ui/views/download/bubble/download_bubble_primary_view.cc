@@ -8,7 +8,6 @@
 
 #include "base/time/time.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
@@ -57,10 +56,8 @@ void DownloadBubblePrimaryView::BuildAndAddScrollView(
     base::WeakPtr<DownloadBubbleNavigationHandler> navigation_handler,
     const DownloadBubbleRowListViewInfo& info,
     int fixed_width) {
-  base::WeakPtr<Browser> row_view_browser =
-      browser && browser->GetBrowserForMigrationOnly()
-          ? browser->GetBrowserForMigrationOnly()->AsWeakPtr()
-          : nullptr;
+  base::WeakPtr<BrowserWindowInterface> row_view_browser =
+      browser ? browser->GetWeakPtr() : nullptr;
   auto row_list_view = std::make_unique<DownloadBubbleRowListView>(
       row_view_browser, bubble_controller, navigation_handler, fixed_width,
       info);

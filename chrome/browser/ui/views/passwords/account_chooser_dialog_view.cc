@@ -26,6 +26,7 @@
 #include "ui/events/event.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/views/border.h"
+#include "ui/views/controls/label.h"
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/fill_layout.h"
@@ -38,8 +39,8 @@ AccountChooserDialogView::AccountChooserDialogView(
     CredentialManagerDialogController* controller,
     content::WebContents* web_contents)
     : controller_(controller), web_contents_(web_contents->GetWeakPtr()) {
-  DCHECK(controller);
-  DCHECK(web_contents);
+  CHECK(controller, base::NotFatalUntil::M162);
+  CHECK(web_contents, base::NotFatalUntil::M162);
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kCancel));
   SetButtonLabel(
       ui::mojom::DialogButton::kOk,
@@ -73,7 +74,7 @@ void AccountChooserDialogView::ShowAccountChooser() {
   DialogModelChanged();
   InitWindow();
 
-  DCHECK(!widget_);
+  CHECK(!widget_, base::NotFatalUntil::M162);
   SetOwnershipOfNewWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
   widget_ = base::WrapUnique(
       constrained_window::ShowWebModalDialogViews(this, web_contents_.get()));
@@ -104,7 +105,7 @@ void AccountChooserDialogView::WindowClosing() {
 }
 
 bool AccountChooserDialogView::Accept() {
-  DCHECK(controller_);
+  CHECK(controller_, base::NotFatalUntil::M162);
   controller_->OnSignInClicked();
   // The dialog is closed by the controller.
   return false;

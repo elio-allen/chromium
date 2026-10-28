@@ -6,36 +6,46 @@
 #define BASE_I18N_LANGUAGE_TAG_H_
 
 #include <compare>
+#include <concepts>
 #include <iosfwd>
 #include <optional>
 #include <string_view>
 #include <type_traits>
 #include <utility>
 
+#include "base/component_export.h"
 #include "base/containers/span.h"
-#include "base/i18n/base_i18n_export.h"
 #include "base/i18n/bcp47_extensions.h"
 #include "base/i18n/internal/bcp47_parser.h"
+#include "base/i18n/internal/bcp47_subtags_reader.h"
 #include "base/i18n/internal/immutable_string.h"
+#include "base/types/pass_key.h"
+
+namespace base {
+class Value;
+}  // namespace base
+
+// Forward declaration of the Mojo deserialization tag, see the
+// `LanguageTag(typename T::Tag)` constructor below.
+namespace mojo {
+struct DefaultConstruct;
+}  // namespace mojo
+
+// Forward declaration of Blink's hash traits, see the
+// `LanguageTag(base::PassKey<blink::HashTraits<LanguageTag>>, ...)` constructor
+// below.
+namespace blink {
+template <typename T>
+struct HashTraits;
+}  // namespace blink
 
 namespace base::i18n {
 
-class BASE_I18N_EXPORT LanguageTagConverter;
-
+class LanguageTagConverter;
 class LanguageTag;
-
-constexpr std::optional<LanguageTag> ParseKnownLanguageTag(
-    std::string_view tag);
-consteval LanguageTag GetKnownLanguageTag(std::string_view tag);
-
-namespace mojo {
-template <typename DataView, typename T>
-struct StructTraits;
-}  // namespace mojo
-
-namespace mojo_base::mojom {
-class LanguageTagDataView;
-}  // namespace mojo_base::mojom
+consteval LanguageTag GetKnownLanguageTag(std::string_view);
+COMPONENT_EXPORT(LANGUAGE_TAG)
+std::optional<LanguageTag> ValueToLanguageTag(const base::Value&);
 
 // A type-safe wrapper for BCP47 language tags (locales).
 //
@@ -48,7 +58,7 @@ class LanguageTagDataView;
 //   - Variants: Optional (e.g., "oxendict").
 //   - Extensions: Optional (e.g., "u-ca-gregory").
 //   - Private use: Optional (e.g., "x-privatestuff")
-class BASE_I18N_EXPORT LanguageTag {
+class COMPONENT_EXPORT(LANGUAGE_TAG) LanguageTag {
  public:
   using ImmutableStringType = i18n_internal::ImmutableString;
 
@@ -58,6 +68,37 @@ class BASE_I18N_EXPORT LanguageTag {
   constexpr LanguageTag& operator=(LanguageTag&&) noexcept = default;
 
   constexpr ~LanguageTag() = default;
+
+  // Mojo-specific constructor used for deserialization, e.g. when language
+  // tags are used as Mojo map keys and the container of keys has to be created
+  // before it can be filled in. The tag is initialized to the undetermined
+  // ("und") tag and is expected to be overwritten by the deserialized value.
+  //
+  // This constructor uses a template parameter to accept the
+  // `mojo::DefaultConstruct::Tag` type. This is a workaround for a layering
+  // issue where `base` cannot depend on `mojo`, preventing us from including
+  // the Mojo header that defines this tag. By using a template and a forward
+  // declaration, we can safely reference the tag type without an explicit
+  // dependency.
+  //
+  // Defined out-of-line below because it relies on `GetKnownLanguageTag()`,
+  // which is a consteval function that has to be defined before it is used.
+  template <typename T = ::mojo::DefaultConstruct>
+    requires std::same_as<T, ::mojo::DefaultConstruct>
+  explicit LanguageTag(typename T::Tag);
+
+  // Constructor restricted to `blink::HashTraits<LanguageTag>`, which needs to
+  // build the empty and deleted sentinel values of Blink hash tables. `tag` is
+  // stored verbatim, without any validation or canonicalization, so callers are
+  // responsible for picking values that never collide with real tags.
+  //
+  // `blink::HashTraits` is forward-declared above as `base` cannot depend on
+  // Blink.
+  // The constructor is declared as consteval to only allow compile-time strings
+  // to be passed here.
+  consteval LanguageTag(base::PassKey<::blink::HashTraits<LanguageTag>>,
+                        std::string_view tag)
+      : LanguageTag(base::span<const std::string_view>({tag})) {}
 
   constexpr friend bool operator==(const LanguageTag& lhs,
                                    const LanguageTag& rhs) {
@@ -95,25 +136,49 @@ class BASE_I18N_EXPORT LanguageTag {
   // Notice that this does not necessarily represent the language itself as some
   // of them need their region, script and variant to be properly represented.
   constexpr std::string_view language_subtag() const LIFETIME_BOUND {
-    return i18n_internal::ParseBcp47Tag(tag_string())
-        .value_or(i18n_internal::ParsedBcp47Tag())
-        .language;
+    return i18n_internal::SubtagsReaderUnsafe::Create(
+               base::PassKey<LanguageTag>(), tag_string())
+        .Peek(i18n_internal::SubtagType::kLanguage);
   }
   // Creates a new `LanguageTag` containing only the language subtag.
   LanguageTag WithLanguageSubtagOnly() const;
 
+  // Returns the script subtag in the language tag, if present.
+  // Examples:
+  // - "zh-Hant-TW" -> "Hant"
+  // - "zh-TW" -> ""
+  // - "sr-Latn" -> "Latn"
+  // - "zh-Hans" -> "Hans"
+  constexpr std::string_view script_subtag() const LIFETIME_BOUND {
+    return i18n_internal::SubtagsReaderUnsafe::Create(
+               base::PassKey<LanguageTag>(), tag_string())
+        .Seek(i18n_internal::SubtagType::kScript)
+        .Peek(i18n_internal::SubtagType::kScript);
+  }
   // Returns the region subtag in the language tag if present.
   // Examples:
   // - "en-US" -> "US"
   // - "zh-Hant-TW" -> "TW"
   // - "en" -> ""
   // - "sr-Latn" -> ""
-  // Note that the region subtag is not always present, if it is not set, an
-  // empty string is returned.
   constexpr std::string_view region_subtag() const LIFETIME_BOUND {
-    return i18n_internal::ParseBcp47Tag(tag_string())
-        .value_or(i18n_internal::ParsedBcp47Tag())
-        .region;
+    return i18n_internal::SubtagsReaderUnsafe::Create(
+               base::PassKey<LanguageTag>(), tag_string())
+        .Seek(i18n_internal::SubtagType::kRegion)
+        .Peek(i18n_internal::SubtagType::kRegion);
+  }
+
+  // Returns the variant subtags in the language tag if present.
+  // Examples:
+  // - "en-US" -> []
+  // - "en-GB-oxendict" -> ["oxendict"]
+  // - "sl-IT-rozaj-biske" -> ["biske", "rozaj"]
+  constexpr std::vector<std::string_view> variant_subtags() const
+      LIFETIME_BOUND {
+    return i18n_internal::SubtagsReaderUnsafe::Create(
+               base::PassKey<LanguageTag>(), tag_string())
+        .Seek(i18n_internal::SubtagType::kVariant)
+        .ReadSubtags(i18n_internal::SubtagType::kVariant);
   }
 
   // Returns the parent language tag of this language tag by stripping the most
@@ -127,6 +192,11 @@ class BASE_I18N_EXPORT LanguageTag {
   // If the language tag only consists of the base language subtag (e.g., "en"),
   // it has no parent and `std::nullopt` is returned.
   constexpr std::optional<LanguageTag> GetParentTag() const;
+  // Returns the lineage of this language tag, starting with the tag itself and
+  // traversing up the parent hierarchy.
+  // Example:
+  //  "sr-Latn-RS" -> ["sr-Latn-RS", "sr-Latn", "sr"]
+  constexpr std::vector<LanguageTag> GetLineage() const;
 
   // Retrieves the singleton and subtag(s) for an extension to a BCP47 language
   // tag.
@@ -156,12 +226,13 @@ class BASE_I18N_EXPORT LanguageTag {
     requires(extid != 'u' && extid != 'x')
   std::optional<Extension> GetExtension(
       bcp47_extensions::Traits<extid> traits) const {
-    std::string_view extension = GetExtensionStringInternal(extid);
-    if (extension.empty()) {
+    std::vector<std::string_view> extension_subtags =
+        GetExtensionSubtagsInternal(extid);
+    if (extension_subtags.empty()) {
       return std::nullopt;
     }
 
-    return traits.Factory(base::PassKey<LanguageTag>(), extension);
+    return traits.Factory(base::PassKey<LanguageTag>(), extension_subtags);
   }
 
   // Returns a new `LanguageTag` with the given `extension` set (language tags
@@ -178,23 +249,21 @@ class BASE_I18N_EXPORT LanguageTag {
   LanguageTag WithExtension(const PrivateUseSubtags& extension) const;
   LanguageTag WithExtension(const Extension& extension) const;
 
+  // Removes the extension keyed by `key`.
+  // Examples:
+  // "en-u-ca-gregory".WithExtensionRemoved("u") -> "en"
+  // "en-u-ca-gregory".WithExtensionRemoved("t") -> "en-u-ca-gregory"
+  LanguageTag WithExtensionRemoved(char key) const;
+
  private:
   friend class LanguageTagConverter;
-  friend constexpr std::optional<LanguageTag> ParseKnownLanguageTag(
-      std::string_view tag);
-  friend consteval LanguageTag GetKnownLanguageTag(std::string_view tag);
-  // Allow Mojo StructTraits to default-construct an instance during IPC
-  // deserialization
-  friend struct mojo::StructTraits<mojo_base::mojom::LanguageTagDataView,
-                                   base::i18n::LanguageTag>;
+  friend consteval LanguageTag GetKnownLanguageTag(std::string_view);
+  // Allow base::Value conversion from and to `LanguageTag` without having to
+  // depend on ICU.
+  friend COMPONENT_EXPORT(LANGUAGE_TAG)
+      std::optional<LanguageTag> ValueToLanguageTag(const base::Value&);
 
-  // Default constructor is intended for internal use by Mojo StructTraits to
-  // allow for deserialization of the language tag from IPC.
-  // `mojo::DefaultConstruct` cannot be used here because of layered
-  // dependencies.
-  LanguageTag();
-
-  std::string_view GetExtensionStringInternal(char key) const;
+  std::vector<std::string_view> GetExtensionSubtagsInternal(char key) const;
   LanguageTag WithExtensionStringInternal(char key,
                                           std::string_view subtags) const;
 
@@ -204,39 +273,44 @@ class BASE_I18N_EXPORT LanguageTag {
   // Constexpr Constructor that expects the span of string-views and constructs
   // tha ImmutableString on its own.
   constexpr explicit LanguageTag(base::span<const std::string_view> parts)
-      : tag_(std::is_constant_evaluated()
-                 ? i18n_internal::ImmutableString(
-                       i18n_internal::ImmutableString::ForceStackString{},
-                       parts)
-                 : i18n_internal::ImmutableString(parts)) {}
+      : tag_(i18n_internal::ImmutableString(parts)) {}
 
   // The BCP47 language tag, e.g. "pt-BR".
   // Supports language, script, region, variants and extensions.
   ImmutableStringType tag_;
 };
 
-BASE_I18N_EXPORT std::ostream& operator<<(std::ostream& os,
-                                          const LanguageTag& lt);
+COMPONENT_EXPORT(LANGUAGE_TAG)
+std::ostream& operator<<(std::ostream& os, const LanguageTag& lt);
 
-BASE_I18N_EXPORT std::ostream& operator<<(
-    std::ostream& os,
-    const std::optional<LanguageTag>& opt);
-
-// Parses a LanguageTag from a string_view.
-// Returns std::nullopt if `tag` is not a valid BCP 47 language tag or has
-// unknown subtags.
-constexpr std::optional<LanguageTag> ParseKnownLanguageTag(
-    std::string_view tag) {
-  std::optional<i18n_internal::ParsedBcp47Tag> parsed =
-      i18n_internal::ParseBcp47Tag(tag);
-  if (!parsed || !i18n_internal::AreSubtagsKnown(*parsed)) {
-    return std::nullopt;
-  }
-  return LanguageTag(base::span<const std::string_view>({tag}));
-}
+COMPONENT_EXPORT(LANGUAGE_TAG)
+std::ostream& operator<<(std::ostream& os,
+                         const std::optional<LanguageTag>& opt);
 
 // Returns a LanguageTag checked at compile time. does not compile if tag is
 // not one of the predefined supported language tags.
+// The function expects that the tags are well-formed and normalized, which
+// means:
+// - language subtag: must be all lowercase (en).
+// - script subtag: must have only the first letter uppercase (Latn).
+// - region subtag: must be all uppercase (US).
+// - variant subtags: must be all lowercase (oxendict).
+//
+// The function currently does not support extensions or tags that have fewer
+// than 14 characters; that is when LanguageTag fits in the stack.
+//
+// Usage examples:
+//     // OK
+//   - GetKnownLanguageTag("en-US");
+//
+//     // Failed compilation: the tag is not well formed as the country code
+//     // subtag is expected to be all uppercase.
+//   - GetKnownLanguageTag("en-us");
+//
+//     // Failed compilation: the tag is not known "xx" even though it is
+//     // well-formed according to the BCP47 standard.
+//   - GetKnownLanguageTag("xx");
+//
 consteval LanguageTag GetKnownLanguageTag(std::string_view tag) {
   // It is only possible to construct `LanguageTag`s at compile-time if they
   // are small.
@@ -245,14 +319,26 @@ consteval LanguageTag GetKnownLanguageTag(std::string_view tag) {
     ERROR_TagIsTooLarge();
   }
 
-  std::optional<LanguageTag> language_tag = ParseKnownLanguageTag(tag);
-  if (!language_tag) {
+  std::optional<i18n_internal::ParsedBcp47Tag> parsed =
+      i18n_internal::ParseBcp47Tag(tag);
+  // Check if the input `tag` is a well-formed bcp47 tag
+  if (!parsed) {
+    void ERROR_TagIsMalformed();
+    ERROR_TagIsMalformed();
+  }
+  // Check that the subtags are known.
+  if (!i18n_internal::AreSubtagsKnown(*parsed)) {
     void ERROR_TagIsUnknown();
     ERROR_TagIsUnknown();
   }
 
-  return *language_tag;
+  return LanguageTag(base::span<const std::string_view>({tag}));
 }
+
+template <typename T>
+  requires std::same_as<T, ::mojo::DefaultConstruct>
+LanguageTag::LanguageTag(typename T::Tag)
+    : LanguageTag(GetKnownLanguageTag("und")) {}
 
 constexpr std::optional<LanguageTag> LanguageTag::GetParentTag() const {
   std::optional<i18n_internal::ParsedBcp47Tag> parsed =
@@ -276,6 +362,14 @@ constexpr std::optional<LanguageTag> LanguageTag::GetParentTag() const {
   }
 
   return LanguageTag(i18n_internal::GetBcp47TagPieces(*parsed));
+}
+
+constexpr std::vector<LanguageTag> LanguageTag::GetLineage() const {
+  std::vector<LanguageTag> lineage;
+  for (std::optional<LanguageTag> tag = *this; tag; tag = tag->GetParentTag()) {
+    lineage.push_back(*tag);
+  }
+  return lineage;
 }
 
 }  // namespace base::i18n

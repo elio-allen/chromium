@@ -559,10 +559,11 @@ class ABSL_LOCKABLE ABSL_ATTRIBUTE_WARN_UNUSED Mutex {
                             const Condition* absl_nullable cond,
                             synchronization_internal::KernelTimeout t,
                             int flags);
-  void LockSlow(MuHow absl_nonnull how, const Condition* absl_nullable cond,
-                int flags) ABSL_ATTRIBUTE_COLD;
+  ABSL_ATTRIBUTE_COLD void LockSlow(MuHow absl_nonnull how,
+                                    const Condition* absl_nullable cond,
+                                    int flags);
   // slow path release
-  void UnlockSlow(SynchWaitParams* absl_nullable waitp) ABSL_ATTRIBUTE_COLD;
+  ABSL_ATTRIBUTE_COLD void UnlockSlow(SynchWaitParams* absl_nullable waitp);
   // TryLock slow path.
   bool TryLockSlow();
   // ReaderTryLock slow path.
@@ -961,7 +962,7 @@ class Condition {
 
   // Helper methods for storing, validating, and reading callback arguments.
   template <typename T>
-  inline void StoreCallback(T callback) {
+  void StoreCallback(T callback) {
     static_assert(
         sizeof(callback) <= sizeof(callback_),
         "An overlarge pointer was passed as a callback to Condition.");
@@ -969,7 +970,7 @@ class Condition {
   }
 
   template <typename T>
-  inline void ReadCallback(T* absl_nonnull callback) const {
+  void ReadCallback(T* absl_nonnull callback) const {
     std::memcpy(callback, callback_, sizeof(*callback));
   }
 
@@ -1184,7 +1185,7 @@ inline Mutex::Mutex() : mu_(0) {
   ABSL_TSAN_MUTEX_CREATE(this, __tsan_mutex_not_static);
 }
 
-inline constexpr Mutex::Mutex(absl::ConstInitType) : mu_(0) {}
+constexpr Mutex::Mutex(absl::ConstInitType) : mu_(0) {}
 
 #if !defined(__APPLE__) && !defined(ABSL_BUILD_DLL)
 ABSL_ATTRIBUTE_ALWAYS_INLINE

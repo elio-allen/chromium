@@ -231,6 +231,11 @@ BASE_FEATURE(kSaveRawFilesOnTracing,
              "ArcSaveRawFilesOnTracing",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// Controls whether to shut down ARCVM after post-OOBE provisioning on 4GB
+// devices.
+BASE_FEATURE(kShutDownArcPostOobeProvisioning,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // When enabled, skip dropping ARCVM page cache after boot.
 BASE_FEATURE(kSkipDropCaches,
              "ArcSkipDropPageCache",
@@ -249,18 +254,6 @@ BASE_FEATURE(kUnthrottleOnActiveAudioV2,
 BASE_FEATURE(kVideoDecoder,
              "ArcVideoDecoder",
              base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Feature to continuously log PSI memory pressure data to Chrome.
-BASE_FEATURE(kVmMemoryPSIReports,
-             "ArcVmMemoryPSIReports",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Controls how frequently memory pressure data is logged
-BASE_FEATURE_PARAM(int,
-                   kVmMemoryPSIReportsPeriod,
-                   &kVmMemoryPSIReports,
-                   "period",
-                   10);
 
 // Controls whether a custom memory size is used when creating ARCVM. When
 // enabled, ARCVM is sized with the following formula:
@@ -311,29 +304,6 @@ BASE_FEATURE(kVmmSwapKeyboardShortcut,
 BASE_FEATURE(kVmmSwapPolicy,
              "ArcVmmSwapPolicy",
              base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Controls the time interval between create staging memory and swap out. The
-// default value is 10 seconds.
-BASE_FEATURE_PARAM(int,
-                   kVmmSwapOutDelaySecond,
-                   &kVmmSwapPolicy,
-                   "delay_sec",
-                   10);
-
-// Controls the time interval between two swap out. The default value is 12
-// hours.
-BASE_FEATURE_PARAM(int,
-                   kVmmSwapOutTimeIntervalSecond,
-                   &kVmmSwapPolicy,
-                   "swapout_interval_sec",
-                   60 * 60 * 12);
-
-// Controls the time interval of ARC silence. The default value is 15 minutes.
-BASE_FEATURE_PARAM(int,
-                   kVmmSwapArcSilenceIntervalSecond,
-                   &kVmmSwapPolicy,
-                   "arc_silence_interval_sec",
-                   60 * 15);
 
 // Controls the interval for swap trimming maintenance.
 BASE_FEATURE_PARAM(base::TimeDelta,

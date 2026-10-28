@@ -12,7 +12,6 @@
 #include "base/base64.h"
 #include "base/notreached.h"
 #include "base/strings/to_string.h"
-#include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "components/autofill/core/browser/crowdsourcing/autofill_crowdsourcing_encoding.h"
@@ -22,7 +21,7 @@
 #include "components/autofill/core/browser/foundations/autofill_manager_test_api.h"
 #include "components/autofill/core/browser/heuristic_source.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics_test_base.h"
-#include "components/autofill/core/browser/metrics/ukm_metrics_test_utils.h"
+#include "components/autofill/core/browser/metrics/ukm_metrics_test_util.h"
 #include "components/autofill/core/browser/proto/api_v1.pb.h"
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/form_data_test_api.h"
@@ -109,7 +108,6 @@ TEST_F(FormInteractionsUkmLoggerTest, TypeOfEditedAutofilledFieldsUkmLogging) {
                  {FormTypeNameForLogging::kAddressForm})},
             {UkmSuggestionFilledType::kMillisecondsSinceFormParsedName, 0}}}));
 
-  base::HistogramTester histogram_tester;
   // Simulate text input in the first and second fields.
   SimulateUserChangedField(form, form.fields()[0]);
 
@@ -193,7 +191,6 @@ TEST_F(FieldLogUkmMetricTest, TestShowSuggestionAutofillStatus) {
         AutofillSuggestionTriggerSource::kFormControlElementClicked);
 
     task_environment_.FastForwardBy(base::Milliseconds(9));
-    base::HistogramTester histogram_tester;
     SubmitForm(form);
 
     // Record Autofill2.FieldInfo UKM event at autofill manager reset.
@@ -258,7 +255,6 @@ TEST_F(FieldLogUkmMetricTest, AddressSubmittedFormLogEvents) {
     SimulateUserChangedFieldTo(form, form.fields()[0], u"United States",
                                parse_time + base::Milliseconds(3));
     task_environment_.FastForwardBy(base::Milliseconds(1200));
-    base::HistogramTester histogram_tester;
     SubmitForm(form);
 
     // Record Autofill2.FieldInfo UKM event at autofill manager reset.
@@ -381,23 +377,6 @@ TEST_F(FieldLogUkmMetricTest, AddressSubmittedFormLogEvents) {
     };
     EXPECT_THAT(GetUkmEvents(test_ukm_recorder(), UFST::kEntryName),
                 UkmEventsAre({expected}));
-
-    // Verify LogEvent count UMA events of each type.
-    histogram_tester.ExpectBucketCount(
-        "Autofill.LogEvent.AskForValuesToFillEvent", 1, 1);
-    histogram_tester.ExpectBucketCount("Autofill.LogEvent.TriggerFillEvent", 1,
-                                       1);
-    histogram_tester.ExpectBucketCount("Autofill.LogEvent.FillEvent", 3, 1);
-    histogram_tester.ExpectBucketCount("Autofill.LogEvent.TypingEvent", 1, 1);
-    histogram_tester.ExpectBucketCount(
-        "Autofill.LogEvent.HeuristicPredictionEvent", 0, 1);
-    histogram_tester.ExpectBucketCount(
-        "Autofill.LogEvent.AutocompleteAttributeEvent", 0, 1);
-    histogram_tester.ExpectBucketCount(
-        "Autofill.LogEvent.ServerPredictionEvent", 0, 1);
-    histogram_tester.ExpectBucketCount("Autofill.LogEvent.RationalizationEvent",
-                                       0, 1);
-    histogram_tester.ExpectBucketCount("Autofill.LogEvent.All", 6, 1);
   }
 }
 
@@ -465,7 +444,6 @@ TEST_F(FieldLogUkmMetricTest, AutofillFieldInfoMetricsFieldType) {
           {form});
 
   task_environment_.FastForwardBy(base::Milliseconds(37000));
-  base::HistogramTester histogram_tester;
   SubmitForm(form);
   // Record Autofill2.FieldInfo UKM event at autofill manager reset.
   autofill_client().GetAutofillDriverFactory().Reset(autofill_driver());
@@ -583,23 +561,6 @@ TEST_F(FieldLogUkmMetricTest, AutofillFieldInfoMetricsFieldType) {
   };
   EXPECT_THAT(GetUkmEvents(test_ukm_recorder(), UFST::kEntryName),
               UkmEventsAre({expected}));
-
-  // Verify LogEvent count UMA events of each type.
-  histogram_tester.ExpectBucketCount(
-      "Autofill.LogEvent.AskForValuesToFillEvent", 0, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.TriggerFillEvent", 0,
-                                     1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.FillEvent", 0, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.TypingEvent", 0, 1);
-  histogram_tester.ExpectBucketCount(
-      "Autofill.LogEvent.AutocompleteAttributeEvent", 5, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.ServerPredictionEvent",
-                                     6, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.RationalizationEvent",
-                                     12, 1);
-  histogram_tester.ExpectBucketCount(
-      "Autofill.LogEvent.HeuristicPredictionEvent", 4, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.All", 27, 1);
 }
 
 // Test if we have recorded FieldInfo UKM metrics correctly after typing in
@@ -622,7 +583,6 @@ TEST_F(FieldLogUkmMetricTest, AutofillFieldInfoMetricsEditedFieldWithoutFill) {
   SimulateUserChangedFieldTo(form, form.fields()[1], u"buddy@gmail.com",
                              parse_time + base::Milliseconds(3));
   task_environment_.FastForwardBy(base::Milliseconds(1200));
-  base::HistogramTester histogram_tester;
   SubmitForm(form);
 
   // Record Autofill2.FieldInfo UKM event at autofill manager reset.
@@ -699,23 +659,6 @@ TEST_F(FieldLogUkmMetricTest, AutofillFieldInfoMetricsEditedFieldWithoutFill) {
   };
   EXPECT_THAT(GetUkmEvents(test_ukm_recorder(), UFST::kEntryName),
               UkmEventsAre({expected}));
-
-  // Verify LogEvent count UMA events of each type.
-  histogram_tester.ExpectBucketCount(
-      "Autofill.LogEvent.AskForValuesToFillEvent", 0, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.TriggerFillEvent", 0,
-                                     1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.FillEvent", 0, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.TypingEvent", 2, 1);
-  histogram_tester.ExpectBucketCount(
-      "Autofill.LogEvent.HeuristicPredictionEvent", 0, 1);
-  histogram_tester.ExpectBucketCount(
-      "Autofill.LogEvent.AutocompleteAttributeEvent", 0, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.ServerPredictionEvent",
-                                     0, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.RationalizationEvent",
-                                     0, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.All", 2, 1);
 }
 
 // Test that we do not record FieldInfo/FormSummary UKM metrics for forms
@@ -761,160 +704,6 @@ TEST_F(FieldLogUkmMetricTest, AutofillFieldInfoMetricsNotRecordOnSearchBox) {
               UkmEventsAre({}));
 }
 
-// Tests that the forms with only <input type="checkbox"> fields are not
-// recorded in FieldInfo metrics. We do this to reduce bandwidth.
-TEST_F(FieldLogUkmMetricTest, AutofillFieldInfoMetricsNotRecordOnAllCheckBox) {
-  // Two checkable checkboxes.
-  FormData form = test::GetFormData(
-      {.fields = {
-           {.label = u"Option 1",
-            .name = u"Option 1",
-            .form_control_type = FormControlType::kInputCheckbox},
-           {.label = u"Option 2",
-            .name = u"Option 2",
-            .form_control_type = FormControlType::kInputCheckbox},
-       }});
-
-  SeeForm(form);
-  SubmitForm(form);
-  autofill_client().GetAutofillDriverFactory().Reset(autofill_driver());
-
-  // The form with two checkboxes is not recorded into any UKM events.
-  EXPECT_THAT(GetUkmEvents(test_ukm_recorder(), UkmFieldInfoType::kEntryName),
-              UkmEventsAre({}));
-  EXPECT_THAT(GetUkmEvents(test_ukm_recorder(), UkmFormSummaryType::kEntryName),
-              UkmEventsAre({}));
-}
-
-// Tests that the forms with <input type="checkbox"> fields and a text field
-// which does not get a type from heuristics or the server are not recorded in
-// UkmFieldInfo metrics.
-TEST_F(
-    FieldLogUkmMetricTest,
-    AutofillFieldInfoMetricsNotRecordOnCheckBoxWithTextFieldWithUnknownType) {
-  FormData form = test::GetFormData(
-      {.fields = {
-           // Start with a username field.
-           {.label = u"username", .name = u"username"},
-           // Two checkable radio buttons.
-           {.label = u"female",
-            .name = u"female",
-            .form_control_type = FormControlType::kInputRadio},
-           {.label = u"male",
-            .name = u"male",
-            .form_control_type = FormControlType::kInputRadio},
-           // One checkable checkbox.
-           {.label = u"save",
-            .name = u"save",
-            .form_control_type = FormControlType::kInputCheckbox},
-       }});
-
-  SeeForm(form);
-  SubmitForm(form);
-  autofill_client().GetAutofillDriverFactory().Reset(autofill_driver());
-
-  // This form only has one non-checkable field, so the local heuristics are
-  // not executed.
-  EXPECT_THAT(GetUkmEvents(test_ukm_recorder(), UkmFieldInfoType::kEntryName),
-              UkmEventsAre({}));
-  EXPECT_THAT(GetUkmEvents(test_ukm_recorder(), UkmFormSummaryType::kEntryName),
-              UkmEventsAre({}));
-}
-
-// Tests that the forms with <input type="checkbox"> fields and two text field
-// which have predicted types are recorded in FieldInfo metrics.
-TEST_F(FieldLogUkmMetricTest,
-       AutofillFieldInfoMetricsRecordOnCheckBoxWithTextField) {
-  FormData form = test::GetFormData(
-      {.fields = {
-           // Start with two input text fields.
-           {.label = u"First Name", .name = u"firstname"},
-           {.label = u"Last Name", .name = u"lastname"},
-           // Two checkable radio buttons.
-           {.label = u"female",
-            .name = u"female",
-            .form_control_type = FormControlType::kInputRadio},
-           {.label = u"male",
-            .name = u"male",
-            .form_control_type = FormControlType::kInputRadio},
-       }});
-
-  // The two text fields have predicted types.
-  std::vector<FieldType> field_types = {NAME_FIRST, NAME_LAST, UNKNOWN_TYPE,
-                                        UNKNOWN_TYPE};
-  autofill_manager().AddSeenForm(form, field_types);
-  SeeForm(form);
-  task_environment_.FastForwardBy(base::Milliseconds(3500));
-  base::HistogramTester histogram_tester;
-  SubmitForm(form);
-  autofill_client().GetAutofillDriverFactory().Reset(autofill_driver());
-
-  std::vector<FormControlType> form_control_types = {
-      FormControlType::kInputText, FormControlType::kInputText,
-      FormControlType::kInputRadio, FormControlType::kInputRadio};
-  using UFIT = UkmFieldInfoType;
-  std::vector<std::vector<UkmMetricNameAndValue>> expected_events;
-  for (size_t i = 0; i < 4; ++i) {
-    DenseSet<AutofillStatus> autofill_status_vector = {
-        AutofillStatus::kIsFocusable};
-    expected_events.push_back({
-        {UFIT::kFormSessionIdentifierName,
-         FormGlobalIdToHash64Bit(form.global_id())},
-        {UFIT::kFormSignatureName,
-         Collapse(CalculateFormSignature(form)).value()},
-        {UFIT::kFieldSessionIdentifierName,
-         FieldGlobalIdToHash64Bit(form.fields()[i].global_id())},
-        {UFIT::kFieldSignatureName,
-         Collapse(CalculateFieldSignatureForField(form.fields()[i])).value()},
-        {UFIT::kOverallTypeName, field_types[i]},
-        {UFIT::kSectionIdName, 1},
-        {UFIT::kTypeChangedByRationalizationName, false},
-        {UFIT::kFormControlType2Name, form_control_types[i]},
-        {UFIT::kAutocompleteStateName,
-         AutofillMetrics::AutocompleteState::kNone},
-        {UFIT::kAutofillStatusVectorName, autofill_status_vector.data()[0]},
-        {UFIT::kFieldLogEventCountName, 1},
-    });
-  }
-  EXPECT_THAT(GetUkmEvents(test_ukm_recorder(), UFIT::kEntryName),
-              UkmEventsAre(expected_events));
-
-  // Verify FormSummary UKM event for the form.
-  using UFST = UkmFormSummaryType;
-  FormInteractionsUkmLogger::FormEventSet form_events = {
-      FORM_EVENT_DID_PARSE_FORM};
-  std::vector<UkmMetricNameAndValue> expected = {
-      {UFST::kFormSessionIdentifierName,
-       FormGlobalIdToHash64Bit(form.global_id())},
-      {UFST::kFormSignatureName,
-       Collapse(CalculateFormSignature(form)).value()},
-      {UFST::kAutofillFormEventsName, form_events.data()[0]},
-      {UFST::kAutofillFormEvents2Name, form_events.data()[1]},
-      {UFST::kSampleRateName, 1},
-      {UFST::kWasSubmittedName, true},
-      {UFST::kMillisecondsFromFormParsedUntilSubmissionName, 3000},
-  };
-  EXPECT_THAT(GetUkmEvents(test_ukm_recorder(), UFST::kEntryName),
-              UkmEventsAre({expected}));
-
-  // Verify LogEvent count UMA events of each type.
-  histogram_tester.ExpectBucketCount(
-      "Autofill.LogEvent.AskForValuesToFillEvent", 0, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.TriggerFillEvent", 0,
-                                     1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.FillEvent", 0, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.TypingEvent", 0, 1);
-  histogram_tester.ExpectBucketCount(
-      "Autofill.LogEvent.HeuristicPredictionEvent", 0, 1);
-  histogram_tester.ExpectBucketCount(
-      "Autofill.LogEvent.AutocompleteAttributeEvent", 0, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.ServerPredictionEvent",
-                                     0, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.RationalizationEvent",
-                                     4, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.All", 4, 1);
-}
-
 // Tests that the field which is in a different frame than its form is recorded
 // as AutofillStatus::kIsInSubFrame.
 TEST_F(FieldLogUkmMetricTest, AutofillFieldInfoMetricsRecordOnDifferentFrames) {
@@ -934,7 +723,6 @@ TEST_F(FieldLogUkmMetricTest, AutofillFieldInfoMetricsRecordOnDifferentFrames) {
   autofill_manager().AddSeenForm(form, field_types);
   SeeForm(form);
   task_environment_.FastForwardBy(base::Milliseconds(1980000));  // 33m
-  base::HistogramTester histogram_tester;
   SubmitForm(form);
   autofill_client().GetAutofillDriverFactory().Reset(autofill_driver());
 
@@ -993,23 +781,6 @@ TEST_F(FieldLogUkmMetricTest, AutofillFieldInfoMetricsRecordOnDifferentFrames) {
   };
   EXPECT_THAT(GetUkmEvents(test_ukm_recorder(), UFST::kEntryName),
               UkmEventsAre({expected}));
-
-  // Verify LogEvent count UMA events of each type.
-  histogram_tester.ExpectBucketCount(
-      "Autofill.LogEvent.AskForValuesToFillEvent", 0, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.TriggerFillEvent", 0,
-                                     1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.FillEvent", 0, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.TypingEvent", 0, 1);
-  histogram_tester.ExpectBucketCount(
-      "Autofill.LogEvent.AutocompleteAttributeEvent", 0, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.ServerPredictionEvent",
-                                     0, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.RationalizationEvent",
-                                     3, 1);
-  histogram_tester.ExpectBucketCount(
-      "Autofill.LogEvent.HeuristicPredictionEvent", 3, 1);
-  histogram_tester.ExpectBucketCount("Autofill.LogEvent.All", 6, 1);
 }
 
 // The following code tests that Autofill2.FocusedComplexForm events are emitted
@@ -1498,7 +1269,6 @@ TEST_P(LogFocusedComplexFormAtFormRemoveTest, TestEmittedUKM) {
   FormData form = test::GetFormData(GetParam().form);
   const FormFieldData& first_field = form.fields()[0];
 
-  base::HistogramTester histogram_tester;
   task_environment_.FastForwardBy(base::Milliseconds(37000));
   SeeForm(form);
 
@@ -1530,7 +1300,8 @@ TEST_P(LogFocusedComplexFormAtFormRemoveTest, TestEmittedUKM) {
           mojom::ActionPersistence::kFill, form.global_id(),
           first_field.global_id(),
           paydm().GetCreditCardByGUID("10000000-0000-0000-0000-000000000001"),
-          AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+          AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+          /*blocked_fields=*/{});
     } else {
       // Autofill should not be simulated on a field that is not autofillable.
       NOTREACHED();

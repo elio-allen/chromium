@@ -11,6 +11,7 @@ import static org.junit.Assert.assertNull;
 import static org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorUtils.INVALID_ID;
 
 import android.content.Context;
+import android.graphics.Color;
 import android.graphics.drawable.LayerDrawable;
 
 import androidx.annotation.ColorInt;
@@ -23,7 +24,6 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.build.annotations.Nullable;
@@ -43,7 +43,6 @@ import java.util.List;
 
 /** Tests for {@link NtpThemeColorUtils}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class NtpThemeColorUtilsUnitTest {
     private static final int COLOR_LIST_SIZE = NtpThemeColorId.NUM_ENTRIES - 1;
     private Context mContext;
@@ -107,13 +106,12 @@ public class NtpThemeColorUtilsUnitTest {
     }
 
     @Test
-    public void testInitColorsListAndFindPrimaryColorIndex_customColorWithoutBackgroundColor() {
+    public void testInitColorsListAndFindPrimaryColorIndex_customColorWithWhiteBackgroundColor() {
         @ColorInt int primaryColor = ContextCompat.getColor(mContext, R.color.default_red);
         verifyInitColorsListAndFindPrimaryColorIndexReturnCorrectIndex(
-                new NtpThemeColorFromHexInfo(
-                        mContext, NtpThemeColorInfo.COLOR_NOT_SET, primaryColor),
-                RecyclerView.NO_POSITION,
-                /* expectedSize= */ COLOR_LIST_SIZE);
+                new NtpThemeColorFromHexInfo(mContext, Color.WHITE, primaryColor),
+                /* expectedIndex= */ COLOR_LIST_SIZE,
+                /* expectedSize= */ COLOR_LIST_SIZE + 1);
     }
 
     @Test
@@ -282,8 +280,7 @@ public class NtpThemeColorUtilsUnitTest {
 
         @ColorInt int backgroundColor = ContextCompat.getColor(mContext, R.color.green_50);
         NtpThemeColorFromHexInfo customInfo =
-                new NtpThemeColorFromHexInfo(
-                        mContext, backgroundColor, NtpThemeColorInfo.COLOR_NOT_SET);
+                new NtpThemeColorFromHexInfo(mContext, backgroundColor, Color.TRANSPARENT);
         NtpBackgroundDataCustomizedColor dataCustomizedColor =
                 new NtpBackgroundDataCustomizedColor(PlatformType.ANDROID, customInfo);
         assertEquals(

@@ -23,10 +23,11 @@
 #include "chrome/browser/actor/actor_keyed_service_factory.h"
 #include "chrome/browser/actor/actor_keyed_service_fake.h"
 #include "chrome/browser/actor/actor_task.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/chrome_signin_pref_names.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/passwords/manage_passwords_test.h"
 #include "chrome/browser/ui/passwords/manage_passwords_ui_controller.h"
 #include "chrome/browser/ui/tab_dialogs.h"
@@ -46,25 +47,31 @@
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/affiliations/core/browser/match_type.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_form_manager.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/common/password_manager_features.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/signin/public/base/signin_prefs.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/focus_changed_observer.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/clipboard/test/clipboard_test_util.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/events/base_event_utils.h"
+#include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/editable_combobox/editable_combobox.h"
+#include "ui/views/controls/label.h"
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/controls/textarea/textarea.h"
 #include "ui/views/controls/textfield/textfield.h"
@@ -79,10 +86,14 @@ using net::test_server::BasicHttpResponse;
 using net::test_server::HttpRequest;
 using net::test_server::HttpResponse;
 using password_manager::PasswordForm;
+using password_manager::PasswordString;
 using testing::_;
+using testing::Contains;
+using testing::Each;
 using testing::ElementsAre;
 using testing::Eq;
 using testing::Field;
+using testing::Not;
 
 namespace {
 
@@ -93,6 +104,22 @@ bool IsBubbleShowing() {
          !PasswordBubbleViewBase::manage_password_bubble()
               ->GetWidget()
               ->IsClosed();
+}
+
+void GetLabelTexts(views::View* parent, std::vector<std::u16string>& texts) {
+  if (views::IsViewClass<views::Label>(parent)) {
+    texts.emplace_back(static_cast<views::Label*>(parent)->GetText());
+  }
+  for (views::View* child : parent->children()) {
+    GetLabelTexts(child, texts);
+  }
+}
+
+// Returns the texts of all views::Labels in the subtree rooted at `parent`.
+std::vector<std::u16string> GetLabelTexts(views::View* parent) {
+  std::vector<std::u16string> texts;
+  GetLabelTexts(parent, texts);
+  return texts;
 }
 
 views::EditableCombobox* GetUsernameDropdown(
@@ -123,8 +150,8 @@ PasswordForm CreateSharedCredentials(
   shared_credentials.signon_realm = url.GetWithEmptyPath().spec();
   shared_credentials.url = url;
   shared_credentials.username_value = username;
-  shared_credentials.password_value = u"12345";
-  shared_credentials.match_type = PasswordForm::MatchType::kExact;
+  shared_credentials.password_value = PasswordString(u"12345");
+  shared_credentials.match_type = affiliations::MatchType::kExact;
   shared_credentials.type = PasswordForm::Type::kReceivedViaSharing;
   shared_credentials.sender_name = sender_name;
   return shared_credentials;
@@ -180,7 +207,7 @@ class PasswordBubbleInteractiveUiTestBase : public ManagePasswordsTest {
     actor::ActorTask* task = actor_keyed_service->GetTask(task_id);
     base::RunLoop loop;
     task->AddTab(
-        browser()->tab_strip_model()->GetActiveTab()->GetHandle(),
+        browser()->GetTabStripModel()->GetActiveTab()->GetHandle(),
         /*stop_task_on_detach=*/true,
         base::BindLambdaForTesting(
             [&](actor::mojom::ActionResultPtr result) { loop.Quit(); }));
@@ -191,9 +218,9 @@ class PasswordBubbleInteractiveUiTestBase : public ManagePasswordsTest {
   void InitializeFeatures(
       std::vector<base::test::FeatureRefAndParams> enabled_features = {},
       std::vector<base::test::FeatureRef> disabled_features = {}) {
+    enabled_features.push_back({features::kGlicActor, {}});
     enabled_features.push_back(
-        {features::kGlicActor,
-         {{features::kGlicActorPolicyControlExemption.name, "true"}}});
+        {features::kGlicActorPolicyControlExemption, {}});
     disabled_features.push_back(features::kNonBlockingOsClipboardReads);
 
     scoped_feature_list_.InitWithFeaturesAndParameters(enabled_features,
@@ -236,7 +263,7 @@ IN_PROC_BROWSER_TEST_F(PasswordBubbleInteractiveUiTest, BasicOpenAndClose) {
 
   // And, just for grins, ensure that we can re-open the bubble.
   TabDialogs::FromWebContents(
-      browser()->tab_strip_model()->GetActiveWebContents())
+      browser()->GetTabStripModel()->GetActiveWebContents())
       ->ShowManagePasswordsBubble(true /* user_action */);
   EXPECT_TRUE(IsBubbleShowing());
   bubble = PasswordBubbleViewBase::manage_password_bubble();
@@ -296,7 +323,7 @@ IN_PROC_BROWSER_TEST_F(PasswordBubbleInteractiveUiTest,
   form.url = origin;
   form.signon_realm = origin.GetWithEmptyPath().spec();
   form.username_value = u"Eve";
-  form.password_value = u"password";
+  form.password_value = PasswordString(u"password");
   GetController()->OnCredentialLeak(password_manager::LeakedPasswordDetails(
       password_manager::CredentialLeakFlags::kPasswordSaved, std::move(form),
       /*in_account_store=*/false));
@@ -480,7 +507,7 @@ IN_PROC_BROWSER_TEST_F(PasswordBubbleInteractiveUiTest,
 
 IN_PROC_BROWSER_TEST_F(PasswordBubbleInteractiveUiTest, DontCloseOnKey) {
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   content::FocusChangedObserver focus_observer(web_contents);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(),
@@ -552,34 +579,34 @@ IN_PROC_BROWSER_TEST_F(PasswordBubbleInteractiveUiTest,
       WaitForShow(PasswordSaveUpdateView::kPasswordBubbleElementId),
       // 2. Add and switch to tab 1.
       Do([this]() {
-        ASSERT_TRUE(AddTabAtIndex(
-            1, embedded_test_server()->GetURL("/empty.html"),
-            ui::PAGE_TRANSITION_TYPED));
-        browser()->tab_strip_model()->ActivateTabAt(
+        ASSERT_TRUE(AddTabAtIndex(1,
+                                  embedded_test_server()->GetURL("/empty.html"),
+                                  ui::PAGE_TRANSITION_TYPED));
+        browser()->GetTabStripModel()->ActivateTabAt(
             1, TabStripUserGestureDetails(
                    TabStripUserGestureDetails::GestureType::kOther));
 #if BUILDFLAG(IS_MAC)
         // On Mac, tab switches in swarming test environments do not reliably
         // call WasHidden() via OS window visibility signals. Explicitly notify
         // the tab (crbug.com/542160939).
-        browser()->tab_strip_model()->GetWebContentsAt(0)->WasHidden();
+        browser()->GetTabStripModel()->GetWebContentsAt(0)->WasHidden();
 #endif
       }),
       // 3. Wait for the bubble to hide due to the tab switch.
       WaitForHide(PasswordSaveUpdateView::kPasswordBubbleElementId),
       Check([this]() {
-        return browser()->tab_strip_model()->active_index() == 1;
+        return browser()->GetTabStripModel()->active_index() == 1;
       }),
       // 4. Show bubble on tab 1.
       Do([this]() { SetupPendingPassword(); }),
       WaitForShow(PasswordSaveUpdateView::kPasswordBubbleElementId),
       // 5. Switch back to tab 0.
       Do([this]() {
-        browser()->tab_strip_model()->ActivateTabAt(
+        browser()->GetTabStripModel()->ActivateTabAt(
             0, TabStripUserGestureDetails(
                    TabStripUserGestureDetails::GestureType::kOther));
 #if BUILDFLAG(IS_MAC)
-        browser()->tab_strip_model()->GetWebContentsAt(1)->WasHidden();
+        browser()->GetTabStripModel()->GetWebContentsAt(1)->WasHidden();
 #endif
       }),
       // 6. Wait for the bubble to hide again.
@@ -591,7 +618,7 @@ IN_PROC_BROWSER_TEST_F(PasswordBubbleInteractiveUiTest,
   // Set up the second tab and bring the bubble there.
   ASSERT_TRUE(AddTabAtIndex(1, embedded_test_server()->GetURL("/empty.html"),
                             ui::PAGE_TRANSITION_TYPED));
-  TabStripModel* tab_model = browser()->tab_strip_model();
+  TabStripModel* tab_model = browser()->GetTabStripModel();
   tab_model->ActivateTabAt(
       1, TabStripUserGestureDetails(
              TabStripUserGestureDetails::GestureType::kOther));
@@ -654,7 +681,7 @@ IN_PROC_BROWSER_TEST_F(PasswordBubbleInteractiveUiTest,
   form.url = origin;
   form.signon_realm = origin.GetWithEmptyPath().spec();
   form.username_value = u"Eve";
-  form.password_value = u"password";
+  form.password_value = PasswordString(u"password");
   GetController()->OnCredentialLeak(password_manager::LeakedPasswordDetails(
       password_manager::CredentialLeakFlags::kPasswordSaved, std::move(form),
       /*in_account_store=*/false));
@@ -679,7 +706,7 @@ IN_PROC_BROWSER_TEST_F(PasswordBubbleInteractiveUiTest, LeakPromptHidesBubble) {
   form.url = origin;
   form.signon_realm = origin.GetWithEmptyPath().spec();
   form.username_value = u"Eve";
-  form.password_value = u"password";
+  form.password_value = PasswordString(u"password");
   GetController()->OnCredentialLeak(password_manager::LeakedPasswordDetails(
       password_manager::CredentialLeakFlags::kPasswordSaved, std::move(form),
       /*in_account_store=*/false));
@@ -693,8 +720,9 @@ IN_PROC_BROWSER_TEST_F(PasswordBubbleInteractiveUiTest, SaveUiDismissalReason) {
 
   RunTestSequence(
       Do([this]() { SetupPendingPassword(); }),
-      WaitForShow(PasswordSaveUpdateView::kPasswordBubbleElementId),
-      Do([]() { PasswordBubbleViewBase::manage_password_bubble()->AcceptDialog(); }),
+      WaitForShow(PasswordSaveUpdateView::kPasswordBubbleElementId), Do([]() {
+        PasswordBubbleViewBase::manage_password_bubble()->AcceptDialog();
+      }),
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
       Do([]() { content::RunAllPendingInMessageLoop(); }),
       Check([]() { return IsBubbleShowing(); }),
@@ -721,7 +749,7 @@ IN_PROC_BROWSER_TEST_F(PasswordBubbleInteractiveUiTest,
   EXPECT_EQ(0, browser()->GetProfile()->GetPrefs()->GetInteger(
                    prefs::kAutofillSignInPromoDismissCountPerProfile));
   EXPECT_EQ(0, SigninPrefs(*browser()->GetProfile()->GetPrefs())
-                   .GetAutofillSigninPromoDismissCount(info.gaia));
+                   .GetAutofillSigninPromoDismissCount(info.GetGaiaId()));
 }
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
@@ -1357,9 +1385,10 @@ IN_PROC_BROWSER_TEST_F(PasswordBubbleInteractiveUiTest,
       }),
       // Click the manage passwords button
       Do([]() {
-        ClickOnView(PasswordBubbleViewBase::manage_password_bubble()->GetViewByID(
-            static_cast<int>(
-                password_manager::ManagePasswordsViewIDs::kManagePasswordButton)));
+        ClickOnView(
+            PasswordBubbleViewBase::manage_password_bubble()->GetViewByID(
+                static_cast<int>(password_manager::ManagePasswordsViewIDs::
+                                     kManagePasswordButton)));
       }),
       // Wait for the bubble to hide on navigation
       WaitForHide(ManagePasswordsView::kTopView));
@@ -1634,9 +1663,32 @@ IN_PROC_BROWSER_TEST_F(PasswordBubbleWithUnifiedUiDisabledInteractiveUiTest,
   EXPECT_FALSE(IsBubbleShowing());
   content::RunAllPendingInMessageLoop();
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   EXPECT_EQ(password_manager::ui::MANAGE_STATE,
             PasswordsModelDelegateFromWebContents(web_contents)->GetState());
+}
+
+// Site-provided usernames (e.g. stored via navigator.credentials.store()) must
+// not be able to add lines of text to the auto sign-in bubble.
+IN_PROC_BROWSER_TEST_F(PasswordBubbleWithUnifiedUiDisabledInteractiveUiTest,
+                       AutoSigninShowsUsernameOnSingleLine) {
+  test_form()->url = GURL("https://example.com");
+  test_form()->username_value =
+      u"pet12@gmail.com\n\n\nChrome Security\nThis site is verified";
+  std::vector<std::unique_ptr<password_manager::PasswordForm>>
+      local_credentials;
+  local_credentials.push_back(
+      std::make_unique<password_manager::PasswordForm>(*test_form()));
+
+  SetupAutoSignin(std::move(local_credentials));
+  ASSERT_TRUE(IsBubbleShowing());
+
+  std::vector<std::u16string> texts =
+      GetLabelTexts(PasswordBubbleViewBase::manage_password_bubble());
+  EXPECT_THAT(
+      texts,
+      Contains(u"pet12@gmail.com Chrome Security This site is verified"));
+  EXPECT_THAT(texts, Each(Not(Contains(u'\n'))));
 }
 
 IN_PROC_BROWSER_TEST_F(PasswordBubbleWithUnifiedUiDisabledInteractiveUiTest,
@@ -1650,7 +1702,8 @@ IN_PROC_BROWSER_TEST_F(PasswordBubbleWithUnifiedUiDisabledInteractiveUiTest,
       std::make_unique<password_manager::PasswordForm>(*test_form()));
 
   // Open another window with focus.
-  Browser* focused_window = CreateBrowser(browser()->GetProfile());
+  BrowserWindowInterface* focused_window =
+      CreateBrowser(browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(focused_window));
 
   PasswordAutoSignInView::set_auto_signin_toast_timeout(1);

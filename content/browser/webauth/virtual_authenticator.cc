@@ -7,11 +7,11 @@
 #include <optional>
 #include <utility>
 
+#include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/uuid.h"
 #include "crypto/hash.h"
-#include "device/fido/fido_parsing_utils.h"
 #include "device/fido/public/fido_constants.h"
 #include "device/fido/public/public_key_credential_rp_entity.h"
 #include "device/fido/public/public_key_credential_user_entity.h"
@@ -205,6 +205,9 @@ VirtualAuthenticator::ConstructDevice() {
       config.advertised_algorithms = {
           device::CoseAlgorithmIdentifier::kEdDSA,
           device::CoseAlgorithmIdentifier::kEs256,
+          device::CoseAlgorithmIdentifier::kMlDsa44,
+          device::CoseAlgorithmIdentifier::kMlDsa65,
+          device::CoseAlgorithmIdentifier::kMlDsa87,
           device::CoseAlgorithmIdentifier::kRs256,
       };
       return std::make_unique<device::VirtualCtap2Device>(state_, config);
@@ -301,7 +304,8 @@ void VirtualAuthenticator::OnLargeBlobUncompressed(
   if (result.has_value())
     value = std::move(*result);
 
-  std::move(callback).Run(device::fido_parsing_utils::MaterializeOrNull(value));
+  std::move(callback).Run(value ? std::make_optional(base::ToVector(*value))
+                                : std::nullopt);
 }
 
 void VirtualAuthenticator::OnLargeBlobCompressed(
@@ -317,8 +321,7 @@ void VirtualAuthenticator::OnLargeBlobCompressed(
   if (result.has_value()) {
     state_->InjectLargeBlob(
         &registration->second,
-        device::LargeBlob(device::fido_parsing_utils::Materialize(*result),
-                          original_size));
+        device::LargeBlob(base::ToVector(*result), original_size));
   }
   std::move(callback).Run(result.has_value());
 }

@@ -4,14 +4,11 @@
 
 import './contextual_tasks_inner_composebox.js';
 import '//resources/cr_components/composebox/composebox_dropdown.js';
-import '//resources/cr_components/composebox/composebox.js';
 import '//resources/cr_components/localized_link/localized_link.js';
 
 import {GlifAnimationState} from '//resources/cr_components/composebox/common.js';
-import type {ComposeboxElement} from '//resources/cr_components/composebox/composebox.js';
 import type {PageHandlerRemote} from '//resources/cr_components/composebox/composebox.mojom-webui.js';
 import {LensOverlayDismissalSource} from '//resources/cr_components/composebox/composebox.mojom-webui.js';
-import type {ComposeboxDropdownElement} from '//resources/cr_components/composebox/composebox_dropdown.js';
 import {ComposeboxProxyImpl, createAutocompleteMatch} from '//resources/cr_components/composebox/composebox_proxy.js';
 import {GlowAnimationState, VoiceSearchState} from '//resources/cr_components/search/constants.js';
 import {I18nMixinLit} from '//resources/cr_elements/i18n_mixin_lit.js';
@@ -29,6 +26,7 @@ import {getCss} from './composebox.css.js';
 import {getHtml} from './composebox.html.js';
 import {IconType} from './contextual_tasks.mojom-webui.js';
 import type {InjectedInput} from './contextual_tasks.mojom-webui.js';
+import type {ContextualTasksInnerComposeboxElement} from './contextual_tasks_inner_composebox.js';
 
 const ICON_TYPE_TO_NAME: {[id: number]: string} = {
   [IconType.kUnspecified]: 'unspecified',
@@ -53,19 +51,21 @@ function recordVoiceSearchAction(voiceSearchState: VoiceSearchState) {
 }
 
 function createGhostMatch(): AutocompleteMatch {
-  return createAutocompleteMatch({
-    contents: '\u200b',
-    description: '\u200b',
+  const match = createAutocompleteMatch({
     type: 'SEARCH_SUGGEST',
     isSearchType: true,
-    iconPath: '//resources/cr_components/searchbox/icons/search_spark.svg',
+    iconPath:
+        (document.documentElement.hasAttribute('webui-rounded-icons') ?
+             '//resources/cr_components/searchbox/icons/search_spark.svg' :
+             '//resources/cr_components/searchbox/icons/search_spark_old.svg'),
   });
+  match.suggestTemplate.primaryText.text = '\u200b';
+  return match;
 }
 export interface ContextualTasksComposeboxElement {
   $: {
-    composebox: ComposeboxElement,
+    composebox: ContextualTasksInnerComposeboxElement,
     composeboxContainer: HTMLElement,
-    contextualTasksSuggestionsContainer: ComposeboxDropdownElement,
   };
 }
 
@@ -148,9 +148,9 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
       lensButtonDisabled_: {type: Boolean},
       caretAnimationsEnabled_: {type: Boolean},
       usePecApi_: {type: Boolean},
-      useFork_: {type: Boolean},
       smartTabSharingVisible_: {type: Boolean},
       contextManagementInComposeboxEnabled_: {type: Boolean},
+      clearAllInputsWhenSubmittingQuery_: {type: Boolean},
       energyEffectEnabled_: {type: Boolean, reflect: true},
       energyEffectAnimationEnabled_: {type: Boolean, reflect: true},
       glifAnimationState_: {type: String},
@@ -173,6 +173,7 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
     suggestionGroupsMap: {},
     matches: Array(5).fill(null).map(() => createGhostMatch()),
     smartComposeInlineHint: null,
+    showAimActivityLink: false,
     sequenceId: 0,
   };
   /* If suggestions are loading. Set this any time that should hide suggestions
@@ -214,12 +215,12 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
       loadTimeData.getBoolean('caretAnimationEnabled');
   protected accessor usePecApi_: boolean =
       loadTimeData.getBoolean('contextualMenuUsePecApi');
-  protected accessor useFork_: boolean =
-      loadTimeData.getBoolean('useContextualTasksComposeboxFork');
   protected accessor smartTabSharingVisible_: boolean =
       loadTimeData.getBoolean('composeboxSmartTabSharingVisible');
   protected accessor contextManagementInComposeboxEnabled_: boolean =
       loadTimeData.getBoolean('contextManagementInComposeboxEnabled');
+  protected accessor clearAllInputsWhenSubmittingQuery_: boolean =
+      loadTimeData.getBoolean('clearAllInputsWhenSubmittingQuery');
   protected accessor energyEffectEnabled_: boolean =
       loadTimeData.getBoolean('energyEffectEnabled');
   // The use of energyEffectEnabled to set energyEffectAnimationEnabled_ is
@@ -260,6 +261,7 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
               this.shouldSubmitAfterUpload_ = false;
               composebox.submitQuery();
             }
+            this.fire('update-tooltip-visibility');
           });
       this.eventTracker_.add(composebox, 'composebox-focus-in', () => {
         this.isComposeboxFocused_ = true;
@@ -381,12 +383,14 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
               await this.pageHandler_.canShowNextboxAnimation();
           if (allowed) {
             this.glifAnimationState_ = GlifAnimationState.STARTED;
-            this.pageHandler_.recordNextboxAnimationImpression();
+            this.pageHandler_.recordNextboxAnimationImpression(true);
           } else {
             this.glifAnimationState_ = GlifAnimationState.INELIGIBLE;
+            this.pageHandler_.recordNextboxAnimationImpression(false);
           }
         } else {
           this.glifAnimationState_ = GlifAnimationState.STARTED;
+          this.pageHandler_.recordNextboxAnimationImpression(true);
         }
       } else {
         this.glifAnimationState_ = GlifAnimationState.INELIGIBLE;
@@ -435,7 +439,7 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
         '';
   }
 
-  // Called when cr-composebox suggestion activity link should be
+  // Called when the inner composebox suggestion activity link should be
   // shown or hidden. That is calculated based on results and
   // `showDropdown_`.
   protected onShowSuggestionActivityLink_(e: CustomEvent<boolean>) {
@@ -493,6 +497,7 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
 
     if (match) {
       this.searchboxHandler_.openAutocompleteMatch(
+          /*resultSequenceId=*/ this.zeroStateSuggestions_.sequenceId,
           /*line=*/ index,
           /*url=*/ match.destinationUrl,
           /*areMatchesShowing=*/ true,
@@ -516,9 +521,15 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
     const hadContent = this.$.composebox.input.trim().length > 0 ||
         this.$.composebox.hasFiles();
 
-    // Clear text from composebox and focus.
-    this.$.composebox.clearAllInputs(
-        querySubmitted, /* shouldBlockAutoSuggestedTabs= */ false);
+    // When submitting a query, clear all inputs. When refocusing or starting a
+    // new thread, only clear typed text and manual attachments to keep the
+    // auto-suggested tab.
+    if (querySubmitted) {
+      this.$.composebox.clearAllInputs(
+          querySubmitted, /* shouldBlockAutoSuggestedTabs= */ false);
+    } else {
+      this.$.composebox.clearInputsForNewThread();
+    }
     this.$.composebox.focusInput();
 
     // Unconditionally clearing matches wipes out the zero state suggestions
@@ -612,7 +623,8 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
       this.inToolMode_ =
           (this.inputState_?.activeTool ?? toolMode) !== ToolMode.kUnspecified;
 
-      this.searchboxHandler_.setActiveToolMode(toolMode as ToolMode);
+      this.searchboxHandler_.setActiveToolMode(
+          toolMode as ToolMode, /*isSetByAim=*/ true);
     }
 
     if (modelMode !== undefined && modelMode !== null) {
@@ -622,7 +634,9 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
           activeModel: modelMode as ModelMode,
         };
       }
-      this.searchboxHandler_.setActiveModelMode(modelMode as ModelMode);
+      this.searchboxHandler_.setActiveModelMode(
+          modelMode as ModelMode,
+          /*isSetByAim=*/ true);
     }
   }
 

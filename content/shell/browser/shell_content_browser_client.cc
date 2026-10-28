@@ -131,8 +131,10 @@
 #endif
 
 #if BUILDFLAG(IS_IOS)
+#include "components/application_locale_storage/application_locale_storage.h"  // nogncheck
 #include "components/permissions/bluetooth_delegate_impl.h"
 #include "content/shell/browser/bluetooth/shell_bluetooth_delegate_impl_client.h"
+#include "ui/base/l10n/l10n_util_mac.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -545,25 +547,6 @@ bool ShellContentBrowserClient::ShouldUrlUseApplicationIsolationLevel(
       url::Origin::Create(url.ReplaceComponents(replacements)));
 }
 
-bool ShellContentBrowserClient::IsSharedStorageAllowed(
-    content::BrowserContext* browser_context,
-    content::RenderFrameHost* rfh,
-    const url::Origin& top_frame_origin,
-    const url::Origin& accessing_origin,
-    std::string* out_debug_message,
-    bool* out_block_is_site_setting_specific) {
-  return true;
-}
-
-bool ShellContentBrowserClient::IsSharedStorageSelectURLAllowed(
-    content::BrowserContext* browser_context,
-    const url::Origin& top_frame_origin,
-    const url::Origin& accessing_origin,
-    std::string* out_debug_message,
-    bool* out_block_is_site_setting_specific) {
-  return true;
-}
-
 GeneratedCodeCacheSettings
 ShellContentBrowserClient::GetGeneratedCodeCacheSettings(
     content::BrowserContext* context) {
@@ -575,7 +558,7 @@ ShellContentBrowserClient::GetGeneratedCodeCacheSettings(
 
 base::OnceClosure ShellContentBrowserClient::SelectClientCertificate(
     BrowserContext* browser_context,
-    int process_id,
+    ChildProcessId process_id,
     WebContents* web_contents,
     net::SSLCertRequestInfo* cert_request_info,
     net::ClientCertIdentityList client_certs,
@@ -709,8 +692,14 @@ std::unique_ptr<LoginDelegate> ShellContentBrowserClient::CreateLoginDelegate(
     const GURL& url,
     scoped_refptr<net::HttpResponseHeaders> response_headers,
     bool first_auth_attempt,
+    bool do_not_prompt_for_login,
     GuestPageHolder* guest,
     LoginDelegate::LoginAuthRequiredCallback auth_required_callback) {
+  // `login_request_callback_` stands in for a login dialog, which must not be
+  // shown for requests that must not prompt for login.
+  if (do_not_prompt_for_login) {
+    return nullptr;
+  }
   if (!login_request_callback_.is_null()) {
     std::move(login_request_callback_)
         .Run(is_request_for_primary_main_frame_navigation,
@@ -838,6 +827,15 @@ ShellContentBrowserClient::GetNetworkContextsParentDirectory() {
 }
 
 #if BUILDFLAG(IS_IOS)
+base::i18n::LanguageTag ShellContentBrowserClient::GetApplicationLocale() {
+  if (!application_locale_storage_) {
+    application_locale_storage_ = std::make_unique<ApplicationLocaleStorage>();
+    application_locale_storage_->Set(l10n_util::GetLocaleOverride());
+  }
+
+  return application_locale_storage_->GetTag();
+}
+
 BluetoothDelegate* ShellContentBrowserClient::GetBluetoothDelegate() {
   if (!bluetooth_delegate_) {
     bluetooth_delegate_ = std::make_unique<permissions::BluetoothDelegateImpl>(

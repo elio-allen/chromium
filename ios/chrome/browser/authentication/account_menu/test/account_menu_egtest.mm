@@ -4,36 +4,31 @@
 
 #import <UIKit/UIKit.h>
 
-#import "base/ios/ios_util.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
+#import "components/signin/public/base/signin_switches.h"
 #import "ios/chrome/browser/authentication/account_menu/public/account_menu_constants.h"
 #import "ios/chrome/browser/authentication/test/separate_profiles_util.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
-#import "ios/chrome/browser/bookmarks/test/bookmark_earl_grey.h"
+#import "ios/chrome/browser/authentication/ui_bundled/cells/ai_subscription_chip_constants.h"
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_constants.h"
-#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
 #import "ios/chrome/browser/settings/google_services/public/google_services_settings_constants.h"
 #import "ios/chrome/browser/settings/manage_accounts/public/manage_accounts_table_view_controller_constants.h"
-#import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/browser/shared/public/snackbar/snackbar_constants.h"
+#import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/test_constants.h"
 #import "ios/chrome/browser/signin/model/test_constants_utils.h"
-#import "ios/chrome/browser/start_surface/ui_bundled/start_surface_features.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
-#import "ios/chrome/test/earl_grey/chrome_matchers_app_interface.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
-#import "ios/chrome/test/earl_grey/test_switches.h"
 #import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
-#import "net/test/embedded_test_server/embedded_test_server.h"
+#import "ios/testing/test_tag_registry.h"
 #import "ui/base/l10n/l10n_util.h"
 
 namespace {
@@ -71,23 +66,27 @@ id<GREYMatcher> identityDiscMatcher() {
 
 @implementation AccountMenuTestCase
 
-+ (void)setUpForTestCase {
-  [SigninEarlGrey setUseFakeResponsesForProfileSeparationPolicyRequests];
-}
-
-+ (void)tearDown {
-  [SigninEarlGrey clearUseFakeResponsesForProfileSeparationPolicyRequests];
-  [super tearDown];
+- (AppLaunchConfiguration)appConfigurationForTestCase {
+  AppLaunchConfiguration config = [super appConfigurationForTestCase];
+  if ([self isRunningTest:@selector(testUserActionableMDMErrorFlow)] ||
+      [self isRunningTest:@selector(testNonActionableMDMErrorFlow)]) {
+    config.features_enabled.push_back(
+        switches::kHandleMdmErrorsForDasherAccounts);
+  }
+  config.features_enabled.push_back(kAiSubscriptionAvatarRingIOS);
+  return config;
 }
 
 - (void)setUp {
   [super setUp];
+  [SigninEarlGrey setUseFakeResponsesForProfileSeparationPolicyRequests];
   // Adding the sync passphrase must be done before signin due to limitation of
   // the fakes.
   [ChromeEarlGrey addSyncPassphrase:kPassphrase];
 }
 
 - (void)tearDownHelper {
+  [SigninEarlGrey clearUseFakeResponsesForProfileSeparationPolicyRequests];
   [ChromeEarlGrey signOutAndClearIdentities];
   [super tearDownHelper];
 }
@@ -150,6 +149,7 @@ id<GREYMatcher> identityDiscMatcher() {
 
 // Tests that the identity disc particle can be selected, and lead to opening
 // the account menu.
+TAG_SMOKE_TEST(AccountMenuTestCase, testViewAccountMenu);
 - (void)testViewAccountMenu {
   [SigninEarlGrey signinWithFakeIdentity:kPrimaryIdentity];
   // Select the identity disc particle.
@@ -282,6 +282,7 @@ id<GREYMatcher> identityDiscMatcher() {
 
 // Tests that the sign out button actually signs out and the account menu view
 // is closed, from a personal account.
+TAG_SMOKE_TEST(AccountMenuTestCase, testSignOut);
 - (void)testSignOut {
   [SigninEarlGrey signinWithFakeIdentity:kPrimaryIdentity];
   [self selectIdentityDisc];
@@ -307,11 +308,6 @@ id<GREYMatcher> identityDiscMatcher() {
 
 // Tests that the add account button opens the add account view.
 - (void)testAddAccount {
-  // TODO(crbug.com/516431613): Re-enable this flaky test on iOS below 26.
-  if (!base::ios::IsRunningOnIOS26OrLater()) {
-    EARL_GREY_TEST_DISABLED(@"Flaky on iOS below 26.");
-  }
-
   [SigninEarlGrey signinWithFakeIdentity:kPrimaryIdentity];
   [self selectIdentityDisc];
   for (NSString* cancelButtonId in
@@ -320,18 +316,18 @@ id<GREYMatcher> identityDiscMatcher() {
                                             kAccountMenuAddAccountButtonId)]
         performAction:grey_tap()];
     // Checks the Fake authentication view is shown
-    [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
-                                            kFakeAuthActivityViewIdentifier)]
-        assertWithMatcher:grey_sufficientlyVisible()];
+    [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                        grey_accessibilityID(kFakeAuthActivityViewIdentifier)];
     // Close the SSO view controller.
     id<GREYMatcher> matcher = grey_allOf(grey_accessibilityID(cancelButtonId),
                                          grey_sufficientlyVisible(), nil);
     [[EarlGrey selectElementWithMatcher:matcher] performAction:grey_tap()];
+    // Make sure the SSO view controller is fully removed before the next
+    // iteration or before ending the test.
+    [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:
+                        grey_accessibilityID(kFakeAuthActivityViewIdentifier)];
+    [ChromeEarlGreyUI waitForAppToIdle];
   }
-  // Make sure the SSO view controller is fully removed before ending the test.
-  // The tear down needs to remove other view controllers, and it cannot be done
-  // during the animation of the SSO view controller.
-  [ChromeEarlGreyUI waitForAppToIdle];
 
   // TODO(crbug.com/41493423): Check whether the Add Account or Account Menu
   // should be logged as Signin started histogram.
@@ -339,19 +335,13 @@ id<GREYMatcher> identityDiscMatcher() {
 
 // Tests the enter passphrase button.
 - (void)testAddPassphrase {
-  // TODO(crbug.com/516431613): Re-enable this flaky test on iOS below 26.
-  if (!base::ios::IsRunningOnIOS26OrLater()) {
-    EARL_GREY_TEST_DISABLED(@"Flaky on iOS below 26.");
-  }
-
   [SigninEarlGrey signinWithFakeIdentity:kPrimaryIdentity];
   // Encrypt synced data with a passphrase to enable passphrase encryption for
   // the signed in account.
   [self selectIdentityDisc];
   // Check the error button is displayed.
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
-                                          kAccountMenuErrorActionButtonId)]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      grey_accessibilityID(kAccountMenuErrorActionButtonId)];
   // Tap on it
   [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
                                           kAccountMenuErrorActionButtonId)]
@@ -364,16 +354,15 @@ id<GREYMatcher> identityDiscMatcher() {
   // Enter the passphrase.
   [SigninEarlGreyUI submitSyncPassphrase:kPassphrase];
   // Entering the passphrase closes the view.
-  [[EarlGrey selectElementWithMatcher:
-                 grey_accessibilityID(
-                     kSyncEncryptionPassphraseTableViewAccessibilityIdentifier)]
-      assertWithMatcher:grey_nil()];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
+          grey_accessibilityID(
+              kSyncEncryptionPassphraseTableViewAccessibilityIdentifier)];
   // Check the error button disappeared.
-  [[EarlGrey
-      selectElementWithMatcher:grey_allOf(grey_accessibilityID(
-                                              kAccountMenuErrorActionButtonId),
-                                          grey_sufficientlyVisible(), nil)]
-      assertWithMatcher:grey_nil()];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
+          grey_allOf(grey_accessibilityID(kAccountMenuErrorActionButtonId),
+                     grey_sufficientlyVisible(), nil)];
 }
 
 // Tests that tapping on the secondary account button causes the primary account
@@ -418,8 +407,7 @@ id<GREYMatcher> identityDiscMatcher() {
 // Tests that tapping on a managed account button causes the primary account
 // to be changed and the account menu view to be closed after showing managed
 // account sign-in dialog.
-// TODO(crbug.com/507486331): Re-enable test
-- (void)DISABLED_testSwitchToManagedAccount {
+- (void)testSwitchToManagedAccount {
   [SigninEarlGrey signinWithFakeIdentity:kPrimaryIdentity];
   [SigninEarlGrey addFakeIdentity:kManagedIdentity1];
   [self selectIdentityDisc];
@@ -448,8 +436,7 @@ id<GREYMatcher> identityDiscMatcher() {
   [self assertAccountMenuIsNotShown];
 }
 
-// TODO(crbug.com/507486331): Re-enable test
-- (void)DISABLED_testSwitchFromManagedAccountToManagedAccount {
+- (void)testSwitchFromManagedAccountToManagedAccount {
   [SigninEarlGrey
       signinWithFakeManagedIdentityInPersonalProfile:kManagedIdentity1];
   [ChromeEarlGreyUI waitForAppToIdle];
@@ -560,6 +547,165 @@ id<GREYMatcher> identityDiscMatcher() {
 
   // Verify the Account Menu is dismissed.
   [self assertAccountMenuIsNotShown];
+}
+
+// Tests the MDM error resolution flow in the account menu.
+- (void)testUserActionableMDMErrorFlow {
+  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
+  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
+
+  // Set the MDM error.
+  [SigninEarlGrey setMDMErrorForIdentity:fakeIdentity userActionable:YES];
+
+  [self selectIdentityDisc];
+
+  // Verify the error message is visible.
+  id<GREYMatcher> errorMatcher = grey_text(l10n_util::GetNSString(
+      IDS_IOS_IDENTITY_ERROR_INFOBAR_DEVICE_MANAGEMENT_SERVICES_UNAVAILABLE_MESSAGE));
+  [[EarlGrey selectElementWithMatcher:errorMatcher]
+      assertWithMatcher:grey_sufficientlyVisible()];
+
+  // Reset the MDM notification status.
+  [SigninEarlGrey resetMDMNotificationDisplayed];
+
+  // Tap "Fix Now".
+  id<GREYMatcher> fixNowMatcher = grey_text(l10n_util::GetNSString(
+      IDS_IOS_IDENTITY_ERROR_INFOBAR_DEVICE_MANAGEMENT_REQUIRED_FIX_NOW_BUTTON));
+  [[EarlGrey selectElementWithMatcher:fixNowMatcher] performAction:grey_tap()];
+
+  // Verify that the MDM dialog was requested.
+  [SigninEarlGrey waitForMDMNotificationDisplayed];
+
+  // Resolve the error and verify the error UI is dismissed.
+  [SigninEarlGrey resetMDMNotificationDisplayed];
+  [SigninEarlGrey clearMDMErrorForIdentity:fakeIdentity];
+  [[EarlGrey selectElementWithMatcher:errorMatcher]
+      assertWithMatcher:grey_notVisible()];
+  GREYAssertFalse([SigninEarlGrey wasMDMNotificationDisplayed],
+                  @"MDM dialog should not be shown.");
+
+  [self closeAccountMenu];
+  [self assertAccountMenuIsNotShown];
+}
+
+// Tests the non-actionable MDM error resolution flow in the account menu.
+- (void)testNonActionableMDMErrorFlow {
+  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
+  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
+
+  // Set the MDM error.
+  [SigninEarlGrey setMDMErrorForIdentity:fakeIdentity userActionable:NO];
+
+  [self selectIdentityDisc];
+
+  // Verify the error message is visible.
+  id<GREYMatcher> errorMatcher = grey_text(l10n_util::GetNSString(
+      IDS_IOS_IDENTITY_ERROR_INFOBAR_DEVICE_MANAGEMENT_SERVICES_UNAVAILABLE_MESSAGE));
+  [[EarlGrey selectElementWithMatcher:errorMatcher]
+      assertWithMatcher:grey_sufficientlyVisible()];
+
+  // Reset the MDM notification status.
+  [SigninEarlGrey resetMDMNotificationDisplayed];
+
+  // Tap "Learn More".
+  id<GREYMatcher> learnMoreMatcher = grey_text(l10n_util::GetNSString(
+      IDS_IOS_IDENTITY_ERROR_INFOBAR_DEVICE_MANAGEMENT_REQUIRED_LEARN_MORE_BUTTON));
+  [[EarlGrey selectElementWithMatcher:learnMoreMatcher]
+      performAction:grey_tap()];
+
+  // Verify that the MDM dialog was requested.
+  [SigninEarlGrey waitForMDMNotificationDisplayed];
+
+  // Resolve the error and verify the error UI is dismissed.
+  [SigninEarlGrey resetMDMNotificationDisplayed];
+  [SigninEarlGrey clearMDMErrorForIdentity:fakeIdentity];
+  [[EarlGrey selectElementWithMatcher:errorMatcher]
+      assertWithMatcher:grey_notVisible()];
+  GREYAssertFalse([SigninEarlGrey wasMDMNotificationDisplayed],
+                  @"MDM dialog should not be shown.");
+
+  [self closeAccountMenu];
+  [self assertAccountMenuIsNotShown];
+}
+
+// Tests that tapping the AI Tier Ring and AI subscription chip
+// does not appear in case of error. That they appear when the error is
+// resolved. Test that tapping the AI subscription chip logs the correct metric.
+// Test that the ring and chip disappear if the user lose the tier.
+- (void)testTapAISubscriptionChipLogsMetric {
+  // Sign in.
+  [SigninEarlGrey signinWithFakeIdentity:kPrimaryIdentity];
+
+  // Set the AI subscription tier user preference to 1.
+  [ChromeEarlGrey setIntegerValue:1 forUserPref:"sync.ai_subscription_tier"];
+
+  // Open the account menu.
+  [self selectIdentityDiscAndVerify];
+
+  // Verify that the AI Tier avatar ring and subscription chip are not displayed
+  // due to the sync error.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kPremiumAvatarRingAccessibilityIdentifier)]
+      assertWithMatcher:grey_nil()];
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(kAISubscriptionChipId)]
+      assertWithMatcher:grey_nil()];
+
+  // Tap on the error button to open the passphrase dialog.
+  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
+                                          kAccountMenuErrorActionButtonId)]
+      performAction:grey_tap()];
+
+  // Verify that the passphrase view was opened.
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:
+          grey_accessibilityID(
+              kSyncEncryptionPassphraseTableViewAccessibilityIdentifier)];
+
+  // Submit the passphrase.
+  [SigninEarlGreyUI submitSyncPassphrase:kPassphrase];
+
+  // Wait for the passphrase dialog to disappear and the error button to be
+  // gone.
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
+          grey_allOf(grey_accessibilityID(kAccountMenuErrorActionButtonId),
+                     grey_sufficientlyVisible(), nil)];
+
+  // Set up the user action tester.
+  NSError* error = [MetricsAppInterface setupUserActionTester];
+  chrome_test_util::GREYAssertErrorNil(error,
+                                       @"Failed to setup user action tester");
+
+  // Match the subscription chip view and tap it.
+  id<GREYMatcher> chipMatcher =
+      grey_allOf(grey_accessibilityID(kAISubscriptionChipId),
+                 grey_sufficientlyVisible(), nil);
+  [[EarlGrey selectElementWithMatcher:chipMatcher] performAction:grey_tap()];
+
+  // Verify that the user action was logged exactly once.
+  error =
+      [MetricsAppInterface expectCount:1
+                         forUserAction:@"Signin_AccountMenu_SubscriptionChip"];
+  chrome_test_util::GREYAssertErrorNil(
+      error, @"Failed to log Signin_AccountMenu_SubscriptionChip user action");
+
+  // Clean up.
+  error = [MetricsAppInterface releaseUserActionTester];
+  chrome_test_util::GREYAssertErrorNil(error,
+                                       @"Failed to release user action tester");
+
+  // Set the AI subscription tier user preference to 0 (losing the tier).
+  [ChromeEarlGrey setIntegerValue:0 forUserPref:"sync.ai_subscription_tier"];
+
+  // Verify that the AI Tier avatar ring and subscription chip disappear.
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
+          grey_accessibilityID(kPremiumAvatarRingAccessibilityIdentifier)];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:grey_accessibilityID(
+                                                 kAISubscriptionChipId)];
 }
 
 @end

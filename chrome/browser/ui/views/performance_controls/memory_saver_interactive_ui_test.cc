@@ -26,6 +26,7 @@
 #include "chrome/browser/ui/performance_controls/memory_saver_chip_tab_helper.h"
 #include "chrome/browser/ui/performance_controls/test_support/memory_saver_interactive_test_mixin.h"
 #include "chrome/browser/ui/recently_audible_helper.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
@@ -58,6 +59,7 @@
 #include "ui/base/text/bytes_formatting.h"
 #include "ui/gfx/animation/animation.h"
 #include "ui/gfx/animation/animation_test_api.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/interaction/element_tracker_views.h"
@@ -174,7 +176,7 @@ IN_PROC_BROWSER_TEST_P(MemorySaverDiscardPolicyInteractiveTest,
 
   base::CallbackListSubscription subscription =
       RecentlyAudibleHelper::FromWebContents(
-          browser()->tab_strip_model()->GetWebContentsAt(0))
+          browser()->GetTabStripModel()->GetWebContentsAt(0))
           ->RegisterRecentlyAudibleChangedCallback(
               base::BindRepeating(&MemorySaverDiscardPolicyInteractiveTest::
                                       OnRecentlyAudibleCallback,
@@ -283,9 +285,7 @@ class MemorySaverChipInteractiveTest
   }
 
   views::BubbleDialogDelegate* GetMemorySaverBubble() {
-    return browser()
-        ->GetFeatures()
-        .memory_saver_bubble_controller()
+    return memory_saver::MemorySaverBubbleController::From(browser())
         ->bubble_for_testing();
   }
 
@@ -297,11 +297,18 @@ class MemorySaverChipInteractiveTest
   }
 
   auto CheckChipIsExpandedState(bool is_expanded) {
-    MultiStep steps =
-        Steps(WaitForPageActionChipVisible(),
-              CheckViewProperty(kMemorySaverChipElementId,
-                                &page_actions::PageActionView::ShouldShowLabel,
-                                is_expanded));
+    MultiStep steps = Steps(
+        is_expanded ? WaitForPageActionChipVisible(kActionShowMemorySaverChip)
+                    : WaitForPageActionIconVisible(kActionShowMemorySaverChip),
+        // Check expanded status by seeing if chip has text.
+        CheckResult(
+            [this]() {
+              return !page_actions::PageActionTestAccessor(
+                          browser(), kActionShowMemorySaverChip)
+                          .GetText()
+                          .empty();
+            },
+            is_expanded));
     AddDescriptionPrefix(steps, "CheckChipIsExpandedState()");
     return steps;
   }
@@ -323,9 +330,17 @@ class MemorySaverChipInteractiveTest
     return steps;
   }
 
+  // Opens the bubble. Uses a keyboard-triggered invocation because the WebUI
+  // page action's reopen suppressor only debounces *pointer* clicks that land
+  // shortly after the bubble closed. Several tests dismiss the bubble and
+  // immediately press the chip again (faster than any real user could), which
+  // would otherwise be swallowed as a spurious reopen. The suppression window
+  // itself must stay at its production value so that late WebUI pointer events
+  // from MousePressPageActionButton() are still absorbed.
   auto PressPageActionButton() {
-    MultiStep steps = Steps(WaitForPageActionChipVisible(),
-                            PressButton(kMemorySaverChipElementId));
+    MultiStep steps = Steps(
+        WaitForPageActionButtonVisible(kActionShowMemorySaverChip),
+        InvokePageAction(kActionShowMemorySaverChip, InputType::kKeyboard));
     AddDescriptionPrefix(steps, "PressPageActionButton()");
     return steps;
   }
@@ -336,7 +351,7 @@ class MemorySaverChipInteractiveTest
   // in tests will not. See crbug.com/395901614.
   auto MousePressPageActionButton() {
     MultiStep steps =
-        Steps(WaitForPageActionChipVisible(),
+        Steps(WaitForPageActionButtonVisible(kActionShowMemorySaverChip),
               MoveMouseTo(kMemorySaverChipElementId), ClickMouse());
     AddDescriptionPrefix(steps, "MousePressPageActionButton()");
     return steps;
@@ -354,7 +369,7 @@ class MemorySaverChipInteractiveTest
   auto SetTabPreDiscardMemoryUsage(size_t index, base::ByteSize usage) {
     return Do(base::BindLambdaForTesting([=, this]() {
       content::WebContents* web_contents =
-          browser()->tab_strip_model()->GetWebContentsAt(index);
+          browser()->GetTabStripModel()->GetWebContentsAt(index);
       auto* pre_discard_resource_usage =
           performance_manager::user_tuning::UserPerformanceTuningManager::
               PreDiscardResourceUsage::FromWebContents(web_contents);
@@ -400,11 +415,9 @@ IN_PROC_BROWSER_TEST_P(MemorySaverChipInteractiveTest,
       AddInstrumentedTab(kSecondTabContents, GetURL()),
       EnsureNotPresent(kMemorySaverChipElementId),
       DiscardAndReloadTab(0, kFirstTabContents), CheckChipIsExpandedState(true),
-      SelectTab(kTabStripElementId, 1),
-      EnsureNotPresent(kMemorySaverChipElementId),
+      SelectTab(kTabStripElementId, 1), WaitForHide(kMemorySaverChipElementId),
       SelectTab(kTabStripElementId, 0), CheckChipIsExpandedState(false),
-      SelectTab(kTabStripElementId, 1),
-      EnsureNotPresent(kMemorySaverChipElementId));
+      SelectTab(kTabStripElementId, 1), WaitForHide(kMemorySaverChipElementId));
 }
 
 // Page Action chip should stay collapsed when navigating between two
@@ -419,7 +432,8 @@ IN_PROC_BROWSER_TEST_P(MemorySaverChipInteractiveTest,
       DiscardAndReloadTab(0, kFirstTabContents), CheckChipIsExpandedState(true),
       DiscardAndReloadTab(1, kSecondTabContents),
       CheckChipIsExpandedState(true), SelectTab(kTabStripElementId, 0),
-      CheckChipIsExpandedState(false), SelectTab(kTabStripElementId, 1),
+      WaitForShow(kFirstTabContents), CheckChipIsExpandedState(false),
+      SelectTab(kTabStripElementId, 1), WaitForShow(kSecondTabContents),
       CheckChipIsExpandedState(false));
 }
 
@@ -427,24 +441,23 @@ IN_PROC_BROWSER_TEST_P(MemorySaverChipInteractiveTest,
 // popup is closed
 IN_PROC_BROWSER_TEST_P(MemorySaverChipInteractiveTest,
                        ChipShowsAfterOmniboxPopupIsClosed) {
-  RunTestSequence(InstrumentTab(kFirstTabContents, 0),
-                  NavigateWebContents(kFirstTabContents, GetURL()),
-                  AddInstrumentedTab(kSecondTabContents, GetURL()),
-                  EnsureNotPresent(kMemorySaverChipElementId),
-                  DiscardAndReloadTab(0, kFirstTabContents),
-                  SelectTab(kTabStripElementId, 1),
-                  EnsureNotPresent(kMemorySaverChipElementId),
-                  SelectTab(kTabStripElementId, 0),
-                  WaitForShow(kMemorySaverChipElementId),
-                  FocusElement(kOmniboxElementId),
-                  // Start typing into the omnibox.
-                  EnterText(kOmniboxElementId, u"query"),
-                  WaitForHide(kMemorySaverChipElementId),
-                  // Clear the input.
-                  SendKeyPress(kOmniboxElementId, ui::VKEY_ESCAPE),
-                  // Exit the editing mode.
-                  SendKeyPress(kOmniboxElementId, ui::VKEY_ESCAPE),
-                  WaitForShow(kMemorySaverChipElementId));
+  RunTestSequence(
+      InstrumentTab(kFirstTabContents, 0),
+      NavigateWebContents(kFirstTabContents, GetURL()),
+      AddInstrumentedTab(kSecondTabContents, GetURL()),
+      EnsureNotPresent(kMemorySaverChipElementId),
+      DiscardAndReloadTab(0, kFirstTabContents),
+      SelectTab(kTabStripElementId, 1), WaitForHide(kMemorySaverChipElementId),
+      SelectTab(kTabStripElementId, 0), WaitForShow(kMemorySaverChipElementId),
+      FocusElement(kOmniboxElementId),
+      // Start typing into the omnibox.
+      EnterText(kOmniboxElementId, u"query"),
+      WaitForHide(kMemorySaverChipElementId),
+      // Clear the input.
+      SendKeyPress(kFirstTabContents, ui::VKEY_ESCAPE),
+      // Exit the editing mode.
+      SendKeyPress(kFirstTabContents, ui::VKEY_ESCAPE),
+      WaitForShow(kMemorySaverChipElementId));
 }
 
 // Page Action chip should only show on discarded non-chrome pages
@@ -462,19 +475,17 @@ IN_PROC_BROWSER_TEST_P(MemorySaverChipInteractiveTest,
   constexpr std::string_view kDiscardableInternalPage =
       chrome::kChromeUIVersionURL;
 
-  RunTestSequence(InstrumentTab(kFirstTabContents, 0),
-                  NavigateWebContents(kFirstTabContents, GetURL()),
-                  AddInstrumentedTab(kSecondTabContents,
-                                     GURL(kDiscardableInternalPage)),
+  RunTestSequence(
+      InstrumentTab(kFirstTabContents, 0),
+      NavigateWebContents(kFirstTabContents, GetURL()),
+      AddInstrumentedTab(kSecondTabContents, GURL(kDiscardableInternalPage)),
 
-                  // Discards tab on non-chrome page
-                  DiscardAndReloadTab(0, kFirstTabContents),
-                  WaitForPageActionChipVisible(),
+      // Discards tab on non-chrome page
+      DiscardAndReloadTab(0, kFirstTabContents), WaitForPageActionChipVisible(),
 
-                  // Discards tab on chrome:// page
-                  TryDiscardTab(1), CheckTabIsDiscarded(1, true),
-                  SelectTab(kTabStripElementId, 1),
-                  EnsureNotPresent(kMemorySaverChipElementId));
+      // Discards tab on chrome:// page
+      TryDiscardTab(1), CheckTabIsDiscarded(1, true),
+      SelectTab(kTabStripElementId, 1), WaitForHide(kMemorySaverChipElementId));
 }
 
 // Memory Saver Dialog bubble should close after clicking the "OK" button
@@ -508,7 +519,7 @@ IN_PROC_BROWSER_TEST_P(MemorySaverChipInteractiveTest,
                 GetMemorySaverBubble()->GetBubbleFrameView()->close_button());
           })),
       PressButton(kDialogCloseButton),
-      EnsureNotPresent(MemorySaverBubbleView::kMemorySaverDialogBodyElementId));
+      WaitForHide(MemorySaverBubbleView::kMemorySaverDialogBodyElementId));
 }
 
 // Memory Saver Dialog bubble should close after clicking on
@@ -521,7 +532,7 @@ IN_PROC_BROWSER_TEST_P(MemorySaverChipInteractiveTest, CloseBubbleOnChipClick) {
       DiscardAndReloadTab(0, kFirstTabContents), PressPageActionButton(),
       WaitForShow(MemorySaverBubbleView::kMemorySaverDialogBodyElementId),
       MousePressPageActionButton(),
-      EnsureNotPresent(MemorySaverBubbleView::kMemorySaverDialogBodyElementId));
+      WaitForHide(MemorySaverBubbleView::kMemorySaverDialogBodyElementId));
 }
 
 // Memory Saver dialog bubble should close when clicking to navigate to
@@ -543,7 +554,7 @@ IN_PROC_BROWSER_TEST_P(MemorySaverChipInteractiveTest, CloseBubbleOnTabSwitch) {
 IN_PROC_BROWSER_TEST_P(MemorySaverChipInteractiveTest,
                        BubbleCorrectlyReportingMemorySaved) {
   // Simulate a page larger than the threshold for showing savings UI.
-  static constexpr base::ByteSize kMemoryUsage = base::GiBU(1);
+  static constexpr base::ByteSize kMemoryUsage = base::GiB(1);
   RunTestSequence(
       InstrumentTab(kFirstTabContents, 0),
       NavigateWebContents(kFirstTabContents, GetURL()),
@@ -590,7 +601,7 @@ IN_PROC_BROWSER_TEST_P(MemorySaverChipInteractiveTest,
                                       kTabDiscardingExceptionsWithTime);
         EXPECT_EQ(1u, discard_exception.size());
         std::string current_site_host = browser()
-                                            ->tab_strip_model()
+                                            ->GetTabStripModel()
                                             ->GetActiveWebContents()
                                             ->GetURL()
                                             .GetHost();
@@ -608,7 +619,7 @@ IN_PROC_BROWSER_TEST_P(MemorySaverChipInteractiveTest,
       PressButton(MemorySaverBubbleView::kMemorySaverDialogCancelButton),
       WaitForHide(MemorySaverBubbleView::kMemorySaverDialogBodyElementId),
       Check(base::BindLambdaForTesting(
-          [&]() { return browser()->tab_strip_model()->count() == 3; })),
+          [&]() { return browser()->GetTabStripModel()->count() == 3; })),
       InstrumentTab(kPerformanceSettingsTab, 2),
       WaitForWebContentsReady(
           kPerformanceSettingsTab,
@@ -641,7 +652,9 @@ IN_PROC_BROWSER_TEST_P(MemorySaverChipInteractiveTest,
       WaitForHide(MemorySaverBubbleView::kMemorySaverDialogBodyElementId),
       // Second tab's cancel button should allow users to exclude the site
       // since this tab's site wasn't excluded yet
-      SelectTab(kTabStripElementId, 1), PressPageActionButton(),
+      SelectTab(kTabStripElementId, 1), WaitForShow(kSecondTabContents),
+      Do([this]() { content::WaitForLoadStop(GetWebContentsAt(1)); }),
+      WaitForPageActionChipVisible(), PressPageActionButton(),
       WaitForShow(MemorySaverBubbleView::kMemorySaverDialogBodyElementId),
       CheckViewProperty(
           MemorySaverBubbleView::kMemorySaverDialogCancelButton,
@@ -652,7 +665,9 @@ IN_PROC_BROWSER_TEST_P(MemorySaverChipInteractiveTest,
       WaitForHide(MemorySaverBubbleView::kMemorySaverDialogBodyElementId),
       // Ensure that the first tab's cancel button continues to allow users
       // to navigate to the settings page even after we selected another tab
-      SelectTab(kTabStripElementId, 0), PressPageActionButton(),
+      SelectTab(kTabStripElementId, 0), WaitForShow(kFirstTabContents),
+      Do([this]() { content::WaitForLoadStop(GetWebContentsAt(0)); }),
+      PressPageActionButton(),
       WaitForShow(MemorySaverBubbleView::kMemorySaverDialogBodyElementId),
       CheckViewProperty(
           MemorySaverBubbleView::kMemorySaverDialogCancelButton,
@@ -671,7 +686,7 @@ IN_PROC_BROWSER_TEST_P(MemorySaverChipInteractiveTest,
       NavigateWebContents(kFirstTabContents, GetURL()),
       AddInstrumentedTab(kSecondTabContents, GURL(kOtherPage)),
       ForceRefreshMemoryMetrics(), DiscardAndReloadTab(0, kFirstTabContents),
-      SetTabPreDiscardMemoryUsage(0, base::MiBU(135)), PressPageActionButton(),
+      SetTabPreDiscardMemoryUsage(0, base::MiB(135)), PressPageActionButton(),
       WaitForShow(
           MemorySaverBubbleView::kMemorySaverDialogResourceViewElementId),
       Screenshot(MemorySaverBubbleView::kMemorySaverDialogResourceViewElementId,
@@ -742,8 +757,12 @@ class MemorySaverImprovedFaviconTreatmentTest
 
   TabIcon* GetTabIcon(int tab_index) {
     return views::AsViewClass<TabIcon>(
-        GetTabStripView()->GetTabAnchorViewAt(tab_index)->GetViewByElementId(
-            kTabIconElementId));
+        GetTabStripView()
+            ->GetTabAnchorView(browser()
+                                   ->GetTabStripModel()
+                                   ->GetTabAtIndex(tab_index)
+                                   ->GetHandle())
+            ->GetViewByElementId(kTabIconElementId));
   }
 
  private:

@@ -10,6 +10,7 @@
 
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
+#include "chrome/browser/glic/common/observable_value.h"
 #include "chrome/browser/glic/public/glic_instance.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -25,21 +26,14 @@ class MockGlicInstance : public GlicInstance {
 
   MOCK_METHOD(bool, IsActive, (), (override));
   MOCK_METHOD(bool, IsHibernated, (), (const, override));
-  MOCK_METHOD(void,
-              AddStateObserver,
-              (PanelStateObserver * observer),
-              (override));
-  MOCK_METHOD(void,
-              RemoveStateObserver,
-              (PanelStateObserver * observer),
-              (override));
-  MOCK_METHOD(mojom::PanelState, GetPanelState, (), (override));
+  ObservableValueView<mojom::PanelState>& GetPanelState() const override {
+    return panel_state_.view();
+  }
   MOCK_METHOD(base::CallbackListSubscription,
               RegisterWillBeDestroyed,
               (DestructionCallback),
               (override));
   MOCK_METHOD(bool, IsShowing, (), (const, override));
-  MOCK_METHOD(bool, IsFullyClosedForTesting, (), (const, override));
   MOCK_METHOD(gfx::Size, GetPanelSize, (), (override));
   MOCK_METHOD(Target, GetInvokeTarget, (Target::Surface), (override));
   MOCK_METHOD(const InstanceId&, id, (), (const, override));
@@ -79,6 +73,7 @@ class MockGlicInstance : public GlicInstance {
               (mojom::AdditionalContextPtr),
               (override));
   MOCK_METHOD(void, FocusIfActive, (), (override));
+  MOCK_METHOD(bool, IsLiveMode, (), (const, override));
   MOCK_METHOD(void, NotifyActorTaskListRowClicked, (int32_t), (override));
 
   base::WeakPtr<MockGlicInstance> GetWeakPtr() {
@@ -86,6 +81,7 @@ class MockGlicInstance : public GlicInstance {
   }
 
  private:
+  ObservableValue<mojom::PanelState> panel_state_;
   base::WeakPtrFactory<MockGlicInstance> weak_ptr_factory_{this};
 };
 

@@ -12,6 +12,7 @@
 #include "base/base64.h"
 #include "base/containers/flat_set.h"
 #include "base/functional/callback_helpers.h"
+#include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/escape.h"
@@ -29,14 +30,17 @@
 #include "content/browser/webid/mappers.h"
 #include "content/browser/webid/metrics.h"
 #include "content/browser/webid/network_request_manager.h"
+#include "content/browser/webid/url_computations.h"
 #include "content/browser/webid/webid_utils.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/weak_document_ptr.h"
 #include "content/public/browser/webid/constants.h"
 #include "content/public/browser/webid/federated_identity_permission_context_delegate.h"
 #include "content/public/browser/webid/identity_request_dialog_controller.h"
+#include "content/public/browser/webid/native_idp_fetcher.h"
 #include "content/public/common/color_parser.h"
 #include "crypto/hash.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -44,7 +48,6 @@
 #include "net/base/load_flags.h"
 #include "net/base/network_isolation_partition.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
-#include "net/base/schemeful_site.h"
 #include "net/base/url_util.h"
 #include "net/cookies/site_for_cookies.h"
 #include "net/http/http_request_headers.h"
@@ -232,6 +235,10 @@ GURL FindBestMatchingIconUrl(const base::ListValue* icons_value,
   params.ideal_icon_size_in_px = brand_icon_ideal_size;
   params.minimum_icon_size_in_px = brand_icon_minimum_size;
   params.purpose = blink::mojom::ManifestImageResource_Purpose::MASKABLE;
+  // FedCM icons don't specify a `type`, and some icon URLs (e.g. RP icons
+  // served from image CDNs) have no file extension to infer one from. Don't
+  // reject those; the downloaded bytes are validated by DecodeImageIsolated().
+  params.allow_icons_with_unknown_type = true;
   auto result =
       blink::ManifestIconSelector::FindBestMatchingIcon(icons, params);
   return result ? result->icon_url : GURL();
@@ -446,69 +453,42 @@ void OnAccountsRequestParsed(
     IdpNetworkRequestManager::AccountsRequestCallback callback,
     FetchStatus fetch_status,
     std::optional<base::DictValue> result) {
-  IdpNetworkRequestManager::AccountsResponse response;
   if (fetch_status.parse_status != ParseStatus::kSuccess) {
     RecordAccountsResponseInvalidReason(
         AccountsResponseInvalidReason::kResponseIsNotJsonOrDict);
-    std::move(callback).Run(fetch_status, std::move(response));
+    std::move(callback).Run(fetch_status,
+                            IdpNetworkRequestManager::AccountsResponse());
     return;
   }
 
-  auto parse_result = IdpAccountsParser::ParseAccounts(*result);
-
-  if (!parse_result.has_value()) {
-    AccountsResponseInvalidReason parse_error = parse_result.error();
+  auto response_result = IdpAccountsParser::ParseAccountsResponse(*result);
+  if (!response_result.has_value()) {
+    AccountsResponseInvalidReason parse_error = response_result.error();
     CHECK_NE(parse_error,
              AccountsResponseInvalidReason::kResponseIsNotJsonOrDict);
     RecordAccountsResponseInvalidReason(parse_error);
     ParseStatus parse_status = ParseStatus::kInvalidResponseError;
     if (parse_error == AccountsResponseInvalidReason::kAccountListIsEmpty) {
       parse_status = ParseStatus::kEmptyListError;
+    } else if (parse_error ==
+               AccountsResponseInvalidReason::kUseNativeUiDelegation) {
+      parse_status = ParseStatus::kUseNativeUiDelegation;
     }
     std::move(callback).Run({parse_status, fetch_status.response_code},
                             IdpNetworkRequestManager::AccountsResponse());
     return;
   }
 
-  response.accounts = std::move(*parse_result);
+  IdpNetworkRequestManager::AccountsResponse response =
+      std::move(*response_result);
   if (fetch_status.from_accounts_push) {
     for (auto& account : response.accounts) {
       account->from_accounts_push = true;
     }
   }
 
-  const std::string* site_salt = result->FindString(kSiteSaltKey);
-  if (IsEmbedderInitiatedLoginEnabled() && site_salt) {
-    response.site_salt = *site_salt;
-  }
-
   std::move(callback).Run({ParseStatus::kSuccess, fetch_status.response_code},
                           std::move(response));
-}
-
-std::pair<GURL, std::optional<ErrorUrlType>> GetErrorUrlAndType(
-    const std::string* url,
-    const GURL& idp_url) {
-  if (!url || url->empty()) {
-    return std::make_pair(GURL(), std::nullopt);
-  }
-
-  GURL error_url = idp_url.Resolve(*url);
-  if (!error_url.is_valid()) {
-    return std::make_pair(GURL(), std::nullopt);
-  }
-
-  url::Origin error_origin = url::Origin::Create(error_url);
-  url::Origin idp_origin = url::Origin::Create(idp_url);
-  if (error_origin == idp_origin) {
-    return std::make_pair(error_url, ErrorUrlType::kSameOrigin);
-  }
-
-  if (!net::SchemefulSite::IsSameSite(error_origin, idp_origin)) {
-    return std::make_pair(GURL(), ErrorUrlType::kCrossSite);
-  }
-
-  return std::make_pair(error_url, ErrorUrlType::kCrossOriginSameSite);
 }
 
 ErrorDialogType GetErrorDialogType(const std::string& code, const GURL& url) {
@@ -577,7 +557,7 @@ void OnTokenRequestParsed(
   TokenResult token_result;
 
   bool parse_succeeded = fetch_status.parse_status == ParseStatus::kSuccess;
-  DCHECK(!parse_succeeded || result.has_value());
+  CHECK(!parse_succeeded || result.has_value(), base::NotFatalUntil::M158);
 
   // We need to handle a number of cases, in order:
   // 1) Result has a custom error field - return error
@@ -611,10 +591,7 @@ void OnTokenRequestParsed(
       token_value, continue_on, redirect_to, response_error);
 
   if (response_error) {
-    std::string error_code;
-    if (IsErrorAttributeEnabled()) {
-      error_code = ExtractString(*response_error, kErrorKey);
-    }
+    std::string error_code = ExtractString(*response_error, kErrorKey);
     if (error_code.empty()) {
       error_code = ExtractString(*response_error, kErrorCodeKey);
     }
@@ -643,7 +620,7 @@ void OnTokenRequestParsed(
     std::move(callback).Run(fetch_status, std::move(token_result));
     return;
   }
-  DCHECK(response);
+  CHECK(response, base::NotFatalUntil::M158);
 
   if (issuance_token && IsDelegationEnabled()) {
     token_result.token = base::Value(*issuance_token);
@@ -832,7 +809,7 @@ IdpNetworkRequestManager::IdpNetworkRequestManager(
                             std::move(initiator_document)),
       rp_embedding_origin_(rp_embedding_origin),
       permission_delegate_(permission_delegate) {
-  DCHECK(client_security_state_);
+  CHECK(client_security_state_, base::NotFatalUntil::M158);
   // If COEP:credentialless was used, this would break FedCM credentialled
   // requests. We clear the Cross-Origin-Embedder-Policy because FedCM responses
   // are not really embedded in the page. They do not enter the renderer
@@ -1019,6 +996,23 @@ void IdpNetworkRequestManager::SendTokenRequest(
     ContinueOnCallback continue_on,
     RedirectToCallback redirect_to,
     RecordErrorMetricsCallback record_error_metrics_callback) {
+  if (IsFedCmNativeIdPsEnabled()) {
+    NativeIdpFetcher* fetcher =
+        GetNativeIdpFetcher(url::Origin::Create(token_url));
+    if (fetcher) {
+      NativeIdpFetcher::RequestParams params;
+      params.url = token_url;
+      params.body = url_encoded_post_data;
+      fetcher->Fetch(
+          params,
+          base::BindOnce(&IdpNetworkRequestManager::OnNativeTokenFetched,
+                         weak_ptr_factory_.GetWeakPtr(), std::move(callback),
+                         std::move(continue_on), std::move(redirect_to),
+                         std::move(record_error_metrics_callback), token_url));
+      return;
+    }
+  }
+
   std::unique_ptr<network::ResourceRequest> resource_request =
       CreateCredentialedResourceRequest(
           token_url, idp_blindness
@@ -1027,7 +1021,7 @@ void IdpNetworkRequestManager::SendTokenRequest(
 
   if (idp_blindness) {
     // IdP blindness can only be used when the feature is enabled.
-    DCHECK(IsDelegationEnabled());
+    CHECK(IsDelegationEnabled(), base::NotFatalUntil::M158);
     // We have to set this to a Origin: null because the underlying loader
     // will  not let us send a request without Origin header if the request
     // method is POST.
@@ -1043,6 +1037,76 @@ void IdpNetworkRequestManager::SendTokenRequest(
       // even if the response code is non-2xx because the server may include the
       // error details with the Error API.
       /*allow_http_error_results=*/true);
+}
+
+void IdpNetworkRequestManager::OnNativeTokenFetched(
+    TokenRequestCallback callback,
+    ContinueOnCallback continue_on_callback,
+    RedirectToCallback redirect_to_callback,
+    RecordErrorMetricsCallback record_error_metrics_callback,
+    const GURL& token_url,
+    NativeIdpFetcher::FetchResult fetch_result) {
+  if (!fetch_result.has_value()) {
+    OnTokenRequestParsed(
+        std::move(callback), std::move(continue_on_callback),
+        std::move(redirect_to_callback),
+        std::move(record_error_metrics_callback), token_url,
+        FetchStatus{ParseStatus::kNoResponseError, net::ERR_FAILED},
+        /*result=*/std::nullopt);
+    return;
+  }
+
+  std::optional<base::DictValue> dict =
+      base::JSONReader::ReadDict(fetch_result.value(), base::JSON_PARSE_RFC);
+  if (!dict) {
+    OnTokenRequestParsed(
+        std::move(callback), std::move(continue_on_callback),
+        std::move(redirect_to_callback),
+        std::move(record_error_metrics_callback), token_url,
+        FetchStatus{ParseStatus::kInvalidResponseError, net::HTTP_OK},
+        /*result=*/std::nullopt);
+    return;
+  }
+
+  OnTokenRequestParsed(std::move(callback), std::move(continue_on_callback),
+                       std::move(redirect_to_callback),
+                       std::move(record_error_metrics_callback), token_url,
+                       FetchStatus{ParseStatus::kSuccess, net::HTTP_OK},
+                       std::move(dict));
+}
+
+NativeIdpFetcher* IdpNetworkRequestManager::GetOrCreateNativeIdpFetcher(
+    const url::Origin& idp_origin) {
+  auto fetcher_it = native_idp_fetchers_.find(idp_origin);
+  if (fetcher_it != native_idp_fetchers_.end()) {
+    return fetcher_it->second.get();
+  }
+  if (!GetContentClient() || !GetContentClient()->browser()) {
+    return nullptr;
+  }
+  std::unique_ptr<NativeIdpFetcher> fetcher =
+      GetContentClient()->browser()->CreateNativeIdpFetcher(idp_origin);
+  if (!fetcher) {
+    return nullptr;
+  }
+  NativeIdpFetcher* raw_fetcher = fetcher.get();
+  native_idp_fetchers_.emplace(idp_origin, std::move(fetcher));
+  return raw_fetcher;
+}
+
+NativeIdpFetcher* IdpNetworkRequestManager::GetNativeIdpFetcher(
+    const url::Origin& idp_origin) const {
+  auto fetcher_it = native_idp_fetchers_.find(idp_origin);
+  if (fetcher_it != native_idp_fetchers_.end()) {
+    return fetcher_it->second.get();
+  }
+  return nullptr;
+}
+
+void IdpNetworkRequestManager::SetNativeIdpFetcherForTesting(  // IN-TEST
+    const url::Origin& idp_origin,
+    std::unique_ptr<NativeIdpFetcher> fetcher) {
+  native_idp_fetchers_[idp_origin] = std::move(fetcher);
 }
 
 void IdpNetworkRequestManager::SendSuccessfulTokenRequestMetrics(
@@ -1332,7 +1396,7 @@ IdpNetworkRequestManager::CreateCachedAccountPictureRequest(
       /*frame_origin=*/url::Origin::Create(target_url), net::SiteForCookies(),
       /*nonce=*/std::nullopt,
       net::NetworkIsolationPartition::kFedCmUncredentialedRequests);
-  DCHECK(client_security_state_);
+  CHECK(client_security_state_, base::NotFatalUntil::M158);
   resource_request->trusted_params->client_security_state =
       client_security_state_.Clone();
 

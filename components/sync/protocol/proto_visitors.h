@@ -12,7 +12,8 @@
 #include "components/sync/protocol/app_setting_specifics.pb.h"
 #include "components/sync/protocol/app_specifics.pb.h"
 #include "components/sync/protocol/arc_package_specifics.pb.h"
-#include "components/sync/protocol/autofill_offer_specifics.pb.h"
+#include "components/sync/protocol/attachment.pb.h"
+#include "components/sync/protocol/autofill_entity_suppression_specifics.pb.h"
 #include "components/sync/protocol/autofill_specifics.pb.h"
 #include "components/sync/protocol/autofill_valuable_metadata_specifics.pb.h"
 #include "components/sync/protocol/autofill_valuable_specifics.pb.h"
@@ -43,8 +44,6 @@
 #include "components/sync/protocol/password_sharing_invitation_specifics.pb.h"
 #include "components/sync/protocol/password_specifics.pb.h"
 #include "components/sync/protocol/persisted_entity_data.pb.h"
-#include "components/sync/protocol/plus_address_setting_specifics.pb.h"
-#include "components/sync/protocol/plus_address_specifics.pb.h"
 #include "components/sync/protocol/power_bookmark_specifics.pb.h"
 #include "components/sync/protocol/preference_specifics.pb.h"
 #include "components/sync/protocol/printer_specifics.pb.h"
@@ -65,6 +64,7 @@
 #include "components/sync/protocol/sync.pb.h"
 #include "components/sync/protocol/sync_entity.pb.h"
 #include "components/sync/protocol/sync_invalidations_payload.pb.h"
+#include "components/sync/protocol/tab_context_container_access_token.pb.h"
 #include "components/sync/protocol/tab_group_attribution_metadata.pb.h"
 #include "components/sync/protocol/theme_android_specifics.pb.h"
 #include "components/sync/protocol/theme_ios_specifics.pb.h"
@@ -75,7 +75,6 @@
 #include "components/sync/protocol/unique_position.pb.h"
 #include "components/sync/protocol/user_consent_specifics.pb.h"
 #include "components/sync/protocol/user_event_specifics.pb.h"
-#include "components/sync/protocol/web_apk_specifics.pb.h"
 #include "components/sync/protocol/web_app_specifics.pb.h"
 #include "components/sync/protocol/webauthn_credential_specifics.pb.h"
 #include "components/sync/protocol/workspace_desk_specifics.pb.h"
@@ -198,48 +197,6 @@ VISIT_PROTO_FIELDS(const sync_pb::ArcPackageSpecifics& proto) {
   VISIT(package_version);
   VISIT(last_backup_android_id);
   VISIT(last_backup_time);
-}
-
-VISIT_PROTO_FIELDS(const sync_pb::AutofillOfferSpecifics& proto) {
-  VISIT(id);
-  VISIT(offer_details_url);
-  VISIT_REP(merchant_domain);
-  VISIT_REP(merchant_app_package);
-  VISIT(offer_expiry_date);
-  VISIT(card_linked_offer_data);
-  VISIT(promo_code_offer_data);
-  VISIT(display_strings);
-  VISIT(percentage_reward);
-  VISIT(fixed_amount_reward);
-}
-
-VISIT_PROTO_FIELDS(
-    const sync_pb::AutofillOfferSpecifics::CardLinkedOfferData& proto) {
-  VISIT_REP(instrument_id);
-}
-
-VISIT_PROTO_FIELDS(
-    const sync_pb::AutofillOfferSpecifics::PromoCodeOfferData& proto) {
-  VISIT(promo_code);
-}
-
-VISIT_PROTO_FIELDS(
-    const sync_pb::AutofillOfferSpecifics::DisplayStrings& proto) {
-  VISIT(value_prop_text);
-  VISIT(see_details_text_mobile);
-  VISIT(see_details_text_desktop);
-  VISIT(usage_instructions_text_mobile);
-  VISIT(usage_instructions_text_desktop);
-}
-
-VISIT_PROTO_FIELDS(
-    const sync_pb::AutofillOfferSpecifics::PercentageReward& proto) {
-  VISIT(percentage);
-}
-
-VISIT_PROTO_FIELDS(
-    const sync_pb::AutofillOfferSpecifics::FixedAmountReward& proto) {
-  VISIT(amount);
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::AutofillProfileSpecifics& proto) {
@@ -554,7 +511,6 @@ VISIT_PROTO_FIELDS(const sync_pb::ClientConfigParams& proto) {
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::ClientStatus& proto) {
-  VISIT(hierarchy_conflict_detected);
   VISIT(is_sync_feature_enabled);
 }
 
@@ -604,7 +560,7 @@ VISIT_PROTO_FIELDS(const sync_pb::CommitResponse::EntryResponse& proto) {
   VISIT(id_string);
   VISIT(version);
   VISIT(error_message);
-  VISIT(mtime);
+  VISIT(attachment_modification_time_unix_epoch_millis);
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::DataTypeContext& proto) {
@@ -680,6 +636,7 @@ VISIT_PROTO_FIELDS(const sync_pb::DeviceInfoSpecifics& proto) {
   VISIT_ENUM(device_form_factor);
   VISIT(android_os_build_fingerprint_prefix);
   VISIT(server_determined_model_name);
+  VISIT(personal_context_fields);
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::DesktopToMobilePromoMessage& proto) {
@@ -701,6 +658,7 @@ VISIT_PROTO_FIELDS(const sync_pb::FeatureSpecificFields& proto) {
   VISIT_REP(desktop_to_ios_promo_receiving_types);
   VISIT_ENUM(glic_experimental_triggering_state);
   VISIT(glic_experimental_triggering_version);
+  VISIT_REP(glic_experimental_triggering_capabilities);
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::SharingSpecificFields& proto) {
@@ -729,6 +687,12 @@ VISIT_PROTO_FIELDS(const sync_pb::GooglePlayServicesVersionInfo& proto) {
   VISIT(apk_version_name);
 }
 
+VISIT_PROTO_FIELDS(const sync_pb::PersonalContextSpecificFields& proto) {
+  VISIT_BYTES(p256dh_v2);
+  VISIT_BYTES(serialized_tink_keyset);
+  VISIT(eligible_for_spii);
+}
+
 VISIT_PROTO_FIELDS(const sync_pb::DictionarySpecifics& proto) {
   VISIT(word);
 }
@@ -740,10 +704,15 @@ VISIT_PROTO_FIELDS(const sync_pb::EncryptedData& proto) {
   VISIT(key_id_v2);
 }
 
+VISIT_PROTO_FIELDS(const sync_pb::TabContextItemContent& proto) {
+  VISIT_BYTES(raw_data);
+  VISIT_BYTES(gzip_compressed_data);
+}
+
 VISIT_PROTO_FIELDS(const sync_pb::EncryptedTabContextItemSpecifics& proto) {
   VISIT(container_id);
   VISIT(item_id);
-  VISIT(encrypted_data);
+  VISIT(encrypted_content);
 }
 
 VISIT_PROTO_FIELDS(
@@ -767,6 +736,18 @@ VISIT_PROTO_FIELDS(const sync_pb::EntityMetadata& proto) {
   VISIT(deleted_by_version);
   VISIT(collaboration);
   VISIT(deletion_origin);
+  VISIT(attachment_metadata);
+}
+
+VISIT_PROTO_FIELDS(
+    const sync_pb::EntityMetadata::AttachmentMetadata::PendingUpload& proto) {
+  VISIT(file_path);
+  VISIT(upload_url);
+}
+
+VISIT_PROTO_FIELDS(const sync_pb::EntityMetadata::AttachmentMetadata& proto) {
+  VISIT(attachment);
+  VISIT(pending_upload);
 }
 
 VISIT_PROTO_FIELDS(
@@ -782,7 +763,7 @@ VISIT_PROTO_FIELDS(
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::EntitySpecifics& proto) {
-  static_assert(67 == GetNumDataTypes(),
+  static_assert(64 == GetNumDataTypes(),
                 "When adding a new protocol type, you will likely need to add "
                 "it here as well.");
   VISIT(encrypted);
@@ -792,7 +773,7 @@ VISIT_PROTO_FIELDS(const sync_pb::EntitySpecifics& proto) {
   VISIT(app_setting);
   VISIT(arc_package);
   VISIT(autofill);
-  VISIT(autofill_offer);
+  VISIT(autofill_entity_suppression);
   VISIT(autofill_profile);
   VISIT(autofill_valuable);
   VISIT(autofill_valuable_metadata);
@@ -818,8 +799,6 @@ VISIT_PROTO_FIELDS(const sync_pb::EntitySpecifics& proto) {
   VISIT(os_priority_preference);
   VISIT(outgoing_password_sharing_invitation);
   VISIT(password);
-  VISIT(plus_address);
-  VISIT(plus_address_setting);
   VISIT(preference);
   VISIT(printer);
   VISIT(printers_authorization_server);
@@ -842,7 +821,6 @@ VISIT_PROTO_FIELDS(const sync_pb::EntitySpecifics& proto) {
   VISIT(user_consent);
   VISIT(user_event);
   VISIT(wallet_metadata);
-  VISIT(web_apk);
   VISIT(web_app);
   VISIT(webauthn_credential);
   VISIT(wifi_configuration);
@@ -872,6 +850,7 @@ VISIT_PROTO_FIELDS(const sync_pb::ExtensionSpecifics& proto) {
   VISIT(all_urls_enabled);
   VISIT(disable_reasons);
   VISIT_REP(disable_reasons_list);
+  VISIT(withhold_permissions);
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::GetUpdateTriggers& proto) {
@@ -1000,7 +979,6 @@ VISIT_PROTO_FIELDS(const sync_pb::NigoriModel& proto) {
   VISIT_REP(encrypted_types_specifics_field_number);
   VISIT_REP(keystore_key);
   VISIT(pending_keystore_decryptor_token);
-  VISIT(last_default_trusted_vault_key_name);
   VISIT(trusted_vault_debug_info);
   VISIT(cross_user_sharing_public_key);
 }
@@ -1279,23 +1257,6 @@ VISIT_PROTO_FIELDS(const sync_pb::NoteEntity& proto) {
 VISIT_PROTO_FIELDS(const sync_pb::PersistedEntityData& proto) {
   VISIT(name);
   VISIT(specifics);
-}
-
-VISIT_PROTO_FIELDS(const sync_pb::PlusAddressSettingSpecifics& proto) {
-  VISIT(name);
-  VISIT(bool_value);
-  VISIT(string_value);
-  VISIT(int_value);
-}
-
-VISIT_PROTO_FIELDS(const sync_pb::PlusAddressSpecifics& proto) {
-  VISIT(profile_id);
-  VISIT(facet);
-  VISIT(plus_email);
-}
-
-VISIT_PROTO_FIELDS(const sync_pb::PlusEmail& proto) {
-  VISIT(email_address);
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::PreferenceSpecifics& proto) {
@@ -1580,11 +1541,8 @@ VISIT_PROTO_FIELDS(
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::SyncCycleCompletedEventInfo& proto) {
-  VISIT(num_encryption_conflicts);
-  VISIT(num_hierarchy_conflicts);
   VISIT(num_server_conflicts);
   VISIT(num_updates_downloaded);
-  VISIT(num_reflected_updates_downloaded);
   VISIT(caller_info);
   VISIT_ENUM(get_updates_origin);
 }
@@ -1702,6 +1660,17 @@ VISIT_PROTO_FIELDS(
 
 VISIT_PROTO_FIELDS(const sync_pb::UserEventSpecifics::FlocIdComputed& proto) {
   VISIT(floc_id);
+}
+
+VISIT_PROTO_FIELDS(const google::protobuf::Timestamp& proto) {
+  visitor.Visit(proto, "seconds", proto.seconds());
+  visitor.Visit(proto, "nanos", proto.nanos());
+}
+
+VISIT_PROTO_FIELDS(const sync_pb::TabContextContainerAccessToken& proto) {
+  VISIT(name);
+  VISIT_BYTES(encrypted_container_key);
+  VISIT(expire_time);
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::TabNavigation& proto) {
@@ -2059,22 +2028,6 @@ VISIT_PROTO_FIELDS(const sync_pb::WalletMaskedIban& proto) {
   VISIT(nickname);
 }
 
-VISIT_PROTO_FIELDS(const sync_pb::WebApkIconInfo& proto) {
-  VISIT(size_in_px);
-  VISIT(url);
-  VISIT_ENUM(purpose);
-}
-
-VISIT_PROTO_FIELDS(const sync_pb::WebApkSpecifics& proto) {
-  VISIT(manifest_id);
-  VISIT(start_url);
-  VISIT(name);
-  VISIT(theme_color);
-  VISIT(scope);
-  VISIT_REP(icon_infos);
-  VISIT(last_used_time_windows_epoch_micros);
-}
-
 VISIT_PROTO_FIELDS(const sync_pb::WebAppIconInfo& proto) {
   VISIT(size_in_px);
   VISIT(url);
@@ -2234,6 +2187,8 @@ VISIT_PROTO_FIELDS(const sync_pb::AutofillValuableSpecifics& proto) {
   VISIT(offer);
   VISIT(order);
   VISIT(shipment);
+  VISIT(pass_view_url);
+  VISIT_BYTES(legal_message_token);
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::Any& proto) {
@@ -2353,6 +2308,8 @@ VISIT_PROTO_FIELDS(const sync_pb::Offer& proto) {
   VISIT(offer_code);
   VISIT(offer_title_image_url);
   VISIT_REP(issuer_domains);
+  VISIT(description);
+  VISIT(issue_time_unix_epoch_micros);
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::Order& proto) {
@@ -2370,7 +2327,8 @@ VISIT_PROTO_FIELDS(const sync_pb::Shipment& proto) {
   VISIT(shipping_date);
   VISIT(carrier_name);
   VISIT(carrier_domain);
-  VISIT_REP(associated_order_ids);
+  VISIT(merchant_name);
+  VISIT_REP(product_names);
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::AutofillValuableMetadataSpecifics& proto) {
@@ -2468,6 +2426,7 @@ VISIT_PROTO_FIELDS(const sync_pb::SkillSpecifics& proto) {
   VISIT(schema_version);
   VISIT_ENUM(skill_source);
   VISIT(source_skill_id);
+  VISIT(enabled);
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::SimpleSkill& proto) {
@@ -2501,6 +2460,15 @@ VISIT_PROTO_FIELDS(
   VISIT(prompt);
 }
 
+VISIT_PROTO_FIELDS(const sync_pb::JourneySpecifics::CollectionItem& proto) {
+  VISIT(history_entry);
+}
+
+VISIT_PROTO_FIELDS(const sync_pb::JourneySpecifics::Collection& proto) {
+  VISIT(title);
+  VISIT_REP(items);
+}
+
 VISIT_PROTO_FIELDS(const sync_pb::JourneySpecifics& proto) {
   VISIT(journey_id);
   VISIT(title);
@@ -2510,6 +2478,7 @@ VISIT_PROTO_FIELDS(const sync_pb::JourneySpecifics& proto) {
   VISIT(creation_time_windows_epoch_micros);
   VISIT_REP(history_entries);
   VISIT_REP(continuation_queries);
+  VISIT_REP(collections);
 }
 
 VISIT_PROTO_FIELDS(const sync_pb::AiThreadSpecifics& proto) {
@@ -2536,6 +2505,24 @@ VISIT_PROTO_FIELDS(const sync_pb::ContextualTaskSpecifics& proto) {
   VISIT(contextual_task);
   VISIT(url_resource);
   VISIT(version);
+}
+
+VISIT_PROTO_FIELDS(const sync_pb::EntitySuppressionKey::Attribute& proto) {
+  VISIT(name);
+  VISIT_BYTES(value_hash);
+}
+
+VISIT_PROTO_FIELDS(const sync_pb::EntitySuppressionKey& proto) {
+  VISIT(entity_type_name);
+  VISIT_REP(attributes);
+}
+
+VISIT_PROTO_FIELDS(const sync_pb::AutofillEntitySuppressionSpecifics& proto) {
+  VISIT(guid);
+  VISIT(entity_suppression_key);
+  VISIT(schema_version);
+  VISIT(creation_time_windows_epoch_micros);
+  VISIT(entity_suppression_hash);
 }
 
 }  // namespace syncer

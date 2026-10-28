@@ -5,6 +5,7 @@
 import '//resources/cr_elements/cr_button/cr_button.js';
 
 import {I18nMixinLit} from '//resources/cr_elements/i18n_mixin_lit.js';
+import {isFaviconUrl} from '//resources/js/icon.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 
@@ -94,6 +95,17 @@ export class SearchboxComposeButtonElement extends
         reflect: true,
         attribute: 'energy-effect-animation-enabled',
       },
+      hasVirtualFocus: {
+        type: Boolean,
+        reflect: true,
+      },
+      virtualFocusEnabled: {
+        type: Boolean,
+        reflect: true,
+      },
+      dropdownIsVisible: {
+        type: Boolean,
+      },
     };
   }
 
@@ -111,6 +123,10 @@ export class SearchboxComposeButtonElement extends
       loadTimeData.getString('searchboxComposeButtonIcon') :
       '//resources/cr_components/searchbox/icons/search_spark.svg';
 
+  accessor hasVirtualFocus: boolean = false;
+  accessor dropdownIsVisible: boolean = false;
+  accessor virtualFocusEnabled: boolean = false;
+
   protected accessor isFuseboxEnabled_: boolean =
       loadTimeData.getBoolean('isFuseboxEnabled');
 
@@ -118,12 +134,22 @@ export class SearchboxComposeButtonElement extends
       loadTimeData.getBoolean('energyEffectAnimationEnabled');
 
   protected accessor arrowIcon_: string =
-      '//resources/cr_components/searchbox/icons/arrow_forward.svg';
+      (document.documentElement.hasAttribute('webui-rounded-icons') ?
+           '//resources/cr_components/searchbox/icons/arrow_forward.svg' :
+           '//resources/cr_components/searchbox/icons/arrow_forward_old.svg');
 
   protected accessor showAnimation_: boolean = false;
 
   protected hasFavicon_(): boolean {
-    return this.composeIcon.startsWith('chrome://favicon2/');
+    return isFaviconUrl(this.composeIcon);
+  }
+
+  override focus() {
+    this.$.composeButton?.focus();
+  }
+
+  override blur() {
+    this.$.composeButton?.blur();
   }
 
   override firstUpdated() {

@@ -2069,6 +2069,67 @@ TEST(HostCacheTest, DeserializeInvalidQueryTypeHttpsExperimental) {
   ASSERT_EQ(0u, restored_cache.size());
 }
 
+// An entry with a NetworkAnonymizationKey that can't be deserialized (e.g.,
+// because it uses a NetworkIsolationPartition value that's no longer
+// supported) should be skipped, without preventing other entries from being
+// restored.
+TEST(HostCacheTest, DeserializeSkipsEntryWithInvalidNetworkAnonymizationKey) {
+  base::TimeDelta ttl = base::Seconds(99);
+  std::string expiration_time_str = base::NumberToString(
+      (base::Time::Now() + ttl).since_origin().InMicroseconds());
+
+  auto dict = base::JSONReader::Read(
+      base::StringPrintf(
+          R"(
+            [{
+              "addresses": ["1.2.3.4"],
+              "dns_query_type": 1,
+              "expiration": "%s",
+              "flags": 0,
+              "host_resolver_source": 2,
+              "hostname": "invalid-nak.test",
+              "network_anonymization_key": ["This is not valid"],
+              "port": 443,
+              "scheme": "https",
+              "secure": false
+            }, {
+              "addresses": ["5.6.7.8"],
+              "dns_query_type": 1,
+              "expiration": "%s",
+              "flags": 0,
+              "host_resolver_source": 2,
+              "hostname": "valid-nak.test",
+              "network_anonymization_key": [],
+              "port": 443,
+              "scheme": "https",
+              "secure": false
+            }]
+          )",
+          expiration_time_str.c_str(), expiration_time_str.c_str()),
+      base::JSON_PARSE_RFC);
+  ASSERT_TRUE(dict);
+
+  HostCache restored_cache(kMaxCacheEntries);
+  ASSERT_TRUE(dict->is_list());
+  EXPECT_TRUE(restored_cache.RestoreFromListValue(dict->GetList()));
+
+  // Only the entry with the valid NetworkAnonymizationKey should be restored.
+  ASSERT_EQ(restored_cache.size(), 1u);
+
+  HostCache::Key key(
+      url::SchemeHostPort(url::kHttpsScheme, "valid-nak.test", 443),
+      DnsQueryType::A, 0, HostResolverSource::DNS, NetworkAnonymizationKey(),
+      handles::kInvalidNetworkHandle);
+
+  HostCache::EntryStaleness stale;
+  const std::pair<const HostCache::Key, HostCache::Entry>* result =
+      restored_cache.LookupStale(key, base::TimeTicks::Now(), &stale);
+
+  ASSERT_TRUE(result);
+  EXPECT_THAT(result->second.ip_endpoints(),
+              ElementsAreArray(MakeEndpoints({"5.6.7.8"})));
+}
+
 TEST(HostCacheTest, PersistenceDelegate) {
   const base::TimeDelta kTTL = base::Seconds(10);
   HostCache cache(kMaxCacheEntries);
@@ -2630,7 +2691,9 @@ TEST(HostCacheTest, ConvertFromInternalMetadataResult) {
   results.insert(std::make_unique<HostResolverInternalMetadataResult>(
       "endpoint.test", DnsQueryType::HTTPS, base::TimeTicks() + kTtl1,
       base::Time() + kTtl1, HostResolverInternalResult::Source::kDns,
-      kMetadatas));
+      kMetadatas,
+      /*address_hints=*/
+      HostResolverInternalMetadataResult::AddressHintsMap()));
   results.insert(std::make_unique<HostResolverInternalAliasResult>(
       "domain1.test", DnsQueryType::HTTPS, base::TimeTicks() + kTtl2,
       base::Time() + kTtl2, HostResolverInternalResult::Source::kDns,
@@ -2664,7 +2727,9 @@ TEST(HostCacheTest, ConvertFromCompatibleOnlyInternalMetadataResult) {
   results.insert(std::make_unique<HostResolverInternalMetadataResult>(
       "endpoint.test", DnsQueryType::HTTPS, base::TimeTicks() + kTtl1,
       base::Time() + kTtl1, HostResolverInternalResult::Source::kDns,
-      kMetadatas));
+      kMetadatas,
+      /*address_hints=*/
+      HostResolverInternalMetadataResult::AddressHintsMap()));
   results.insert(std::make_unique<HostResolverInternalAliasResult>(
       "domain1.test", DnsQueryType::HTTPS, base::TimeTicks() + kTtl2,
       base::Time() + kTtl2, HostResolverInternalResult::Source::kDns,
@@ -2853,7 +2918,9 @@ TEST(HostCacheTest, ConvertFromInternalMergedResult) {
   results.insert(std::make_unique<HostResolverInternalMetadataResult>(
       "endpoint.test", DnsQueryType::HTTPS, base::TimeTicks() + kOtherTtl,
       base::Time() + kOtherTtl, HostResolverInternalResult::Source::kDns,
-      kMetadatas));
+      kMetadatas,
+      /*address_hints=*/
+      HostResolverInternalMetadataResult::AddressHintsMap()));
   results.insert(std::make_unique<HostResolverInternalAliasResult>(
       "domain1.test", DnsQueryType::HTTPS, base::TimeTicks() + kOtherTtl,
       base::Time() + kOtherTtl, HostResolverInternalResult::Source::kDns,
@@ -2903,7 +2970,9 @@ TEST(HostCacheTest, ConvertFromInternalMergedResultWithPartialError) {
   results.insert(std::make_unique<HostResolverInternalMetadataResult>(
       "endpoint.test", DnsQueryType::HTTPS, base::TimeTicks() + kOtherTtl,
       base::Time() + kOtherTtl, HostResolverInternalResult::Source::kDns,
-      kMetadatas));
+      kMetadatas,
+      /*address_hints=*/
+      HostResolverInternalMetadataResult::AddressHintsMap()));
   results.insert(std::make_unique<HostResolverInternalAliasResult>(
       "domain1.test", DnsQueryType::HTTPS, base::TimeTicks() + kOtherTtl,
       base::Time() + kOtherTtl, HostResolverInternalResult::Source::kDns,

@@ -166,12 +166,9 @@ typedef NS_ENUM(NSInteger, ItemType) {
         accessibilityIdentifier:kSettingsSafeBrowsingEnhancedProtectionCellId];
     [items addObject:safeBrowsingEnhancedProtectionItem];
 
-    if (base::FeatureList::IsEnabled(
-            safe_browsing::kMovePasswordLeakDetectionToggleIos) &&
-        base::FeatureList::IsEnabled(
-            safe_browsing::kExtendedReportingRemovePrefDependency)) {
+    if (self.enterpriseEnabled) {
       TableViewItem* safeBrowsingStandardProtectionItem = [self
-               detailIconItemType:ItemTypeSafeBrowsingStandardProtection
+               infoButtonItemType:ItemTypeSafeBrowsingStandardProtection
                           titleId:
                               IDS_IOS_PRIVACY_SAFE_BROWSING_STANDARD_PROTECTION_TITLE
                        detailText:standardProtectionSummary
@@ -180,7 +177,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
       [items addObject:safeBrowsingStandardProtectionItem];
     } else {
       TableViewItem* safeBrowsingStandardProtectionItem = [self
-               infoButtonItemType:ItemTypeSafeBrowsingStandardProtection
+               detailIconItemType:ItemTypeSafeBrowsingStandardProtection
                           titleId:
                               IDS_IOS_PRIVACY_SAFE_BROWSING_STANDARD_PROTECTION_TITLE
                        detailText:standardProtectionSummary
@@ -345,7 +342,8 @@ typedef NS_ENUM(NSInteger, ItemType) {
 - (BOOL)shouldEnterprisePopOverDisplay:(ItemType)itemType {
   return self.enterpriseEnabled &&
          (![self shouldItemTypeHaveCheckmark:itemType] ||
-          itemType == ItemTypeSafeBrowsingNoProtection);
+          itemType == ItemTypeSafeBrowsingNoProtection ||
+          itemType == ItemTypeSafeBrowsingStandardProtection);
 }
 
 // Called when the user tap on an info button.
@@ -362,11 +360,6 @@ typedef NS_ENUM(NSInteger, ItemType) {
       base::RecordAction(base::UserMetricsAction(
           "SafeBrowsing.Settings.EnhancedProtectionExpandArrowClicked"));
       [self.handler showSafeBrowsingEnhancedProtection];
-      break;
-    case ItemTypeSafeBrowsingStandardProtection:
-      base::RecordAction(base::UserMetricsAction(
-          "SafeBrowsing.Settings.StandardProtectionExpandArrowClicked"));
-      [self.handler showSafeBrowsingStandardProtection];
       break;
     default:
       NOTREACHED();
@@ -393,16 +386,11 @@ typedef NS_ENUM(NSInteger, ItemType) {
     }
   }
 
-  if (type == ItemTypeSafeBrowsingStandardProtection) {
-    if ([self shouldItemTypeHaveCheckmark:type]) {
-      base::RecordAction(base::UserMetricsAction(
-          "SafeBrowsing.Settings.StandardProtectionExpandArrowClicked"));
-      [self.handler showSafeBrowsingStandardProtection];
-    } else {
-      base::RecordAction(base::UserMetricsAction(
-          "SafeBrowsing.Settings.StandardProtectionClicked"));
-      [self selectSettingItem:item];
-    }
+  if (type == ItemTypeSafeBrowsingStandardProtection &&
+      ![self shouldItemTypeHaveCheckmark:type]) {
+    base::RecordAction(base::UserMetricsAction(
+        "SafeBrowsing.Settings.StandardProtectionClicked"));
+    [self selectSettingItem:item];
   }
 
   if (type == ItemTypeSafeBrowsingNoProtection &&
@@ -420,6 +408,31 @@ typedef NS_ENUM(NSInteger, ItemType) {
       [self.consumer selectItem:item];
       break;
     }
+  }
+}
+
+- (void)recordCloseUserAction {
+  if (!self.userPrefService) {
+    return;
+  }
+  if (safe_browsing::GetSafeBrowsingState(*self.userPrefService) !=
+      safe_browsing::SafeBrowsingState::NO_SAFE_BROWSING) {
+    base::RecordAction(base::UserMetricsAction(
+        "MobilePrivacySafeBrowsingSettingsCloseWithProtection"));
+  }
+  switch (safe_browsing::GetSafeBrowsingState(*self.userPrefService)) {
+    case safe_browsing::SafeBrowsingState::ENHANCED_PROTECTION:
+      base::RecordAction(base::UserMetricsAction(
+          "MobilePrivacySafeBrowsingSettingsCloseWithEnhancedProtection"));
+      break;
+    case safe_browsing::SafeBrowsingState::STANDARD_PROTECTION:
+      base::RecordAction(base::UserMetricsAction(
+          "MobilePrivacySafeBrowsingSettingsCloseWithStandardProtection"));
+      break;
+    case safe_browsing::SafeBrowsingState::NO_SAFE_BROWSING:
+      base::RecordAction(base::UserMetricsAction(
+          "MobilePrivacySafeBrowsingSettingsCloseWithNoProtection"));
+      break;
   }
 }
 

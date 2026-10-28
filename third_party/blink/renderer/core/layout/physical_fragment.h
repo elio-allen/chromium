@@ -7,11 +7,13 @@
 
 #include <unicode/ubidi.h>
 
+#include <algorithm>
 #include <iterator>
 #include <optional>
 
 #include "base/containers/span.h"
 #include "base/dcheck_is_on.h"
+#include "cc/input/scroll_snap_data.h"
 #include "third_party/blink/renderer/core/animation/animation_trigger.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/element.h"
@@ -19,11 +21,13 @@
 #include "third_party/blink/renderer/core/editing/forward.h"
 #include "third_party/blink/renderer/core/layout/anchor_map.h"
 #include "third_party/blink/renderer/core/layout/break_token.h"
+#include "third_party/blink/renderer/core/layout/geometry/axis.h"
 #include "third_party/blink/renderer/core/layout/geometry/physical_rect.h"
 #include "third_party/blink/renderer/core/layout/ink_overflow.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/core/layout/layout_inline.h"
 #include "third_party/blink/renderer/core/layout/physical_fragment_link.h"
+#include "third_party/blink/renderer/core/layout/snap_area.h"
 #include "third_party/blink/renderer/core/layout/split_axis_item.h"
 #include "third_party/blink/renderer/core/layout/style_variant.h"
 #include "third_party/blink/renderer/core/style/computed_style_base_constants.h"
@@ -122,7 +126,7 @@ class CORE_EXPORT PhysicalFragment : public GarbageCollected<PhysicalFragment> {
    public:
     PropagatedData(const GCedHeapVector<SplitAxisItem<LayoutBoxModelObject>>*
                        sticky_descendants,
-                   const GCedHeapVector<Member<Element>>* snap_areas,
+                   const GCedHeapVector<SnapArea>* snap_areas,
                    const Member<const LayoutObject> scroll_initial_target,
                    const TriggerScopedNameMap* named_triggers)
         : sticky_descendants(sticky_descendants),
@@ -132,7 +136,7 @@ class CORE_EXPORT PhysicalFragment : public GarbageCollected<PhysicalFragment> {
     void Trace(Visitor* visitor) const;
     Member<const GCedHeapVector<SplitAxisItem<LayoutBoxModelObject>>>
         sticky_descendants;
-    Member<const GCedHeapVector<Member<Element>>> snap_areas;
+    Member<const GCedHeapVector<SnapArea>> snap_areas;
     Member<const LayoutObject> scroll_initial_target;
     Member<const TriggerScopedNameMap> named_triggers;
   };
@@ -207,15 +211,14 @@ class CORE_EXPORT PhysicalFragment : public GarbageCollected<PhysicalFragment> {
     return false;
   }
   bool HasStickyConstrainedPosition() const {
-    return IsCSSBox() &&
-           layout_object_->StyleRef().HasStickyConstrainedPosition();
+    return IsCSSBox() && layout_object_->Style().HasStickyConstrainedPosition();
   }
   bool IsInitialLetterBox() const {
     return IsCSSBox() && layout_object_->IsInitialLetterBox();
   }
   bool IsSnapArea() const {
     return IsCSSBox() && IsA<LayoutBox>(layout_object_.Get()) &&
-           layout_object_->StyleRef().GetScrollSnapAlign() !=
+           layout_object_->Style().GetScrollSnapAlign() !=
                cc::ScrollSnapAlign();
   }
   // Return true if this is the legend child of a fieldset that gets special
@@ -410,8 +413,7 @@ class CORE_EXPORT PhysicalFragment : public GarbageCollected<PhysicalFragment> {
   // True if this is a non-overlay overscroll container which can have
   // its contents shifted by its ::overscroll-area-parents.
   bool IsNonOverlayOverscrollScrollContainer() const {
-    return IsCSSBox() && layout_object_->InternalOverscrollArea() ==
-                             EInternalOverscrollArea::kAuto;
+    return IsCSSBox() && layout_object_->IsContentMovingOverscrollContainer();
   }
 
   // Return true if the given object is the effective root scroller in its
@@ -447,10 +449,11 @@ class CORE_EXPORT PhysicalFragment : public GarbageCollected<PhysicalFragment> {
     return layout_object_->CanTraversePhysicalFragments();
   }
 
-  // This fragment is hidden for paint purpose, but exists for querying layout
-  // information. Used for `text-overflow: ellipsis`.
-  bool IsHiddenForPaint() const {
-    return is_hidden_for_paint_ || layout_object_->IsTruncated();
+  // This fragment won't be painted (due to reasons involving layout, rather
+  // than style), but still exists for querying layout information. Used for
+  // `text-overflow: ellipsis` and `line-clamp`.
+  bool IsHiddenDueToLayout() const {
+    return is_hidden_due_to_layout_ || layout_object_->IsTruncated();
   }
 
   // This fragment is opaque for layout and paint, as if it does not exist and
@@ -683,19 +686,22 @@ class CORE_EXPORT PhysicalFragment : public GarbageCollected<PhysicalFragment> {
     return propagated_data_ ? propagated_data_->scroll_initial_target : nullptr;
   }
   const Member<const LayoutObject> PropagatedScrollInitialTarget() const {
-    return IsScrollContainer() ? nullptr : ScrollInitialTarget();
+    // Check the plain field access first: it's null for the common case
+    // (nothing set an initial scroll target), which makes the result null
+    // either way without needing IsScrollContainer()'s virtual call.
+    const Member<const LayoutObject> target = ScrollInitialTarget();
+    return (!target || IsScrollContainer()) ? nullptr : target;
   }
 
-  const GCedHeapVector<Member<Element>>* SnapAreas() const {
-    return propagated_data_ ? propagated_data_->snap_areas.Get() : nullptr;
-  }
-  const GCedHeapVector<Member<Element>>* PropagatedSnapAreas() const {
-    return IsScrollContainer() ? nullptr : SnapAreas();
+  const GCedHeapVector<SnapArea>& SnapAreas() const;
+
+  bool HasPendingSnapAreas() const {
+    return std::ranges::any_of(SnapAreas(), &SnapArea::IsPending);
   }
 
   bool HasPropagatedLayoutObjects() const {
     return HasPendingStickyDescendants() || PropagatedScrollInitialTarget() ||
-           PropagatedSnapAreas() || NamedTriggers() || HasChildAnchors();
+           HasPendingSnapAreas() || NamedTriggers() || HasChildAnchors();
   }
 
   class OofData : public GarbageCollected<OofData> {
@@ -780,7 +786,7 @@ class CORE_EXPORT PhysicalFragment : public GarbageCollected<PhysicalFragment> {
   const uint8_t type_ : 1;           // FragmentType
   const uint8_t sub_type_ : 4;       // BoxType, TextItemType, or LineBoxType
   const uint8_t style_variant_ : 2;  // StyleVariant
-  const uint8_t is_hidden_for_paint_ : 1;
+  const uint8_t is_hidden_due_to_layout_ : 1;
   uint8_t : 0;  // Zero-length bitfield used to allow the compiler to split
                 // memory locations. If the above bitfields are part of the
                 // same memory location as the bitfields below, they will all

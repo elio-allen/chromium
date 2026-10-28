@@ -449,17 +449,16 @@ static bool DisplayStateMediaFeatureEval(const MediaQueryExpValue& value,
 static bool ResizableMediaFeatureEval(const MediaQueryExpValue& value,
                                       MediaQueryOperator,
                                       const MediaValues& media_values) {
-  // No value = boolean context:
-  // https://w3c.github.io/csswg-drafts/mediaqueries/#mq-boolean-context
+  bool resizable = media_values.Resizable();
+
+  // No value = boolean context.
   if (!value.IsValid()) {
-    return true;
+    return resizable;
   }
 
   if (!value.IsId()) {
     return false;
   }
-
-  bool resizable = media_values.Resizable();
 
   return (resizable && value.Id() == CSSValueID::kTrue) ||
          (!resizable && value.Id() == CSSValueID::kFalse);
@@ -516,9 +515,12 @@ static bool DynamicRangeMediaFeatureEval(const MediaQueryExpValue& value,
   UseCounter::Count(media_values.GetDocument(),
                     WebFeature::kDynamicRangeMediaQuery);
 
-  if (!value.IsId()) {
-    return false;
+  // An invalid value is only possible in a boolean context with no value
+  // attached. We should treat no value as truthy.
+  if (!value.IsValid()) {
+    return true;
   }
+  CHECK(value.IsId());
 
   switch (value.Id()) {
     case CSSValueID::kStandard:
@@ -1128,23 +1130,13 @@ static bool ColorGamutMediaFeatureEval(const MediaQueryExpValue& value,
   ColorSpaceGamut gamut = media_values.ColorGamut();
 
   switch (gamut) {
-    case ColorSpaceGamut::kUnknown:
-    case ColorSpaceGamut::kLessThanNTSC:
-    case ColorSpaceGamut::NTSC:
     case ColorSpaceGamut::SRGB:
       return value.Id() == CSSValueID::kSRGB;
-    case ColorSpaceGamut::kAlmostP3:
     case ColorSpaceGamut::P3:
-    case ColorSpaceGamut::kAdobeRGB:
-    case ColorSpaceGamut::kWide:
       return value.Id() == CSSValueID::kSRGB || value.Id() == CSSValueID::kP3;
     case ColorSpaceGamut::BT2020:
-    case ColorSpaceGamut::kProPhoto:
-    case ColorSpaceGamut::kUltraWide:
       return value.Id() == CSSValueID::kSRGB || value.Id() == CSSValueID::kP3 ||
              value.Id() == CSSValueID::kRec2020;
-    case ColorSpaceGamut::kEnd:
-      NOTREACHED();
   }
 
   NOTREACHED();

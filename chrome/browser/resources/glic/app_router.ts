@@ -6,9 +6,9 @@ import {assertNotReachedCase} from '//resources/js/assert.js';
 import {getRequiredElement} from 'chrome://resources/js/util.js';
 
 import {BrowserProxyImpl} from './browser_proxy.js';
-import type {ProfileReadyState, ZoomAction} from './glic.mojom-webui.js';
-import {PanelStateKind} from './glic.mojom-webui.js';
 import {GlicAppController} from './glic_app_controller.js';
+import {PanelStateKind} from './glic_enums.mojom-webui.js';
+import type {ProfileReadyState, ZoomAction} from './glic_webui.mojom-webui.js';
 
 export enum AppView {
   GLIC,
@@ -33,6 +33,9 @@ export class AppRouter {
     this.browserProxy.pageCallbackRouter.intentToShow.addListener(
         this.intentToShow_.bind(this),
     );
+    this.browserProxy.pageCallbackRouter.waitForLoad.addListener(
+        this.waitForLoad_.bind(this),
+    );
     this.browserProxy.pageCallbackRouter.updatePageState.addListener(
         this.updatePageState_.bind(this),
     );
@@ -49,7 +52,14 @@ export class AppRouter {
         .addListener(
             this.setProfileReadyState_.bind(this),
         );
+    this.browserProxy.pageCallbackRouter.clientReadyStateChanged.addListener(
+        this.clientReadyStateChanged_.bind(this),
+    );
     this.switchToView(AppView.GLIC);
+  }
+
+  private clientReadyStateChanged_(ready: boolean) {
+    this.glicController?.clientReadyStateChanged(ready);
   }
 
   switchToView(view: AppView): void {
@@ -76,6 +86,13 @@ export class AppRouter {
 
   private intentToShow_() {
     this.glicController?.intentToShow();
+  }
+
+  private waitForLoad_(): Promise<{failed: boolean}> {
+    if (!this.glicController) {
+      return Promise.resolve({failed: true});
+    }
+    return this.glicController.waitForLoad();
   }
 
   private setProfileReadyState_(state: ProfileReadyState) {
@@ -121,9 +138,5 @@ export class AppRouter {
 
   reload(): void {
     this.glicController?.reload();
-  }
-
-  showDebug(): void {
-    this.glicController?.showDebug();
   }
 }

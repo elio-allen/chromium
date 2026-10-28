@@ -23,6 +23,8 @@
 #include "ui/gfx/geometry/insets.h"
 #include "ui/views/border.h"
 #include "ui/views/cascading_property.h"
+#include "ui/views/controls/image_view.h"
+#include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
 
 namespace payments {
@@ -70,7 +72,7 @@ class PaymentMethodListItem final : public PaymentRequestItemList::Item {
 
   std::unique_ptr<views::View> CreateContentView(
       std::u16string* accessible_content) override {
-    DCHECK(accessible_content);
+    CHECK(accessible_content, base::NotFatalUntil::M162);
     auto card_info_container = std::make_unique<views::View>();
     if (!app_) {
       return card_info_container;

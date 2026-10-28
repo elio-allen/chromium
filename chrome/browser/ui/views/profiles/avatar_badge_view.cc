@@ -4,13 +4,15 @@
 
 #include "chrome/browser/ui/views/profiles/avatar_badge_view.h"
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "base/feature_list.h"
 #include "base/logging.h"
-#include "base/strings/string_number_conversions.h"
 #include "build/branding_buildflags.h"
 #include "cc/paint/paint_filter.h"
 #include "cc/paint/paint_flags.h"
@@ -262,20 +264,6 @@ void PaintAvatarBadgeBackground(gfx::Canvas* canvas,
 }
 
 }  // namespace
-
-// static
-std::u16string AvatarBadgeView::GetAvatarBadgeLabel(int tier) {
-  switch (tier) {
-    case 1:
-      return std::u16string(kAvatarBadgeLabelTier1);
-    case 2:
-      return std::u16string(kAvatarBadgeLabelTier2);
-    case 3:
-      return std::u16string(kAvatarBadgeLabelTier3);
-    default:
-      return std::u16string();
-  }
-}
 
 AvatarBadgeView::AvatarBadgeView(const std::u16string& label_text,
                                  std::optional<SkPath> wave_path)

@@ -7,7 +7,10 @@
 #import "base/test/scoped_feature_list.h"
 #import "components/sync/test/test_sync_service.h"
 #import "ios/chrome/browser/cobrowse/model/cobrowse_tab_helper.h"
+#import "ios/chrome/browser/enterprise/connectors/device_trust/features.h"
+#import "ios/chrome/browser/enterprise/connectors/device_trust/model/device_trust_challenge_tab_helper.h"
 #import "ios/chrome/browser/infobars/model/infobar_badge_tab_helper.h"
+#import "ios/chrome/browser/itunes_urls/model/itunes_urls_handler_tab_helper.h"
 #import "ios/chrome/browser/lens/model/lens_tab_helper.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_modality.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_request_queue.h"
@@ -40,6 +43,8 @@ class TabHelperUtilTest : public PlatformTest,
         return "LensOverlay";
       case TabHelperFilter::kAssistantAim:
         return "AssistantAim";
+      case TabHelperFilter::kGeminiWebModal:
+        return "GeminiWebModal";
     }
   }
 
@@ -93,6 +98,7 @@ TEST_P(TabHelperUtilTest, LensTabHelper) {
     case TabHelperFilter::kReaderMode:
     case TabHelperFilter::kLensOverlay:
     case TabHelperFilter::kAssistantAim:
+    case TabHelperFilter::kGeminiWebModal:
       ASSERT_FALSE(LensTabHelper::FromWebState(&web_state_));
       break;
   }
@@ -114,7 +120,32 @@ TEST_P(TabHelperUtilTest, CobrowseTabHelper) {
     case TabHelperFilter::kReaderMode:
     case TabHelperFilter::kLensOverlay:
     case TabHelperFilter::kAssistantAim:
+    case TabHelperFilter::kGeminiWebModal:
       ASSERT_FALSE(CobrowseTabHelper::FromWebState(&web_state_));
+      break;
+  }
+}
+
+// Validate that DeviceTrustChallengeTabHelper is created for WebStates that
+// serve a standard navigation and suppressed for the embedded WebStates used
+// by other features.
+TEST_P(TabHelperUtilTest, DeviceTrustChallengeTabHelper) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      enterprise_connectors::features::kEnableIOSDeviceTrustConnector);
+
+  AttachTabHelpers(&web_state_, tab_helper_filter());
+
+  switch (tab_helper_filter()) {
+    case TabHelperFilter::kEmpty:
+    case TabHelperFilter::kPrerender:
+      ASSERT_TRUE(DeviceTrustChallengeTabHelper::FromWebState(&web_state_));
+      break;
+    case TabHelperFilter::kReaderMode:
+    case TabHelperFilter::kLensOverlay:
+    case TabHelperFilter::kAssistantAim:
+    case TabHelperFilter::kGeminiWebModal:
+      ASSERT_FALSE(DeviceTrustChallengeTabHelper::FromWebState(&web_state_));
       break;
   }
 }
@@ -136,9 +167,29 @@ TEST_P(TabHelperUtilTest, InfobarBadgeTabHelper) {
     } break;
     case TabHelperFilter::kReaderMode:
     case TabHelperFilter::kLensOverlay:
-    case TabHelperFilter::kAssistantAim: {
+    case TabHelperFilter::kAssistantAim:
+    case TabHelperFilter::kGeminiWebModal: {
       ASSERT_FALSE(tab_helper);
     } break;
+  }
+}
+
+// Tests that `ITunesUrlsHandlerTabHelper` is not created for Prerender, Lens
+// Overlay, or Gemini Web Modal WebStates.
+TEST_P(TabHelperUtilTest, ITunesUrlsHandlerTabHelper) {
+  AttachTabHelpers(&web_state_, tab_helper_filter());
+
+  switch (tab_helper_filter()) {
+    case TabHelperFilter::kEmpty:
+    case TabHelperFilter::kReaderMode:
+    case TabHelperFilter::kAssistantAim:
+      EXPECT_TRUE(ITunesUrlsHandlerTabHelper::FromWebState(&web_state_));
+      break;
+    case TabHelperFilter::kPrerender:
+    case TabHelperFilter::kLensOverlay:
+    case TabHelperFilter::kGeminiWebModal:
+      EXPECT_FALSE(ITunesUrlsHandlerTabHelper::FromWebState(&web_state_));
+      break;
   }
 }
 
@@ -148,5 +199,6 @@ INSTANTIATE_TEST_SUITE_P(,
                                          TabHelperFilter::kPrerender,
                                          TabHelperFilter::kLensOverlay,
                                          TabHelperFilter::kReaderMode,
-                                         TabHelperFilter::kAssistantAim),
+                                         TabHelperFilter::kAssistantAim,
+                                         TabHelperFilter::kGeminiWebModal),
                          TabHelperUtilTest::TabHelperFilterToString);

@@ -26,6 +26,7 @@
 #include "chrome/browser/glic/actor/glic_actor_test_util.h"
 #include "chrome/browser/glic/glic_enums.h"
 #include "chrome/browser/glic/glic_pref_names.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/glic/test_support/glic_browser_test.h"
@@ -59,6 +60,7 @@
 #include "components/variations/service/variations_service.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/mock_navigation_handle.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "net/dns/mock_host_resolver.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -96,10 +98,8 @@ class GlicActorPolicyCheckerBrowserTestBase : public GlicBrowserTest {
   GlicActorPolicyCheckerBrowserTestBase() {
     scoped_feature_list_.InitWithFeaturesAndParameters(
         /* enabled_features = */
-        {{features::kGlicActor,
-          {{features::kGlicActorPolicyControlExemption.name, "false"}}},
-         {features::kGlicUserStatusCheck, {}}},
-        /* disabled_features = */ {});
+        {{features::kGlicActor, {}}, {features::kGlicUserStatusCheck, {}}},
+        /* disabled_features = */ {features::kGlicActorPolicyControlExemption});
   }
   ~GlicActorPolicyCheckerBrowserTestBase() override = default;
 
@@ -113,7 +113,6 @@ class GlicActorPolicyCheckerBrowserTestBase : public GlicBrowserTest {
     GlicBrowserTest::SetUpOnMainThread();
 
     host_resolver()->AddRule("*", "127.0.0.1");
-    ASSERT_TRUE(embedded_https_test_server().Start());
 
     adaptor_ =
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(GetProfile());
@@ -160,8 +159,8 @@ class GlicActorPolicyCheckerBrowserTestBase : public GlicBrowserTest {
     identity_test_env_->UpdateAccountInfoForAccount(account_info);
 
     identity_test_env_->SimulateSuccessfulFetchOfAccountInfo(
-        account_info.account_id, account_info.email, account_info.gaia,
-        std::string(account->host_domain),
+        account_info.GetAccountId(), account_info.GetEmail(),
+        account_info.GetGaiaId(), account->host_domain,
         base::StrCat({"full_name-", account->email}),
         base::StrCat({"given_name-", account->email}),
         base::StrCat({"local-", account->email}),
@@ -479,10 +478,13 @@ class GlicActorPolicyCheckerBrowserTestManagedBrowser
     ActorTask* task = GetActorService().GetTask(task_id);
     ASSERT_TRUE(task);
 
-    base::test::TestFuture<actor::MayActOnUrlBlockReason> allowed;
-    task->GetExecutionEngine().IsAcceptableNavigationDestination(
-        url_to_check, allowed.GetCallback());
-    EXPECT_EQ(expected_result.may_act_on_url_block_reason, allowed.Get());
+    base::test::TestFuture<actor::MayActOnUrlBlockReason> future;
+    content::MockNavigationHandle navigation_handle(
+        url_to_check, web_contents()->GetPrimaryMainFrame());
+    navigation_handle.set_is_in_primary_main_frame(true);
+    task->GetExecutionEngine().ShouldNavigationCommit(navigation_handle,
+                                                      future.GetCallback());
+    EXPECT_EQ(expected_result.may_act_on_url_block_reason, future.Get());
   }
 
  private:
@@ -687,12 +689,9 @@ IN_PROC_BROWSER_TEST_F(GlicActorPolicyCheckerBrowserTestManagedBrowser,
 
   ActResultFuture result;
   task->Act(ToRequestList(click), result.GetCallback());
-  const auto expected_result =
-      base::FeatureList::IsEnabled(
-          actor::kGlicGranularBlockingActionResultCodes)
-          ? actor::mojom::ActionResultCode::kActionsBlockedByEnterprisePolicy
-          : actor::mojom::ActionResultCode::kUrlBlocked;
-  ExpectErrorResult(result, expected_result);
+  ExpectErrorResult(
+      result,
+      actor::mojom::ActionResultCode::kActionsBlockedByEnterprisePolicy);
 }
 
 IN_PROC_BROWSER_TEST_F(GlicActorPolicyCheckerBrowserTestManagedBrowser,
@@ -756,12 +755,9 @@ IN_PROC_BROWSER_TEST_F(GlicActorPolicyCheckerBrowserTestManagedBrowser,
 
   ActResultFuture result;
   task->Act(ToRequestList(click), result.GetCallback());
-  const auto expected_result =
-      base::FeatureList::IsEnabled(
-          actor::kGlicGranularBlockingActionResultCodes)
-          ? actor::mojom::ActionResultCode::kActionsBlockedByEnterprisePolicy
-          : actor::mojom::ActionResultCode::kTriggeredNavigationBlocked;
-  ExpectErrorResult(result, expected_result);
+  ExpectErrorResult(
+      result,
+      actor::mojom::ActionResultCode::kActionsBlockedByEnterprisePolicy);
 }
 
 IN_PROC_BROWSER_TEST_F(GlicActorPolicyCheckerBrowserTestManagedBrowser,
@@ -1121,9 +1117,8 @@ class GlicApiActorPolicyCheckerBrowserTest
     scoped_feature_list_.InitWithFeaturesAndParameters(
         /* enabled_features = */
         {{features::kGlicActor,
-          {{features::kGlicActorPolicyControlExemption.name, "false"},
-           {features::kGlicActorEligibleTiers.name, "1"}}}},
-        /* disabled_features = */ {});
+          {{features::kGlicActorEligibleTiers.name, "1"}}}},
+        /* disabled_features = */ {features::kGlicActorPolicyControlExemption});
   }
   ~GlicApiActorPolicyCheckerBrowserTest() override = default;
 
@@ -1370,9 +1365,9 @@ class GlicApiActorPolicyCheckerBrowserTestExemption
   GlicApiActorPolicyCheckerBrowserTestExemption() {
     scoped_feature_list_.InitWithFeaturesAndParameters(
         /* enabled_features = */
-        {{features::kGlicActor,
-          {{features::kGlicActorPolicyControlExemption.name, "true"},
-           {features::kGlicActorEligibleTiers.name, "1"}}}},
+        {{features::kGlicActorPolicyControlExemption, {}},
+         {features::kGlicActor,
+          {{features::kGlicActorEligibleTiers.name, "1"}}}},
         /* disabled_features = */ {});
   }
   ~GlicApiActorPolicyCheckerBrowserTestExemption() override = default;

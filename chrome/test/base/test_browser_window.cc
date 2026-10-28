@@ -12,6 +12,7 @@
 #include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/find_bar/find_bar.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
@@ -27,8 +28,8 @@
 
 // Helpers --------------------------------------------------------------------
 
-std::unique_ptr<Browser> CreateBrowserWithTestWindowForParams(
-    Browser::CreateParams params) {
+std::unique_ptr<BrowserWindowInterface> CreateBrowserWithTestWindowForParams(
+    BrowserWindowCreateParams params) {
   DCHECK(!params.window);
   auto window = std::make_unique<TestBrowserWindow>();
   window->set_is_minimized(params.initial_show_state ==
@@ -40,7 +41,7 @@ std::unique_ptr<Browser> CreateBrowserWithTestWindowForParams(
       params.initial_show_state != ui::mojom::WindowShowState::kMinimized);
   params.window = window.release();
 
-  return Browser::DeprecatedCreateOwnedForTesting(std::move(params));
+  return DeprecatedCreateOwnedBrowserWindowForTesting(std::move(params));
 }
 
 // TestBrowserWindow::TestLocationBar -----------------------------------------
@@ -67,7 +68,7 @@ ChipController* TestBrowserWindow::TestLocationBar::GetChipController() {
 }
 
 LocationBarTesting*
-    TestBrowserWindow::TestLocationBar::GetLocationBarForTesting() {
+TestBrowserWindow::TestLocationBar::GetLocationBarForTesting() {
   return nullptr;
 }
 
@@ -273,6 +274,14 @@ LocationBar* TestBrowserWindow::GetLocationBar() const {
   return const_cast<TestLocationBar*>(&location_bar_);
 }
 
+ui::AcceleratorProvider* TestBrowserWindow::GetAcceleratorProvider() {
+  return nullptr;
+}
+
+PinnedToolbarActions* TestBrowserWindow::GetPinnedToolbarActions() {
+  return nullptr;
+}
+
 autofill::AutofillBubbleHandler* TestBrowserWindow::GetAutofillBubbleHandler() {
   return &autofill_bubble_handler_;
 }
@@ -330,7 +339,6 @@ ShowTranslateBubbleResult TestBrowserWindow::ShowTranslateBubble(
   return ShowTranslateBubbleResult::kSuccess;
 }
 
-
 #if BUILDFLAG(IS_CHROMEOS)
 void TestBrowserWindow::ToggleMultitaskMenu() {
   return;
@@ -346,7 +354,7 @@ std::unique_ptr<FindBar> TestBrowserWindow::CreateFindBar() {
 }
 
 web_modal::WebContentsModalDialogHost*
-    TestBrowserWindow::GetWebContentsModalDialogHost() {
+TestBrowserWindow::GetWebContentsModalDialogHost() {
   return nullptr;
 }
 
@@ -383,9 +391,8 @@ void TestBrowserWindow::SetCloseCallback(base::OnceClosure close_callback) {
 }
 
 void TestBrowserWindow::OnBrowserCreated(BrowserWindowInterface* browser) {
-  Browser* current_browser = browser->GetBrowserForMigrationOnly();
-  if (BrowserInitState::From(current_browser)->create_params().window == this) {
-    browser_ = current_browser;
+  if (BrowserInitState::From(browser)->create_params().window == this) {
+    browser_ = browser;
     browser_collection_observation_.Reset();
   }
 }

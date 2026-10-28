@@ -4,6 +4,8 @@
 
 #include "components/component_updater/component_installer.h"
 
+#include <stdint.h>
+
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -12,6 +14,7 @@
 #include <vector>
 
 #include "base/barrier_closure.h"
+#include "base/containers/to_vector.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -121,6 +124,7 @@ class MockUpdateClient : public UpdateClient {
               (const, override));
   MOCK_METHOD(bool, IsUpdating, (const std::string& id), (const, override));
   MOCK_METHOD(void, Stop, (), (override));
+  MOCK_METHOD(bool, Cancel, (const std::string& id), (override));
   MOCK_METHOD(void,
               CleanupStaleDownloads,
               (base::Time older_than, base::OnceClosure callback),
@@ -188,7 +192,7 @@ class MockInstallerPolicy : public ComponentInstallerPolicy {
 
  private:
   static void GetPkHash(std::vector<uint8_t>* hash) {
-    hash->assign(std::begin(kSha256Hash), std::end(kSha256Hash));
+    hash->assign_range(kSha256Hash);
   }
 
   ComponentReadyCallback component_ready_cb_;
@@ -259,7 +263,8 @@ ComponentInstallerTest::ComponentInstallerTest() {
   RegisterComponentUpdateServicePrefs(pref_->registry());
   config_ = base::MakeRefCounted<TestConfigurator>(pref_.get());
   component_updater_ = std::make_unique<CrxUpdateService>(
-      config_, std::move(scheduler), update_client_, "");
+      config_, std::move(scheduler), update_client_, "",
+      /*update_checks_disabled=*/false);
 }
 
 ComponentInstallerTest::~ComponentInstallerTest() {
@@ -273,9 +278,8 @@ void ComponentInstallerTest::RunThreads() {
 void ComponentInstallerTest::Unpack(const base::FilePath& crx_path) {
   update_client::Unpacker::Unpack(
       "jebgalgnebhfojomionfpkfelancnnkf", "ComponentInstallerTest",
-      std::vector<uint8_t>(std::begin(kSha256Hash), std::end(kSha256Hash)),
-      crx_path, config_->GetUnzipperFactory()->Create(),
-      crx_file::VerifierFormat::CRX3,
+      base::ToVector(kSha256Hash), crx_path,
+      config_->GetUnzipperFactory()->Create(), crx_file::VerifierFormat::CRX3,
       /*is_foreground=*/true,
       base::BindOnce(&ComponentInstallerTest::UnpackComplete,
                      base::Unretained(this)));
@@ -363,9 +367,7 @@ TEST_F(ComponentInstallerTest, RegisterComponent) {
   expected_attrs["ap"] = "fake-ap";
   expected_attrs["is-enterprise"] = "1";
 
-  EXPECT_EQ(
-      std::vector<uint8_t>(std::begin(kSha256Hash), std::end(kSha256Hash)),
-      component.pk_hash);
+  EXPECT_EQ(base::ToVector(kSha256Hash), component.pk_hash);
   EXPECT_EQ(base::Version("0.0.0.0"), component.version);
   EXPECT_TRUE(component.fingerprint.empty());
   EXPECT_EQ("fake name", component.name);
@@ -525,7 +527,7 @@ TEST_F(ComponentInstallerTest, UnpackPathInstallError) {
         EXPECT_EQ(result.result.category,
                   update_client::ErrorCategory::kInstall);
         EXPECT_EQ(result.result.code,
-                  static_cast<int>(
+                  std::to_underlying(
                       update_client::InstallError::NO_DIR_COMPONENT_USER));
       }));
 

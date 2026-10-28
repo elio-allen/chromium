@@ -14,12 +14,15 @@ import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription
 import static androidx.test.espresso.matcher.ViewMatchers.withEffectiveVisibility;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import static org.chromium.chrome.test.util.ChromeTabUtils.getTabCountOnUiThread;
 
+import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 
 import androidx.recyclerview.widget.RecyclerView;
@@ -39,13 +42,13 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.browser.layouts.LayoutTestUtils;
-import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.tab.Tab;
@@ -80,6 +83,7 @@ import java.util.List;
 @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
 @EnableFeatures({ChromeFeatureList.ANDROID_VERTICAL_TABS + ":enable_by_default/true"})
 @Batch(Batch.PER_CLASS)
+@DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/563034033
 public class VerticalTabsTest {
     private static final String TEST_GROUP_TITLE = "Vertical Tabs Project";
     private static final int TEST_TABS_TO_MAKE = 5;
@@ -104,6 +108,9 @@ public class VerticalTabsTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     TabModel normalModel = selector.getModel(/* incognito= */ false);
+                    if (TabMultiSelectHelper.hasMultipleTabsSelected(normalModel)) {
+                        normalModel.clearMultiSelection(/* notifyObservers= */ false);
+                    }
                     while (normalModel.getCount() > 1) {
                         normalModel
                                 .getTabRemover()
@@ -146,9 +153,18 @@ public class VerticalTabsTest {
 
     @Test
     @MediumTest
-    public void testToolbarButtonsVisibility() {
+    @DisableFeatures(ChromeFeatureList.TAB_SEARCH_FOR_DESKTOP)
+    public void testToolbarButtonsVisibility_TabSearchDisabled() {
         onView(withId(R.id.collapse_button)).check(matches(isDisplayed()));
-        onView(withId(R.id.grid_button)).check(matches(isDisplayed()));
+        onView(withId(R.id.tab_search_button)).check(matches(withEffectiveVisibility(GONE)));
+        onView(withId(R.id.new_tab_button)).check(matches(isDisplayed()));
+    }
+
+    @Test
+    @MediumTest
+    @EnableFeatures(ChromeFeatureList.TAB_SEARCH_FOR_DESKTOP)
+    public void testToolbarButtonsVisibility_TabSearchEnabled() {
+        onView(withId(R.id.collapse_button)).check(matches(isDisplayed()));
         onView(withId(R.id.tab_search_button)).check(matches(isDisplayed()));
         onView(withId(R.id.new_tab_button)).check(matches(isDisplayed()));
     }
@@ -177,7 +193,7 @@ public class VerticalTabsTest {
         ChromeTabbedActivity cta = mActivityTestRule.getActivity();
         TabModelSelector selector = cta.getTabModelSelectorSupplier().get();
 
-        int firstTabId = ThreadUtils.runOnUiThreadBlocking(() -> selector.getCurrentTabId());
+        int firstTabId = ThreadUtils.runOnUiThreadBlocking(selector::getCurrentTabId);
         Tab secondTab = createTabOnUiThread(cta, /* incognito= */ false);
         assertNotNull("Second tab should be created.", secondTab);
 
@@ -253,13 +269,12 @@ public class VerticalTabsTest {
         assertActiveTabId(selector, thirdTabId, "Active tab ID should be the third tab.");
 
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel()
-                            .getTabRemover()
-                            .closeTabs(
-                                    TabClosureParams.closeTab(newTabs.get(0)).build(),
-                                    /* allowDialog= */ false);
-                });
+                () ->
+                        selector.getCurrentModel()
+                                .getTabRemover()
+                                .closeTabs(
+                                        TabClosureParams.closeTab(newTabs.get(0)).build(),
+                                        /* allowDialog= */ false));
 
         assertActiveTabId(
                 selector,
@@ -277,13 +292,12 @@ public class VerticalTabsTest {
         createTabOnUiThread(cta, /* incognito= */ false);
 
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getModel(false)
-                            .getTabRemover()
-                            .closeTabs(
-                                    TabClosureParams.closeAllTabs().build(),
-                                    /* allowDialog= */ false);
-                });
+                () ->
+                        selector.getModel(false)
+                                .getTabRemover()
+                                .closeTabs(
+                                        TabClosureParams.closeAllTabs().build(),
+                                        /* allowDialog= */ false));
 
         CriteriaHelper.pollUiThread(
                 () -> selector.getModel(false).getCount() == 0,
@@ -309,9 +323,7 @@ public class VerticalTabsTest {
         assertNotNull("Tab 2 should exist.", tab2);
 
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId());
-                });
+                () -> selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId()));
 
         assertTabInGroup(selector, tab1, "Tab 1 should be part of a tab group.");
         assertTabInGroup(selector, tab2, "Tab 2 should be part of a tab group.");
@@ -327,21 +339,18 @@ public class VerticalTabsTest {
         Tab tab2 = createTabOnUiThread(cta, /* incognito= */ false);
 
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId());
-                });
+                () -> selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId()));
 
         assertTabInGroup(selector, tab1, "Tab 1 should be part of a group.");
 
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel()
-                            .getTabUngrouper()
-                            .ungroupTabs(
-                                    List.of(tab1, tab2),
-                                    /* trailing= */ false,
-                                    /* allowDialog= */ false);
-                });
+                () ->
+                        selector.getCurrentModel()
+                                .getTabUngrouper()
+                                .ungroupTabs(
+                                        List.of(tab1, tab2),
+                                        /* trailing= */ false,
+                                        /* allowDialog= */ false));
 
         CriteriaHelper.pollUiThread(
                 () -> !selector.getCurrentModel().isTabInTabGroup(tab1),
@@ -361,15 +370,11 @@ public class VerticalTabsTest {
         Tab tab2 = createTabOnUiThread(cta, /* incognito= */ false);
 
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId());
-                });
+                () -> selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId()));
 
         String testTitle = TEST_GROUP_TITLE;
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().setTabGroupTitle(tab1.getTabGroupId(), testTitle);
-                });
+                () -> selector.getCurrentModel().setTabGroupTitle(tab1.getTabGroupId(), testTitle));
 
         CriteriaHelper.pollUiThread(
                 () ->
@@ -388,16 +393,13 @@ public class VerticalTabsTest {
         Tab tab2 = createTabOnUiThread(cta, /* incognito= */ false);
 
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId());
-                });
+                () -> selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId()));
 
         @TabGroupColorId int targetColorId = TabGroupColorId.CYAN;
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel()
-                            .setTabGroupColor(tab1.getTabGroupId(), targetColorId);
-                });
+                () ->
+                        selector.getCurrentModel()
+                                .setTabGroupColor(tab1.getTabGroupId(), targetColorId));
 
         CriteriaHelper.pollUiThread(
                 () ->
@@ -417,9 +419,7 @@ public class VerticalTabsTest {
         Tab tab2 = createTabOnUiThread(cta, /* incognito= */ false);
 
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId());
-                });
+                () -> selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId()));
 
         assertTabInGroup(selector, tab1, "Tab 1 should be in a group.");
 
@@ -456,10 +456,7 @@ public class VerticalTabsTest {
         onView(withId(R.id.pinned_tabs_recycler_view))
                 .check(matches(withEffectiveVisibility(VISIBLE)));
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().unpinTab(tab1.getId());
-                });
+        ThreadUtils.runOnUiThreadBlocking(() -> selector.getCurrentModel().unpinTab(tab1.getId()));
 
         CriteriaHelper.pollUiThread(
                 () -> selector.getCurrentModel().getPinnedTabsCount() == 0,
@@ -475,13 +472,13 @@ public class VerticalTabsTest {
         ChromeTabbedActivity cta = mActivityTestRule.getActivity();
         TabModelSelector selector = cta.getTabModelSelectorSupplier().get();
 
-        int firstTabId = ThreadUtils.runOnUiThreadBlocking(() -> selector.getCurrentTabId());
+        int firstTabId = ThreadUtils.runOnUiThreadBlocking(selector::getCurrentTabId);
         createTabOnUiThread(cta, /* incognito= */ false);
 
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().pinTab(firstTabId, /* showUngroupDialog= */ false);
-                });
+                () ->
+                        selector.getCurrentModel()
+                                .pinTab(firstTabId, /* showUngroupDialog= */ false));
 
         CriteriaHelper.pollUiThread(
                 () -> selector.getCurrentModel().getPinnedTabsCount() == 1,
@@ -499,10 +496,7 @@ public class VerticalTabsTest {
                 "Active tab ID should switch to the pinned tab after clicking its pill in Left"
                         + " Rail.");
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().unpinTab(firstTabId);
-                });
+        ThreadUtils.runOnUiThreadBlocking(() -> selector.getCurrentModel().unpinTab(firstTabId));
     }
 
     @Test
@@ -511,7 +505,7 @@ public class VerticalTabsTest {
         ChromeTabbedActivity cta = mActivityTestRule.getActivity();
         TabModelSelector selector = cta.getTabModelSelectorSupplier().get();
 
-        int tab1Id = ThreadUtils.runOnUiThreadBlocking(() -> selector.getCurrentTabId());
+        int tab1Id = ThreadUtils.runOnUiThreadBlocking(selector::getCurrentTabId);
         Tab tab2 = createTabOnUiThread(cta, /* incognito= */ false);
         int tab2Id = tab2.getId();
         createTabOnUiThread(cta, /* incognito= */ false); // Tab3 remains unpinned as active tab.
@@ -554,9 +548,9 @@ public class VerticalTabsTest {
         Tab tab1 = createTabOnUiThread(cta, /* incognito= */ false);
 
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().pinTab(tab1.getId(), /* showUngroupDialog= */ false);
-                });
+                () ->
+                        selector.getCurrentModel()
+                                .pinTab(tab1.getId(), /* showUngroupDialog= */ false));
 
         CriteriaHelper.pollUiThread(
                 () -> selector.getCurrentModel().getPinnedTabsCount() == 1,
@@ -565,13 +559,12 @@ public class VerticalTabsTest {
                 .check(matches(withEffectiveVisibility(VISIBLE)));
 
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel()
-                            .getTabRemover()
-                            .closeTabs(
-                                    TabClosureParams.closeTab(tab1).build(),
-                                    /* allowDialog= */ false);
-                });
+                () ->
+                        selector.getCurrentModel()
+                                .getTabRemover()
+                                .closeTabs(
+                                        TabClosureParams.closeTab(tab1).build(),
+                                        /* allowDialog= */ false));
 
         CriteriaHelper.pollUiThread(
                 () -> selector.getCurrentModel().getPinnedTabsCount() == 0,
@@ -595,10 +588,7 @@ public class VerticalTabsTest {
 
         pinTabAndWait(selector, tab1, 1);
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().unpinTab(tab1Id);
-                });
+        ThreadUtils.runOnUiThreadBlocking(() -> selector.getCurrentModel().unpinTab(tab1Id));
 
         CriteriaHelper.pollUiThread(
                 () -> selector.getCurrentModel().getPinnedTabsCount() == 0,
@@ -614,7 +604,7 @@ public class VerticalTabsTest {
     @Test
     @MediumTest
     public void testRailCollapseAndExpand() {
-        ChromeTabbedActivity cta = mActivityTestRule.getActivity();
+        mActivityTestRule.getActivity();
 
         // 1. Verify the collapse button is displayed and initially in the EXPANDED state.
         onView(withId(R.id.collapse_button))
@@ -646,26 +636,6 @@ public class VerticalTabsTest {
     }
 
     // =========================================================================================
-    // Left Rail Toolbar Action Buttons
-    // =========================================================================================
-
-    @Test
-    @MediumTest
-    public void testClickGridButtonOpensHub() {
-        ChromeTabbedActivity cta = mActivityTestRule.getActivity();
-
-        assertFalse(
-                "Hub layout should not be visible initially.",
-                cta.getLayoutManager().isLayoutVisible(LayoutType.HUB));
-
-        onView(withId(R.id.grid_button)).perform(click());
-
-        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.HUB);
-
-        TabUiTestHelper.leaveTabSwitcher(cta);
-    }
-
-    // =========================================================================================
     // Desktop Windowing Mode & App Header Spacer
     // =========================================================================================
 
@@ -688,7 +658,7 @@ public class VerticalTabsTest {
                 () -> {
                     VerticalTabRailLayout railLayout =
                             cta.findViewById(R.id.vertical_tab_rail_container);
-                    railLayout.setDesktopWindowSpacerVisible(/* visible= */ true);
+                    railLayout.setDesktopWindowSpacerVisibleForTesting(/* visible= */ true);
                 });
 
         // 3. Verify the spacer transitions to VISIBLE.
@@ -699,7 +669,7 @@ public class VerticalTabsTest {
                 () -> {
                     VerticalTabRailLayout railLayout =
                             cta.findViewById(R.id.vertical_tab_rail_container);
-                    railLayout.setDesktopWindowSpacerVisible(/* visible= */ false);
+                    railLayout.setDesktopWindowSpacerVisibleForTesting(/* visible= */ false);
                 });
 
         onView(withId(R.id.desktop_window_spacer)).check(matches(withEffectiveVisibility(GONE)));
@@ -709,7 +679,7 @@ public class VerticalTabsTest {
                 () -> {
                     VerticalTabRailLayout railLayout =
                             cta.findViewById(R.id.vertical_tab_rail_container);
-                    railLayout.setDesktopWindowSpacerVisible(initialSpacerVisible);
+                    railLayout.setDesktopWindowSpacerVisibleForTesting(initialSpacerVisible);
                 });
     }
 
@@ -743,9 +713,10 @@ public class VerticalTabsTest {
                                 View aiIndicator =
                                         viewHolder.itemView.findViewById(R.id.ai_indicator);
                                 assertNotNull("AI indicator view should exist.", aiIndicator);
-                                assertTrue(
+                                assertEquals(
                                         "AI indicator should be GONE by default.",
-                                        aiIndicator.getVisibility() == View.GONE);
+                                        View.GONE,
+                                        aiIndicator.getVisibility());
                             }
                         });
     }
@@ -760,15 +731,13 @@ public class VerticalTabsTest {
         ChromeTabbedActivity cta = mActivityTestRule.getActivity();
         TabModelSelector selector = cta.getTabModelSelectorSupplier().get();
 
-        Tab tabA = createTabOnUiThread(cta, /* incognito= */ false);
-        Tab tabB = createTabOnUiThread(cta, /* incognito= */ false);
+        createTabOnUiThread(cta, /* incognito= */ false);
+        createTabOnUiThread(cta, /* incognito= */ false);
         Tab tabC = createTabOnUiThread(cta, /* incognito= */ false);
 
         // 1. Move Tab C UP from the bottom index to index 0 (upwards drag and drop reordering).
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().moveTab(tabC.getId(), 0);
-                });
+                () -> selector.getCurrentModel().moveTab(tabC.getId(), 0));
 
         CriteriaHelper.pollUiThread(
                 () -> selector.getCurrentModel().getTabAt(0).getId() == tabC.getId(),
@@ -777,9 +746,7 @@ public class VerticalTabsTest {
         // 2. Move Tab C DOWN from index 0 to the last index (downwards drag and drop reordering).
         int lastIndex = getTabCountOnUiThread(selector.getCurrentModel()) - 1;
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().moveTab(tabC.getId(), lastIndex);
-                });
+                () -> selector.getCurrentModel().moveTab(tabC.getId(), lastIndex));
 
         CriteriaHelper.pollUiThread(
                 () -> selector.getCurrentModel().getTabAt(lastIndex).getId() == tabC.getId(),
@@ -797,16 +764,12 @@ public class VerticalTabsTest {
         Tab tab3 = createTabOnUiThread(cta, /* incognito= */ false);
 
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId());
-                });
+                () -> selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId()));
 
         assertTabInGroup(selector, tab1, "Tab 1 should be in a group.");
 
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().mergeTabsToGroup(tab3.getId(), tab1.getId());
-                });
+                () -> selector.getCurrentModel().mergeTabsToGroup(tab3.getId(), tab1.getId()));
 
         assertTabInGroup(selector, tab3, "Tab 3 should be merged into Tab 1's group.");
     }
@@ -833,9 +796,7 @@ public class VerticalTabsTest {
 
         // 1. Move child Tab 3 UP within the group to index 0.
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().moveTab(tab3.getId(), 0);
-                });
+                () -> selector.getCurrentModel().moveTab(tab3.getId(), 0));
 
         CriteriaHelper.pollUiThread(
                 () ->
@@ -845,9 +806,7 @@ public class VerticalTabsTest {
 
         // 2. Move child Tab 3 DOWN within the group to index 2.
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().moveTab(tab3.getId(), 2);
-                });
+                () -> selector.getCurrentModel().moveTab(tab3.getId(), 2));
 
         CriteriaHelper.pollUiThread(
                 () ->
@@ -867,17 +826,13 @@ public class VerticalTabsTest {
         Tab tabC = createTabOnUiThread(cta, /* incognito= */ false);
 
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().mergeTabsToGroup(tabA.getId(), tabB.getId());
-                });
+                () -> selector.getCurrentModel().mergeTabsToGroup(tabA.getId(), tabB.getId()));
 
         assertTabInGroup(selector, tabA, "Tab A and B should be in a group.");
 
         // 1. Move Tab C UP above the Tab Group to index 0.
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().moveTab(tabC.getId(), 0);
-                });
+                () -> selector.getCurrentModel().moveTab(tabC.getId(), 0));
 
         CriteriaHelper.pollUiThread(
                 () ->
@@ -888,9 +843,7 @@ public class VerticalTabsTest {
         // 2. Move Tab C DOWN below the Tab Group to the last index.
         int lastIndex = getTabCountOnUiThread(selector.getCurrentModel()) - 1;
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().moveTab(tabC.getId(), lastIndex);
-                });
+                () -> selector.getCurrentModel().moveTab(tabC.getId(), lastIndex));
 
         CriteriaHelper.pollUiThread(
                 () ->
@@ -919,12 +872,13 @@ public class VerticalTabsTest {
 
         // 1. Simulate dragging Tab 1 UPWARDS out of the group (trailing = false).
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel()
-                            .getTabUngrouper()
-                            .ungroupTabs(
-                                    List.of(tab1), /* trailing= */ false, /* allowDialog= */ false);
-                });
+                () ->
+                        selector.getCurrentModel()
+                                .getTabUngrouper()
+                                .ungroupTabs(
+                                        List.of(tab1),
+                                        /* trailing= */ false,
+                                        /* allowDialog= */ false));
 
         CriteriaHelper.pollUiThread(
                 () -> !selector.getCurrentModel().isTabInTabGroup(tab1),
@@ -932,12 +886,13 @@ public class VerticalTabsTest {
 
         // 2. Simulate dragging Tab 3 DOWNWARDS out of the group (trailing = true).
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel()
-                            .getTabUngrouper()
-                            .ungroupTabs(
-                                    List.of(tab3), /* trailing= */ true, /* allowDialog= */ false);
-                });
+                () ->
+                        selector.getCurrentModel()
+                                .getTabUngrouper()
+                                .ungroupTabs(
+                                        List.of(tab3),
+                                        /* trailing= */ true,
+                                        /* allowDialog= */ false));
 
         CriteriaHelper.pollUiThread(
                 () -> !selector.getCurrentModel().isTabInTabGroup(tab3),
@@ -967,9 +922,7 @@ public class VerticalTabsTest {
 
         // 1. Move Pinned Tab C UP/LEFT from index 2 to index 0.
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().moveTab(tabC.getId(), 0);
-                });
+                () -> selector.getCurrentModel().moveTab(tabC.getId(), 0));
 
         CriteriaHelper.pollUiThread(
                 () ->
@@ -979,9 +932,7 @@ public class VerticalTabsTest {
 
         // 2. Move Pinned Tab C DOWN/RIGHT from index 0 to index 2.
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().moveTab(tabC.getId(), 2);
-                });
+                () -> selector.getCurrentModel().moveTab(tabC.getId(), 2));
 
         CriteriaHelper.pollUiThread(
                 () ->
@@ -1001,16 +952,320 @@ public class VerticalTabsTest {
                 "Pinned tabs should be unpinned.");
     }
 
+    // =========================================================================================
+    // Multi-Tab Selection Workflows (Ctrl+Click, Shift+Click, Shift+Ctrl+Click)
+    // =========================================================================================
+
+    @Test
+    @MediumTest
+    public void testMultiSelectCtrlClickToggle() {
+        ChromeTabbedActivity cta = mActivityTestRule.getActivity();
+        TabModelSelector selector = cta.getTabModelSelectorSupplier().get();
+
+        Tab tab1 = createTabOnUiThread(cta, /* incognito= */ false);
+        Tab tab2 = createTabOnUiThread(cta, /* incognito= */ false);
+        Tab tab3 = createTabOnUiThread(cta, /* incognito= */ false);
+
+        TabModel model = selector.getCurrentModel();
+        // Model order from top to bottom in Left Rail: tab3 (pos 0), tab2 (pos 1), tab1 (pos 2).
+        ThreadUtils.runOnUiThreadBlocking(() -> model.indexOf(tab3));
+        int tab2Index = ThreadUtils.runOnUiThreadBlocking(() -> model.indexOf(tab2));
+        int tab1Index = ThreadUtils.runOnUiThreadBlocking(() -> model.indexOf(tab1));
+
+        // 1. Initially tab3 is active and no multi-selection is active.
+        assertActiveTabId(selector, tab3.getId(), "Tab 3 should be active initially.");
+        assertFalse(
+                "No multiple tabs should be selected initially.",
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> TabMultiSelectHelper.hasMultipleTabsSelected(model)));
+
+        // 2. Ctrl+Click tab2: both tab3 and tab2 become multi-selected, and tab2 becomes active.
+        clickTabItemWithModifiers(tab2Index, KeyEvent.META_CTRL_ON);
+        CriteriaHelper.pollUiThread(
+                () ->
+                        model.getMultiSelectedTabsCount() == 2
+                                && model.isTabMultiSelected(tab3.getId())
+                                && model.isTabMultiSelected(tab2.getId())
+                                && selector.getCurrentTabId() == tab2.getId(),
+                "Tab 3 and Tab 2 should both be multi-selected and Tab 2 active after Ctrl+Click.");
+
+        // 3. Ctrl+Click tab1: tab3, tab2, and tab1 become multi-selected, and tab1 becomes active.
+        clickTabItemWithModifiers(tab1Index, KeyEvent.META_CTRL_ON);
+        CriteriaHelper.pollUiThread(
+                () ->
+                        model.getMultiSelectedTabsCount() == 3
+                                && model.isTabMultiSelected(tab3.getId())
+                                && model.isTabMultiSelected(tab2.getId())
+                                && model.isTabMultiSelected(tab1.getId())
+                                && selector.getCurrentTabId() == tab1.getId(),
+                "All 3 tabs should be multi-selected and Tab 1 active after Ctrl+Click.");
+
+        // 4. Ctrl+Click tab2 (unselecting middle tab): tab2 is removed from selection.
+        clickTabItemWithModifiers(tab2Index, KeyEvent.META_CTRL_ON);
+        CriteriaHelper.pollUiThread(
+                () ->
+                        model.getMultiSelectedTabsCount() == 2
+                                && model.isTabMultiSelected(tab3.getId())
+                                && !model.isTabMultiSelected(tab2.getId())
+                                && model.isTabMultiSelected(tab1.getId()),
+                "Tab 2 should be deselected while Tab 3 and Tab 1 remain multi-selected.");
+
+        // 5. Normal click tab2: clears multi-selection and sets tab2 as the active tab.
+        clickTabItemAtPosition(tab2Index);
+        CriteriaHelper.pollUiThread(
+                () ->
+                        !TabMultiSelectHelper.hasMultipleTabsSelected(model)
+                                && selector.getCurrentTabId() == tab2.getId(),
+                "Multi-selection should clear and Tab 2 become active on normal click.");
+    }
+
+    @Test
+    @MediumTest
+    public void testMultiSelectCtrlClickActiveTabHandover() {
+        ChromeTabbedActivity cta = mActivityTestRule.getActivity();
+        TabModelSelector selector = cta.getTabModelSelectorSupplier().get();
+
+        Tab tab1 = createTabOnUiThread(cta, /* incognito= */ false);
+        Tab tab2 = createTabOnUiThread(cta, /* incognito= */ false);
+
+        TabModel model = selector.getCurrentModel();
+        int tab2Index = ThreadUtils.runOnUiThreadBlocking(() -> model.indexOf(tab2));
+        int tab1Index = ThreadUtils.runOnUiThreadBlocking(() -> model.indexOf(tab1));
+
+        // 1. Ctrl+Click tab1 so tab2 and tab1 are multi-selected, tab1 is active.
+        clickTabItemWithModifiers(tab1Index, KeyEvent.META_CTRL_ON);
+        CriteriaHelper.pollUiThread(
+                () ->
+                        model.getMultiSelectedTabsCount() == 2
+                                && selector.getCurrentTabId() == tab1.getId(),
+                "Tab 2 and Tab 1 should be multi-selected and Tab 1 active.");
+
+        // 2. Ctrl+Click the active tab (tab1): tab1 is deselected, active tab hands over to tab2.
+        clickTabItemWithModifiers(tab1Index, KeyEvent.META_CTRL_ON);
+        CriteriaHelper.pollUiThread(
+                () ->
+                        !model.isTabMultiSelected(tab1.getId())
+                                && selector.getCurrentTabId() == tab2.getId(),
+                "Active tab should hand over to Tab 2 after Ctrl+Clicking active tab.");
+
+        // 3. Normal click to reset selection.
+        clickTabItemAtPosition(tab2Index);
+        CriteriaHelper.pollUiThread(
+                () -> !TabMultiSelectHelper.hasMultipleTabsSelected(model),
+                "Multi-selection should be cleared after normal click.");
+    }
+
+    @Test
+    @MediumTest
+    public void testMultiSelectShiftClickRange() {
+        ChromeTabbedActivity cta = mActivityTestRule.getActivity();
+        TabModelSelector selector = cta.getTabModelSelectorSupplier().get();
+
+        createTabOnUiThread(cta, /* incognito= */ false);
+        Tab tab2 = createTabOnUiThread(cta, /* incognito= */ false);
+        Tab tab3 = createTabOnUiThread(cta, /* incognito= */ false);
+        Tab tab4 = createTabOnUiThread(cta, /* incognito= */ false);
+
+        TabModel model = selector.getCurrentModel();
+        // Model order from top to bottom: tab4 (index 0), tab3 (index 1), tab2 (index 2), tab1
+        // (index 3).
+        int tab4Index = ThreadUtils.runOnUiThreadBlocking(() -> model.indexOf(tab4));
+        int tab2Index = ThreadUtils.runOnUiThreadBlocking(() -> model.indexOf(tab2));
+        int tab3Index = ThreadUtils.runOnUiThreadBlocking(() -> model.indexOf(tab3));
+
+        // 1. Select tab4 initially (anchor).
+        clickTabItemAtPosition(tab4Index);
+        assertActiveTabId(selector, tab4.getId(), "Tab 4 should be active.");
+
+        // 2. Shift+Click tab2: selects continuous range [tab4, tab3, tab2].
+        clickTabItemWithModifiers(tab2Index, KeyEvent.META_SHIFT_ON);
+        CriteriaHelper.pollUiThread(
+                () ->
+                        model.getMultiSelectedTabsCount() == 3
+                                && model.isTabMultiSelected(tab4.getId())
+                                && model.isTabMultiSelected(tab3.getId())
+                                && model.isTabMultiSelected(tab2.getId())
+                                && selector.getCurrentTabId() == tab2.getId(),
+                "Tabs 4, 3, and 2 should be multi-selected after Shift+Click.");
+
+        // 3. Shift+Click tab3: destructive shift-click shrinks range from anchor tab4 to tab3.
+        clickTabItemWithModifiers(tab3Index, KeyEvent.META_SHIFT_ON);
+        CriteriaHelper.pollUiThread(
+                () ->
+                        model.getMultiSelectedTabsCount() == 2
+                                && model.isTabMultiSelected(tab4.getId())
+                                && model.isTabMultiSelected(tab3.getId())
+                                && !model.isTabMultiSelected(tab2.getId())
+                                && selector.getCurrentTabId() == tab3.getId(),
+                "Range should shrink to Tabs 4 and 3 after Shift+Clicking Tab 3.");
+
+        // 4. Normal click to clear selection.
+        clickTabItemAtPosition(tab4Index);
+        CriteriaHelper.pollUiThread(
+                () -> !TabMultiSelectHelper.hasMultipleTabsSelected(model),
+                "Multi-selection should be cleared after normal click.");
+    }
+
+    @Test
+    @MediumTest
+    public void testMultiSelectShiftClickAutoExpandsGroup() {
+        ChromeTabbedActivity cta = mActivityTestRule.getActivity();
+        TabModelSelector selector = cta.getTabModelSelectorSupplier().get();
+
+        Tab tab1 = createTabOnUiThread(cta, /* incognito= */ false);
+        Tab tab2 = createTabOnUiThread(cta, /* incognito= */ false);
+        Tab tab3 = createTabOnUiThread(cta, /* incognito= */ false);
+        Tab tab4 = createTabOnUiThread(cta, /* incognito= */ false);
+
+        TabModel model = selector.getCurrentModel();
+        // Model order from top to bottom: tab4 (index 0), tab3 (index 1), tab2 (index 2), tab1
+        // (index 3).
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    model.mergeTabsToGroup(tab2.getId(), tab3.getId());
+                    model.setTabGroupCollapsed(tab2.getTabGroupId(), true);
+                });
+
+        CriteriaHelper.pollUiThread(
+                () -> model.getTabGroupCollapsed(tab2.getTabGroupId()),
+                "Tab group should be collapsed initially.");
+
+        // In the Flat RV, position 0 is tab4, position 1 is group header for tab3/tab2, position 2
+        // is tab1.
+        // 1. Select tab4 as anchor.
+        clickTabItemAtPosition(0);
+        assertActiveTabId(selector, tab4.getId(), "Tab 4 should be active.");
+
+        // 2. Shift+Click tab1 (which is at position 2 in the collapsed list).
+        clickTabItemWithModifiers(2, KeyEvent.META_SHIFT_ON);
+
+        // 3. Verify the tab group is automatically expanded and all 4 tabs are multi-selected.
+        CriteriaHelper.pollUiThread(
+                () ->
+                        !model.getTabGroupCollapsed(tab2.getTabGroupId())
+                                && model.getMultiSelectedTabsCount() == 4
+                                && model.isTabMultiSelected(tab4.getId())
+                                && model.isTabMultiSelected(tab3.getId())
+                                && model.isTabMultiSelected(tab2.getId())
+                                && model.isTabMultiSelected(tab1.getId())
+                                && selector.getCurrentTabId() == tab1.getId(),
+                "Tab group should auto-expand and all 4 tabs should be multi-selected.");
+
+        // 4. Normal click to clear selection.
+        clickTabItemAtPosition(0);
+        CriteriaHelper.pollUiThread(
+                () -> !TabMultiSelectHelper.hasMultipleTabsSelected(model),
+                "Multi-selection should be cleared after normal click.");
+    }
+
+    @Test
+    @MediumTest
+    public void testMultiSelectShiftCtrlClickNonDestructiveRange() {
+        ChromeTabbedActivity cta = mActivityTestRule.getActivity();
+        TabModelSelector selector = cta.getTabModelSelectorSupplier().get();
+
+        Tab tab1 = createTabOnUiThread(cta, /* incognito= */ false);
+        Tab tab2 = createTabOnUiThread(cta, /* incognito= */ false);
+        Tab tab3 = createTabOnUiThread(cta, /* incognito= */ false);
+        Tab tab4 = createTabOnUiThread(cta, /* incognito= */ false);
+        Tab tab5 = createTabOnUiThread(cta, /* incognito= */ false);
+
+        TabModel model = selector.getCurrentModel();
+        // Model order from top to bottom: tab5 (index 0), tab4 (index 1), tab3 (index 2), tab2
+        // (index 3), tab1 (index 4).
+        int tab5Index = ThreadUtils.runOnUiThreadBlocking(() -> model.indexOf(tab5));
+        int tab3Index = ThreadUtils.runOnUiThreadBlocking(() -> model.indexOf(tab3));
+        int tab1Index = ThreadUtils.runOnUiThreadBlocking(() -> model.indexOf(tab1));
+
+        // 1. Select tab5.
+        clickTabItemAtPosition(tab5Index);
+        assertActiveTabId(selector, tab5.getId(), "Tab 5 should be active.");
+
+        // 2. Ctrl+Click tab1: tab5 and tab1 are multi-selected (disjoint selection).
+        clickTabItemWithModifiers(tab1Index, KeyEvent.META_CTRL_ON);
+        CriteriaHelper.pollUiThread(
+                () ->
+                        model.getMultiSelectedTabsCount() == 2
+                                && model.isTabMultiSelected(tab5.getId())
+                                && model.isTabMultiSelected(tab1.getId()),
+                "Tab 5 and Tab 1 should be multi-selected.");
+
+        // 3. Shift+Ctrl+Click tab3: non-destructive range selection from anchor (tab1) to tab3 adds
+        // [tab3, tab2, tab1] while PRESERVING tab5!
+        clickTabItemWithModifiers(tab3Index, KeyEvent.META_SHIFT_ON | KeyEvent.META_CTRL_ON);
+        CriteriaHelper.pollUiThread(
+                () ->
+                        model.getMultiSelectedTabsCount() == 4
+                                && model.isTabMultiSelected(tab5.getId())
+                                && model.isTabMultiSelected(tab3.getId())
+                                && model.isTabMultiSelected(tab2.getId())
+                                && model.isTabMultiSelected(tab1.getId())
+                                && !model.isTabMultiSelected(tab4.getId())
+                                && selector.getCurrentTabId() == tab3.getId(),
+                "Tab 5, 3, 2, 1 should all be multi-selected after Shift+Ctrl+Click.");
+
+        // 4. Normal click to clear selection.
+        clickTabItemAtPosition(tab5Index);
+        CriteriaHelper.pollUiThread(
+                () -> !TabMultiSelectHelper.hasMultipleTabsSelected(model),
+                "Multi-selection should be cleared after normal click.");
+    }
+
+    @Test
+    @MediumTest
+    public void testMultiSelectMixedPinnedAndRegularTabs() {
+        ChromeTabbedActivity cta = mActivityTestRule.getActivity();
+        TabModelSelector selector = cta.getTabModelSelectorSupplier().get();
+
+        Tab tab1 = createTabOnUiThread(cta, /* incognito= */ false);
+        Tab tab2 = createTabOnUiThread(cta, /* incognito= */ false);
+
+        TabModel model = selector.getCurrentModel();
+        // Pin tab2.
+        pinTabAndWait(selector, tab2, 1);
+        waitForViewVisibility(cta, R.id.pinned_tabs_recycler_view, View.VISIBLE);
+
+        // 1. Click pinned tab2 in Pinned Strip.
+        clickPinnedTabItemAtPosition(0);
+        assertActiveTabId(selector, tab2.getId(), "Pinned Tab 2 should be active.");
+
+        int tab1Index = ThreadUtils.runOnUiThreadBlocking(() -> model.indexOf(tab1));
+
+        // 2. Ctrl+Click unpinned tab1 in regular tab list.
+        clickTabItemWithModifiers(tab1Index, KeyEvent.META_CTRL_ON);
+
+        // 3. Verify both pinned tab2 and unpinned tab1 are multi-selected.
+        CriteriaHelper.pollUiThread(
+                () ->
+                        model.getMultiSelectedTabsCount() == 2
+                                && model.isTabMultiSelected(tab2.getId())
+                                && model.isTabMultiSelected(tab1.getId())
+                                && selector.getCurrentTabId() == tab1.getId(),
+                "Both pinned Tab 2 and regular Tab 1 should be multi-selected.");
+
+        // Cleanup: unpin tab2.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    model.unpinTab(tab2.getId());
+                    model.clearMultiSelection(/* notifyObservers= */ false);
+                });
+        CriteriaHelper.pollUiThread(
+                () ->
+                        model.getPinnedTabsCount() == 0
+                                && !TabMultiSelectHelper.hasMultipleTabsSelected(model),
+                "Cleaned up pinned and multi-selected tabs.");
+    }
+
     private static Tab createTabOnUiThread(ChromeTabbedActivity cta, boolean incognito) {
         return ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    return cta.getTabCreator(incognito)
-                            .createNewTab(
-                                    new LoadUrlParams(ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL),
-                                    TabLaunchType.FROM_CHROME_UI,
-                                    /* parent= */ null,
-                                    /* position= */ 0);
-                });
+                () ->
+                        cta.getTabCreator(incognito)
+                                .createNewTab(
+                                        new LoadUrlParams(
+                                                ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL),
+                                        TabLaunchType.FROM_CHROME_UI,
+                                        /* parent= */ null,
+                                        /* position= */ 0));
     }
 
     private static void waitForViewVisibility(
@@ -1034,9 +1289,9 @@ public class VerticalTabsTest {
 
     private static void pinTabAndWait(TabModelSelector selector, Tab tab, int expectedPinnedCount) {
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().pinTab(tab.getId(), /* showUngroupDialog= */ false);
-                });
+                () ->
+                        selector.getCurrentModel()
+                                .pinTab(tab.getId(), /* showUngroupDialog= */ false));
         CriteriaHelper.pollUiThread(
                 () -> selector.getCurrentModel().getPinnedTabsCount() == expectedPinnedCount,
                 "Pinned tabs count should be " + expectedPinnedCount + ".");
@@ -1059,7 +1314,10 @@ public class VerticalTabsTest {
 
                             @Override
                             public void perform(UiController uiController, View view) {
+                                uiController.loopMainThreadUntilIdle();
                                 RecyclerView recyclerView = (RecyclerView) view;
+                                recyclerView.scrollToPosition(index);
+                                uiController.loopMainThreadUntilIdle();
                                 RecyclerView.ViewHolder viewHolder =
                                         recyclerView.findViewHolderForAdapterPosition(index);
                                 assertNotNull(
@@ -1071,8 +1329,7 @@ public class VerticalTabsTest {
     }
 
     private static void clickTabItemAtPosition(int index) {
-        performActionOnRecyclerViewItem(
-                R.id.tab_list_recycler_view, index, "click tab item", view -> view.performClick());
+        clickTabItemWithModifiers(index, 0);
     }
 
     private static void clickActionButtonAtPosition(int index) {
@@ -1088,10 +1345,46 @@ public class VerticalTabsTest {
     }
 
     private static void clickPinnedTabItemAtPosition(int index) {
+        clickPinnedTabItemWithModifiers(index, 0);
+    }
+
+    private static void clickTabItemWithModifiers(int index, int metaState) {
+        performActionOnRecyclerViewItem(
+                R.id.tab_list_recycler_view,
+                index,
+                "click tab item with modifiers " + metaState,
+                view -> {
+                    MotionEvent down =
+                            MotionEvent.obtain(
+                                    /* downTime= */ 0,
+                                    /* eventTime= */ 0,
+                                    MotionEvent.ACTION_DOWN,
+                                    view.getWidth() / 2f,
+                                    view.getHeight() / 2f,
+                                    metaState);
+                    view.dispatchTouchEvent(down);
+                    down.recycle();
+                    view.performClick();
+                });
+    }
+
+    private static void clickPinnedTabItemWithModifiers(int index, int metaState) {
         performActionOnRecyclerViewItem(
                 R.id.pinned_tabs_recycler_view,
                 index,
-                "click pinned tab item",
-                view -> view.performClick());
+                "click pinned tab item with modifiers " + metaState,
+                view -> {
+                    MotionEvent down =
+                            MotionEvent.obtain(
+                                    /* downTime= */ 0,
+                                    /* eventTime= */ 0,
+                                    MotionEvent.ACTION_DOWN,
+                                    view.getWidth() / 2f,
+                                    view.getHeight() / 2f,
+                                    metaState);
+                    view.dispatchTouchEvent(down);
+                    down.recycle();
+                    view.performClick();
+                });
     }
 }

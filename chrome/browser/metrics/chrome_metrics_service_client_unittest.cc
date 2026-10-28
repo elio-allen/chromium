@@ -19,6 +19,7 @@
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "components/crash/core/common/shared_memory_user_stream_reader.h"
 #include "components/metrics/client_info.h"
 #include "components/metrics/content/subprocess_metrics_provider.h"
 #include "components/metrics/dwa/dwa_recorder.h"
@@ -26,10 +27,12 @@
 #include "components/metrics/metrics_features.h"
 #include "components/metrics/metrics_service.h"
 #include "components/metrics/metrics_state_manager.h"
+#include "components/metrics/system_profile_user_stream.h"
 #include "components/metrics/test/test_enabled_state_provider.h"
 #include "components/metrics/unsent_log_store.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/regional_capabilities/regional_capabilities_switches.h"
+#include "components/site_token_provider/features.h"
 #include "components/ukm/ukm_service.h"
 #include "components/ukm/ukm_test_helper.h"
 
@@ -135,7 +138,8 @@ class ChromeMetricsServiceClientTest : public testing::Test {
     scoped_feature_list_.InitWithFeatures(
         {features::kUmaStorageDimensions,
          features::kClassManagementEnabledMetricsProvider,
-         metrics::dwa::kDwaFeature, switches::kDynamicProfileCountry},
+         metrics::dwa::kDwaFeature, switches::kDynamicProfileCountry,
+         site_token_provider::features::kSiteTokenProviderEnabled},
         {});
 
     // ChromeOs Metrics Provider require g_login_state and power manager client
@@ -145,13 +149,19 @@ class ChromeMetricsServiceClientTest : public testing::Test {
 #elif BUILDFLAG(IS_WIN)
     scoped_feature_list_.InitWithFeatures(
         {metrics::dwa::kDwaFeature, switches::kDynamicProfileCountry,
-         features::kSystemPdhMetrics},
+         features::kSystemPdhMetrics,
+         site_token_provider::features::kSiteTokenProviderEnabled},
         {});
 #elif BUILDFLAG(IS_ANDROID)
-    scoped_feature_list_.InitWithFeatures({metrics::dwa::kDwaFeature}, {});
+    scoped_feature_list_.InitWithFeatures(
+        {metrics::dwa::kDwaFeature,
+         site_token_provider::features::kSiteTokenProviderEnabled},
+        {});
 #else
     scoped_feature_list_.InitWithFeatures(
-        {metrics::dwa::kDwaFeature, switches::kDynamicProfileCountry}, {});
+        {metrics::dwa::kDwaFeature, switches::kDynamicProfileCountry,
+         site_token_provider::features::kSiteTokenProviderEnabled},
+        {});
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -240,7 +250,7 @@ TEST_F(ChromeMetricsServiceClientTest, TestRegisterUKMProviders) {
   // Test that UKM service has initialized all its metrics providers listed in
   // ChromeMetricsServiceClient::RegisterUKMProviders, for all platform with one
   // exception on ChromeOS.
-  size_t expected_providers = 10;
+  size_t expected_providers = 11;
 #if BUILDFLAG(IS_CHROMEOS)
   // ChromeOSMetricsProvider
   expected_providers++;
@@ -277,7 +287,7 @@ TEST_F(ChromeMetricsServiceClientTest, TestRegisterMetricsServiceProviders) {
   size_t expected_providers = 2;
 
   // This is the number of metrics providers that are outside any #if macros.
-  expected_providers += 25;
+  expected_providers += 26;
 
   int sample_rate;
   if (ChromeMetricsServicesManagerClient::GetSamplingRatePerMille(
@@ -322,13 +332,13 @@ TEST_F(ChromeMetricsServiceClientTest, TestRegisterMetricsServiceProviders) {
   // CrosHealthdMetricsProvider, ChromeOSMetricsProvider,
   // ChromeOSHistogramMetricsProvider, ChromeShelfMetricsProvider,
   // ClassManagementEnabledMetricsProvider,
-  // K12AgeClassificationMetricsProvider, KeyboardBacklightColorMetricsProvider,
+  // K12AgeClassificationMetricsProvider,
   // PersonalizationAppThemeMetricsProvider, PrinterMetricsProvider,
   // FamilyUserMetricsProvider, FamilyLinkUserMetricsProvider,
   // UpdateEngineMetricsProvider, OsSettingsMetricsProvider,
   // UserTypeByDeviceTypeMetricsProvider, WallpaperMetricsProvider,
   // and VmmMetricsProvider.
-  expected_providers += 17;
+  expected_providers += 16;
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -363,6 +373,9 @@ TEST_F(ChromeMetricsServiceClientTest, TestRegisterMetricsServiceProviders) {
 #endif
 
   // GlicMetricsProvider
+  expected_providers += 1;
+
+  // SiteTokenProviderMetricsProvider
   expected_providers += 1;
 
   std::unique_ptr<TestChromeMetricsServiceClient>
@@ -478,46 +491,49 @@ TEST_F(ChromeMetricsServiceClientTest,
   ukm::UkmService* ukm_service = client->GetUkmService();
   ASSERT_TRUE(ukm_service);
 
-  ukm::UkmTestHelper ukm_test_helper(ukm_service);
+  {
+    ukm::UkmTestHelper ukm_test_helper(ukm_service);
 
-  // Create and register a testing profile with mock history and sync services.
-  TestingProfile::TestingFactories testing_factories;
-  testing_factories.emplace_back(HistoryServiceFactory::GetInstance(),
-                                 base::BindRepeating(&BuildTestHistoryService));
-  testing_factories.emplace_back(SyncServiceFactory::GetInstance(),
-                                 base::BindRepeating(&BuildTestSyncService));
-  TestingProfile* profile =
-      profile_manager_.CreateTestingProfile("p1", std::move(testing_factories));
+    // Create and register a testing profile with mock history and sync services.
+    TestingProfile::TestingFactories testing_factories;
+    testing_factories.emplace_back(HistoryServiceFactory::GetInstance(),
+                                   base::BindRepeating(&BuildTestHistoryService));
+    testing_factories.emplace_back(SyncServiceFactory::GetInstance(),
+                                   base::BindRepeating(&BuildTestSyncService));
+    TestingProfile* profile =
+        profile_manager_.CreateTestingProfile("p1", std::move(testing_factories));
 
-  // Enable advanced reporting for this profile.
-  // This will enable UKM recording and trigger initialization.
-  metrics::MetricsReportingChoiceService::SetAdvancedReportingEnabled(
-      profile->GetPrefs(), true);
-  EXPECT_TRUE(client->IsUkmAllowedForAllProfiles());
+    // Enable advanced reporting for this profile.
+    // This will enable UKM recording and trigger initialization.
+    metrics::MetricsReportingChoiceService::SetAdvancedReportingEnabled(
+        profile->GetPrefs(), true);
+    EXPECT_TRUE(client->IsUkmAllowedForAllProfiles());
 
-  // Manually enable recording/reporting since MetricsServicesManager is not
-  // running in this unit test.
-  ukm_service->EnableRecording();
-  ukm_service->EnableReporting();
+    // Manually enable recording/reporting since MetricsServicesManager is not
+    // running in this unit test.
+    ukm_service->EnableRecording();
+    ukm_service->EnableReporting();
 
-  // Setup: build and store a dummy log to verify purging logic.
-  ukm::SourceId source_id = ukm::UkmRecorder::GetNewSourceID();
-  ukm_test_helper.RecordSourceForTesting(source_id);
-  ukm_test_helper.BuildAndStoreLog();
-  ASSERT_TRUE(ukm_test_helper.HasUnsentLogs());
+    // Setup: build and store a dummy log to verify purging logic.
+    ukm::SourceId source_id = ukm::UkmRecorder::GetNewSourceID();
+    ukm_test_helper.RecordSourceForTesting(source_id);
+    ukm_test_helper.BuildAndStoreLog();
+    ASSERT_TRUE(ukm_test_helper.HasUnsentLogs());
 
-  uint64_t initial_client_id = ukm_service->client_id();
+    uint64_t initial_client_id = ukm_service->client_id();
 
-  // Simulate profile unloading (like during browser shutdown) by deleting the
-  // profile. UKM client ID should NOT change, and unsent logs should NOT be
-  // purged.
-  profile_manager_.DeleteTestingProfile("p1");
+    // Simulate profile unloading (like during browser shutdown) by deleting the
+    // profile. UKM client ID should NOT change, and unsent logs should NOT be
+    // purged.
+    profile_manager_.DeleteTestingProfile("p1");
+    EXPECT_FALSE(client->IsUkmAllowedForAllProfiles());
+    EXPECT_EQ(initial_client_id, ukm_service->client_id());
+    EXPECT_TRUE(ukm_test_helper.HasUnsentLogs());
+  }
+
 #if BUILDFLAG(IS_CHROMEOS)
   ash::ScopedStubInstallAttributes stub_install_attributes;
 #endif
-  EXPECT_FALSE(client->IsUkmAllowedForAllProfiles());
-  EXPECT_EQ(initial_client_id, ukm_service->client_id());
-  EXPECT_TRUE(ukm_test_helper.HasUnsentLogs());
 
   client.reset();
 
@@ -543,47 +559,50 @@ TEST_F(ChromeMetricsServiceClientTest,
   ukm::UkmService* ukm_service = client->GetUkmService();
   ASSERT_TRUE(ukm_service);
 
-  ukm::UkmTestHelper ukm_test_helper(ukm_service);
+  {
+    ukm::UkmTestHelper ukm_test_helper(ukm_service);
 
-  // Create and register a testing profile with mock history and sync services.
-  TestingProfile::TestingFactories testing_factories;
-  testing_factories.emplace_back(HistoryServiceFactory::GetInstance(),
-                                 base::BindRepeating(&BuildTestHistoryService));
-  testing_factories.emplace_back(SyncServiceFactory::GetInstance(),
-                                 base::BindRepeating(&BuildTestSyncService));
-  TestingProfile* profile =
-      profile_manager_.CreateTestingProfile("p1", std::move(testing_factories));
+    // Create and register a testing profile with mock history and sync services.
+    TestingProfile::TestingFactories testing_factories;
+    testing_factories.emplace_back(HistoryServiceFactory::GetInstance(),
+                                   base::BindRepeating(&BuildTestHistoryService));
+    testing_factories.emplace_back(SyncServiceFactory::GetInstance(),
+                                   base::BindRepeating(&BuildTestSyncService));
+    TestingProfile* profile =
+        profile_manager_.CreateTestingProfile("p1", std::move(testing_factories));
 
-  // Enable advanced reporting for this profile.
-  // This will enable UKM recording and trigger initialization.
-  metrics::MetricsReportingChoiceService::SetAdvancedReportingEnabled(
-      profile->GetPrefs(), true);
-  EXPECT_TRUE(client->IsUkmAllowedForAllProfiles());
+    // Enable advanced reporting for this profile.
+    // This will enable UKM recording and trigger initialization.
+    metrics::MetricsReportingChoiceService::SetAdvancedReportingEnabled(
+        profile->GetPrefs(), true);
+    EXPECT_TRUE(client->IsUkmAllowedForAllProfiles());
 
-  // Manually enable recording/reporting since MetricsServicesManager is not
-  // running in this unit test.
-  ukm_service->EnableRecording();
-  ukm_service->EnableReporting();
+    // Manually enable recording/reporting since MetricsServicesManager is not
+    // running in this unit test.
+    ukm_service->EnableRecording();
+    ukm_service->EnableReporting();
 
-  // Setup: build and store a dummy log to verify purging logic.
-  ukm::SourceId source_id = ukm::UkmRecorder::GetNewSourceID();
-  ukm_test_helper.RecordSourceForTesting(source_id);
-  ukm_test_helper.BuildAndStoreLog();
-  ASSERT_TRUE(ukm_test_helper.HasUnsentLogs());
+    // Setup: build and store a dummy log to verify purging logic.
+    ukm::SourceId source_id = ukm::UkmRecorder::GetNewSourceID();
+    ukm_test_helper.RecordSourceForTesting(source_id);
+    ukm_test_helper.BuildAndStoreLog();
+    ASSERT_TRUE(ukm_test_helper.HasUnsentLogs());
 
-  uint64_t initial_client_id = ukm_service->client_id();
+    uint64_t initial_client_id = ukm_service->client_id();
 
-  // Simulate user revoking consent (setting pref to false).
-  // This will trigger state change with reset_client_state = true.
-  // UKM client ID SHOULD change, and unsent logs SHOULD be purged.
-  metrics::MetricsReportingChoiceService::SetAdvancedReportingEnabled(
-      profile->GetPrefs(), false);
-  EXPECT_FALSE(client->IsUkmAllowedForAllProfiles());
-  EXPECT_NE(initial_client_id, ukm_service->client_id());
-  EXPECT_FALSE(ukm_test_helper.HasUnsentLogs());
+    // Simulate user revoking consent (setting pref to false).
+    // This will trigger state change with reset_client_state = true.
+    // UKM client ID SHOULD change, and unsent logs SHOULD be purged.
+    metrics::MetricsReportingChoiceService::SetAdvancedReportingEnabled(
+        profile->GetPrefs(), false);
+    EXPECT_FALSE(client->IsUkmAllowedForAllProfiles());
+    EXPECT_NE(initial_client_id, ukm_service->client_id());
+    EXPECT_FALSE(ukm_test_helper.HasUnsentLogs());
 
-  // Clean up profile before shutting down the tracker.
-  profile_manager_.DeleteTestingProfile("p1");
+    // Clean up profile before shutting down the tracker.
+    profile_manager_.DeleteTestingProfile("p1");
+  }
+
 #if BUILDFLAG(IS_CHROMEOS)
   ash::ScopedStubInstallAttributes stub_install_attributes;
 #endif
@@ -593,4 +612,36 @@ TEST_F(ChromeMetricsServiceClientTest,
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   metrics::DesktopSessionDurationTracker::CleanupForTesting();
 #endif
+}
+
+TEST_F(ChromeMetricsServiceClientTest,
+       OnEnvironmentUpdate_SharedMemoryEnabled) {
+  base::test::ScopedFeatureList local_feature_list;
+  local_feature_list.InitAndEnableFeature(
+      metrics::features::kSharedMemorySystemProfileMinidump);
+
+  // Initialize the stream region first.
+  metrics::SystemProfileUserStream::Get().Initialize();
+  base::ReadOnlySharedMemoryRegion shared_region =
+      metrics::SystemProfileUserStream::Get().DuplicateSharedMemoryRegion();
+  ASSERT_TRUE(shared_region.IsValid());
+
+  std::unique_ptr<TestChromeMetricsServiceClient> client =
+      TestChromeMetricsServiceClient::Create(metrics_state_manager_.get(),
+                                             synthetic_trial_registry_.get());
+
+  std::string test_environment = "test_environment_payload";
+  client->OnEnvironmentUpdate(&test_environment);
+
+  base::ReadOnlySharedMemoryMapping mapping = shared_region.Map();
+  ASSERT_TRUE(mapping.IsValid());
+
+  std::optional<crash_reporter::UserStreamData> stream_data =
+      crash_reporter::ExtractSharedMemoryUserStreamData(
+          mapping.GetMemoryAsSpan<const uint8_t>());
+  ASSERT_TRUE(stream_data.has_value());
+  EXPECT_EQ(stream_data->user_stream_type, 0x4B6B0003u);
+  EXPECT_EQ(
+      std::string(stream_data->payload.begin(), stream_data->payload.end()),
+      test_environment);
 }

@@ -29,12 +29,14 @@ import androidx.annotation.VisibleForTesting;
 import androidx.core.content.ContextCompat;
 
 import org.chromium.base.Callback;
+import org.chromium.base.CallbackUtils;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.MonotonicNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.build.annotations.RequiresNonNull;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.ConfigurationChangedObserver;
 import org.chromium.chrome.browser.lifecycle.StartStopWithNativeObserver;
@@ -352,15 +354,14 @@ class AppMenuHandlerImpl
         }
 
         mHierarchicalMenuController.setupCallbacks(
-                /* headerModelList= */ null, mModelList, () -> {});
+                /* headerModelList= */ null, mModelList, CallbackUtils.emptyRunnable());
 
         if (mAppMenu == null) {
             mAppMenu =
                     new AppMenu(
                             this,
                             mContext.getResources(),
-                            mHierarchicalMenuController,
-                            mAppMenuDelegate.shouldDisableVerticalScrollbar());
+                            mHierarchicalMenuController);
             mAppMenuDragHelper = new AppMenuDragHelper(mContext, mAppMenu, itemRowHeight);
         }
 
@@ -513,12 +514,6 @@ class AppMenuHandlerImpl
 
         int itemId = model.get(AppMenuItemProperties.MENU_ITEM_ID);
 
-        // Empty menu items are technically enabled for keyboard navigation, but clicks should be
-        // ignored.
-        if (itemId == R.id.empty_item_menu_id) {
-            return;
-        }
-
         mAppMenu.setSelectedItemBeforeDismiss(true);
         mAppMenu.dismiss();
 
@@ -535,12 +530,6 @@ class AppMenuHandlerImpl
     public boolean onItemLongClick(PropertyModel model, View view) {
         if (mAppMenu == null) return false;
         if (!model.get(AppMenuItemProperties.ENABLED)) return false;
-
-        // Empty menu items are technically enabled for keyboard navigation, but long clicks should
-        // be ignored.
-        if (model.get(AppMenuItemProperties.MENU_ITEM_ID) == R.id.empty_item_menu_id) {
-            return false;
-        }
 
         mAppMenu.setSelectedItemBeforeDismiss(true);
 
@@ -804,6 +793,16 @@ class AppMenuHandlerImpl
             appRect.bottom = mDecorView.getHeight();
         }
 
+        // When anchored to the bottom bar with top-anchored controls, keep the menu from growing
+        // over the top controls unless the delegate says there is nothing there to protect.
+        int reservedTopSpace =
+                isFromBottomBar
+                                && mBrowserControlsStateProvider.getControlsPosition()
+                                        == ControlsPosition.TOP
+                                && mDelegate.shouldKeepMenuBelowTopControls()
+                        ? mBrowserControlsStateProvider.getTopControlsHeight()
+                        : 0;
+
         mAppMenu.show(
                 wrapper,
                 anchorView,
@@ -817,6 +816,7 @@ class AppMenuHandlerImpl
                 mBrowserControlsStateProvider.getControlsPosition(),
                 addTopPaddingBeforeFirstRow(),
                 isFromBottomBar,
+                reservedTopSpace,
                 this);
         assumeNonNull(mAppMenuDragHelper);
         mAppMenuDragHelper.onShow(startDragging);
@@ -863,6 +863,7 @@ class AppMenuHandlerImpl
 
     @Override
     public void setWindowFocus(AppMenuPopup popupWindow, boolean hasFocus) {
+        popupWindow.setFocusable(hasFocus);
         ViewGroup contentView = (ViewGroup) popupWindow.getContentView();
         if (contentView == null) return;
 

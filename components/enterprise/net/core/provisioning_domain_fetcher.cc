@@ -79,10 +79,8 @@ void ProvisioningDomainFetcher::Start(FetchCompleteCallback callback) {
   // need to handle it here.
   if (policy_config_.auth_config.has_value() &&
       policy_config_.auth_config->type == AuthType::kProfileBearerToken) {
-    // TODO(crbug.com/535229810): Enforce scope restrictions based on the
-    // domain.
     auth_service_->FetchAccessToken(
-        policy_config_.auth_config->scope,
+        policy_config_.auth_config->scope, url,
         base::BindOnce(&ProvisioningDomainFetcher::OnAccessTokenFetched,
                        weak_factory_.GetWeakPtr()));
     return;
@@ -155,6 +153,11 @@ void ProvisioningDomainFetcher::CompleteFetch(
     CHECK_NE(result.error().status,
              ProvisioningDomainFetchResultStatus::kSuccess)
         << "ProvisioningDomainFetchError status cannot be kSuccess";
+    if (result.error().status ==
+        ProvisioningDomainFetchResultStatus::kTokenFetchError) {
+      CHECK(result.error().token_fetch_error.has_value())
+          << "token_fetch_error must be populated for kTokenFetchError";
+    }
   }
 
   ProvisioningDomainFetchResultStatus status =

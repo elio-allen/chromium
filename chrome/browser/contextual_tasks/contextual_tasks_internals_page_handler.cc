@@ -41,7 +41,9 @@ ContextualTasksInternalsPageHandler::ContextualTasksInternalsPageHandler(
     : profile_(profile),
       context_service_(context_service),
       optimization_guide_logger_(
-          optimization_guide_keyed_service->GetOptimizationGuideLogger()),
+          optimization_guide_keyed_service
+              ? optimization_guide_keyed_service->GetOptimizationGuideLogger()
+              : nullptr),
       receiver_(this, std::move(receiver)),
       page_(std::move(page)) {
   if (optimization_guide_logger_) {
@@ -90,20 +92,35 @@ void ContextualTasksInternalsPageHandler::GetRelevantContext(
 
 void ContextualTasksInternalsPageHandler::SetForcedEmbeddedPageHost(
     const GURL& host) {
-  // Extract just the host portion, e.g. "test.google.com" from the URL.
+  if (!profile_ || profile_->IsOffTheRecord()) {
+    return;
+  }
+
   // If the passed URL is empty/invalid, this clears the override.
-  contextual_tasks::SetForcedEmbeddedPageHostOverride(std::string(host.host()));
+  if (!host.is_valid() || host.is_empty()) {
+    contextual_tasks::SetForcedEmbeddedPageHostOverride(std::nullopt);
+    return;
+  }
+
+  std::optional<uint16_t> port;
+  if (host.has_port()) {
+    port = static_cast<uint16_t>(host.EffectiveIntPort());
+  }
+
+  contextual_tasks::SetForcedEmbeddedPageHostOverride(
+      contextual_tasks::HostOverride{std::string(host.host()), port});
 }
 
 void ContextualTasksInternalsPageHandler::GetForcedEmbeddedPageHost(
     GetForcedEmbeddedPageHostCallback callback) {
-  std::string host = contextual_tasks::GetForcedEmbeddedPageHost();
-  if (host.empty()) {
+  std::optional<contextual_tasks::HostOverride> host =
+      contextual_tasks::GetForcedEmbeddedPageHost();
+  if (!host.has_value()) {
     std::move(callback).Run(GURL());
   } else {
-    // Wrap the string host into a valid URL so it can be passed via Mojo.
+    // Wrap the host and port into a valid URL so it can be passed via Mojo.
     std::move(callback).Run(GURL(base::StrCat(
-        {url::kHttpsScheme, url::kStandardSchemeSeparator, host})));
+        {url::kHttpsScheme, url::kStandardSchemeSeparator, host->ToString()})));
   }
 }
 
@@ -127,7 +144,7 @@ void ContextualTasksInternalsPageHandler::GetEligibilityState(
     auto* aim_eligibility_service =
         AimEligibilityServiceFactory::GetForProfile(profile_);
     state->is_contextual_tasks_enabled =
-        base::FeatureList::IsEnabled(contextual_tasks::kContextualTasks);
+        contextual_tasks::IsContextualTasksUIEnabled();
 
     auto* ui_service =
         contextual_tasks::ContextualTasksUiServiceFactory::GetForBrowserContext(

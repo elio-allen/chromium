@@ -20,6 +20,7 @@
 #include "ui/base/x/x11_desktop_window_move_client.h"
 #include "ui/base/x/x11_drag_drop_client.h"
 #include "ui/base/x/x11_move_loop_delegate.h"
+#include "ui/base/x/x11_whole_screen_move_loop.h"
 #include "ui/events/platform/platform_event_dispatcher.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/x/connection.h"
@@ -84,6 +85,12 @@ class X11Window : public PlatformWindow,
 
   bool has_pointer() const { return has_pointer_; }
 
+  // Returns true if the window has been requested to map but the server has
+  // not yet responded with a MapNotify (or UnmapNotify).  During this period
+  // the server has not had a chance to report, via EnterNotify, whether the
+  // pointer is inside the window, so has_pointer() is not yet meaningful.
+  bool IsMapPending() const { return map_pending_; }
+
   // PlatformWindow:
   void Show(bool inactive) override;
   void Hide() override;
@@ -95,6 +102,9 @@ class X11Window : public PlatformWindow,
   void SetBoundsInDIP(const gfx::Rect& bounds) override;
   gfx::Rect GetBoundsInDIP() const override;
   void SetTitle(const std::u16string& title) override;
+  void SetWindowClass(const std::string& wm_class_name,
+                      const std::string& wm_class_class,
+                      const std::string& wayland_app_id) override;
   void SetCapture() override;
   void ReleaseCapture() override;
   bool HasCapture() const override;
@@ -185,6 +195,14 @@ class X11Window : public PlatformWindow,
   uint32_t DispatchEvent(const PlatformEvent& event) override;
 
   void DispatchUiEvent(ui::Event* event, const x11::Event& xev);
+
+  // Dispatches a touch cancel for each touch sequence whose release or cancel
+  // was consumed by an X11WholeScreenMoveLoop, to the window the touch was
+  // targeted at (or `fallback` if that is unknown). Without this, aura would
+  // consider those touches active indefinitely. May destroy any window.
+  static void CancelConsumedTouches(
+      base::WeakPtr<X11Window> fallback,
+      std::vector<X11WholeScreenMoveLoop::ConsumedTouch> touches);
 
   // WmMoveResizeHandler
   void DispatchHostWindowDragMovement(
@@ -297,6 +315,9 @@ class X11Window : public PlatformWindow,
 
   void OnWorkspaceUpdated();
 
+  // Called when a MapNotify is expected for this window, either because we
+  // requested the map or because the window manager is restoring it.
+  void OnMapPending();
   void OnWindowMapped();
 
   // Record the activation state.
@@ -410,6 +431,10 @@ class X11Window : public PlatformWindow,
 
   // Whether the window is mapped with respect to the X server.
   bool window_mapped_in_server_ = false;
+
+  // True from the MapWindow request until the corresponding MapNotify or
+  // UnmapNotify arrives (or the request is withdrawn).  See IsMapPending().
+  bool map_pending_ = false;
 
   // The bounds of `xwindow_`.  If `bounds_wm_sync_` is active, then
   // `last_set_bounds_px_` should be treated as the current bounds.  Otherwise,

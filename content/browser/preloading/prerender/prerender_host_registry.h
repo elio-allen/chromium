@@ -25,10 +25,10 @@
 #include "content/browser/preloading/preloading_confidence.h"
 #include "content/browser/preloading/prerender/prerender_final_status.h"
 #include "content/browser/preloading/prerender/reserved_prerender_host_info.h"
-#include "content/browser/web_contents/web_contents_impl.h"
 #include "content/common/content_export.h"
 #include "content/common/frame.mojom-forward.h"
 #include "content/public/browser/preloading.h"
+#include "content/public/browser/storage_partition.h"
 #include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -58,6 +58,7 @@ class PrerenderHost;
 class PrerenderNewTabHandle;
 class RenderFrameHostImpl;
 class StoredPage;
+class WebContentsImpl;
 struct PrerenderAttributes;
 
 // PrerenderHostRegistry creates and retains a prerender host, and reserves it
@@ -409,10 +410,10 @@ class CONTENT_EXPORT PrerenderHostRegistry : public WebContentsObserver,
 
   scoped_refptr<base::SingleThreadTaskRunner> GetTimerTaskRunner();
 
-  // Returns the current memory pressure limit percentage (0 to 100). Returns
-  // base::MemoryConsumer::kDefaultMemoryLimit (100) if stateful memory
-  // pressure or Prerender2 memory controls are disabled.
-  int GetCurrentMemoryLimit() const;
+  // Returns the current memory limit. Returns base::MemoryLimit::Default()
+  // (100%) if stateful memory pressure or Prerender2 memory controls are
+  // disabled.
+  base::MemoryLimit GetCurrentMemoryLimit() const;
 
   // Returns the baseline unscaled maximum capacity limit for `limit_group`.
   int GetMaxLimit(PrerenderLimitGroup limit_group) const;

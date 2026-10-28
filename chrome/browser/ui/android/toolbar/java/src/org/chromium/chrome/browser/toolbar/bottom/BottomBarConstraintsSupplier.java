@@ -14,7 +14,6 @@ import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.cc.input.BrowserControlsState;
-import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
@@ -41,7 +40,7 @@ public class BottomBarConstraintsSupplier
     private final Callback<@Nullable Integer> mConstraintsObserver = this::onConstraintsChanged;
     private final Callback<@Nullable Tab> mTabObserver = this::onTabChanged;
     private final TabObserver mPageObserver =
-            new EmptyTabObserver() {
+            new TabObserver() {
                 // Triggered when a NativePage is swapped in or out (e.g., the New Tab Page).
                 // This is the primary way we detect transitions to/from the NTP.
                 @Override
@@ -122,12 +121,12 @@ public class BottomBarConstraintsSupplier
 
     @Override
     public @Nullable @BrowserControlsState Integer addObserver(
-            Callback<@Nullable Integer> obs, int behavior) {
+            Callback<? super @Nullable Integer> obs, int behavior) {
         return mSupplier.addObserver(obs, behavior);
     }
 
     @Override
-    public void removeObserver(Callback<@Nullable Integer> obs) {
+    public void removeObserver(Callback<? super @Nullable Integer> obs) {
         mSupplier.removeObserver(obs);
     }
 

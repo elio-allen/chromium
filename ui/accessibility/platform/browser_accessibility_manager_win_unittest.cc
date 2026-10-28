@@ -4,9 +4,21 @@
 
 #include "ui/accessibility/platform/browser_accessibility_manager.h"
 
+#include <utility>
+#include <vector>
+
+#include "base/feature_list.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/no_destructor.h"
+#include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
+#include "ui/accessibility/accessibility_features.h"
+#include "ui/accessibility/ax_tree_observer.h"
 #include "ui/accessibility/ax_updates_and_events.h"
 #include "ui/accessibility/platform/ax_fragment_root_delegate_win.h"
 #include "ui/accessibility/platform/ax_fragment_root_win.h"
@@ -39,6 +51,7 @@ class TestFragmentRootDelegate : public ui::AXFragmentRootDelegateWin {
 
   raw_ptr<ui::BrowserAccessibilityManager> browser_accessibility_manager_;
 };
+
 }  // namespace
 
 namespace ui {
@@ -582,6 +595,350 @@ TEST_F(BrowserAccessibilityPlatformNodeWinTest,
   node->UpdatePlatformNode();
 
   EXPECT_EQ(first, node->GetAXPlatformNode());
+}
+
+TEST_F(BrowserAccessibilityManagerWinTest,
+       LocationChangeGroupedByCommonAncestor) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAccessibilityGroupLocationChangeByCommonAncestor);
+
+  // Tree structure:
+  // ++Root (ID 1)
+  // ++++Container 1 (ID 2)
+  // ++++++Child 1A (ID 3)
+  // ++++++Child 1B (ID 4)
+  // ++++Container 2 (ID 5)
+  // ++++++Child 2A (ID 6)
+  // ++++++Child 2B (ID 7)
+  AXNodeData root;
+  root.id = 1;
+  root.role = ax::mojom::Role::kRootWebArea;
+  root.relative_bounds.bounds = gfx::RectF(0, 0, 800, 600);
+  root.child_ids = {2, 5};
+
+  AXNodeData container1;
+  container1.id = 2;
+  container1.role = ax::mojom::Role::kGenericContainer;
+  container1.relative_bounds.offset_container_id = 1;
+  container1.relative_bounds.bounds = gfx::RectF(10, 10, 100, 100);
+  container1.child_ids = {3, 4};
+
+  AXNodeData child1a;
+  child1a.id = 3;
+  child1a.role = ax::mojom::Role::kStaticText;
+  child1a.relative_bounds.offset_container_id = 2;
+  child1a.relative_bounds.bounds = gfx::RectF(0, 0, 50, 10);
+
+  AXNodeData child1b;
+  child1b.id = 4;
+  child1b.role = ax::mojom::Role::kStaticText;
+  child1b.relative_bounds.offset_container_id = 2;
+  child1b.relative_bounds.bounds = gfx::RectF(0, 10, 50, 10);
+
+  AXNodeData container2;
+  container2.id = 5;
+  container2.role = ax::mojom::Role::kGenericContainer;
+  container2.relative_bounds.offset_container_id = 1;
+  container2.relative_bounds.bounds = gfx::RectF(200, 10, 100, 100);
+  container2.child_ids = {6, 7};
+
+  AXNodeData child2a;
+  child2a.id = 6;
+  child2a.role = ax::mojom::Role::kStaticText;
+  child2a.relative_bounds.offset_container_id = 5;
+  child2a.relative_bounds.bounds = gfx::RectF(0, 0, 50, 10);
+
+  AXNodeData child2b;
+  child2b.id = 7;
+  child2b.role = ax::mojom::Role::kStaticText;
+  child2b.relative_bounds.offset_container_id = 5;
+  child2b.relative_bounds.bounds = gfx::RectF(0, 10, 50, 10);
+
+  // Build the initial tree update.
+  AXTreeUpdate initial_tree;
+  AXTreeData tree_data;
+  tree_data.tree_id = AXTreeID::CreateNewAXTreeID();
+  tree_data.focused_tree_id = tree_data.tree_id;
+  tree_data.parent_tree_id = AXTreeIDUnknown();
+  initial_tree.tree_data = tree_data;
+  initial_tree.has_tree_data = true;
+  initial_tree.root_id = 1;
+  initial_tree.nodes = {root,       container1, child1a, child1b,
+                        container2, child2a,    child2b};
+
+  test_browser_accessibility_delegate_->accelerated_widget_ =
+      gfx::kMockAcceleratedWidget;
+
+  std::unique_ptr<BrowserAccessibilityManager> manager(
+      BrowserAccessibilityManager::Create(
+          initial_tree, node_id_delegate_,
+          test_browser_accessibility_delegate_.get()));
+
+  std::vector<AXNodeID> fired_location_change_node_ids;
+  manager->ToBrowserAccessibilityManagerWin()
+      ->SetLocationChangeEventCallbackForTesting(
+          base::BindLambdaForTesting([&](BrowserAccessibility* node) {
+            fired_location_change_node_ids.push_back(node->GetId());
+          }));
+
+  // 1. Single node location change (Child 1A, ID 3).
+  // A single location change fires a location change event on that node.
+  {
+    fired_location_change_node_ids.clear();
+    AXLocationAndScrollUpdates updates;
+    AXRelativeBounds bounds;
+    bounds.offset_container_id = 2;
+    bounds.bounds = gfx::RectF(10, 0, 50, 10);
+    updates.location_changes.emplace_back(3, bounds);
+
+    manager->OnLocationChanges(updates);
+
+    EXPECT_THAT(fired_location_change_node_ids, testing::ElementsAre(3));
+  }
+
+  // 2. Multiple location changes under the same container (Child 1A ID 3 &
+  // Child 1B ID 4). The lowest common ancestor is Container 1 (ID 2).
+  {
+    fired_location_change_node_ids.clear();
+    AXLocationAndScrollUpdates updates;
+    AXRelativeBounds bounds1;
+    bounds1.offset_container_id = 2;
+    bounds1.bounds = gfx::RectF(20, 0, 50, 10);
+    updates.location_changes.emplace_back(3, bounds1);
+
+    AXRelativeBounds bounds2;
+    bounds2.offset_container_id = 2;
+    bounds2.bounds = gfx::RectF(20, 10, 50, 10);
+    updates.location_changes.emplace_back(4, bounds2);
+
+    manager->OnLocationChanges(updates);
+
+    EXPECT_THAT(fired_location_change_node_ids, testing::ElementsAre(2));
+  }
+
+  // 3. Multiple location changes across different branches (Child 1A ID 3 &
+  // Child 2A ID 6). The lowest common ancestor is Root (ID 1).
+  {
+    fired_location_change_node_ids.clear();
+    AXLocationAndScrollUpdates updates;
+    AXRelativeBounds bounds1;
+    bounds1.offset_container_id = 2;
+    bounds1.bounds = gfx::RectF(30, 0, 50, 10);
+    updates.location_changes.emplace_back(3, bounds1);
+
+    AXRelativeBounds bounds2;
+    bounds2.offset_container_id = 5;
+    bounds2.bounds = gfx::RectF(30, 0, 50, 10);
+    updates.location_changes.emplace_back(6, bounds2);
+
+    manager->OnLocationChanges(updates);
+
+    EXPECT_THAT(fired_location_change_node_ids, testing::ElementsAre(1));
+  }
+
+  // 4. Ensure LCA algorithm goes upward from first common ancestor found to
+  // lowest overall common ancestor (Container 2 ID 5, Child 1B ID 4, and Child
+  // 1A ID 3). The lowest common ancestor is Root (ID 1).
+  {
+    fired_location_change_node_ids.clear();
+    AXLocationAndScrollUpdates updates;
+    AXRelativeBounds bounds1;
+    bounds1.offset_container_id = 1;
+    bounds1.bounds = gfx::RectF(40, 10, 100, 100);
+    updates.location_changes.emplace_back(5, bounds1);
+
+    AXRelativeBounds bounds2;
+    bounds2.offset_container_id = 2;
+    bounds2.bounds = gfx::RectF(40, 10, 50, 10);
+    updates.location_changes.emplace_back(4, bounds2);
+
+    AXRelativeBounds bounds3;
+    bounds2.offset_container_id = 2;
+    bounds2.bounds = gfx::RectF(40, 0, 50, 10);
+    updates.location_changes.emplace_back(3, bounds3);
+
+    manager->OnLocationChanges(updates);
+
+    EXPECT_THAT(fired_location_change_node_ids, testing::ElementsAre(1));
+  }
+}
+
+namespace {
+
+base::OnceClosure* GetReentrantWinEventCallbackStorage() {
+  static base::NoDestructor<base::OnceClosure> callback;
+  return callback.get();
+}
+
+void CALLBACK ReentrantDescriptionChangeWinEventProc(HWINEVENTHOOK handle,
+                                                     DWORD event,
+                                                     HWND hwnd,
+                                                     LONG obj_id,
+                                                     LONG child_id,
+                                                     DWORD event_thread,
+                                                     DWORD event_time) {
+  if (event == EVENT_OBJECT_DESCRIPTIONCHANGE &&
+      *GetReentrantWinEventCallbackStorage()) {
+    std::move(*GetReentrantWinEventCallbackStorage()).Run();
+  }
+}
+
+}  // namespace
+
+TEST_F(BrowserAccessibilityManagerWinTest,
+       AtomicUpdateReentrantNodeDestruction) {
+  AXNodeData root;
+  root.id = 1;
+  root.role = ax::mojom::Role::kRootWebArea;
+  root.child_ids = {2, 3};
+
+  AXNodeData button1;
+  button1.id = 2;
+  button1.role = ax::mojom::Role::kButton;
+  button1.SetDescription("old description 1");
+
+  AXNodeData button2;
+  button2.id = 3;
+  button2.role = ax::mojom::Role::kButton;
+  button2.SetDescription("old description 2");
+
+  // Use a real HWND owned by the current thread so ::NotifyWinEvent
+  // synchronously dispatches in-context WinEvent hooks on this thread.
+  HWND hwnd = ::CreateWindowExW(0, L"STATIC", L"", 0, 0, 0, 0, 0, HWND_MESSAGE,
+                                nullptr, nullptr, nullptr);
+  ASSERT_TRUE(hwnd);
+  absl::Cleanup destroy_hwnd = [hwnd] { ::DestroyWindow(hwnd); };
+  test_browser_accessibility_delegate_->accelerated_widget_ = hwnd;
+
+  std::unique_ptr<BrowserAccessibilityManager> manager(
+      BrowserAccessibilityManager::Create(
+          MakeAXTreeUpdateForTesting(root, button1, button2), node_id_delegate_,
+          test_browser_accessibility_delegate_.get()));
+
+  HWINEVENTHOOK hook = ::SetWinEventHook(
+      EVENT_OBJECT_DESCRIPTIONCHANGE, EVENT_OBJECT_DESCRIPTIONCHANGE,
+      ::GetModuleHandle(nullptr), &ReentrantDescriptionChangeWinEventProc,
+      ::GetCurrentProcessId(), ::GetCurrentThreadId(), WINEVENT_INCONTEXT);
+  ASSERT_TRUE(hook);
+  absl::Cleanup unhook = [hook] {
+    ::UnhookWinEvent(hook);
+    *GetReentrantWinEventCallbackStorage() = base::OnceClosure();
+  };
+
+  std::vector<AXTreeObserver::Change> changes = {
+      {manager->ax_tree()->GetFromId(2), AXTreeObserver::NODE_CHANGED},
+      {manager->ax_tree()->GetFromId(3), AXTreeObserver::NODE_CHANGED}};
+  bool hook_ran = false;
+  *GetReentrantWinEventCallbackStorage() = base::BindLambdaForTesting([&]() {
+    hook_ran = true;
+    // Clear the outer `changes` vector before unserializing `inner_update` so
+    // `AXTreeObserver::Change::node` (`raw_ptr<AXNode>`) does not dangle when
+    // `Unserialize()` destroys `AXNode`s 2 and 3.
+    changes.clear();
+    AXNodeData updated_root = root;
+    updated_root.child_ids = {};
+    AXTreeUpdate inner_update;
+    inner_update.nodes = {updated_root};
+    EXPECT_TRUE(manager->ax_tree()->Unserialize(inner_update));
+  });
+
+  // Update both sibling buttons' descriptions in a single atomic update so
+  // both are queued in `objs_to_update`. When the first button fires
+  // EVENT_OBJECT_DESCRIPTIONCHANGE during UpdateStep3FireEvents(), the
+  // synchronous hook removes both buttons from the tree while `manager`
+  // remains alive.
+  // Note: Call `OnAtomicUpdateFinished` directly for the outer update rather
+  // than `ax_tree()->Unserialize()`, because `AXTree::Unserialize()` invokes
+  // `OnAtomicUpdateFinished` inside `observers_.Notify()`, and
+  // `AXTree::observers_` uses
+  // `ObserverListReentrancyPolicy::kDisallowReentrancy` which
+  // `DUMP_WILL_BE_CHECK`s if the hook's `Unserialize()` iterates `observers_`
+  // while the outer `Notify()` iterator is still on the stack.
+  button1.SetDescription("new description 1");
+  button2.SetDescription("new description 2");
+  manager->ax_tree()->GetFromId(2)->SetData(button1);
+  manager->ax_tree()->GetFromId(3)->SetData(button2);
+  manager->OnAtomicUpdateFinished(manager->ax_tree(), /*root_changed=*/false,
+                                  changes);
+
+  EXPECT_TRUE(hook_ran);
+  EXPECT_EQ(nullptr, manager->GetFromID(2));
+  EXPECT_EQ(nullptr, manager->GetFromID(3));
+}
+
+TEST_F(BrowserAccessibilityManagerWinTest,
+       AtomicUpdateReentrantInPlaceNodeModification) {
+  AXNodeData root;
+  root.id = 1;
+  root.role = ax::mojom::Role::kRootWebArea;
+  root.child_ids = {2};
+
+  AXNodeData button;
+  button.id = 2;
+  button.role = ax::mojom::Role::kButton;
+  button.SetDescription("old description");
+  button.child_ids = {3};
+
+  AXNodeData static_text;
+  static_text.id = 3;
+  static_text.role = ax::mojom::Role::kStaticText;
+  static_text.SetName("old text");
+
+  HWND hwnd = ::CreateWindowExW(0, L"STATIC", L"", 0, 0, 0, 0, 0, HWND_MESSAGE,
+                                nullptr, nullptr, nullptr);
+  ASSERT_TRUE(hwnd);
+  absl::Cleanup destroy_hwnd = [hwnd] { ::DestroyWindow(hwnd); };
+  test_browser_accessibility_delegate_->accelerated_widget_ = hwnd;
+
+  std::unique_ptr<BrowserAccessibilityManager> manager(
+      BrowserAccessibilityManager::Create(
+          MakeAXTreeUpdateForTesting(root, button, static_text),
+          node_id_delegate_, test_browser_accessibility_delegate_.get()));
+
+  HWINEVENTHOOK hook = ::SetWinEventHook(
+      EVENT_OBJECT_DESCRIPTIONCHANGE, EVENT_OBJECT_DESCRIPTIONCHANGE,
+      ::GetModuleHandle(nullptr), &ReentrantDescriptionChangeWinEventProc,
+      ::GetCurrentProcessId(), ::GetCurrentThreadId(), WINEVENT_INCONTEXT);
+  ASSERT_TRUE(hook);
+  absl::Cleanup unhook = [hook] {
+    ::UnhookWinEvent(hook);
+    *GetReentrantWinEventCallbackStorage() = base::OnceClosure();
+  };
+
+  bool hook_ran = false;
+  *GetReentrantWinEventCallbackStorage() = base::BindLambdaForTesting([&]() {
+    hook_ran = true;
+    AXNodeData inner_button = button;
+    inner_button.SetDescription("reentrant description");
+    AXNodeData inner_text = static_text;
+    inner_text.SetName("reentrant text");
+    AXTreeUpdate inner_update;
+    inner_update.nodes = {inner_button, inner_text};
+    EXPECT_TRUE(manager->ax_tree()->Unserialize(inner_update));
+  });
+
+  // Modify both description and child text in the outer update so that after
+  // `FireNativeEvent(EVENT_OBJECT_DESCRIPTIONCHANGE)` returns, outer
+  // `UpdateStep3FireEvents()` would otherwise proceed to hypertext diffing
+  // against moved-from `old_win_attributes` and cleared `update_state_`.
+  // As above, call `OnAtomicUpdateFinished` directly for the outer update so
+  // the inner `Unserialize()` does not trip `AXTree::observers_`'s
+  // `kDisallowReentrancy` check during `observers_.Notify()`.
+  button.SetDescription("new description");
+  static_text.SetName("new text");
+  manager->ax_tree()->GetFromId(2)->SetData(button);
+  manager->ax_tree()->GetFromId(3)->SetData(static_text);
+  std::vector<AXTreeObserver::Change> changes = {
+      {manager->ax_tree()->GetFromId(2), AXTreeObserver::NODE_CHANGED},
+      {manager->ax_tree()->GetFromId(3), AXTreeObserver::NODE_CHANGED}};
+  manager->OnAtomicUpdateFinished(manager->ax_tree(), /*root_changed=*/false,
+                                  changes);
+
+  EXPECT_TRUE(hook_ran);
+  ASSERT_NE(nullptr, manager->GetFromID(2));
+  EXPECT_EQ("reentrant description",
+            manager->GetFromID(2)->GetStringAttribute(
+                ax::mojom::StringAttribute::kDescription));
 }
 
 }  // namespace ui

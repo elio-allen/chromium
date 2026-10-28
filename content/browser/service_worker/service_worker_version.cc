@@ -53,6 +53,7 @@
 #include "content/browser/service_worker/service_worker_metrics.h"
 #include "content/browser/service_worker/service_worker_security_utils.h"
 #include "content/browser/service_worker/service_worker_usb_delegate_observer.h"
+#include "content/browser/storage_partition_impl.h"
 #include "content/common/content_navigation_policy.h"
 #include "content/common/features.h"
 #include "content/public/browser/browser_thread.h"
@@ -70,6 +71,8 @@
 #include "net/http/http_response_headers.h"
 #include "services/network/public/mojom/cross_origin_embedder_policy.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
+#include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/common/origin_trials/trial_token_validator.h"
 #include "third_party/blink/public/common/service_worker/service_worker_type_converters.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
@@ -405,21 +408,25 @@ void ServiceWorkerVersion::SetStatus(Status status) {
       case ACTIVATING:
         // Do nothing until ACTIVATED time.
         break;
-      case ACTIVATED:
+      case ACTIVATED: {
         // Resolve skip waiting promises.
         ClearTick(&skip_waiting_time_);
-        for (SkipWaitingCallback& callback : pending_skip_waiting_requests_) {
+        std::vector<SkipWaitingCallback> callbacks;
+        callbacks.swap(pending_skip_waiting_requests_);
+        for (SkipWaitingCallback& callback : callbacks) {
           std::move(callback).Run(true);
         }
-        pending_skip_waiting_requests_.clear();
         break;
-      case REDUNDANT:
+      }
+      case REDUNDANT: {
         // Fail any pending skip waiting requests since this version is dead.
-        for (SkipWaitingCallback& callback : pending_skip_waiting_requests_) {
+        std::vector<SkipWaitingCallback> callbacks;
+        callbacks.swap(pending_skip_waiting_requests_);
+        for (SkipWaitingCallback& callback : callbacks) {
           std::move(callback).Run(false);
         }
-        pending_skip_waiting_requests_.clear();
         break;
+      }
     }
   }
 
@@ -444,12 +451,17 @@ void ServiceWorkerVersion::SetStatus(Status status) {
   if (status == INSTALLED) {
     embedded_worker_->OnWorkerVersionInstalled();
   } else if (status == ACTIVATED) {
-#if !BUILDFLAG(IS_ANDROID)
     // Notify the hid delegate observer if the active service worker has any hid
     // event handlers.
-    context_->hid_delegate_observer()->UpdateHasEventHandlers(
-        registration_id_, has_hid_event_handlers_);
-#endif  // !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID)
+    if (base::FeatureList::IsEnabled(blink::features::kWebHID) &&
+        base::FeatureList::IsEnabled(
+            features::kWebHidOnDesktopAndroidServiceWorkers))
+#endif  // BUILDFLAG(IS_ANDROID)
+    {
+      context_->hid_delegate_observer()->UpdateHasEventHandlers(
+          registration_id_, has_hid_event_handlers_);
+    }
 
 #if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
     // Notify the usb delegate observer if the active service worker has any usb
@@ -1890,6 +1902,7 @@ void ServiceWorkerVersion::OpenNewTab(const GURL& url,
 
 void ServiceWorkerVersion::OpenPaymentHandlerWindow(
     const GURL& url,
+    blink::mojom::PaymentHandlerOpenWindowOptionsPtr options,
     OpenPaymentHandlerWindowCallback callback) {
   // Just respond failure if we are shutting down.
   if (!context_) {
@@ -1921,6 +1934,28 @@ void ServiceWorkerVersion::OpenPaymentHandlerWindow(
         "PaymentRequestEvent.");
     receiver_.reset();
     return;
+  }
+
+  // The renderer sends a preferred size only when the
+  // PaymentHandlerStaticCustomSize feature is enabled, and only if both
+  // dimensions are greater than 0.
+  if (options->preferred_inner_size.has_value()) {
+    if (!base::FeatureList::IsEnabled(
+            blink::features::kPaymentHandlerStaticCustomSize)) {
+      associated_interface_receiver_.ReportBadMessage(
+          "Received PaymentRequestEvent#openWindow() request with a preferred "
+          "size while PaymentHandlerStaticCustomSize is disabled.");
+      receiver_.reset();
+      return;
+    }
+    if (options->preferred_inner_size->width() <= 0 ||
+        options->preferred_inner_size->height() <= 0) {
+      associated_interface_receiver_.ReportBadMessage(
+          "Received PaymentRequestEvent#openWindow() request with a "
+          "non-positive preferred size.");
+      receiver_.reset();
+      return;
+    }
   }
 
   // `PaymentHandlerSupport::ShowPaymentHandlerWindow` implements API
@@ -1956,7 +1991,7 @@ void ServiceWorkerVersion::OpenPaymentHandlerWindow(
   }
 
   PaymentHandlerSupport::ShowPaymentHandlerWindow(
-      url, context_.get(),
+      url, options->preferred_inner_size, context_.get(),
       base::BindOnce(&ServiceWorkerVersion::DidShowPaymentHandlerWindow,
                      weak_factory_.GetWeakPtr(), url, key_, context_),
       base::BindOnce(
@@ -2467,12 +2502,8 @@ void ServiceWorkerVersion::CountFeature(blink::mojom::WebFeature feature) {
 ServiceWorkerVersion::RouterRulesForDevTools
 ServiceWorkerVersion::CalculateRouterRulesForDevTools() const {
   RouterRulesForDevTools rules;
-  // Router rules that have nested conditions are currently unsupported. Use
-  // the legacy field for them even if the flag is enabled.
-  // TODO(crbug.com/540469610): support them.
   if (base::FeatureList::IsEnabled(
-          features::kServiceWorkerStaticRouterTypedRulesForDevTools) &&
-      !router_evaluator()->has_nested_conditions()) {
+          features::kServiceWorkerStaticRouterTypedRulesForDevTools)) {
     rules.typed_rules = router_evaluator()->CalculateRouterRulesForDevTools();
   } else {
     rules.legacy_rules = router_evaluator()->ToString();
@@ -3296,6 +3327,7 @@ void ServiceWorkerVersion::OnStoppedInternal(
   // Let all message callbacks fail (this will also fire and clear all
   // callbacks for events).
   // TODO(kinuko): Consider if we want to add queue+resend mechanism here.
+  std::vector<StatusCallback> error_callbacks;
   base::IDMap<std::unique_ptr<InflightRequest>>::iterator iter(
       &inflight_requests_);
   while (!iter.IsAtEnd()) {
@@ -3305,14 +3337,17 @@ void ServiceWorkerVersion::OnStoppedInternal(
         perfetto::TerminatingFlow::FromPointer(iter.GetCurrentValue(),
                                                "ServiceWorkerVersion::Request"),
         "Error", "Worker Stopped");
-    std::move(iter.GetCurrentValue()->error_callback)
-        .Run(blink::ServiceWorkerStatusCode::kErrorFailed);
+    error_callbacks.push_back(
+        std::move(iter.GetCurrentValue()->error_callback));
     iter.Advance();
   }
   inflight_requests_.Clear();
   request_timeouts_.clear();
   external_request_uuid_to_request_id_.clear();
   latest_external_keepalive_sequence_number_ = 0;
+  for (auto& callback : error_callbacks) {
+    std::move(callback).Run(blink::ServiceWorkerStatusCode::kErrorFailed);
+  }
   service_worker_remote_.reset();
   is_endpoint_ready_ = false;
   remote_controller_.reset();
@@ -3340,19 +3375,19 @@ void ServiceWorkerVersion::OnStoppedInternal(
 
 void ServiceWorkerVersion::FinishStartWorker(
     blink::ServiceWorkerStatusCode status) {
+  is_running_start_callbacks_ = true;
   std::vector<StatusCallback> callbacks;
   callbacks.swap(start_callbacks_);
-  is_running_start_callbacks_ = true;
   for (auto& callback : callbacks) {
     std::move(callback).Run(status);
   }
-  is_running_start_callbacks_ = false;
 
   std::vector<StatusCallback> warm_up_callbacks;
   warm_up_callbacks.swap(warm_up_callbacks_);
   for (auto& callback : warm_up_callbacks) {
     std::move(callback).Run(status);
   }
+  is_running_start_callbacks_ = false;
 }
 
 void ServiceWorkerVersion::CleanUpExternalRequest(

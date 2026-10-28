@@ -7,6 +7,7 @@ import '//resources/cr_elements/cr_link_row/cr_link_row.js';
 import '//resources/cr_elements/cr_icon/cr_icon.js';
 import '//resources/cr_elements/cr_toggle/cr_toggle.js';
 import '//resources/cr_elements/cr_lazy_render/cr_lazy_render_lit.js';
+import '//resources/cr_components/help_bubble/new_badge.js';
 
 import type {CrActionMenuElement} from '//resources/cr_elements/cr_action_menu/cr_action_menu.js';
 import type {CrLazyRenderLitElement} from '//resources/cr_elements/cr_lazy_render/cr_lazy_render_lit.js';
@@ -14,14 +15,17 @@ import {WebUiListenerMixinLit} from '//resources/cr_elements/web_ui_listener_mix
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import {CrLitElement, nothing} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
+import {browserProxyFactory as userEducationProxyFactory} from '//resources/mojo/components/user_education/webui/user_education.mojom-webui.js';
 
-import type {SettingsPrefs} from '../content/read_anything_types.js';
-import {DEFAULT_SETTINGS, SettingsOption, ToolbarEvent} from '../content/read_anything_types.js';
+import type {VisualBrowserProxy} from '../app/visual_browser_proxy.js';
+import {VisualBrowserProxyImpl} from '../app/visual_browser_proxy.js';
+import {SettingsOption, ToolbarEvent} from '../content/read_anything_types.js';
 import {openMenu} from '../shared/common.js';
 import {isActivationKey, isBackwardArrow, isForwardArrow, isVerticalArrow} from '../shared/keyboard_util.js';
-import {ReadAnythingSettingsAction, ReadAnythingSettingsChange} from '../shared/metrics_browser_proxy.js';
+import {ReadAnythingSettingsAction} from '../shared/metrics_browser_proxy.js';
 import {ReadAnythingLogger} from '../shared/read_anything_logger.js';
 
+import {LINE_FOCUS_FEATURE_NAME} from './line_focus_menu.js';
 import {SettingsItemType} from './menu_util.js';
 import type {SettingsItem} from './menu_util.js';
 import {getCss} from './settings_menu.css.js';
@@ -40,6 +44,12 @@ const MENU_ITEM_DATA: Record<SettingsOption, SettingsItem> = {
     id: SettingsOption.APPEARANCE,
     icon: 'read-anything:appearance',
     title: 'appearanceTitle',
+    itemType: SettingsItemType.MENU,
+  },
+  [SettingsOption.AUDIO]: {
+    id: SettingsOption.AUDIO,
+    icon: 'read-anything:volume-up',
+    title: 'audioTitle',
     itemType: SettingsItemType.MENU,
   },
   [SettingsOption.COLOR]: {
@@ -112,6 +122,7 @@ const MENU_ITEM_DATA: Record<SettingsOption, SettingsItem> = {
         'read-anything:line-focus-old',
     title: 'lineFocusLabel',
     itemType: SettingsItemType.MENU,
+    showBadge: false,
   },
   [SettingsOption.PINNED_TO_TOOLBAR]: {
     id: SettingsOption.PINNED_TO_TOOLBAR,
@@ -139,8 +150,14 @@ const MENU_ITEM_DATA: Record<SettingsOption, SettingsItem> = {
   },
   [SettingsOption.TRANSLATION_REQUESTED]: {
     id: SettingsOption.TRANSLATION_REQUESTED,
-    icon: 'read-anything:translate',
+    icon: 'read-anything:g-translate',
     title: 'translateLabel',
+    itemType: SettingsItemType.ACTION,
+  },
+  [SettingsOption.SEND_FEEDBACK]: {
+    id: SettingsOption.SEND_FEEDBACK,
+    icon: 'read-anything:feedback',
+    title: 'sendFeedbackLabel',
     itemType: SettingsItemType.ACTION,
   },
   [SettingsOption.VOICE_SELECTION]: {
@@ -189,7 +206,9 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
       isImmersiveMode: {type: Boolean},
       isReadAnythingPinned: {type: Boolean},
       isSpeechActive: {type: Boolean},
-      settingsPrefs: {type: Object},
+      showLineFocusNewBadge: {type: Boolean},
+      linksEnabled: {type: Boolean},
+      imagesEnabled: {type: Boolean},
       currentOpenId_: {
         state: true,
         type: String,
@@ -201,7 +220,9 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
   accessor isImmersiveMode: boolean = false;
   accessor isReadAnythingPinned: boolean = false;
   accessor isSpeechActive: boolean = false;
-  accessor settingsPrefs: SettingsPrefs = DEFAULT_SETTINGS;
+  accessor showLineFocusNewBadge: boolean = false;
+  accessor linksEnabled: boolean = false;
+  accessor imagesEnabled: boolean = false;
 
   protected accessor options_: SettingsItem[] = [];
   protected accessor currentOpenId_: string|null = null;
@@ -213,9 +234,12 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
   // Used to prevent accidental triggers of other submenus after a submenu
   // has recently been opened.
   private lastMenuOpenTime_: number = 0;
+  private lastPointerPosition_: {x: number, y: number} = {x: -1, y: -1};
   private pointerEventCallback_: (e: Event) => void = () => {};
   private keyDownCallback_: (e: KeyboardEvent) => void = () => {};
   private logger_: ReadAnythingLogger = ReadAnythingLogger.getInstance();
+  private visualBrowserProxy_: VisualBrowserProxy =
+      VisualBrowserProxyImpl.getInstance();
 
   // Used to check if focus is currently on the PreviewPlayButton of the
   // VOICE_SELECTION submenu.
@@ -227,13 +251,20 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
     this.keyDownCallback_ = this.onKeyDown_.bind(this);
   }
 
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    this.close();
+  }
+
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
 
-    if (changedProperties.has('settingsPrefs') ||
+    if (changedProperties.has('linksEnabled') ||
+        changedProperties.has('imagesEnabled') ||
         changedProperties.has('isImmersiveMode') ||
         changedProperties.has('isReadAnythingPinned') ||
-        changedProperties.has('isSpeechActive')) {
+        changedProperties.has('isSpeechActive') ||
+        changedProperties.has('showLineFocusNewBadge')) {
       this.initializeMenuOptions_();
     }
   }
@@ -257,22 +288,23 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
       SettingsOption.VOICE_HIGHLIGHT,
     ];
 
-    if (chrome.readingMode.isLineFocusEnabled) {
+    if (this.visualBrowserProxy_.isLineFocusEnabled()) {
       optionIDs.push(SettingsOption.LINE_FOCUS);
     }
 
     optionIDs.push(SettingsOption.PRESENTATION);
-    if (chrome.readingMode.isReadAnythingTranslateEntryPointEnabled) {
+    if (this.visualBrowserProxy_.isReadAnythingTranslateEntryPointEnabled()) {
       optionIDs.push(SettingsOption.TRANSLATION_REQUESTED);
     }
     optionIDs.push(SettingsOption.LINKS);
-
-    if (chrome.readingMode.imagesFeatureEnabled) {
-      optionIDs.push(SettingsOption.IMAGES);
-    }
+    optionIDs.push(SettingsOption.IMAGES);
 
     if (this.isImmersiveMode) {
       optionIDs.push(SettingsOption.PINNED_TO_TOOLBAR);
+    }
+
+    if (this.visualBrowserProxy_.isReadAnythingSendFeedbackEnabled()) {
+      optionIDs.push(SettingsOption.SEND_FEEDBACK);
     }
 
     return optionIDs;
@@ -283,11 +315,14 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
       SettingsOption.APPEARANCE,
       SettingsOption.MEDIA,
       SettingsOption.TEXT,
-      SettingsOption.VOICE_SELECTION,
-      SettingsOption.VOICE_HIGHLIGHT,
+      SettingsOption.AUDIO,
     ];
 
-    if (chrome.readingMode.isReadAnythingTranslateEntryPointEnabled) {
+    if (this.visualBrowserProxy_.isLineFocusEnabled()) {
+      optionIDs.push(SettingsOption.LINE_FOCUS);
+    }
+
+    if (this.visualBrowserProxy_.isReadAnythingTranslateEntryPointEnabled()) {
       optionIDs.push(SettingsOption.TRANSLATION_REQUESTED);
     }
 
@@ -295,13 +330,16 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
       optionIDs.push(SettingsOption.PINNED_TO_TOOLBAR);
     }
 
+    if (this.visualBrowserProxy_.isReadAnythingSendFeedbackEnabled()) {
+      optionIDs.push(SettingsOption.SEND_FEEDBACK);
+    }
+
     return optionIDs;
   }
 
   private initializeMenuOptions_() {
     let optionIDs: SettingsOption[];
-    if (chrome.readingMode.isReadAnythingImprovedUiEnabled &&
-        chrome.readingMode.isImmersiveEnabled) {
+    if (this.visualBrowserProxy_.isReadAnythingImprovedUiEnabled()) {
       optionIDs = this.initializeMenuOptionsForImprovedUi_();
     } else {
       optionIDs = this.initializeMenuOptionsLegacy_();
@@ -309,25 +347,35 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
 
     this.options_ = optionIDs.map(id => {
       const original = MENU_ITEM_DATA[id];
-      const title = loadTimeData.getString(original.title);
+      let title = loadTimeData.getString(original.title);
       let ariaLabel = title;
       let checked = false;
       let disabled = false;
+      let icon = original.icon;
+
+      if (id === SettingsOption.LINE_FOCUS &&
+          this.visualBrowserProxy_.isReadAnythingImprovedUiEnabled()) {
+        icon = 'read-anything:service_toolbox';
+        title = loadTimeData.getString('toolsLabel');
+        ariaLabel = title;
+      }
 
       if (id === SettingsOption.IMAGES) {
-        checked = chrome.readingMode.imagesEnabled;
+        checked = this.imagesEnabled;
         disabled = this.isSpeechActive;
         ariaLabel = this.getImageItemLabels();
       }
 
       if (id === SettingsOption.LINKS) {
-        checked = chrome.readingMode.linksEnabled;
+        checked = this.linksEnabled;
         ariaLabel = this.getLinkItemLabels();
         // Since links are disabled when read aloud is playing, the links
         // toggle should also be disabled.
         disabled = this.isSpeechActive;
       }
 
+      const showBadge =
+          (id === SettingsOption.LINE_FOCUS) && this.showLineFocusNewBadge;
       if (id === SettingsOption.PINNED_TO_TOOLBAR) {
         checked = this.isReadAnythingPinned;
         ariaLabel = this.getPinItemLabels();
@@ -337,9 +385,11 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
         ...original,
         id,
         title,
+        icon,
         ariaLabel,
         checked,
         disabled,
+        showBadge,
       };
     });
 
@@ -362,7 +412,7 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
   }
 
   private getLinkItemLabels() {
-    if (chrome.readingMode.linksEnabled) {
+    if (this.linksEnabled) {
       return loadTimeData.getString('disableLinksLabel');
     }
 
@@ -370,7 +420,7 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
   }
 
   private getImageItemLabels() {
-    if (chrome.readingMode.imagesEnabled) {
+    if (this.imagesEnabled) {
       return loadTimeData.getString('disableImagesLabel');
     }
 
@@ -395,19 +445,7 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
     }
 
     if (item.itemType === SettingsItemType.ACTION) {
-      if (item.id === SettingsOption.TRANSLATION_REQUESTED) {
-        // Close any open submenus before firing the translate event.
-        if (this.currentOpenId_) {
-          this.fire(ToolbarEvent.CLOSE_SUBMENU_REQUESTED, {
-            previousId: this.currentOpenId_,
-          });
-          this.currentOpenId_ = null;
-        }
-        this.logger_.logSettingsAction(
-            ReadAnythingSettingsAction.TRANSLATE_ACTION);
-        this.fire(ToolbarEvent.TRANSLATION_REQUESTED);
-        this.close();
-      }
+      this.onActionMenuItemClick_(item);
       return;
     }
 
@@ -423,13 +461,39 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
       return;
     }
 
-    this.fire(ToolbarEvent.OPEN_SETTINGS_SUBMENU, {
-      id: newMenuId,
-      previousId: this.currentOpenId_,
-      target: currentTarget,
-    });
+    const previousId = this.currentOpenId_;
     this.currentOpenId_ = newMenuId;
     this.lastMenuOpenTime_ = Date.now();
+    this.fire(ToolbarEvent.OPEN_SETTINGS_SUBMENU, {
+      id: newMenuId,
+      previousId,
+      target: currentTarget,
+    });
+  }
+
+  private onActionMenuItemClick_(item: SettingsItem) {
+    if (item.itemType !== SettingsItemType.ACTION || item.disabled) {
+      return;
+    }
+
+    // Close any open submenus before firing the action event.
+    if (this.currentOpenId_) {
+      this.fire(ToolbarEvent.CLOSE_SUBMENU_REQUESTED, {
+        previousId: this.currentOpenId_,
+      });
+      this.currentOpenId_ = null;
+    }
+
+    if (item.id === SettingsOption.TRANSLATION_REQUESTED) {
+      this.logger_.logSettingsAction(
+          ReadAnythingSettingsAction.TRANSLATE_ACTION);
+      this.fire(ToolbarEvent.TRANSLATION_REQUESTED);
+    } else if (item.id === SettingsOption.SEND_FEEDBACK) {
+      this.logger_.logSettingsAction(
+          ReadAnythingSettingsAction.SEND_FEEDBACK_ACTION);
+      this.fire(ToolbarEvent.SEND_FEEDBACK);
+    }
+    this.close();
   }
 
   private onToggleMenuItemClick_(item: SettingsItem) {
@@ -438,31 +502,25 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
     }
 
     if (item.id === SettingsOption.LINKS) {
-      this.logger_.logTextSettingsChange(
-          ReadAnythingSettingsChange.LINKS_ENABLED_CHANGE);
-      chrome.readingMode.onLinksEnabledToggled();
       this.fire(ToolbarEvent.LINKS);
-      item.ariaLabel = this.getLinkItemLabels();
-      item.checked = chrome.readingMode.linksEnabled;
     } else if (item.id === SettingsOption.IMAGES) {
-      this.logger_.logTextSettingsChange(
-          ReadAnythingSettingsChange.IMAGES_ENABLED_CHANGE);
-      chrome.readingMode.onImagesEnabledToggled();
       this.fire(ToolbarEvent.IMAGES);
-      item.ariaLabel = this.getImageItemLabels();
-      item.checked = chrome.readingMode.imagesEnabled;
     } else if (item.id === SettingsOption.PINNED_TO_TOOLBAR) {
-      chrome.readingMode.togglePinState();
-      chrome.readingMode.sendPinStateRequest();
+      this.fire(ToolbarEvent.PIN);
     }
-
-    this.requestUpdate();
   }
 
   protected onPointerenter_(e: PointerEvent) {
+    this.lastPointerPosition_ = {x: e.clientX, y: e.clientY};
+    if (this.$.lazyMenu.get().classList.contains(KEYBOARD_NAV_CLASS)) {
+      return;
+    }
+    this.handlePointerEnter_(e.currentTarget as HTMLElement);
+  }
+
+  private handlePointerEnter_(currentTarget: HTMLElement|null) {
     this.clearTimers_();
 
-    const currentTarget = e.currentTarget as HTMLElement;
     if (!currentTarget) {
       return;
     }
@@ -499,17 +557,22 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
         MENU_SHOW_DELAY_MS;
 
     this.openTimer_ = window.setTimeout(() => {
-      this.fire(ToolbarEvent.OPEN_SETTINGS_SUBMENU, {
-        id: newMenuId,
-        previousId: this.currentOpenId_,
-        target: currentTarget,
-      });
+      const previousId = this.currentOpenId_;
       this.currentOpenId_ = newMenuId;
       this.lastMenuOpenTime_ = Date.now();
+      this.fire(ToolbarEvent.OPEN_SETTINGS_SUBMENU, {
+        id: newMenuId,
+        previousId,
+        target: currentTarget,
+      });
     }, delay);
   }
 
   protected onPointerleave_(event: PointerEvent) {
+    if (this.$.lazyMenu.get().classList.contains(KEYBOARD_NAV_CLASS)) {
+      return;
+    }
+
     // Clear the open timer so that submenus aren't opened after the cursor
     // stops hovering.
     this.clearOpenTimer_();
@@ -575,7 +638,20 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
   }
 
   open(anchor: HTMLElement) {
-    openMenu(this.$.lazyMenu.get(), anchor);
+    if (this.visualBrowserProxy_.isLineFocusEnabled()) {
+      userEducationProxyFactory.getInstance()
+          .handler.maybeShowNewBadgeFor(LINE_FOCUS_FEATURE_NAME)
+          .then(({shouldShow}) => {
+            this.showLineFocusNewBadge = shouldShow;
+          });
+    }
+    const menu = this.$.lazyMenu.get();
+    // Start in keyboard-nav mode so a stationary cursor resting where the menu
+    // opens does not trigger hover behavior. This does not impact mouse users
+    // because moving the mouse into the menu immediately exits keyboard-nav
+    // mode, and clicking menu items works regardless.
+    menu.classList.add(KEYBOARD_NAV_CLASS);
+    openMenu(menu, anchor);
     window.addEventListener('keydown', this.keyDownCallback_, {capture: true});
     this.interceptedEvents_.forEach(eventType => {
       window.addEventListener(
@@ -601,23 +677,43 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
     this.fire(ToolbarEvent.SETTINGS_CLOSED);
   }
 
+  private handlePointerMove_(e: PointerEvent) {
+    const hasPointerMoved = e.clientX !== this.lastPointerPosition_.x ||
+        e.clientY !== this.lastPointerPosition_.y;
+    this.lastPointerPosition_ = {x: e.clientX, y: e.clientY};
+    if (!hasPointerMoved) {
+      return;
+    }
+
+    this.isOnPreviewPlayButton = false;
+    const menu = this.$.lazyMenu.get();
+    if (!menu.classList.contains(KEYBOARD_NAV_CLASS)) {
+      return;
+    }
+
+    menu.classList.remove(KEYBOARD_NAV_CLASS);
+    const hoveredRow = e.composedPath().find(
+        (el): el is HTMLElement =>
+            el instanceof HTMLElement && el.classList.contains('menu-row'));
+    if (hoveredRow) {
+      this.handlePointerEnter_(hoveredRow);
+    }
+  }
+
   // Immersive design uses non-modal menus to support submenus. Since non-modal
   // menus don't automatically block background interactions, this handler
   // manually intercepts events to:
   // 1. Prevent interactions with elements outside the menu.
   // 2. Close the menu when clicking outside (simulating modal behavior).
   private onPointerEvent_(e: Event) {
-    // Whenever the user moves or clicks the mouse, reset state for
-    // isOnPreviewPlayButton.
-    this.isOnPreviewPlayButton = false;
-    if (e.type === 'pointermove') {
-      const menu = this.$.lazyMenu.get();
-      if (menu.classList.contains(KEYBOARD_NAV_CLASS)) {
-        menu.classList.remove(KEYBOARD_NAV_CLASS);
-      }
+    if (e.type === 'pointermove' && e instanceof PointerEvent) {
+      this.handlePointerMove_(e);
+    } else {
+      // Whenever the user clicks the mouse, reset state for
+      // isOnPreviewPlayButton.
+      this.isOnPreviewPlayButton = false;
     }
 
-    // TODO (crbug.com/470381025): Fix cursor style when settings menu is open
     let isInsideSubmenu = false;
     let isInsideMain = false;
     const path = e.composedPath();
@@ -638,7 +734,8 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
     // closes any opened submenu. If the user moves from an item into a submenu
     // we should cancel the close timer, as the user intentionally moved into
     // the submenu.
-    if (e.type === 'pointermove' && isInsideSubmenu) {
+    if (e.type === 'pointermove' && isInsideSubmenu &&
+        !this.$.lazyMenu.get().classList.contains(KEYBOARD_NAV_CLASS)) {
       if (this.currentOpenId_) {
         const activeItem = this.shadowRoot?.querySelector<HTMLElement>(
             `#${this.currentOpenId_}`);
@@ -671,9 +768,15 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
   }
 
   private onKeyDown_(e: KeyboardEvent) {
+    if (e.composedPath().some(
+            el => el instanceof HTMLElement && el.tagName === 'CR-DIALOG')) {
+      return;
+    }
+
     const key = e.key;
-    if (isVerticalArrow(key) || isForwardArrow(key) || isActivationKey(key)) {
-      this.clearOpenTimer_();
+    if (isVerticalArrow(key) || isForwardArrow(key) || isBackwardArrow(key) ||
+        isActivationKey(key) || key === 'Escape') {
+      this.clearTimers_();
 
       const menu = this.$.lazyMenu.get();
       if (!menu.classList.contains(KEYBOARD_NAV_CLASS)) {

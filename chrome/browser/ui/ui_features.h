@@ -20,44 +20,70 @@ namespace features {
 // alongside the definition of their values in the .cc file.
 
 BASE_DECLARE_FEATURE(kUseActionsForBrowserCommands);
+bool ShouldUseActionsForBrowserCommands();
 
 BASE_DECLARE_FEATURE(kAllowEyeDropperWGCScreenCapture);
 
-// Enables a compositor-driven rotation animation for the tab load throbber.
-BASE_DECLARE_FEATURE(kCompositorLoadingThrobber);
-
-BASE_DECLARE_FEATURE(kCreateNewTabGroupAppMenuTopLevel);
-
 BASE_DECLARE_FEATURE(kCtrlTabMru);
+
+BASE_DECLARE_FEATURE(kFastFaviconDisplay);
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 BASE_DECLARE_FEATURE(kDseIntegrity);
-BASE_DECLARE_FEATURE(kFewerUpdateConfirmations);
+BASE_DECLARE_FEATURE(kFeedbackDisabledDialog);
 BASE_DECLARE_FEATURE(kLegacySearchIntegrityCheck);
 #endif
 
+BASE_DECLARE_FEATURE(kFedCmPermissionUiWithContainer);
+
 BASE_DECLARE_FEATURE(kImportExportFlags);
 
-BASE_DECLARE_FEATURE(kInfoBarInlineLinks);
+// Shows a "+N" count pill in the bottom-most infobar while lower-priority
+// infobars wait in the prioritization queue.
+BASE_DECLARE_FEATURE(kInfoBarQueuedCountPill);
+
+BASE_DECLARE_FEATURE(kFindInPageSkipViewport);
+
+BASE_DECLARE_FEATURE(kKeyboardLockHeldEscExitsTabFullscreen);
+
+#if BUILDFLAG(IS_LINUX)
+BASE_DECLARE_FEATURE(kLinuxPerProfileAppId);
+#endif
 
 // All feature flags associated with Glow Up, apart from those in
 // ui_base_features.h
 BASE_DECLARE_FEATURE(kTabStripDeclutter);
+BASE_DECLARE_FEATURE_PARAM(bool, kTabStripDeclutterActiveTabCloseHideEnabled);
+BASE_DECLARE_FEATURE_PARAM(bool, kTabStripDeclutterInactiveTabCloseHideEnabled);
+BASE_DECLARE_FEATURE_PARAM(int, kTabStripDeclutterMaxTabWidthForCloseHide);
 BASE_DECLARE_FEATURE(kToolbarGlowUp);
 BASE_DECLARE_FEATURE_PARAM(bool, kToolbarGlowUpReloadEnabled);
 BASE_DECLARE_FEATURE_PARAM(bool, kToolbarGlowUpBackForwardEnabled);
+BASE_DECLARE_FEATURE_PARAM(bool, kToolbarGlowUpBookmarkEnabled);
 BASE_DECLARE_FEATURE(kMenuSimplification);
 BASE_DECLARE_FEATURE(kTabGroupColorRefresh);
 BASE_DECLARE_FEATURE(kWebuiRefresh2026);
 BASE_DECLARE_FEATURE(kAppMenuGlowUp);
+// Enables the redesigned Settings 2026 refresh features and search UX.
+BASE_DECLARE_FEATURE(kSettingsRefresh2026);
+// Enables the new chrome://settings search: the native (C++) search backend
+// and the search WebUI that consumes it. Only takes effect when
+// kSettingsRefresh2026 is also enabled.
+BASE_DECLARE_FEATURE(kSettingsSearch2026);
+// Enables search in the app Chrome menu.
+BASE_DECLARE_FEATURE(kChroMenuSearch);
+BASE_DECLARE_FEATURE_PARAM(std::string, kChroMenuSearchQuery);
 
 bool IsTabStripDeclutterEnabled();
 bool IsToolbarGlowUpEnabled();
 bool IsToolbarGlowUpReloadEnabled();
 bool IsToolbarGlowUpBackForwardEnabled();
+bool IsToolbarGlowUpBookmarkEnabled();
 bool IsMenuSimplificationEnabled();
 bool IsTabGroupColorRefreshEnabled();
 bool IsWebuiRefresh2026Enabled();
+bool IsSettingsRefresh2026Enabled();
+bool IsSettingsSearch2026Enabled();
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
@@ -85,6 +111,11 @@ BASE_DECLARE_FEATURE_PARAM(int, kSeparateDefaultAndPinPromptMessageVersion);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
+// When enabled, SessionService respects the should_trigger_session_restore
+// flag on BrowserInitState when deciding whether to restore a session for a
+// newly opened browser window.
+BASE_DECLARE_FEATURE(kRespectShouldTriggerSessionRestoreOnDesktop);
+
 // When enabled, user may see the session restore UI flow.
 BASE_DECLARE_FEATURE(kSessionRestoreInfobar);
 
@@ -92,7 +123,6 @@ BASE_DECLARE_FEATURE(kSessionRestoreInfobar);
 // continue where you left off as default behavior
 BASE_DECLARE_FEATURE_PARAM(bool, kSetDefaultToContinueSession);
 #endif
-
 
 BASE_DECLARE_FEATURE(kPreloadTopChromeWebUI);
 // This enum entry values must be in sync with
@@ -167,13 +197,18 @@ inline constexpr base::FeatureParam<std::string>
 
 BASE_DECLARE_FEATURE(kPreloadTopChromeWebUILessNavigations);
 
+// Kill switch: hide the preloaded WebContents once its page is ready to show.
+BASE_DECLARE_FEATURE(kPreloadTopChromeWebUIHideWhenReady);
+
 BASE_DECLARE_FEATURE(kPressAndHoldEscToExitBrowserFullscreen);
 
 #if BUILDFLAG(IS_WIN)
 BASE_DECLARE_FEATURE(kProcessIsolationSettings);
 #endif  // BUILDFLAG(IS_WIN)
 
-BASE_DECLARE_FEATURE(kRealboxVirtualFocusNavigation);
+BASE_DECLARE_FEATURE(kLensOverlayVirtualFocusNavigation);
+BASE_DECLARE_FEATURE(kOmniboxEverywhereVirtualFocusNavigation);
+BASE_DECLARE_FEATURE(kWebuiBrowserVirtualFocusNavigation);
 
 BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kShowDropTargetForTabDelay);
 
@@ -189,20 +224,10 @@ BASE_DECLARE_FEATURE_PARAM(int, kSplitViewDragAndDropMaxDistanceThreshold);
 
 BASE_DECLARE_FEATURE(kTabDuplicateMetrics);
 
-BASE_DECLARE_FEATURE(kTabGroupsCollapseFreezing);
 BASE_DECLARE_FEATURE(kCollapseTabGroupDuringDrag);
 
 #if !BUILDFLAG(IS_ANDROID)
-// General improvements to tab group menus
-
-BASE_DECLARE_FEATURE(kTabGroupMenuMoreEntryPoints);
-bool IsTabGroupMenuMoreEntryPointsEnabled();
-
 BASE_DECLARE_FEATURE(kNewTabButtonContextMenu);
-
-BASE_DECLARE_FEATURE(kTabGroupHoverCards);
-bool IsTabGroupHoverCardsEnabled();
-
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 BASE_DECLARE_FEATURE(kTabHoverCardImages);
@@ -250,32 +275,25 @@ BASE_DECLARE_FEATURE(kThreeButtonPasswordSaveDialog);
 BASE_DECLARE_FEATURE(kPasswordSaveUpdateDropdownMenuExperiment);
 #endif
 
-// Feature which uses a flyover animation for animating side panels (and
-// expansion/contraction of the Vertical Tab Strip).
-//
-// Call `UseSidePanelFlyoverAnimation()` instead of checking this feature
-// directly.
-BASE_DECLARE_FEATURE(kSidePanelFlyoverAnimation);
-bool UseSidePanelFlyoverAnimation();
-
-BASE_DECLARE_FEATURE_PARAM(int, kSidePanelFlyoverDurationMs);
-
-BASE_DECLARE_FEATURE(kUseDefaultDeadlineWhenAnimatingBounds);
-
 // TODO(crbug.com/460764864): Cleanup all the enterprise badging feature flags.
-BASE_DECLARE_FEATURE(kEnterpriseProfileBadgingForMenu);
 BASE_DECLARE_FEATURE(kNTPFooterBadgingPolicies);
 
 BASE_DECLARE_FEATURE(kEnterpriseManagementDisclaimerUsesCustomLabel);
-BASE_DECLARE_FEATURE(kEnterpriseReleaseNotes);
 BASE_DECLARE_FEATURE(kManagedProfileRequiredInterstitial);
 // Enables WebUI migration for chrome://management on Android Mobile.
 BASE_DECLARE_FEATURE(kMigrateManagementPageToWebUIOnMobile);
 
-
 // Cocoa to views migration.
 #if BUILDFLAG(IS_MAC)
 BASE_DECLARE_FEATURE(kViewsJSAppModalDialog);
+#endif
+
+#if BUILDFLAG(IS_MAC)
+// When enabled, a new browser window does not activate the input method for
+// its focused location bar until the window has presented its first frame.
+// Activating some input methods (for example Japanese) blocks the main thread
+// and delays the first frame.
+BASE_DECLARE_FEATURE(kMacDeferInputContextUntilFirstPaint);
 #endif
 
 // Controls whether the site-specific data dialog shows a related installed
@@ -285,9 +303,19 @@ BASE_DECLARE_FEATURE(kPageSpecificDataDialogRelatedInstalledAppsSection);
 // Feature for the promotion banner on the top of chrome://management page
 BASE_DECLARE_FEATURE(kEnableManagementPromotionBanner);
 
+// Gates the optimization to cache LocationBarView in
+// LensOverlayHomeworkPageActionController.
+BASE_DECLARE_FEATURE(kLensOverlayHomeworkPageActionFocusOptimization);
+
 // Enables the anchored message bubble to close when deactivated (e.g. when
 // losing focus).
 BASE_DECLARE_FEATURE(kPageActionAnchoredMessageEasyDismiss);
+
+// If enabled, anchored messages will only be shown while their associated tab
+// is active. If the tab becomes inactive or a request to show an anchored
+// message arrives while the tab is inactive, the message is downgraded to a
+// suggestion chip.
+BASE_DECLARE_FEATURE(kPageActionAnchoredMessageActiveTabOnly);
 
 // Gates the optimization for AI Mode page action to reduce mouse pressed
 // latency.
@@ -298,11 +326,11 @@ BASE_DECLARE_FEATURE(kAiModePageActionOptimization);
 
 BASE_DECLARE_FEATURE(kPageActionsPrioritySelector);
 
-#if BUILDFLAG(IS_MAC)
-// Add tab group colours when viewing tab groups using the top mac OS menu bar.
-BASE_DECLARE_FEATURE(kShowTabGroupsMacSystemMenu);
-bool IsShowTabGroupsMacSystemMenuEnabled();
-#endif  // BUILDFLAG(IS_MAC)
+BASE_DECLARE_FEATURE(kPageActionsPrioritySelectorProductMessagingController);
+
+// Enables the elevated capsule toolbar for page actions.
+BASE_DECLARE_FEATURE(kPageActionsElevatedToolbar);
+bool IsPageActionsElevatedToolbarEnabled();
 
 // If enabled, the by date history will show in the side panel.
 BASE_DECLARE_FEATURE(kByDateHistoryInSidePanel);
@@ -310,16 +338,7 @@ BASE_DECLARE_FEATURE(kByDateHistoryInSidePanel);
 // If enabled, the "Tabs from other devices" side panel will be available.
 BASE_DECLARE_FEATURE(kTabsFromOtherDevicesSidePanel);
 
-// If enabled, the "Tabs from other devices" toolbar button will be pinned by
-// default.
-BASE_DECLARE_FEATURE(kTabsFromOtherDevicesSidePanelPinnedByDefault);
-
 #if !BUILDFLAG(IS_ANDROID)
-// Controls whether to add new tabs to active tab group or to the end of the
-// tab strip.
-BASE_DECLARE_FEATURE(kNewTabAddsToActiveGroup);
-
-bool IsNewTabAddsToActiveGroupEnabled();
 
 bool IsWebUIReloadButtonEnabled();
 
@@ -343,6 +362,10 @@ bool IsWebUIAvatarButtonEnabled();
 BASE_DECLARE_FEATURE(kWebUIMediaButton);
 bool IsWebUIMediaButtonEnabled();
 
+// Controls whether the WebUI version of the Glic Button is used.
+BASE_DECLARE_FEATURE(kWebUIGlicButton);
+bool IsWebUIGlicButtonEnabled();
+
 bool IsWebUIPerformanceInterventionButtonEnabled();
 
 bool IsWebUIAppMenuButtonEnabled();
@@ -359,11 +382,6 @@ bool IsWebUIToolbarFullyEnabled();
 // Controls whether to show a toast for Chrome non milestone update.
 BASE_DECLARE_FEATURE(kNonMilestoneUpdateToast);
 
-// Controls whether the updated bookmark and tab group conversion is enabled.
-BASE_DECLARE_FEATURE(kBookmarkTabGroupConversion);
-
-bool IsBookmarkTabGroupConversionEnabled();
-
 #if BUILDFLAG(IS_ANDROID)
 BASE_DECLARE_FEATURE(kAndroidAnimatedProgressBarInBrowser);
 
@@ -371,14 +389,24 @@ bool IsAndroidAnimatedProgressBarInBrowserEnabled();
 #endif  // BUILDFLAG(IS_ANDROID)
 
 BASE_DECLARE_FEATURE(kAiOverlayDialog);
+BASE_DECLARE_FEATURE(kAiOverlayDialogDev);
 BASE_DECLARE_FEATURE_PARAM(std::string, kAiOverlayDialogApiKey);
 BASE_DECLARE_FEATURE_PARAM(std::string, kAiOverlayDialogMockJsonPath);
+BASE_DECLARE_FEATURE_PARAM(bool, kAiOverlayDialogUseMes);
+BASE_DECLARE_FEATURE_PARAM(bool, kAiOverlayDialogPageTools);
+BASE_DECLARE_FEATURE_PARAM(bool, kAiOverlayDialogNext);
+BASE_DECLARE_FEATURE(kAiOverlayDisableNavigationContext);
 
 BASE_DECLARE_FEATURE(kTabGroupsFocusing);
-BASE_DECLARE_FEATURE_PARAM(bool, kTabGroupsFocusingPinnedTabs);
+BASE_DECLARE_FEATURE_PARAM(bool, kTabGroupsFocusFreezing);
+BASE_DECLARE_FEATURE_PARAM(int, kTabGroupsFocusingIphMinTabs);
+BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kTabGroupsFocusingIphPromoDelay);
+bool IsTabGroupsFocusFreezingEnabled();
 
 BASE_DECLARE_FEATURE(kTabGroupRibbon);
 bool IsTabGroupRibbonEnabled();
+
+BASE_DECLARE_FEATURE(kNonGroupFocus);
 
 BASE_DECLARE_FEATURE(kOmniboxResizingPrioritization);
 
@@ -392,6 +420,7 @@ BASE_DECLARE_FEATURE(kToolbarGlicButtonResizing);
 // Currently only used on MacOS as that's the only platform we can
 // be sure the user has an easy remedy. See crbug.com/493148224.
 BASE_DECLARE_FEATURE(kOSCryptAsyncAvailabilityInfoBar);
+BASE_DECLARE_FEATURE(kDeferLayoutDuringBrowserStartup);
 
 }  // namespace features
 

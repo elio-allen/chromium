@@ -14,6 +14,8 @@
 #include <variant>
 #include <vector>
 
+#include "base/containers/flat_map.h"
+#include "base/i18n/language_tag.h"
 #include "mojo/public/cpp/bindings/struct_traits.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "third_party/blink/public/common/common_export.h"
@@ -22,29 +24,10 @@
 #include "third_party/blink/public/mojom/manifest/manifest.mojom-forward.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom-shared.h"
 #include "third_party/blink/public/mojom/manifest/manifest_launch_handler.mojom-forward.h"
-#include "third_party/icu/source/common/unicode/locid.h"
+#include "third_party/blink/public/mojom/manifest/manifest_migration_behavior.mojom-shared.h"
 #include "ui/gfx/geometry/size.h"
 #include "url/gurl.h"
 #include "url/origin.h"
-
-// Abseil hash support for icu::Locale.
-// Allows Locale to be used as a key in absl::flat_hash_map.
-// Uses getName() which returns ICU's internal canonical form with underscores
-// ("en_US"). icu namespace defined with U_NAMESPACE_BEGIN.
-U_NAMESPACE_BEGIN
-template <typename H>
-H AbslHashValue(H h, const icu::Locale& locale) {
-  return H::combine(std::move(h), std::string_view(locale.getName()));
-}
-
-// Comparison operator for icu::Locale.
-// Required for icu::Locale to be used as a key in base::flat_map.
-// The mojo code generator uses base::flat_map for browser-side mojom types,
-// which requires operator< for ordered map operations.
-inline bool operator<(const icu::Locale& lhs, const icu::Locale& rhs) {
-  return std::string_view(lhs.getName()) < std::string_view(rhs.getName());
-}
-U_NAMESPACE_END
 
 namespace blink {
 
@@ -107,13 +90,17 @@ class BLINK_COMMON_EXPORT Manifest {
     std::optional<std::u16string> description;
     GURL url;
     std::vector<ImageResource> icons;
-    std::optional<absl::flat_hash_map<icu::Locale, std::vector<ImageResource>>>
+    std::optional<absl::flat_hash_map<base::i18n::LanguageTag,
+                                      std::vector<ImageResource>>>
         icons_localized;
-    std::optional<absl::flat_hash_map<icu::Locale, ManifestLocalizedTextObject>>
+    std::optional<absl::flat_hash_map<base::i18n::LanguageTag,
+                                      ManifestLocalizedTextObject>>
         name_localized;
-    std::optional<absl::flat_hash_map<icu::Locale, ManifestLocalizedTextObject>>
+    std::optional<absl::flat_hash_map<base::i18n::LanguageTag,
+                                      ManifestLocalizedTextObject>>
         short_name_localized;
-    std::optional<absl::flat_hash_map<icu::Locale, ManifestLocalizedTextObject>>
+    std::optional<absl::flat_hash_map<base::i18n::LanguageTag,
+                                      ManifestLocalizedTextObject>>
         description_localized;
   };
 
@@ -293,6 +280,75 @@ class BLINK_COMMON_EXPORT Manifest {
 
     mojom::DisplayMode display_ = mojom::DisplayMode::kUndefined;
     std::vector<SafeUrlPattern> url_patterns_;
+  };
+
+  // Structure representing a screenshot.
+  struct BLINK_COMMON_EXPORT Screenshot {
+    using FormFactor = mojom::ManifestScreenshot_FormFactor;
+    bool operator==(const Screenshot&) const = default;
+
+    ImageResource image;
+    FormFactor form_factor = FormFactor::kUnknown;
+    std::optional<std::u16string> label;
+  };
+
+  // Structure representing a file handler.
+  struct BLINK_COMMON_EXPORT FileHandler {
+    using LaunchType = mojom::ManifestFileHandler_LaunchType;
+    bool operator==(const FileHandler&) const = default;
+
+    GURL action;
+    std::u16string name;
+    base::flat_map<std::u16string, std::vector<std::u16string>> accept;
+    LaunchType launch_type = LaunchType::kSingleClient;
+  };
+
+  // Structure representing a protocol handler.
+  struct BLINK_COMMON_EXPORT ProtocolHandler {
+    bool operator==(const ProtocolHandler&) const = default;
+
+    std::u16string protocol;
+    GURL url;
+  };
+
+  // Structure representing a scope extension.
+  struct BLINK_COMMON_EXPORT ScopeExtension {
+    bool operator==(const ScopeExtension&) const = default;
+
+    url::Origin origin;
+    bool has_origin_wildcard = false;
+  };
+
+  // Structure representing lock screen capabilities.
+  struct BLINK_COMMON_EXPORT LockScreen {
+    bool operator==(const LockScreen&) const = default;
+
+    GURL start_url;
+  };
+
+  // Structure representing note taking capabilities.
+  struct BLINK_COMMON_EXPORT NoteTaking {
+    bool operator==(const NoteTaking&) const = default;
+
+    GURL new_note_url;
+  };
+
+  // Structure representing a migration source for a PWA.
+  struct BLINK_COMMON_EXPORT MigrateFrom {
+    bool operator==(const MigrateFrom&) const = default;
+
+    GURL id;
+    std::optional<GURL> install_url;
+    mojom::ManifestMigrationBehavior behavior =
+        mojom::ManifestMigrationBehavior::kSuggest;
+  };
+
+  // Structure representing a migration target for a PWA.
+  struct BLINK_COMMON_EXPORT MigrateTo {
+    bool operator==(const MigrateTo&) const = default;
+
+    GURL id;
+    GURL install_url;
   };
 };
 

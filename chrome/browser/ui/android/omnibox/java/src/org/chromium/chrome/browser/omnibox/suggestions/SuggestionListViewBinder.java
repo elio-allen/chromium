@@ -15,11 +15,8 @@ import androidx.annotation.Px;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.omnibox.R;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxLayoutMode;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxLayoutMode;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
-import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
-import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
-import org.chromium.ui.base.ViewUtils;
 import org.chromium.ui.modelutil.ListObservable;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyKey;
@@ -53,27 +50,26 @@ class SuggestionListViewBinder
         // some properties depend on it.
         view.dropdown.setResourceProvider(model.get(SuggestionListProperties.RESOURCE_PROVIDER));
 
-        if (SuggestionListProperties.ACTIVITY_WINDOW_FOCUSED.equals(propertyKey)) {
+        if (propertyKey == SuggestionListProperties.ACTIVITY_WINDOW_FOCUSED) {
             updateContainerVisibility(model, view);
-        } else if (SuggestionListProperties.SELECTION_MODE.equals(propertyKey)) {
-            view.dropdown.setSelectionMode(model.get(SuggestionListProperties.SELECTION_MODE));
-        } else if (SuggestionListProperties.ALPHA.equals(propertyKey)) {
+        } else if (propertyKey == SuggestionListProperties.ALPHA) {
             view.dropdown.setChildAlpha(model.get(SuggestionListProperties.ALPHA));
-        } else if (SuggestionListProperties.APPLY_VERTICAL_PADDING.equals(propertyKey)) {
+        } else if (propertyKey == SuggestionListProperties.APPLY_MARGIN_FOR_LEFT_SIDE_BAR) {
+            updateContainerMargin(model, view);
+        } else if (propertyKey == SuggestionListProperties.APPLY_VERTICAL_PADDING) {
             updateVerticalPadding(model, view);
-        } else if (SuggestionListProperties.CHILD_TRANSLATION_Y.equals(propertyKey)) {
+        } else if (propertyKey == SuggestionListProperties.CHILD_TRANSLATION_Y) {
             view.dropdown.translateChildrenVertical(
                     model.get(SuggestionListProperties.CHILD_TRANSLATION_Y));
-        } else if (SuggestionListProperties.COLOR_SCHEME.equals(propertyKey)) {
-            @BrandedColorScheme int scheme = model.get(SuggestionListProperties.COLOR_SCHEME);
-            view.dropdown.setBrandedColorScheme(scheme);
+        } else if (propertyKey == SuggestionListProperties.COLOR_SCHEME) {
+            view.dropdown.updateVisualsForState();
             updateColorScheme(model, view);
-        } else if (SuggestionListProperties.CONTAINER_ALWAYS_VISIBLE.equals(propertyKey)) {
+        } else if (propertyKey == SuggestionListProperties.CONTAINER_ALWAYS_VISIBLE) {
             if (model.get(SuggestionListProperties.CONTAINER_ALWAYS_VISIBLE)) {
                 updateColorScheme(model, view);
             }
             updateContainerVisibility(model, view);
-        } else if (SuggestionListProperties.DRAW_OVER_ANCHOR.equals(propertyKey)) {
+        } else if (propertyKey == SuggestionListProperties.DRAW_OVER_ANCHOR) {
             boolean drawOver = model.get(SuggestionListProperties.DRAW_OVER_ANCHOR);
             // Note: this assumes the anchor view's z hasn't been modified. If this changes, we'll
             // need to wire that z value so that we choose the correct one here.
@@ -84,52 +80,53 @@ class SuggestionListViewBinder
                                     .getDimensionPixelSize(
                                             R.dimen.omnibox_suggestion_list_elevation)
                             : 0.0f);
-        } else if (SuggestionListProperties.DROPDOWN_HEIGHT_CHANGE_LISTENER.equals(propertyKey)) {
+        } else if (propertyKey == SuggestionListProperties.DROPDOWN_HEIGHT_CHANGE_LISTENER) {
             view.container.setHeightChangeListener(
                     model.get(SuggestionListProperties.DROPDOWN_HEIGHT_CHANGE_LISTENER));
-        } else if (SuggestionListProperties.DROPDOWN_SCROLL_LISTENER.equals(propertyKey)) {
+        } else if (propertyKey == SuggestionListProperties.DROPDOWN_SCROLL_LISTENER) {
             view.dropdown
                     .getLayoutScrollListener()
                     .setSuggestionDropdownScrollListener(
                             model.get(SuggestionListProperties.DROPDOWN_SCROLL_LISTENER));
-        } else if (SuggestionListProperties.DROPDOWN_SCROLL_OFFSET_LISTENER.equals(propertyKey)) {
+        } else if (propertyKey == SuggestionListProperties.DROPDOWN_SCROLL_OFFSET_LISTENER) {
             view.dropdown
                     .getLayoutScrollListener()
                     .setScrollOffsetListener(
                             model.get(SuggestionListProperties.DROPDOWN_SCROLL_OFFSET_LISTENER));
-        } else if (SuggestionListProperties.DROPDOWN_SCROLL_TO_TOP_LISTENER.equals(propertyKey)) {
+        } else if (propertyKey == SuggestionListProperties.DROPDOWN_SCROLL_TO_TOP_LISTENER) {
             view.dropdown
                     .getLayoutScrollListener()
                     .setSuggestionDropdownOverscrolledToTopListener(
                             model.get(SuggestionListProperties.DROPDOWN_SCROLL_TO_TOP_LISTENER));
-        } else if (SuggestionListProperties.EMBEDDER.equals(propertyKey)) {
+        } else if (propertyKey == SuggestionListProperties.EMBEDDER) {
             view.container.setEmbedder(model.get(SuggestionListProperties.EMBEDDER));
-        } else if (SuggestionListProperties.GESTURE_OBSERVER.equals(propertyKey)) {
+        } else if (propertyKey == SuggestionListProperties.GESTURE_OBSERVER) {
             view.dropdown.setGestureObserver(model.get(SuggestionListProperties.GESTURE_OBSERVER));
-        } else if (SuggestionListProperties.IS_LARGE_SCREEN.equals(propertyKey)
-                || SuggestionListProperties.ROUND_TOP_CORNERS.equals(propertyKey)) {
-            updateColorScheme(model, view);
-            boolean isLargeScreen = model.get(SuggestionListProperties.IS_LARGE_SCREEN);
-            boolean roundTopCorners = model.get(SuggestionListProperties.ROUND_TOP_CORNERS);
-            view.container.setShouldRoundTopCorners(roundTopCorners);
-            view.container.setShouldClipToOutline(isLargeScreen || roundTopCorners);
-        } else if (SuggestionListProperties.LIST_IS_FINAL.equals(propertyKey)) {
+        } else if (propertyKey == SuggestionListProperties.IS_LARGE_SCREEN) {
+            updateRoundingAndClipping(model, view);
+        } else if (propertyKey == SuggestionListProperties.LEFT_SIDE_BAR_MARGIN_PX) {
+            updateContainerMargin(model, view);
+        } else if (propertyKey == SuggestionListProperties.LIST_IS_FINAL) {
             if (model.get(SuggestionListProperties.LIST_IS_FINAL)) {
                 view.dropdown.emitWindowContentChangedAnnouncement();
             }
-        } else if (SuggestionListProperties.NAVIGATION_LISTENER.equals(propertyKey)) {
+        } else if (propertyKey == SuggestionListProperties.NAVIGATION_LISTENER) {
             view.dropdown.setNavigationListener(
                     model.get(SuggestionListProperties.NAVIGATION_LISTENER));
-        } else if (SuggestionListProperties.OMNIBOX_SESSION_ACTIVE.equals(propertyKey)) {
+        } else if (propertyKey == SuggestionListProperties.OMNIBOX_SESSION_ACTIVE) {
             updateContainerVisibility(model, view);
             view.container.onOmniboxSessionStateChange(
                     model.get(SuggestionListProperties.OMNIBOX_SESSION_ACTIVE));
-        } else if (SuggestionListProperties.RESET_SELECTION.equals(propertyKey)) {
+        } else if (propertyKey == SuggestionListProperties.RESET_SELECTION) {
             view.dropdown.resetSelection();
-        } else if (SuggestionListProperties.RESOURCE_PROVIDER.equals(propertyKey)) {
+        } else if (propertyKey == SuggestionListProperties.RESOURCE_PROVIDER) {
             view.dropdown.setResourceProvider(
                     model.get(SuggestionListProperties.RESOURCE_PROVIDER));
-        } else if (SuggestionListProperties.SUGGESTION_MODELS.equals(propertyKey)) {
+        } else if (propertyKey == SuggestionListProperties.ROUND_TOP_CORNERS) {
+            updateRoundingAndClipping(model, view);
+        } else if (propertyKey == SuggestionListProperties.SELECTION_MODE) {
+            view.dropdown.setSelectionMode(model.get(SuggestionListProperties.SELECTION_MODE));
+        } else if (propertyKey == SuggestionListProperties.SUGGESTION_MODELS) {
             ModelList listItems = model.get(SuggestionListProperties.SUGGESTION_MODELS);
             listItems.addObserver(
                     new ListObservable.ListObserver<>() {
@@ -149,9 +146,15 @@ class SuggestionListViewBinder
             // When the suggestions list is installed for the first time, it may already contain
             // elements. Be sure to capture and reflect this fact appropriately.
             updateContainerVisibility(model, view);
-        } else if (SuggestionListProperties.APPLY_MARGIN_FOR_LEFT_SIDE_BAR.equals(propertyKey)) {
-            updateContainerMargin(model, view);
         }
+    }
+
+    private void updateRoundingAndClipping(PropertyModel model, SuggestionListViewHolder holder) {
+        updateColorScheme(model, holder);
+        boolean isLargeScreen = model.get(SuggestionListProperties.IS_LARGE_SCREEN);
+        boolean roundTopCorners = model.get(SuggestionListProperties.ROUND_TOP_CORNERS);
+        holder.container.setShouldRoundTopCorners(roundTopCorners);
+        holder.container.setShouldClipToOutline(isLargeScreen || roundTopCorners);
     }
 
     private void updateColorScheme(PropertyModel model, SuggestionListViewHolder holder) {
@@ -214,15 +217,9 @@ class SuggestionListViewBinder
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.WRAP_CONTENT);
         }
-        // TODO(crbug.com/521986417): Consider plumbing SideUiStateProvider to get the
-        // Vertical Tabs panel width. Using the constant works for now since the width is
-        // fixed in MVP.
         boolean applyMargin = model.get(SuggestionListProperties.APPLY_MARGIN_FOR_LEFT_SIDE_BAR);
-        int leftMargin =
-                applyMargin
-                        ? ViewUtils.dpToPx(
-                                container.getContext(), VerticalTabUtils.SIDE_UI_CONTAINER_WIDTH_DP)
-                        : 0;
+        int marginPx = model.get(SuggestionListProperties.LEFT_SIDE_BAR_MARGIN_PX);
+        int leftMargin = applyMargin ? marginPx : 0;
         if (layoutParams.leftMargin != leftMargin) {
             layoutParams.leftMargin = leftMargin;
             container.setLayoutParams(layoutParams);

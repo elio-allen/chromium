@@ -30,10 +30,21 @@ class SidePanelTabModelObserver final : public TabModelObserver {
       delete;
 
  private:
-  // Implements `TabModelObserver`:
-  void DidSelectTab(TabAndroid* tab, TabModel::TabSelectionType type) override;
+  // Implements `TabModelObserver`.
+  //
+  // TODO(crbug.com/561680098): Replace OnFinishingTabClosure() and
+  // OnFinishingMultipleTabClosure() with OnTabCloseCommitted().
+  void DidSelectTab(TabAndroid* tab) override;
   void DidRemoveTabForClosure(TabAndroid* tab) override;
+  void OnFinishingTabClosure(TabAndroid* tab,
+                             TabModel::TabClosingSource source) override;
+  void OnFinishingMultipleTabClosure(const std::vector<TabAndroid*>& tabs,
+                                     bool canRestore) override;
+  void TabClosureUndone(TabAndroid* tab) override;
   void TabRemoved(TabAndroid* tab) override;
+  void WillCloseTabs(const std::vector<TabAndroid*>& tabs,
+                     bool is_all_tabs,
+                     bool allow_undo) override;
   void AllTabsAreClosing() override;
   void OnTabModelDestroyed(TabModel& tab_model) override;
 
@@ -44,9 +55,8 @@ class SidePanelTabModelObserver final : public TabModelObserver {
 
   // `TabHandle` for the current active tab.
   //
-  // We need to cache the active tab handle because
-  // `TabModelObserver::DidSelectTab()` does not provide the previous active
-  // tab.
+  // Cached to detect whether `DidSelectTab()` is actually selecting a different
+  // tab (see `DidSelectTab()` implementation for details).
   //
   // Note:
   //
@@ -64,6 +74,14 @@ class SidePanelTabModelObserver final : public TabModelObserver {
   // initial active tab index). In this case, it's hard to tell if the active
   // tab has changed or not.
   tabs::TabHandle active_tab_handle_;
+
+  // Whether all tabs are being closed.
+  //
+  // This becomes true when all tabs start closing, regardless of whether the
+  // closure can be undone.
+  //
+  // It is reset to false when the closure is committed or undone.
+  bool are_all_tabs_closing_ = false;
 };
 
 #endif  // CHROME_BROWSER_UI_SIDE_PANEL_INTERNAL_ANDROID_SIDE_PANEL_TAB_MODEL_OBSERVER_H_

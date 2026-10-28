@@ -116,35 +116,6 @@ bool NeedsFragmentContextForDecoration(
   return !inset.GetStart().IsZero() || !inset.GetEnd().IsZero();
 }
 
-float ComputeDecorationThickness(
-    const TextDecorationThickness& text_decoration_thickness,
-    const UsedFont& used_font) {
-  float used_font_size = used_font.UsedSize();
-  const float auto_underline_thickness = used_font_size / 10.f;
-
-  if (text_decoration_thickness.IsAuto())
-    return auto_underline_thickness;
-
-  // In principle we would not need to test for PrimaryFont() if
-  // |text_decoration_thickness.Thickness()| is fixed, but a null PrimaryFont()
-  // here would be a rare / error situation anyway, so practically, we can
-  // early out here.
-  if (!used_font.PrimaryFont()) {
-    return auto_underline_thickness;
-  }
-
-  if (text_decoration_thickness.IsFromFont()) {
-    return used_font.UnderlineThickness().value_or(auto_underline_thickness);
-  }
-
-  DCHECK(!text_decoration_thickness.IsFromFont());
-
-  const Length& thickness_length = text_decoration_thickness.Thickness();
-  const float text_decoration_thickness_pixels =
-      FloatValueForLength(thickness_length, used_font_size);
-  return roundf(text_decoration_thickness_pixels);
-}
-
 static enum StrokeStyle TextDecorationStyleToStrokeStyle(
     ETextDecorationStyle decoration_style) {
   switch (decoration_style) {
@@ -183,7 +154,7 @@ TextDecorationFragmentContext ComputeTextDecorationFragmentContext(
   InlineCursor line_cursor = cursor;
   line_cursor.ExpandRootToContainingBlock();
   line_cursor.MoveTo(*cursor.CurrentItem());
-  fragment_context.line_cursor = line_cursor;
+  fragment_context.fragment_cursor = &cursor;
 
   InlineCursor previous_cursor = line_cursor;
   previous_cursor.MoveToPreviousInlineLeafOnLine();
@@ -199,6 +170,49 @@ TextDecorationFragmentContext ComputeTextDecorationFragmentContext(
     fragment_context.next_fragment_on_line = next_cursor.CurrentItem();
   }
   return fragment_context;
+}
+
+std::optional<gfx::RectF> ComputeUnderOverDecorationBounds(
+    const ComputedStyle& style,
+    const UsedFont& font,
+    LayoutUnit inline_size) {
+  DCHECK(style.HasAppliedTextDecorations());
+  if (!font.PrimaryFont()) {
+    return std::nullopt;
+  }
+
+  std::optional<gfx::RectF> bounds;
+  auto unite = [&bounds](const gfx::RectF& rect) {
+    if (!bounds) {
+      bounds = rect;
+      return;
+    }
+    bounds->UnionEvenIfEmpty(rect);
+  };
+
+  TextDecorationInfo decoration_info(
+      LineRelativeOffset(LayoutUnit(), LayoutUnit()), inline_size, style, font,
+      /*inline_context=*/nullptr, TextDecorationLine::kNone, Color());
+  TextDecorationOffset decoration_offset(style);
+  for (wtf_size_t i = 0; i < decoration_info.AppliedDecorationCount(); ++i) {
+    const ResolvedDecoration decoration =
+        decoration_info.ResolveDecorationAt(i);
+    if (!decoration.HasFontData()) {
+      continue;
+    }
+
+    if (decoration.HasUnderline()) {
+      unite(DecorationLinePainter::Bounds(
+          decoration_info.ComputeUnderlineLineData(decoration,
+                                                   decoration_offset)));
+    }
+    if (decoration.HasOverline()) {
+      unite(
+          DecorationLinePainter::Bounds(decoration_info.ComputeOverlineLineData(
+              decoration, decoration_offset)));
+    }
+  }
+  return bounds;
 }
 
 TextDecorationInfo::TextDecorationInfo(
@@ -261,9 +275,17 @@ TextDecorationInfo::ComputeDecoratedRunMetrics(
     wtf_size_t decoration_index) const {
   LayoutUnit size_before;
   LayoutUnit size_after;
-  if (fragment_context_.line_cursor.Current()) {
+  if (fragment_context_.fragment_cursor &&
+      fragment_context_.fragment_cursor->Current()) {
+    // Build the line cursor on demand; this only runs for decorated
+    // fragments whose insets need run metrics, keeping the per-fragment
+    // paint path free of `InlineCursor` copies.
+    InlineCursor line_cursor = *fragment_context_.fragment_cursor;
+    line_cursor.ExpandRootToContainingBlock();
+    line_cursor.MoveTo(*fragment_context_.fragment_cursor->CurrentItem());
+
     const AppliedTextDecoration& applied = *decoration.applied_text_decoration;
-    for (InlineCursor cursor = fragment_context_.line_cursor;;) {
+    for (InlineCursor cursor = line_cursor;;) {
       cursor.MoveToPreviousInlineLeaf();
       const FragmentItem* item = cursor.CurrentItem();
       if (!ContinuesDecoratedRun(item, decoration_index, applied)) {
@@ -271,7 +293,7 @@ TextDecorationInfo::ComputeDecoratedRunMetrics(
       }
       size_before += InlineSizeOfItem(*item);
     }
-    for (InlineCursor cursor = fragment_context_.line_cursor;;) {
+    for (InlineCursor cursor = line_cursor;;) {
       cursor.MoveToNextInlineLeaf();
       const FragmentItem* item = cursor.CurrentItem();
       if (!ContinuesDecoratedRun(item, decoration_index, applied)) {
@@ -283,14 +305,13 @@ TextDecorationInfo::ComputeDecoratedRunMetrics(
     // Visual-order traversal can encounter unrelated bidi content between
     // fragments of the same text node. Account for all fragments of the node
     // so wrapped insets are still accumulated in logical order.
-    const FragmentItem* current_item =
-        fragment_context_.line_cursor.CurrentItem();
+    const FragmentItem* current_item = line_cursor.CurrentItem();
     DCHECK(current_item);
     DCHECK(current_item->GetLayoutObject());
     LayoutUnit size_before_in_node;
     LayoutUnit size_after_in_node;
     bool found_current = false;
-    InlineCursor cursor = fragment_context_.line_cursor;
+    InlineCursor cursor = line_cursor;
     cursor.MoveTo(*current_item->GetLayoutObject());
     for (; cursor.Current(); cursor.MoveToNextForSameLayoutObject()) {
       const FragmentItem* item = cursor.CurrentItem();
@@ -354,9 +375,9 @@ const ResolvedDecoration TextDecorationInfo::ResolveDecorationAt(
       // Disable the decorating box when the baseline is central, because the
       // decorating box doesn't produce the ideal position.
       // https://drafts.csswg.org/css-text-decor-3/#:~:text=text%20is%20not%20aligned%20to%20the%20alphabetic%20baseline
-      // TODO(kojii): The vertical flow in alphabetic baseline may want to use
-      // the decorating box. It needs supporting the rotated coordinate system
-      // text painters use when painting vertical text.
+      // TODO(crbug.com/563435074): The vertical flow in alphabetic baseline
+      // should use the decorating box. It needs supporting the rotated
+      // coordinate system text painters use when painting vertical text.
       disable_decorating_box = !decorating_box_style->IsHorizontalWritingMode();
     }
 
@@ -399,6 +420,10 @@ const ResolvedDecoration TextDecorationInfo::ResolveDecorationAt(
       decoration.HasUnderline() && decorating_box
           ? OffsetFromDecoratingBox(*decorating_box)
           : LayoutUnit();
+  if (decorating_box) {
+    decoration.inline_offset_from_decorating_box =
+        InlineOffsetFromDecoratingBox(*decorating_box);
+  }
 
   decoration.resolved_thickness = ComputeThickness(decoration);
   ResolveDecorationInsets(decoration_index, decoration);
@@ -473,6 +498,12 @@ DecorationGeometry TextDecorationInfo::ComputeLineData(
       DecorationGeometry::Make(style, decoration_rect, double_offset,
                                wavy_offset, base::OptionalToPtr(spelling_wave));
   geometry.antialias = antialias;
+  if (geometry.style == kWavyStroke &&
+      RuntimeEnabledFeatures::WavyDecorationContinuousPhaseEnabled()) {
+    geometry.wavy_pattern_shift =
+        decoration.inline_offset_from_decorating_box.ToFloat() +
+        decoration.line_left_inset;
+  }
   return geometry;
 }
 
@@ -493,7 +524,7 @@ void TextDecorationInfo::ResolveDecorationInsets(
     // Keep adjacent automatic underlines visually distinct, but avoid
     // disproportionately large trims for very thick decorations.
     const float auto_inset =
-        std::clamp(decoration.resolved_thickness / 2.0f, 1.0f, 2.0f);
+        TextDecorationInset::ResolveAutoInset(decoration.resolved_thickness);
     start_inset = auto_inset;
     end_inset = auto_inset;
   } else if (applied_text_decoration.BoxDecorationBreak() ==
@@ -554,6 +585,18 @@ LayoutUnit TextDecorationInfo::OffsetFromDecoratingBox(
       decorating_box.ContentOffsetInContainer().top +
       inline_context_->PaintOffset().top;
   return decorating_box_paint_offset - local_origin_.line_over;
+}
+
+// The decorating box is only used in horizontal writing modes (see
+// |ResolveDecorationAt|), where line-left equals the physical left.
+LayoutUnit TextDecorationInfo::InlineOffsetFromDecoratingBox(
+    const DecoratingBox& decorating_box) const {
+  DCHECK(use_decorating_box_);
+  DCHECK(inline_context_);
+  const LayoutUnit decorating_box_paint_offset =
+      decorating_box.ContentOffsetInContainer().left +
+      inline_context_->PaintOffset().left;
+  return local_origin_.line_left - decorating_box_paint_offset;
 }
 
 DecorationGeometry TextDecorationInfo::ComputeUnderlineLineData(
@@ -668,8 +711,10 @@ float TextDecorationInfo::ComputeThickness(
     return 1.f * decoration.effective_zoom;
 #endif
   }
-  const float thickness = ComputeDecorationThickness(
-      decoration.applied_text_decoration->Thickness(), decoration.used_font);
+  const float thickness =
+      decoration.applied_text_decoration->Thickness().Resolve(
+          decoration.used_font.UsedSize(), decoration.used_font.PrimaryFont(),
+          decoration.used_font.ScalingFactor());
   return std::max(is_svg_text_ ? 0.0f : 1.0f, thickness);
 }
 

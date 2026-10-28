@@ -42,6 +42,14 @@ class ArcAppLauncher;
 class PrefService;
 class Profile;
 
+namespace metrics {
+class MetricsService;
+}  // namespace metrics
+
+namespace consent_auditor {
+class ConsentAuditor;
+}  // namespace consent_auditor
+
 namespace arc {
 
 // The file exists only when ARC container is in use.
@@ -142,8 +150,11 @@ class ArcSessionManager : public ArcSessionRunner::Observer,
 
   // `local_state` and `application_locale_storage` must be non-null and must
   // outlive `this`.
+  // `metrics_service` may be null in tests. If non-null, it must remain valid
+  // until Shutdown() is called.
   ArcSessionManager(PrefService* local_state,
                     const ApplicationLocaleStorage* application_locale_storage,
+                    metrics::MetricsService* metrics_service,
                     std::unique_ptr<ArcSessionRunner> arc_session_runner,
                     std::unique_ptr<AdbSideloadingAvailabilityDelegateImpl>
                         adb_sideloading_availability_delegate,
@@ -171,8 +182,11 @@ class ArcSessionManager : public ArcSessionRunner::Observer,
   void ExpandPropertyFilesAndReadSalt();
 
   // Initializes ArcSessionManager. Before this runs, Profile must be set
-  // via SetProfile().
-  void Initialize();
+  // via SetProfile(). `consent_auditor` is the one belonging to that profile,
+  // and must be non-null in production. It is only used for the ArcSupportHost
+  // created here, so tests where ShouldUseErrorDialog() is false and no host is
+  // built may pass null.
+  void Initialize(consent_auditor::ConsentAuditor* consent_auditor);
 
   // Set the device scale factor used to start the arc. This must be called
   // before staring mini-ARC.
@@ -360,7 +374,7 @@ class ArcSessionManager : public ArcSessionRunner::Observer,
 
   // Invokes functions as if requirement checks are completed for testing.
   void EmulateRequirementCheckCompletionForTesting() {
-    DCHECK(requirement_checker_);
+    CHECK(requirement_checker_, base::NotFatalUntil::M160);
     requirement_checker_->EmulateRequirementCheckCompletionForTesting();
   }
 
@@ -531,6 +545,7 @@ class ArcSessionManager : public ArcSessionRunner::Observer,
 
   const raw_ref<PrefService> local_state_;
   const raw_ref<const ApplicationLocaleStorage> application_locale_storage_;
+  raw_ptr<metrics::MetricsService> metrics_service_ = nullptr;
 
   std::unique_ptr<ArcSessionRunner> arc_session_runner_;
   std::unique_ptr<AdbSideloadingAvailabilityDelegateImpl>
@@ -558,6 +573,7 @@ class ArcSessionManager : public ArcSessionRunner::Observer,
   bool provisioning_reported_ = false;
   bool skipped_terms_of_service_negotiation_ = false;
   bool activation_is_allowed_ = false;
+  bool is_post_oobe_shutdown_4gb_device_ = false;
   // Tri-state of if Activation is delayed. 1) std::nullopt means it is yet
   // unknown, 2) true means Activation is delayed by ARC-on-demand, and 3)
   // false means Activation is not delayed by ARC-on-demand.

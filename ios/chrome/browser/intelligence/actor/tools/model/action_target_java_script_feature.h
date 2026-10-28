@@ -14,8 +14,9 @@
 #import "ios/web/public/js_messaging/java_script_feature.h"
 
 namespace base {
+class ElapsedTimer;
 class Value;
-}
+}  // namespace base
 
 namespace web {
 class WebFrame;
@@ -30,6 +31,8 @@ enum class ActionTargetResultCode {
   kOk = 0,
   // The coordinates provided to the function were not in the viewport.
   kCoordinatesOutOfBounds = 1,
+  // The argument provided to resolveTargetIframe were invalid.
+  kArgumentsInvalid = 2,
 };
 // LINT.ThenChange(//ios/chrome/browser/intelligence/actor/tools/model/resources/action_target.ts:ActionTargetResultCode)
 
@@ -78,6 +81,7 @@ class ActionTargetJavaScriptFeature : public web::JavaScriptFeature {
                               base::WeakPtr<web::WebFrame> current_frame,
                               TargetFrameCallback callback,
                               int depth,
+                              base::ElapsedTimer timer,
                               const base::Value* result);
 
   base::expected<web::WebFrame*, ToolExecutionResult>

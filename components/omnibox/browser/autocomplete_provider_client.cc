@@ -27,6 +27,11 @@ AutocompleteProviderClient::GetDocumentSuggestionsService() const {
   return nullptr;
 }
 
+sessions::TabRestoreService* AutocompleteProviderClient::GetTabRestoreService()
+    const {
+  return nullptr;
+}
+
 AiModeButtonService* AutocompleteProviderClient::GetAiModeButtonService()
     const {
   return nullptr;
@@ -80,7 +85,8 @@ bool AutocompleteProviderClient::in_background_state() const {
   return false;
 }
 
-bool AutocompleteProviderClient::IsOmniboxNextLensSearchChipEnabled() const {
+
+bool AutocompleteProviderClient::IsAskGShowChipEnabled() const {
   return false;
 }
 

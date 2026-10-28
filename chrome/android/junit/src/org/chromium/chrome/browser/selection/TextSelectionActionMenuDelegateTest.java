@@ -8,12 +8,15 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.content.Context;
+import android.content.pm.ActivityInfo;
+import android.content.pm.ResolveInfo;
 
 import androidx.test.core.app.ApplicationProvider;
 
@@ -24,8 +27,8 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.FeatureOverrides;
 import org.chromium.base.SelectionActionMenuClientWrapper.MenuType;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -34,6 +37,7 @@ import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.dom_distiller.ReaderModeManager;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.glic.GlicContextMenuUtils;
 import org.chromium.chrome.browser.glic.GlicEnabling;
 import org.chromium.chrome.browser.glic.GlicKeyedService;
 import org.chromium.chrome.browser.glic.GlicKeyedService.GlicInvocationSource;
@@ -55,7 +59,6 @@ import java.util.List;
 
 /** Unit tests for {@link TextSelectionActionMenuDelegate}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @EnableFeatures(ChromeFeatureList.COPY_LINK_TO_HIGHLIGHT)
 public class TextSelectionActionMenuDelegateTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -184,6 +187,18 @@ public class TextSelectionActionMenuDelegateTest {
     }
 
     @Test
+    public void testGetAdditionalMenuItems_editable() {
+        List<SelectionMenuItem> items =
+                mDelegate.getAdditionalMenuItems(
+                        MenuType.DROPDOWN,
+                        /* isSelectionPassword= */ false,
+                        /* isSelectionReadOnly= */ false,
+                        /* selectedText= */ "test");
+
+        assertFalse(containsId(items, R.id.contextmenu_open_in_reading_mode));
+    }
+
+    @Test
     public void testAskGemini_shownOnFloatingMenu() {
         enableAskGeminiForSelection();
 
@@ -198,7 +213,9 @@ public class TextSelectionActionMenuDelegateTest {
     }
 
     @Test
-    public void testAskGemini_notShownOnDropdownMenu() {
+    public void testAskGemini_shownOnDropdownMenu_mobile() {
+        // When configured for mobile (side panel disabled, tab bottom sheet enabled),
+        // DROPDOWN menu should still show the item.
         enableAskGeminiForSelection();
 
         List<SelectionMenuItem> items =
@@ -208,7 +225,87 @@ public class TextSelectionActionMenuDelegateTest {
                         /* isSelectionReadOnly= */ true,
                         /* selectedText= */ "test");
 
+        assertNotNull(findItem(items, R.id.contextmenu_ask_gemini));
+    }
+
+    @Test
+    public void testAskGemini_shownOnDropdownMenu_desktop() {
+        DeviceInfo.setIsDesktopForTesting(true);
+        FeatureOverrides.enable(ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU);
+        FeatureOverrides.enable(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL);
+        GlicEnabling.setEnabledForTesting(true);
+
+        List<SelectionMenuItem> items =
+                mDelegate.getAdditionalMenuItems(
+                        MenuType.DROPDOWN,
+                        /* isSelectionPassword= */ false,
+                        /* isSelectionReadOnly= */ true,
+                        /* selectedText= */ "test");
+
+        SelectionMenuItem askGemini = findItem(items, R.id.contextmenu_ask_gemini);
+        assertNotNull(askGemini);
+        // Placed among the default items, in the gap before Web Search (the default position).
+        assertEquals(
+                ItemGroupOffset.DEFAULT_ITEMS + SelectionMenuItem.ItemOrder.ASK_GEMINI,
+                askGemini.order);
+        assertTrue(askGemini.order >= ItemGroupOffset.DEFAULT_ITEMS);
+        assertTrue(askGemini.order < ItemGroupOffset.SECONDARY_ASSIST_ITEMS);
+        assertEquals(R.id.select_action_menu_delegate_items, askGemini.groupId);
+    }
+
+    @Test
+    public void testAskGemini_notShownOnPhone_whenNoBottomSheet() {
+        // On a phone the side panel is unavailable regardless of the side panel flag, so with the
+        // bottom sheet also off there is no container to host Glic and the item must be hidden.
+        DeviceInfo.setIsDesktopForTesting(false);
+        FeatureOverrides.enable(ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU);
+        FeatureOverrides.enable(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL);
+        FeatureOverrides.disable(ChromeFeatureList.TAB_BOTTOM_SHEET);
+        GlicEnabling.setEnabledForTesting(true);
+
+        List<SelectionMenuItem> items =
+                mDelegate.getAdditionalMenuItems(
+                        MenuType.DROPDOWN,
+                        /* isSelectionPassword= */ false,
+                        /* isSelectionReadOnly= */ true,
+                        /* selectedText= */ "test");
+
         assertNull(findItem(items, R.id.contextmenu_ask_gemini));
+    }
+
+    @Test
+    public void testAskGemini_shownOnPhone_whenBottomSheetEnabled() {
+        // The bottom sheet provides the container on phones, so the item is still offered.
+        DeviceInfo.setIsDesktopForTesting(false);
+        FeatureOverrides.enable(ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU);
+        FeatureOverrides.enable(ChromeFeatureList.TAB_BOTTOM_SHEET);
+        GlicEnabling.setEnabledForTesting(true);
+
+        List<SelectionMenuItem> items =
+                mDelegate.getAdditionalMenuItems(
+                        MenuType.DROPDOWN,
+                        /* isSelectionPassword= */ false,
+                        /* isSelectionReadOnly= */ true,
+                        /* selectedText= */ "test");
+
+        assertNotNull(findItem(items, R.id.contextmenu_ask_gemini));
+    }
+
+    @Test
+    public void testAskGemini_shownOnFloatingMenu_desktop() {
+        DeviceInfo.setIsDesktopForTesting(true);
+        FeatureOverrides.enable(ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU);
+        FeatureOverrides.enable(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL);
+        GlicEnabling.setEnabledForTesting(true);
+
+        List<SelectionMenuItem> items =
+                mDelegate.getAdditionalMenuItems(
+                        MenuType.FLOATING,
+                        /* isSelectionPassword= */ false,
+                        /* isSelectionReadOnly= */ true,
+                        /* selectedText= */ "test");
+
+        assertNotNull(findItem(items, R.id.contextmenu_ask_gemini));
     }
 
     @Test
@@ -248,21 +345,6 @@ public class TextSelectionActionMenuDelegateTest {
     }
 
     @Test
-    public void testAskGemini_notShownWhenSidePanelEnabled() {
-        enableAskGeminiForSelection();
-        FeatureOverrides.enable(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL);
-
-        List<SelectionMenuItem> items =
-                mDelegate.getAdditionalMenuItems(
-                        MenuType.FLOATING,
-                        /* isSelectionPassword= */ false,
-                        /* isSelectionReadOnly= */ true,
-                        /* selectedText= */ "test");
-
-        assertNull(findItem(items, R.id.contextmenu_ask_gemini));
-    }
-
-    @Test
     public void testAskGemini_notShownOnIncognito() {
         enableAskGeminiForSelection();
         when(mProfile.isOffTheRecord()).thenReturn(true);
@@ -290,6 +372,34 @@ public class TextSelectionActionMenuDelegateTest {
         SelectionMenuItem askGemini = findItem(items, R.id.contextmenu_ask_gemini);
         assertNotNull(askGemini);
 
+        // The default position interposes "Ask Gemini" among the default items, in the gap just
+        // before Web Search.
+        assertEquals(
+                ItemGroupOffset.DEFAULT_ITEMS + SelectionMenuItem.ItemOrder.ASK_GEMINI,
+                askGemini.order);
+        assertTrue(askGemini.order >= ItemGroupOffset.DEFAULT_ITEMS);
+        assertTrue(askGemini.order < ItemGroupOffset.SECONDARY_ASSIST_ITEMS);
+    }
+
+    @Test
+    public void testAskGemini_orderAndCategoryAssistPosition() {
+        enableAskGeminiForSelection();
+        FeatureOverrides.newBuilder()
+                .enable(ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU)
+                .param(
+                        GlicContextMenuUtils.PARAM_ASK_GEMINI_SELECTION_MENU_POSITION,
+                        GlicContextMenuUtils.ASK_GEMINI_POSITION_ASSIST)
+                .apply();
+
+        List<SelectionMenuItem> items =
+                mDelegate.getAdditionalMenuItems(
+                        MenuType.FLOATING,
+                        /* isSelectionPassword= */ false,
+                        /* isSelectionReadOnly= */ true,
+                        /* selectedText= */ "test");
+        SelectionMenuItem askGemini = findItem(items, R.id.contextmenu_ask_gemini);
+        assertNotNull(askGemini);
+
         assertTrue(askGemini.order < ItemGroupOffset.DEFAULT_ITEMS);
     }
 
@@ -299,8 +409,8 @@ public class TextSelectionActionMenuDelegateTest {
         FeatureOverrides.newBuilder()
                 .enable(ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU)
                 .param(
-                        TextSelectionActionMenuDelegate.PARAM_ASK_GEMINI_SELECTION_MENU_POSITION,
-                        TextSelectionActionMenuDelegate.ASK_GEMINI_POSITION_SECONDARY)
+                        GlicContextMenuUtils.PARAM_ASK_GEMINI_SELECTION_MENU_POSITION,
+                        GlicContextMenuUtils.ASK_GEMINI_POSITION_SECONDARY)
                 .apply();
 
         List<SelectionMenuItem> items =
@@ -330,10 +440,17 @@ public class TextSelectionActionMenuDelegateTest {
         SelectionMenuItem askGemini = findItem(items, R.id.contextmenu_ask_gemini);
         assertNotNull(askGemini);
 
+        when(mGlicKeyedService.invokeWithPrompt(
+                        mTab, "test", GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU))
+                .thenReturn(true);
+
         HistogramWatcher histogramWatcher =
-                HistogramWatcher.newSingleRecordWatcher(
-                        "Glic.EntryPoint.Click.Other",
-                        GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU);
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                "Glic.EntryPoint.Click.Other",
+                                GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU)
+                        .expectBooleanRecord("Glic.EntryPoint.SendSelectedTextSucceeded", true)
+                        .build();
 
         boolean handled =
                 mDelegate.handleMenuItemClick(askGemini, mWebContents, /* containerView= */ null);
@@ -345,11 +462,40 @@ public class TextSelectionActionMenuDelegateTest {
     }
 
     @Test
+    public void testAskGemini_recordsFailedSendWhenServiceRejects() {
+        enableAskGeminiForSelection();
+        GlicKeyedServiceFactory.setForTesting(mGlicKeyedService);
+
+        List<SelectionMenuItem> items =
+                mDelegate.getAdditionalMenuItems(
+                        MenuType.FLOATING,
+                        /* isSelectionPassword= */ false,
+                        /* isSelectionReadOnly= */ true,
+                        /* selectedText= */ "test");
+        SelectionMenuItem askGemini = findItem(items, R.id.contextmenu_ask_gemini);
+        assertNotNull(askGemini);
+
+        when(mGlicKeyedService.invokeWithPrompt(
+                        mTab, "test", GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU))
+                .thenReturn(false);
+
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Glic.EntryPoint.SendSelectedTextSucceeded", false);
+
+        boolean handled =
+                mDelegate.handleMenuItemClick(askGemini, mWebContents, /* containerView= */ null);
+
+        assertFalse(handled);
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
     public void testAskGemini_handleClickInvokesGlicWithoutTextWhenParamDisabled() {
         enableAskGeminiForSelection();
         FeatureOverrides.newBuilder()
                 .enable(ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU)
-                .param(TextSelectionActionMenuDelegate.PARAM_ASK_GEMINI_SEND_SELECTED_TEXT, "false")
+                .param(GlicContextMenuUtils.PARAM_ASK_GEMINI_SEND_SELECTED_TEXT, "false")
                 .apply();
         GlicKeyedServiceFactory.setForTesting(mGlicKeyedService);
 
@@ -376,13 +522,130 @@ public class TextSelectionActionMenuDelegateTest {
     }
 
     @Test
+    public void testAskGemini_sanitizesControlObjectReplacementAndInvisibleChars() {
+        enableAskGeminiForSelection();
+        GlicKeyedServiceFactory.setForTesting(mGlicKeyedService);
+
+        // Include \uFFFC (inline image replacement), C0 control (\u0000, \u0007), bidi override
+        // (\u202E), and invisible Unicode tag character U+E0061 (\uDB40\uDC61), while preserving
+        // standard newlines and tabs.
+        String dirtySelection = "  Hello\uFFFC\u0000\u0007\u202E\uDB40\uDC61\n\tworld!  ";
+        List<SelectionMenuItem> items =
+                mDelegate.getAdditionalMenuItems(
+                        MenuType.FLOATING,
+                        /* isSelectionPassword= */ false,
+                        /* isSelectionReadOnly= */ true,
+                        /* selectedText= */ dirtySelection);
+        SelectionMenuItem askGemini = findItem(items, R.id.contextmenu_ask_gemini);
+        assertNotNull(askGemini);
+
+        when(mGlicKeyedService.invokeWithPrompt(
+                        mTab, "Hello\n\tworld!", GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU))
+                .thenReturn(true);
+
+        boolean handled =
+                mDelegate.handleMenuItemClick(askGemini, mWebContents, /* containerView= */ null);
+
+        assertTrue(handled);
+        verify(mGlicKeyedService)
+                .invokeWithPrompt(
+                        mTab, "Hello\n\tworld!", GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU);
+    }
+
+    @Test
+    public void testAskGemini_truncatesOversizedSelectedTextAtDefaultLimit() {
+        enableAskGeminiForSelection();
+        GlicKeyedServiceFactory.setForTesting(mGlicKeyedService);
+
+        String longSelection =
+                "a".repeat(GlicContextMenuUtils.DEFAULT_MAX_SELECTED_TEXT_LENGTH + 5);
+        String expectedTruncated =
+                "a".repeat(GlicContextMenuUtils.DEFAULT_MAX_SELECTED_TEXT_LENGTH) + "…";
+        List<SelectionMenuItem> items =
+                mDelegate.getAdditionalMenuItems(
+                        MenuType.FLOATING,
+                        /* isSelectionPassword= */ false,
+                        /* isSelectionReadOnly= */ true,
+                        /* selectedText= */ longSelection);
+        SelectionMenuItem askGemini = findItem(items, R.id.contextmenu_ask_gemini);
+        assertNotNull(askGemini);
+
+        when(mGlicKeyedService.invokeWithPrompt(
+                        mTab, expectedTruncated, GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU))
+                .thenReturn(true);
+
+        boolean handled =
+                mDelegate.handleMenuItemClick(askGemini, mWebContents, /* containerView= */ null);
+
+        assertTrue(handled);
+        verify(mGlicKeyedService)
+                .invokeWithPrompt(
+                        mTab, expectedTruncated, GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU);
+    }
+
+    @Test
+    public void testAskGemini_truncatesOversizedSelectedTextViaParam() {
+        enableAskGeminiForSelection();
+        FeatureOverrides.newBuilder()
+                .enable(ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU)
+                .param(GlicContextMenuUtils.PARAM_MAX_SELECTED_TEXT_LENGTH, "10")
+                .apply();
+        GlicKeyedServiceFactory.setForTesting(mGlicKeyedService);
+
+        List<SelectionMenuItem> items =
+                mDelegate.getAdditionalMenuItems(
+                        MenuType.FLOATING,
+                        /* isSelectionPassword= */ false,
+                        /* isSelectionReadOnly= */ true,
+                        /* selectedText= */ "0123456789abcdef");
+        SelectionMenuItem askGemini = findItem(items, R.id.contextmenu_ask_gemini);
+        assertNotNull(askGemini);
+
+        when(mGlicKeyedService.invokeWithPrompt(
+                        mTab, "0123456789…", GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU))
+                .thenReturn(true);
+
+        boolean handled =
+                mDelegate.handleMenuItemClick(askGemini, mWebContents, /* containerView= */ null);
+
+        assertTrue(handled);
+        verify(mGlicKeyedService)
+                .invokeWithPrompt(
+                        mTab, "0123456789…", GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU);
+    }
+
+    @Test
+    public void testAskGemini_fallsBackToInvokeWhenSelectionSanitizesToEmpty() {
+        enableAskGeminiForSelection();
+        GlicKeyedServiceFactory.setForTesting(mGlicKeyedService);
+
+        List<SelectionMenuItem> items =
+                mDelegate.getAdditionalMenuItems(
+                        MenuType.FLOATING,
+                        /* isSelectionPassword= */ false,
+                        /* isSelectionReadOnly= */ true,
+                        /* selectedText= */ "\uFFFC\u202E\uDB40\uDC61");
+        SelectionMenuItem askGemini = findItem(items, R.id.contextmenu_ask_gemini);
+        assertNotNull(askGemini);
+
+        boolean handled =
+                mDelegate.handleMenuItemClick(askGemini, mWebContents, /* containerView= */ null);
+
+        assertTrue(handled);
+        verify(mGlicKeyedService).invoke(mTab, GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU);
+    }
+
+    @Test
     public void testGetWebSearchMenuItemTitle_valid() {
         TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
         when(mTemplateUrlService.getDefaultSearchEngineTemplateUrl()).thenReturn(mTemplateUrl);
         when(mTemplateUrl.getKeyword()).thenReturn("google");
         when(mTemplateUrlService.getFullNameFromTemplateUrl("google")).thenReturn("Google");
 
-        Context context = ApplicationProvider.getApplicationContext();
+        Context context =
+                new android.view.ContextThemeWrapper(
+                        ApplicationProvider.getApplicationContext(),
+                        R.style.Theme_BrowserUI_DayNight);
         String title = mDelegate.getWebSearchMenuItemTitle(context, "test query");
 
         assertEquals(
@@ -393,7 +656,10 @@ public class TextSelectionActionMenuDelegateTest {
     @Test
     public void testGetWebSearchMenuItemTitle_nullOrEmpty() {
         TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
-        Context context = ApplicationProvider.getApplicationContext();
+        Context context =
+                new android.view.ContextThemeWrapper(
+                        ApplicationProvider.getApplicationContext(),
+                        R.style.Theme_BrowserUI_DayNight);
 
         // TemplateUrl null
         when(mTemplateUrlService.getDefaultSearchEngineTemplateUrl()).thenReturn(null);
@@ -408,5 +674,237 @@ public class TextSelectionActionMenuDelegateTest {
         // Selected text empty
         when(mTemplateUrlService.getFullNameFromTemplateUrl("google")).thenReturn("Google");
         assertNull(mDelegate.getWebSearchMenuItemTitle(context, ""));
+    }
+
+    @Test
+    public void testGetWebSearchMenuItemTitle_longTextTruncated() {
+        TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
+        when(mTemplateUrlService.getDefaultSearchEngineTemplateUrl()).thenReturn(mTemplateUrl);
+        when(mTemplateUrl.getKeyword()).thenReturn("google");
+        when(mTemplateUrlService.getFullNameFromTemplateUrl("google")).thenReturn("Google");
+
+        Context context =
+                new android.view.ContextThemeWrapper(
+                        ApplicationProvider.getApplicationContext(),
+                        R.style.Theme_BrowserUI_DayNight);
+        String longText = "a".repeat(1000);
+        String title = mDelegate.getWebSearchMenuItemTitle(context, longText);
+
+        assertNotNull(title);
+        assertTrue(
+                title.startsWith(
+                        context.getString(R.string.contextmenu_search_web_for_text, "Google", "")
+                                .replace("\"", "")));
+        assertTrue(title.endsWith("\""));
+        assertTrue(title.length() < longText.length());
+    }
+
+    @Test
+    public void testGetWebSearchMenuItemTitle_searchEngineNameTooLong() {
+        TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
+        when(mTemplateUrlService.getDefaultSearchEngineTemplateUrl()).thenReturn(mTemplateUrl);
+        when(mTemplateUrl.getKeyword()).thenReturn("google");
+        when(mTemplateUrlService.getFullNameFromTemplateUrl("google")).thenReturn("a".repeat(1000));
+
+        Context context =
+                new android.view.ContextThemeWrapper(
+                        ApplicationProvider.getApplicationContext(),
+                        R.style.Theme_BrowserUI_DayNight);
+        assertNull(mDelegate.getWebSearchMenuItemTitle(context, "test query"));
+    }
+
+    private static ResolveInfo createResolveInfo(String packageName, String activityName) {
+        ResolveInfo resolveInfo = new ResolveInfo();
+        resolveInfo.activityInfo = new ActivityInfo();
+        resolveInfo.activityInfo.packageName = packageName;
+        resolveInfo.activityInfo.name = activityName;
+        return resolveInfo;
+    }
+
+    private static final String GSA_ASK_GEMINI_PROCESS_TEXT_ACTIVITY =
+            GlicContextMenuUtils.DEFAULT_SUPPRESSED_PROCESS_TEXT_ACTIVITY_PREFIXES
+                    + "launcher.ProcessTextGatewayActivity";
+
+    private static ResolveInfo createGsaAskGeminiResolveInfo() {
+        return createResolveInfo(
+                "com.google.android.googlequicksearchbox", GSA_ASK_GEMINI_PROCESS_TEXT_ACTIVITY);
+    }
+
+    @Test
+    public void testFilterTextProcessingActivities_removesGsaAskGeminiWhenAskGeminiEnabled() {
+        enableAskGeminiForSelection();
+        ResolveInfo other = createResolveInfo("com.example.translate", "com.example.Translate");
+
+        List<ResolveInfo> filtered =
+                mDelegate.filterTextProcessingActivities(
+                        MenuType.FLOATING, List.of(createGsaAskGeminiResolveInfo(), other));
+
+        assertEquals(List.of(other), filtered);
+    }
+
+    @Test
+    public void testFilterTextProcessingActivities_removesGsaAskGeminiOnDropdownMenu() {
+        enableAskGeminiForSelection();
+
+        List<ResolveInfo> filtered =
+                mDelegate.filterTextProcessingActivities(
+                        MenuType.DROPDOWN, List.of(createGsaAskGeminiResolveInfo()));
+
+        assertTrue(filtered.isEmpty());
+    }
+
+    @Test
+    public void testFilterTextProcessingActivities_keepsGsaAskGeminiWhenAskGeminiDisabled() {
+        // setUp() disables CLANK_GLIC_CONTEXT_MENU, so Chrome contributes no "Ask Gemini" item and
+        // the Google app's entry must be left alone rather than leaving no Gemini entry point.
+        List<ResolveInfo> activities = List.of(createGsaAskGeminiResolveInfo());
+
+        List<ResolveInfo> filtered =
+                mDelegate.filterTextProcessingActivities(MenuType.FLOATING, activities);
+
+        assertSame(activities, filtered);
+    }
+
+    @Test
+    public void testFilterTextProcessingActivities_keepsGsaAskGeminiOnIncognitoTab() {
+        enableAskGeminiForSelection();
+        when(mProfile.isOffTheRecord()).thenReturn(true);
+        List<ResolveInfo> activities = List.of(createGsaAskGeminiResolveInfo());
+
+        List<ResolveInfo> filtered =
+                mDelegate.filterTextProcessingActivities(MenuType.FLOATING, activities);
+
+        assertSame(activities, filtered);
+    }
+
+    @Test
+    public void testFilterTextProcessingActivities_keepsGsaAskGeminiOnDestroyedTab() {
+        enableAskGeminiForSelection();
+        mTab.destroy();
+        List<ResolveInfo> activities = List.of(createGsaAskGeminiResolveInfo());
+
+        List<ResolveInfo> filtered =
+                mDelegate.filterTextProcessingActivities(MenuType.FLOATING, activities);
+
+        assertSame(activities, filtered);
+    }
+
+    @Test
+    public void testFilterTextProcessingActivities_keepsGsaAskGeminiWhenNoContainerAvailable() {
+        FeatureOverrides.enable(ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU);
+        FeatureOverrides.disable(ChromeFeatureList.TAB_BOTTOM_SHEET);
+        FeatureOverrides.disable(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL);
+        GlicEnabling.setEnabledForTesting(true);
+        List<ResolveInfo> activities = List.of(createGsaAskGeminiResolveInfo());
+
+        List<ResolveInfo> filtered =
+                mDelegate.filterTextProcessingActivities(MenuType.FLOATING, activities);
+
+        assertSame(activities, filtered);
+    }
+
+    @Test
+    public void testFilterTextProcessingActivities_keepsOtherActivities() {
+        enableAskGeminiForSelection();
+        // Another activity in the same package must not be filtered out, and the original list
+        // reference should be returned without allocating a copy.
+        List<ResolveInfo> activities =
+                List.of(
+                        createResolveInfo(
+                                "com.google.android.googlequicksearchbox",
+                                "com.google.android.googlequicksearchbox.SearchActivity"),
+                        createResolveInfo("com.example.translate", "com.example.Translate"));
+
+        List<ResolveInfo> filtered =
+                mDelegate.filterTextProcessingActivities(MenuType.FLOATING, activities);
+
+        assertSame(activities, filtered);
+    }
+
+    @Test
+    public void testFilterTextProcessingActivities_removesDifferentClassUnderRobinPrefix() {
+        enableAskGeminiForSelection();
+        ResolveInfo renamedRobinActivity =
+                createResolveInfo(
+                        "com.google.android.googlequicksearchbox",
+                        GlicContextMenuUtils.DEFAULT_SUPPRESSED_PROCESS_TEXT_ACTIVITY_PREFIXES
+                                + "other.SomeRenamedGatewayActivity");
+        ResolveInfo other = createResolveInfo("com.example.translate", "com.example.Translate");
+
+        List<ResolveInfo> filtered =
+                mDelegate.filterTextProcessingActivities(
+                        MenuType.FLOATING, List.of(renamedRobinActivity, other));
+
+        assertEquals(List.of(other), filtered);
+    }
+
+    @Test
+    public void testFilterTextProcessingActivities_keepsSameClassNameOutsideRobinPrefix() {
+        enableAskGeminiForSelection();
+        ResolveInfo nonRobinGateway =
+                createResolveInfo(
+                        "com.google.android.googlequicksearchbox",
+                        "com.google.android.apps.search.lens.ProcessTextGatewayActivity");
+        List<ResolveInfo> activities = List.of(nonRobinGateway);
+
+        List<ResolveInfo> filtered =
+                mDelegate.filterTextProcessingActivities(MenuType.FLOATING, activities);
+
+        assertSame(activities, filtered);
+    }
+
+    @Test
+    public void testFilterTextProcessingActivities_customSuppressedPrefixesParam() {
+        enableAskGeminiForSelection();
+        FeatureOverrides.newBuilder()
+                .enable(ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU)
+                .param(
+                        ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU,
+                        GlicContextMenuUtils.PARAM_SUPPRESSED_PROCESS_TEXT_ACTIVITY_PREFIXES,
+                        "com.example.custom1., com.example.custom2.")
+                .apply();
+        ResolveInfo custom1 =
+                createResolveInfo("com.example.custom1", "com.example.custom1.ProcessTextActivity");
+        ResolveInfo custom2 =
+                createResolveInfo("com.example.custom2", "com.example.custom2.Handler");
+        ResolveInfo gsaRobin = createGsaAskGeminiResolveInfo();
+
+        List<ResolveInfo> filtered =
+                mDelegate.filterTextProcessingActivities(
+                        MenuType.FLOATING, List.of(custom1, gsaRobin, custom2));
+
+        // When overridden, only the configured prefixes are suppressed.
+        assertEquals(List.of(gsaRobin), filtered);
+    }
+
+    @Test
+    public void testFilterTextProcessingActivities_killSwitchDisabledPreservesGsaItem() {
+        enableAskGeminiForSelection();
+        FeatureOverrides.newBuilder()
+                .enable(ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU)
+                .param(
+                        ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU,
+                        GlicContextMenuUtils.PARAM_SUPPRESS_DUPLICATE_PROCESS_TEXT,
+                        false)
+                .apply();
+        List<ResolveInfo> activities = List.of(createGsaAskGeminiResolveInfo());
+
+        List<ResolveInfo> filtered =
+                mDelegate.filterTextProcessingActivities(MenuType.FLOATING, activities);
+
+        assertSame(activities, filtered);
+    }
+
+    @Test
+    public void testFilterTextProcessingActivities_handlesNullActivityInfo() {
+        enableAskGeminiForSelection();
+        ResolveInfo noActivityInfo = new ResolveInfo();
+
+        List<ResolveInfo> filtered =
+                mDelegate.filterTextProcessingActivities(
+                        MenuType.FLOATING,
+                        List.of(noActivityInfo, createGsaAskGeminiResolveInfo()));
+
+        assertEquals(List.of(noActivityInfo), filtered);
     }
 }

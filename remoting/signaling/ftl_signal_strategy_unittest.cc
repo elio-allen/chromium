@@ -66,6 +66,9 @@ MATCHER_P2(SignalingMessageMatchesBoth, to, from, "") {
   const auto& iq_stanza = arg.xmpp().iq_stanza();
   auto get_id = [](const ftl::JabberId& jid) {
     std::string id = jid.local_part();
+    if (!jid.domain_part().empty() && id.find('@') == std::string::npos) {
+      id += "@" + jid.domain_part();
+    }
     if (!jid.resource_part().empty()) {
       id += "/chromoting_ftl_" + jid.resource_part();
     }
@@ -98,6 +101,9 @@ MATCHER_P2(SignalingMessageMatchesProtoOnly, to, from, "") {
   const auto& iq_stanza = arg.xmpp().iq_stanza();
   auto get_id = [](const ftl::JabberId& jid) {
     std::string id = jid.local_part();
+    if (!jid.domain_part().empty() && id.find('@') == std::string::npos) {
+      id += "@" + jid.domain_part();
+    }
     if (!jid.resource_part().empty()) {
       id += "/chromoting_ftl_" + jid.resource_part();
     }
@@ -1363,7 +1369,7 @@ TEST_F(FtlSignalStrategyTest, Negotiation_HostSide_ReceiveBoth) {
   messaging_client_->OnMessage(remote_user_id, kFakeRemoteRegistrationId,
                                init_msg);
 
-  // 2. Host sends reply. Verify it is PROTO-ONLY.
+  // 2. Host sends reply. Verify it is PROTO-ONLY (locks into Proto).
   JingleMessageReply reply;
   reply.to = SignalingAddress(kFakeRemoteFtlId);
   reply.message_id = "req_initiate";
@@ -1387,6 +1393,68 @@ TEST_F(FtlSignalStrategyTest, Negotiation_HostSide_ReceiveBoth) {
               SendMessage(Property(&SignalingAddress::id, kFakeRemoteFtlId),
                           SignalingMessageMatchesProtoOnly(kFakeRemoteFtlId,
                                                            kFakeLocalFtlId),
+                          _, _))
+      .WillOnce(base::test::RunOnceCallback<2>(HttpStatus::OK()));
+
+  signal_strategy_->SendMessage(std::move(accept_message));
+}
+
+TEST_F(FtlSignalStrategyTest,
+       Negotiation_HostSide_ReceiveBoth_ProtoFails_FallsBackToXml) {
+  ExpectGetOAuthTokenSucceedsWithFakeCreds();
+  registration_manager_->ExpectSignInGaiaSucceeds();
+  signal_strategy_->Connect();
+  messaging_client_->AcceptReceivingMessages();
+
+  // 1. Host receives session-initiate with BOTH, but proto has missing sid.
+  ftl::ChromotingMessage init_msg;
+  // Populate malformed Proto (missing session_id / jingle sid)
+  auto* iq = init_msg.mutable_xmpp()->mutable_iq_stanza();
+  iq->set_id("req_initiate");
+  iq->mutable_sender()->set_local_part(kFakeRemoteUsername);
+  iq->mutable_sender()->set_resource_part(kFakeRemoteRegistrationId);
+  iq->mutable_receiver()->set_local_part(kFakeLocalUsername);
+  iq->mutable_receiver()->set_resource_part(kFakeLocalRegistrationId);
+  // Missing session_id causes JingleMessageFromProto to fail.
+  auto* jingle = iq->mutable_jingle();
+  jingle->mutable_session_initiate();
+  // Populate valid XML
+  std::string xml_init =
+      CreateValidSessionInitiateXml("req_initiate", "sid123");
+  init_msg.mutable_xmpp()->set_stanza(xml_init);
+
+  EXPECT_CALL(*this, OnSignalingMessage(_, _)).WillOnce(Return(true));
+
+  ftl::Id remote_user_id;
+  remote_user_id.set_type(ftl::IdType_Type_EMAIL);
+  remote_user_id.set_id(kFakeRemoteUsername);
+  messaging_client_->OnMessage(remote_user_id, kFakeRemoteRegistrationId,
+                               init_msg);
+
+  // 2. Host sends reply. Verify it falls back to XML-ONLY.
+  JingleMessageReply reply;
+  reply.to = SignalingAddress(kFakeRemoteFtlId);
+  reply.message_id = "req_initiate";
+  reply.reply_type = JingleMessageReply::REPLY_RESULT;
+
+  EXPECT_CALL(*messaging_client_,
+              SendMessage(Property(&SignalingAddress::id, kFakeRemoteFtlId),
+                          SignalingMessageMatchesXmlOnly(kFakeRemoteFtlId,
+                                                         kFakeLocalFtlId),
+                          _, _))
+      .WillOnce(base::test::RunOnceCallback<2>(HttpStatus::OK()));
+
+  signal_strategy_->SendReply(std::move(reply));
+
+  // 3. Host sends session-accept. Verify it falls back to XML-ONLY.
+  JingleMessage accept_message(SignalingAddress(kFakeRemoteFtlId),
+                               SessionAccept(), "sid123");
+  accept_message.message_id = "req_accept";
+
+  EXPECT_CALL(*messaging_client_,
+              SendMessage(Property(&SignalingAddress::id, kFakeRemoteFtlId),
+                          SignalingMessageMatchesXmlOnly(kFakeRemoteFtlId,
+                                                         kFakeLocalFtlId),
                           _, _))
       .WillOnce(base::test::RunOnceCallback<2>(HttpStatus::OK()));
 

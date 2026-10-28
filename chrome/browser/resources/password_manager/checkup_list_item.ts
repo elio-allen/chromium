@@ -15,12 +15,12 @@ import './shared_style.css.js';
 import type {CrIconButtonElement} from 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
 import {assert, assertNotReached} from 'chrome://resources/js/assert.js';
-import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {OpenWindowProxyImpl} from 'chrome://resources/js/open_window_proxy.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import {getTemplate} from './checkup_list_item.html.js';
-import {PasswordAutomaticChangeState, PasswordManagerImpl} from './password_manager_proxy.js';
+import {PasswordAutomaticChangeState} from './password_manager.mojom-webui.js';
+import {PasswordManagerImpl} from './password_manager_proxy.js';
 import type {ShowPasswordMixinInterface} from './show_password_mixin.js';
 import {ShowPasswordMixin} from './show_password_mixin.js';
 
@@ -168,9 +168,13 @@ export class CheckupListItemElement extends CheckupListItemElementBase {
     this.isCancelDisabled_ = false;
   }
 
+  private onOpenInNewClick_() {
+    PasswordManagerImpl.getInstance().openPasswordChangeTab(this.item.id);
+  }
+
   private onCancelAutoChangeClick_() {
     this.isCancelDisabled_ = true;
-    PasswordManagerImpl.getInstance().stopPasswordChange();
+    PasswordManagerImpl.getInstance().stopPasswordChange(this.item.id);
   }
 
   private onAlreadyChangedClick_(e: Event) {
@@ -230,6 +234,10 @@ export class CheckupListItemElement extends CheckupListItemElementBase {
     return this.i18n('moreActionsAriaDescription', this.getGroupName_());
   }
 
+  private getOpenInNewButtonAriaLabel_(): string {
+    return this.i18n('changePasswordAriaDescription', this.getGroupName_());
+  }
+
   private isAutoChangePasswordIdle_(state: PasswordAutomaticChangeState):
       boolean {
     return state === PasswordAutomaticChangeState.kInactive;
@@ -239,6 +247,11 @@ export class CheckupListItemElement extends CheckupListItemElementBase {
     return state !== PasswordAutomaticChangeState.kAttemptingSignIn &&
       state !== PasswordAutomaticChangeState.kChangingPassword &&
       state !== PasswordAutomaticChangeState.kConfirmingChangedPassword;
+  }
+
+  private shouldShowOpenInNew_(state: PasswordAutomaticChangeState): boolean {
+    return state !== PasswordAutomaticChangeState.kInactive &&
+        state !== PasswordAutomaticChangeState.kPasswordChangedSuccessfully;
   }
 
   private getAutoChangePasswordIcon_(state: PasswordAutomaticChangeState):
@@ -267,9 +280,7 @@ export class CheckupListItemElement extends CheckupListItemElementBase {
   }
 
   protected getArrowSelectorSparkIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'passwords-icon:arrow-selector-spark' :
-        'passwords-icon:arrow-selector-spark-old';
+    return 'passwords-icon:arrow-selector-spark';
   }
 }
 

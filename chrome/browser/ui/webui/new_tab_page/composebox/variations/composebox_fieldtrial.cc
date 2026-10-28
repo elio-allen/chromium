@@ -52,7 +52,6 @@ omnibox::NTPComposeboxConfig GetNTPComposeboxConfig() {
   auto* composebox = default_config.mutable_composebox();
 
   auto* image_upload = composebox->mutable_image_upload();
-  image_upload->set_enable_webp_encoding(false);
   image_upload->set_downscale_max_image_size(1500000);
   image_upload->set_downscale_max_image_width(1600);
   image_upload->set_downscale_max_image_height(1600);
@@ -207,10 +206,6 @@ const base::FeatureParam<bool> kContextMenuEnableMultiTabSelection(
     "NtpComposeboxContextMenuEnableMultiTabSelection",
     true);
 
-const base::FeatureParam<bool> kUseNtpComposeboxFork(&kNtpComposebox,
-                                                     "useNtpComposeboxFork",
-                                                     true);
-
 FeatureConfig::FeatureConfig() : config(GetNTPComposeboxConfig()) {}
 
 FeatureConfig::FeatureConfig(const FeatureConfig&) = default;
@@ -276,6 +271,6 @@ const base::FeatureParam<bool> kMultiLineEnabled(&kNtpRealboxNext,
 
 BASE_FEATURE(kNtpRealboxCyclingPlaceholders, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kNtpRealboxDynamicAiModeButton, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kNtpRealboxDynamicAiModeButton, base::FEATURE_ENABLED_BY_DEFAULT);
 
 }  // namespace ntp_realbox

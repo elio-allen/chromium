@@ -4,6 +4,7 @@
 
 #include "chrome/browser/autofill/actor/one_time_tokens/actor_one_time_token_filling_service_impl.h"
 
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <utility>
@@ -18,6 +19,7 @@
 #include "base/functional/callback.h"
 #include "base/logging.h"
 #include "base/memory/weak_ptr.h"
+#include "base/notreached.h"
 #include "base/strings/string_split.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
@@ -25,33 +27,40 @@
 #include "base/types/expected.h"
 #include "chrome/browser/affiliations/affiliation_service_factory.h"
 #include "chrome/browser/autofill/actor/one_time_tokens/actor_one_time_token_filling_service_metrics.h"
-#include "chrome/browser/autofill/one_time_token_service_factory.h"
+#include "chrome/browser/autofill/gmail_otp_backend_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ssl/chrome_security_state_util.h"
 #include "chrome/browser/ui/autofill/autofill_client_provider.h"
 #include "chrome/browser/ui/autofill/autofill_client_provider_factory.h"
-#include "components/actor/core/actor_switches.h"
+#include "components/actor/core/aggregated_journal.h"
+#include "components/actor/core/journal_details_builder.h"
 #include "components/affiliations/core/browser/affiliation_service.h"
 #include "components/affiliations/core/browser/domain_matching/domain_relation_checker.h"
 #include "components/autofill/content/browser/content_autofill_client.h"
+#include "components/autofill/content/browser/renderer_forms_from_browser_form.h"
 #include "components/autofill/core/browser/actor/actor_filling_observer.h"
-#include "components/autofill/core/browser/autofill_browser_util.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/autofill_trigger_source.h"
 #include "components/autofill/core/browser/form_structure.h"
+#include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #include "components/autofill/core/browser/integrators/actor/actor_form_filling_types.h"
 #include "components/autofill/core/browser/integrators/one_time_tokens/otp_suggestion.h"
-#include "components/autofill/core/common/form_data.h"
+#include "components/one_time_tokens/core/browser/gmail_otp_backend.h"
 #include "components/one_time_tokens/core/browser/one_time_token.h"
-#include "components/one_time_tokens/core/browser/one_time_token_service.h"
+#include "components/one_time_tokens/core/browser/one_time_token_log_sink.h"
 #include "components/one_time_tokens/core/common/one_time_token_features.h"
+#include "components/one_time_tokens/core/common/one_time_token_switches.h"
+#include "components/password_manager/core/browser/actor_login/actor_login_frame_util.h"
+#include "components/security_interstitials/core/insecure_form_util.h"
 #include "components/security_state/core/security_state.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "url/gurl.h"
 #include "url/origin.h"
 #include "url/scheme_host_port.h"
 #include "url/url_canon.h"
@@ -97,11 +106,115 @@ GetAutofillManager(const tabs::TabInterface& tab) {
   return base::unexpected(kAutofillNotAvailable);
 }
 
+ActorOneTimeTokenFillingServiceRetrieveOtp MapError(
+    OneTimeTokenRetrievalError error) {
+  switch (error) {
+    case OneTimeTokenRetrievalError::kUnknown:
+      return kUnknownError;
+    case OneTimeTokenRetrievalError::kSmsOtpBackendError:
+    case OneTimeTokenRetrievalError::kSmsOtpBackendTimeout:
+    case OneTimeTokenRetrievalError::kSmsOtpBackendPlatformNotSupported:
+    case OneTimeTokenRetrievalError::kSmsOtpBackendApiNotAvailable:
+    case OneTimeTokenRetrievalError::kSmsOtpBackendUserPermissionRequired:
+    case OneTimeTokenRetrievalError::kSmsOtpGmscoreVersionNotSupported:
+    case OneTimeTokenRetrievalError::kSmsOtpBackendInitializationFailed:
+    case OneTimeTokenRetrievalError::kSmsOtpUnknown:
+      NOTREACHED();
+    case OneTimeTokenRetrievalError::kGmailOtpBackendAuthError:
+      return kGmailOtpBackendAuthError;
+    case OneTimeTokenRetrievalError::kGmailOtpBackendNetworkError:
+      return kGmailOtpBackendNetworkError;
+    case OneTimeTokenRetrievalError::kGmailOtpBackendInvalidResponse:
+      return kGmailOtpBackendInvalidResponse;
+    case OneTimeTokenRetrievalError::kGmailOtpUnknown:
+      return kGmailOtpUnknown;
+    case OneTimeTokenRetrievalError::kGmailOtpBackendApiNotAvailable:
+      return kGmailOtpBackendApiNotAvailable;
+    case OneTimeTokenRetrievalError::kGmailOtpBackendInitializationFailed:
+      return kGmailOtpBackendInitializationFailed;
+    case OneTimeTokenRetrievalError::
+        kGmailOtpBackendSmartFeaturesInGmailConsentRequired:
+      return kGmailOtpBackendSmartFeaturesInGmailConsentRequired;
+    case OneTimeTokenRetrievalError::
+        kGmailOtpBackendSmartFeaturesInOtherGoogleProductsConsentRequired:
+      return kGmailOtpBackendSmartFeaturesInOtherGoogleProductsConsentRequired;
+    case OneTimeTokenRetrievalError::
+        kGmailOtpBackendDmaCrossProductSharingConsentRequired:
+      return kGmailOtpBackendDmaCrossProductSharingConsentRequired;
+    case OneTimeTokenRetrievalError::kGmailOtpBackendBadMessageReference:
+      return kGmailOtpBackendBadMessageReference;
+    case OneTimeTokenRetrievalError::kGmailOtpBackendMessageIdNotFound:
+      return kGmailOtpBackendMessageIdNotFound;
+    case OneTimeTokenRetrievalError::kGmailOtpBackendWrongTokenTypeRequested:
+      return kGmailOtpBackendWrongTokenTypeRequested;
+    case OneTimeTokenRetrievalError::kGmailOtpBackendOneTimeTokenExpired:
+      return kGmailOtpBackendOneTimeTokenExpired;
+    case OneTimeTokenRetrievalError::kGmailOtpBackendOtpAttributeNotFound:
+      return kGmailOtpBackendOtpAttributeNotFound;
+    case OneTimeTokenRetrievalError::kGmailOtpBackendServerError:
+      return kGmailOtpBackendServerError;
+    case OneTimeTokenRetrievalError::
+        kGmailOtpBackendMessageAuthenticationFailed:
+      return kGmailOtpBackendMessageAuthenticationFailed;
+    case OneTimeTokenRetrievalError::kSubscriptionExpired:
+      return kRetrievalTimeout;
+  }
+}
+
+// Checks whether a given form is considered mixed content. A form is mixed
+// content if it is displayed on a secure context, but submits to an insecure
+// one.
+bool IsFormMixedContent(const AutofillClient& client,
+                        const FormStructure& form) {
+  return client.IsContextSecure() && form.target_url().is_valid() &&
+         security_interstitials::IsInsecureFormAction(form.target_url());
+}
+
+bool HasCrossOriginAncestor(content::RenderFrameHost* rfh) {
+  content::RenderFrameHost* parent = rfh->GetParentOrOuterDocument();
+  const url::Origin& target_origin = rfh->GetLastCommittedOrigin();
+  while (parent) {
+    if (!parent->GetLastCommittedOrigin().IsSameOriginWith(target_origin)) {
+      return true;
+    }
+    parent = parent->GetParentOrOuterDocument();
+  }
+  return false;
+}
+
+bool IsValidFrameAndOriginToFill(content::RenderFrameHost* rfh,
+                                 const url::Origin& main_frame_origin) {
+  if (!rfh) {
+    return false;
+  }
+  // Note: `IsInPrimaryMainFrame()` returns true only for the primary main frame
+  // document itself (it returns false if GetParent() is non-null). Therefore,
+  // `rfh->GetParent()->IsInPrimaryMainFrame()` correctly identifies whether
+  // `rfh` is a direct child of the primary main frame.
+  bool is_direct_child =
+      rfh->GetParent() && rfh->GetParent()->IsInPrimaryMainFrame();
+  return actor_login::IsValidFrameAndOriginToFill(
+      rfh->GetLastCommittedOrigin(), main_frame_origin,
+      rfh->IsNestedWithinFencedFrame(), rfh->IsInPrimaryMainFrame(),
+      is_direct_child, HasCrossOriginAncestor(rfh));
+}
+
 }  // namespace
 
 ActorOneTimeTokenFillingServiceImpl::ActorOneTimeTokenFillingServiceImpl(
-    Profile* profile)
-    : profile_(profile) {}
+    Profile* profile,
+    base::SafeRef<::actor::AggregatedJournal> journal,
+    ::actor::TaskId task_id)
+    : profile_(profile), journal_(journal), task_id_(task_id) {
+  if (one_time_tokens::GmailOtpBackend* backend =
+          GmailOtpBackendFactory::GetForProfile(profile);
+      backend && backend->GetLogSink()) {
+    log_subscription_ =
+        backend->GetLogSink()->AddLogHandler(base::BindRepeating(
+            &ActorOneTimeTokenFillingServiceImpl::OnBackendLogMessage,
+            base::Unretained(this)));
+  }
+}
 
 ActorOneTimeTokenFillingServiceImpl::~ActorOneTimeTokenFillingServiceImpl() =
     default;
@@ -153,6 +266,20 @@ ActorOneTimeTokenFillingServiceImpl::ConsumeLoginContext() {
   return std::exchange(active_login_context_, std::nullopt);
 }
 
+std::optional<url::Origin>
+ActorOneTimeTokenFillingServiceImpl::GetLoginContextOrigin() const {
+  if (!active_login_context_) {
+    return std::nullopt;
+  }
+  return active_login_context_->origin;
+}
+
+bool ActorOneTimeTokenFillingServiceImpl::
+    GetLoginContextShouldUseStrongMatching() const {
+  return active_login_context_.has_value() &&
+         active_login_context_->should_use_strong_matching;
+}
+
 void ActorOneTimeTokenFillingServiceImpl::RetrieveOtp(
     const tabs::TabHandle tab_handle,
     const url::Origin& otp_frame_origin,
@@ -163,8 +290,14 @@ void ActorOneTimeTokenFillingServiceImpl::RetrieveOtp(
   RecordActorOneTimeTokenFillingServiceRetrieveOtp(kStart);
 
   tabs::TabInterface* tab = tab_handle.Get();
+
   if (!tab || !tab->GetContents()) {
     RecordActorOneTimeTokenFillingServiceRetrieveOtp(kNullTab);
+    journal_->Log(GURL(), task_id_,
+                  "ActorOneTimeTokenFillingServiceImpl::RetrieveOtp",
+                  ::actor::JournalDetailsBuilder()
+                      .AddError("Null tab or WebContents.")
+                      .Build());
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
         base::BindOnce(
@@ -173,11 +306,25 @@ void ActorOneTimeTokenFillingServiceImpl::RetrieveOtp(
     return;
   }
 
+  const GURL url = tab->GetContents()->GetLastCommittedURL();
+
+  journal_->Log(url, task_id_,
+                "ActorOneTimeTokenFillingServiceImpl::RetrieveOtp",
+                ::actor::JournalDetailsBuilder()
+                    .Add("otp_frame_origin", otp_frame_origin.Serialize())
+                    .Add("is_login_flow", is_login_flow)
+                    .Build());
+
   std::string mock_otp =
       base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-          ::actor::switches::kAttemptOtpFillingMockGmailOtpValue);
+          one_time_tokens::switches::kMockOtpValue);
   if (!mock_otp.empty()) {
     RecordActorOneTimeTokenFillingServiceRetrieveOtp(kMockOtp);
+    journal_->Log(url, task_id_,
+                  "ActorOneTimeTokenFillingServiceImpl::RetrieveOtp",
+                  ::actor::JournalDetailsBuilder()
+                      .Add("status", "Using mock OTP")
+                      .Build());
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), std::move(mock_otp)));
     return;
@@ -186,10 +333,15 @@ void ActorOneTimeTokenFillingServiceImpl::RetrieveOtp(
   // TODO(b/502907994): Do we want to check for incognito profiles here?
   // Gemini should not be available in incognito, but should we check just to
   // be sure (and future-proof)?
-  one_time_tokens::OneTimeTokenService* service =
-      OneTimeTokenServiceFactory::GetForProfile(profile_);
-  if (!service) {
+  one_time_tokens::GmailOtpBackend* const backend =
+      GmailOtpBackendFactory::GetForProfile(profile_);
+  if (!backend) {
     RecordActorOneTimeTokenFillingServiceRetrieveOtp(kNoService);
+    journal_->Log(url, task_id_,
+                  "ActorOneTimeTokenFillingServiceImpl::RetrieveOtp",
+                  ::actor::JournalDetailsBuilder()
+                      .AddError("GmailOtpBackend not available.")
+                      .Build());
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
         base::BindOnce(
@@ -207,6 +359,12 @@ void ActorOneTimeTokenFillingServiceImpl::RetrieveOtp(
   if (retrieve_otp_callback_) {
     RecordActorOtpRetrieveOtpCallbackSuperseded(
         ActorOtpRetrieveOtpCallbackSuperseded::kCallbackSuperseded);
+    journal_->Log(url, task_id_,
+                  "ActorOneTimeTokenFillingServiceImpl::RetrieveOtp",
+                  ::actor::JournalDetailsBuilder()
+                      .Add("warning",
+                           "Superseding previous pending RetrieveOtp callback.")
+                      .Build());
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
         base::BindOnce(
@@ -218,33 +376,40 @@ void ActorOneTimeTokenFillingServiceImpl::RetrieveOtp(
   auto checker = std::make_unique<affiliations::DomainRelationChecker>(
       CHECK_DEREF(AffiliationServiceFactory::GetForProfile(profile_)));
   gmail_otp_retriever_ = one_time_tokens::GmailOtpRetriever::CreateAndStart(
-      *service, std::move(checker), otp_frame_origin, is_login_flow,
+      *backend, std::move(checker), otp_frame_origin, is_login_flow,
       base::BindOnce(&ActorOneTimeTokenFillingServiceImpl::OnOtpRetrieved,
-                     weak_ptr_factory_.GetWeakPtr()));
+                     weak_ptr_factory_.GetWeakPtr(), url));
 }
 
 void ActorOneTimeTokenFillingServiceImpl::OnOtpRetrieved(
+    const GURL& url,
     base::expected<one_time_tokens::GmailOtpRetriever::Result,
                    OneTimeTokenRetrievalError> result) {
   gmail_otp_retriever_.reset();
   CHECK(retrieve_otp_callback_);
 
   if (!result.has_value()) {
-    // TODO(crbug.com/532013198): Expand `kError` into all possible errors.
-    RecordActorOneTimeTokenFillingServiceRetrieveOtp(
-        result.error() == OneTimeTokenRetrievalError::kSubscriptionExpired
-            ? kRetrievalTimeout
-            : kError);
+    journal_->Log(url, task_id_,
+                  "ActorOneTimeTokenFillingServiceImpl::OnOtpRetrieved",
+                  ::actor::JournalDetailsBuilder()
+                      .AddError("Failed to retrieve OTP from backend.")
+                      .Add("error_code", result.error())
+                      .Build());
+    RecordActorOneTimeTokenFillingServiceRetrieveOtp(MapError(result.error()));
     std::move(retrieve_otp_callback_).Run(base::unexpected(result.error()));
     return;
   }
+
+  journal_->Log(
+      url, task_id_, "ActorOneTimeTokenFillingServiceImpl::OnOtpRetrieved",
+      ::actor::JournalDetailsBuilder().Add("source", result->source).Build());
   if (result->source == one_time_tokens::GmailOtpRetriever::Source::kCache) {
     RecordActorOneTimeTokenFillingServiceRetrieveOtp(kSuccessCacheMatchFound);
   } else {
     RecordActorOneTimeTokenFillingServiceRetrieveOtp(
         kSuccessReceivedMatchFound);
   }
-  std::move(retrieve_otp_callback_).Run(std::move(result->otp));
+  std::move(retrieve_otp_callback_).Run(std::move(result->token.value()));
 }
 
 void ActorOneTimeTokenFillingServiceImpl::FillOtp(
@@ -255,15 +420,33 @@ void ActorOneTimeTokenFillingServiceImpl::FillOtp(
   using enum ActorOneTimeTokenFillingServiceFillOtp;
   RecordActorOneTimeTokenFillingServiceFillOtp(kStart);
   tabs::TabInterface* tab = tab_handle.Get();
+
   if (!tab || !tab->GetContents()) {
     RecordActorOneTimeTokenFillingServiceFillOtp(kNullTab);
+    journal_->Log(GURL(), task_id_,
+                  "ActorOneTimeTokenFillingServiceImpl::FillOtp",
+                  ::actor::JournalDetailsBuilder()
+                      .AddError("Null tab or WebContents.")
+                      .Build());
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), false));
     return;
   }
 
+  const GURL url = tab->GetContents()->GetLastCommittedURL();
+
+  journal_->Log(url, task_id_, "ActorOneTimeTokenFillingServiceImpl::FillOtp",
+                ::actor::JournalDetailsBuilder()
+                    .Add("trigger_field_count", trigger_field_ids.size())
+                    .Add("otp_length", otp.size())
+                    .Build());
+
   if (trigger_field_ids.empty()) {
     RecordActorOneTimeTokenFillingServiceFillOtp(kEmptyTriggerFieldIds);
+    journal_->Log(url, task_id_, "ActorOneTimeTokenFillingServiceImpl::FillOtp",
+                  ::actor::JournalDetailsBuilder()
+                      .AddError("Empty trigger_field_ids.")
+                      .Build());
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), false));
     return;
@@ -275,8 +458,10 @@ void ActorOneTimeTokenFillingServiceImpl::FillOtp(
   // coordinates sequential usage, concurrent calls are unexpected.
   if (filling_observer_) {
     RecordActorOneTimeTokenFillingServiceFillOtp(kConcurrentCall);
-    LOG(WARNING) << "FillOtp called while another filling operation is still "
-                    "in progress. The new request is ignored.";
+    journal_->Log(url, task_id_, "ActorOneTimeTokenFillingServiceImpl::FillOtp",
+                  ::actor::JournalDetailsBuilder()
+                      .AddError("Concurrent filling operation in progress.")
+                      .Build());
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), false));
     return;
@@ -289,7 +474,10 @@ void ActorOneTimeTokenFillingServiceImpl::FillOtp(
       maybe_manager = GetAutofillManager(*tab);
   if (!maybe_manager.has_value()) {
     RecordActorOneTimeTokenFillingServiceFillOtp(kNoAutofillManager);
-    LOG(WARNING) << "FillOtp failed: AutofillManager not available.";
+    journal_->Log(url, task_id_, "ActorOneTimeTokenFillingServiceImpl::FillOtp",
+                  ::actor::JournalDetailsBuilder()
+                      .AddError("AutofillManager not available.")
+                      .Build());
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), false));
     return;
@@ -307,8 +495,12 @@ void ActorOneTimeTokenFillingServiceImpl::FillOtp(
       autofill_manager.FindCachedFormById(trigger_field_id);
   if (!form_structure) {
     RecordActorOneTimeTokenFillingServiceFillOtp(kFormStructureNotFound);
-    LOG(WARNING) << "FillOtp failed: Form structure containing trigger field "
-                 << trigger_field_id << " not found in cache.";
+    journal_->Log(url, task_id_, "ActorOneTimeTokenFillingServiceImpl::FillOtp",
+                  ::actor::JournalDetailsBuilder()
+                      .AddError("Form structure containing trigger field not "
+                                "found in cache.")
+                      .Add("trigger_field_id", trigger_field_id)
+                      .Build());
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), false));
     return;
@@ -317,8 +509,11 @@ void ActorOneTimeTokenFillingServiceImpl::FillOtp(
       form_structure->GetFieldById(trigger_field_id);
   if (!autofill_field) {
     RecordActorOneTimeTokenFillingServiceFillOtp(kTriggerFieldNotFound);
-    LOG(WARNING) << "FillOtp failed: Trigger field " << trigger_field_id
-                 << " not found in the form structure.";
+    journal_->Log(url, task_id_, "ActorOneTimeTokenFillingServiceImpl::FillOtp",
+                  ::actor::JournalDetailsBuilder()
+                      .AddError("Trigger field not found in form structure.")
+                      .Add("trigger_field_id", trigger_field_id)
+                      .Build());
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), false));
     return;
@@ -332,7 +527,10 @@ void ActorOneTimeTokenFillingServiceImpl::FillOtp(
 
   if (otp_fill_data.empty()) {
     RecordActorOneTimeTokenFillingServiceFillOtp(kEmptyFillData);
-    LOG(WARNING) << "FillOtp failed: Generated OtpFillData is empty.";
+    journal_->Log(url, task_id_, "ActorOneTimeTokenFillingServiceImpl::FillOtp",
+                  ::actor::JournalDetailsBuilder()
+                      .AddError("Generated OtpFillData is empty.")
+                      .Build());
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), false));
     return;
@@ -351,44 +549,63 @@ void ActorOneTimeTokenFillingServiceImpl::FillOtp(
   filling_observer_->ObserveNewFilling(filled_field_ids);
 
   // Trigger the filling operation through the Autofill manager.
+  // TODO(crbug.com/561395976): Figure out if additional authentication can be
+  // required here.
   autofill_manager.FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form_structure->global_id(),
       trigger_field_id, &otp_fill_data, AutofillTriggerSource::kGlic,
+      /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   // Activate the observer and wait for completion.
   filling_observer_->Activate(base::BindOnce(
       [](base::WeakPtr<ActorOneTimeTokenFillingServiceImpl> service,
-         base::OnceCallback<void(bool)> callback,
+         const GURL& url, base::OnceCallback<void(bool)> callback,
          base::expected<base::flat_map<FieldGlobalId, std::string>,
                         ActorFormFillingError> result) {
-        using enum ActorOneTimeTokenFillingServiceFillOtp;
-        if (result.has_value()) {
-          RecordActorOneTimeTokenFillingServiceFillOtp(kSuccess);
-        } else {
-          RecordActorOneTimeTokenFillingServiceFillOtp(kError);
-        }
-        // Once the filling operation completes or times out, we must reset the
-        // observer to clear the busy state so subsequent OTP filling requests
-        // can proceed.
-        // We use `DeleteSoon` to destroy the observer asynchronously after this
-        // callback completes to avoid potential self-deletion/lifetime issues
-        // if the callback is triggered synchronously (leaving the observer
-        // in the call stack).
-        if (service && service->filling_observer_) {
-          base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(
-              FROM_HERE, std::move(service->filling_observer_));
+        if (service) {
+          using enum ActorOneTimeTokenFillingServiceFillOtp;
+          if (result.has_value()) {
+            RecordActorOneTimeTokenFillingServiceFillOtp(kSuccess);
+            service->journal_->Log(
+                url, service->task_id_,
+                "ActorOneTimeTokenFillingServiceImpl::FillOtp",
+                ::actor::JournalDetailsBuilder()
+                    .Add("filling_result", "Success")
+                    .Build());
+          } else {
+            RecordActorOneTimeTokenFillingServiceFillOtp(kError);
+            service->journal_->Log(
+                url, service->task_id_,
+                "ActorOneTimeTokenFillingServiceImpl::FillOtp",
+                ::actor::JournalDetailsBuilder()
+                    .AddError(result.error())
+                    .Build());
+          }
+
+          // Once the filling operation completes or times out, we must reset
+          // the observer to clear the busy state so subsequent OTP filling
+          // requests can proceed. We use `DeleteSoon` to destroy the observer
+          // asynchronously after this callback completes to avoid potential
+          // self-deletion/lifetime issues if the callback is triggered
+          // synchronously (leaving the observer in the call stack).
+          if (service->filling_observer_) {
+            base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(
+                FROM_HERE, std::move(service->filling_observer_));
+          }
         }
         std::move(callback).Run(result.has_value());
       },
-      weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+      weak_ptr_factory_.GetWeakPtr(), url, std::move(callback)));
 }
 
 FormFillingContextStatus
 ActorOneTimeTokenFillingServiceImpl::ValidateFormFillingContext(
     tabs::TabHandle tab_handle,
     base::span<const FieldGlobalId> trigger_field_ids) const {
-  CHECK(!trigger_field_ids.empty());
+  if (trigger_field_ids.empty()) {
+    return FormFillingContextStatus::kFormNotFound;
+  }
   tabs::TabInterface* tab = tab_handle.Get();
   if (!tab || !tab->GetContents()) {
     return FormFillingContextStatus::kTabNotAvailable;
@@ -423,14 +640,65 @@ ActorOneTimeTokenFillingServiceImpl::ValidateFormFillingContext(
     return FormFillingContextStatus::kFormNotFound;
   }
 
+  const AutofillField* const trigger_field =
+      form_structure->GetFieldById(trigger_field_ids.front());
+  if (!trigger_field) {
+    return FormFillingContextStatus::kFormNotFound;
+  }
+
   // Ensure `form_structure` does not submit to an insecure mixed content
   // action.
-  if (autofill::IsFormMixedContent(autofill_manager.client(),
-                                   form_structure->ToFormData())) {
+  if (IsFormMixedContent(autofill_manager.client(), *form_structure)) {
     return FormFillingContextStatus::kInsecureContext;
   }
 
+  // Ensure all OTP fields in a multi-field OTP form share the same origin.
+  if (std::ranges::any_of(form_structure->fields(), [&](const auto& field) {
+        return field->Type().GetTypes().contains(ONE_TIME_CODE) &&
+               field->origin() != trigger_field->origin();
+      })) {
+    return FormFillingContextStatus::kInsecureContext;
+  }
+
+  // Validate frame and origin security for all trigger fields.
+  content::RenderFrameHost* main_rfh = web_contents->GetPrimaryMainFrame();
+  if (!main_rfh) {
+    return FormFillingContextStatus::kTabNotAvailable;
+  }
+  const url::Origin& main_frame_origin = main_rfh->GetLastCommittedOrigin();
+
+  for (const FieldGlobalId& field_id : trigger_field_ids) {
+    content::RenderFrameHost* rfh = autofill::FindRenderFrameHostByToken(
+        *web_contents, field_id.frame_token);
+    if (!rfh) {
+      return FormFillingContextStatus::kFormNotFound;
+    }
+    if (!IsValidFrameAndOriginToFill(rfh, main_frame_origin)) {
+      return FormFillingContextStatus::kInsecureContext;
+    }
+  }
+
   return FormFillingContextStatus::kSecure;
+}
+
+void ActorOneTimeTokenFillingServiceImpl::OnBackendLogMessage(
+    std::string_view message) {
+  journal_->Log(
+      GURL(), task_id_,
+      "ActorOneTimeTokenFillingServiceImpl::OneTimeTokenServiceLog",
+      ::actor::JournalDetailsBuilder().Add("message", message).Build());
+}
+
+void ActorOneTimeTokenFillingServiceImpl::FetchUserDataProcessingConsent(
+    FetchUserDataProcessingConsentCallback callback) {
+  one_time_tokens::GmailOtpBackend* backend =
+      GmailOtpBackendFactory::GetForProfile(profile_);
+  if (!backend) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback), std::nullopt));
+    return;
+  }
+  backend->FetchUserDataProcessingConsent(std::move(callback));
 }
 
 base::WeakPtr<ActorOneTimeTokenFillingService>

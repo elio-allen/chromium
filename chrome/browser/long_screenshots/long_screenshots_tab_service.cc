@@ -80,9 +80,9 @@ LongScreenshotsTabService::LongScreenshotsTabService(
       memory_consumer_registration_("LongScreenshotsTabService",
                                     kLongScreenshotsMemoryConsumerTraits,
                                     this) {
-  DCHECK(google_amp_cache_path_regex_.ok());
-  DCHECK(google_amp_viewer_path_regex_.ok());
-  DCHECK(google_news_path_regex_.ok());
+  CHECK(google_amp_cache_path_regex_.ok(), base::NotFatalUntil::M161);
+  CHECK(google_amp_viewer_path_regex_.ok(), base::NotFatalUntil::M161);
+  CHECK(google_news_path_regex_.ok(), base::NotFatalUntil::M161);
 
   JNIEnv* env = base::android::AttachCurrentThread();
 
@@ -112,22 +112,22 @@ void LongScreenshotsTabService::CaptureTab(
     paint_preview::mojom::ClipCoordOverride clip_x_coord_override,
     paint_preview::mojom::ClipCoordOverride clip_y_coord_override) {
   base::UmaHistogramPercentage("Sharing.LongScreenshots.MemoryLimitOnCapture",
-                               memory_limit());
-
-  int memory_threshold =
-      base::FeatureList::IsEnabled(
-          chrome::android::kLongScreenshotsLenientMemoryCheck)
-          ? base::kCriticalMemoryPressureThreshold
-          : base::kModerateMemoryPressureThreshold;
+                               memory_limit().percent());
 
   // If the system is under memory pressure don't try to capture.
-  bool skip_memory_check = base::FeatureList::IsEnabled(
-      chrome::android::kLongScreenshotsNoMemoryCheck);
-  if (!skip_memory_check && memory_limit() <= memory_threshold) {
-    JNIEnv* env = base::android::AttachCurrentThread();
-    Java_LongScreenshotsTabService_processCaptureTabStatus(
-        env, java_ref_, Status::kLowMemoryDetected);
-    return;
+  if (!base::FeatureList::IsEnabled(
+          chrome::android::kLongScreenshotsNoMemoryCheck)) {
+    const base::MemoryLimit memory_threshold =
+        base::FeatureList::IsEnabled(
+            chrome::android::kLongScreenshotsLenientMemoryCheck)
+            ? base::MemoryLimit::CriticalPressureThreshold()
+            : base::MemoryLimit::ModeratePressureThreshold();
+    if (memory_limit() <= memory_threshold) {
+      JNIEnv* env = base::android::AttachCurrentThread();
+      Java_LongScreenshotsTabService_processCaptureTabStatus(
+          env, java_ref_, Status::kLowMemoryDetected);
+      return;
+    }
   }
 
   // Mark |contents| as being captured so that the renderer doesn't go away

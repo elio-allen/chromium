@@ -24,6 +24,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/sys_string_conversions.h"
@@ -474,6 +475,51 @@ bool ui::HasNonEmptyGroupSemantics(const ui::AXNodeData& data) {
   return false;
 }
 
+namespace {
+
+bool UsesShowMenuForDefaultAction(const ui::BrowserAccessibility& node) {
+  // TODO(accessibility): Add a primary-menu action so macOS pop-up buttons and
+  // select comboboxes can serialize AXShowMenu directly.
+  return !node.manager()->IsWebContentSource() && node.HasDefaultAction() &&
+         !node.HasAction(ax::mojom::Action::kShowContextMenu) &&
+         (node.GetRole() == ax::mojom::Role::kPopUpButton ||
+          node.GetRole() == ax::mojom::Role::kComboBoxSelect);
+}
+
+bool SupportsShowMenuAction(const ui::BrowserAccessibility& node) {
+  return node.manager()->IsWebContentSource() ||
+         node.HasAction(ax::mojom::Action::kShowContextMenu) ||
+         UsesShowMenuForDefaultAction(node);
+}
+
+void PerformShowMenuAction(ui::BrowserAccessibility& node) {
+  if (UsesShowMenuForDefaultAction(node)) {
+    node.manager()->DoDefaultAction(node);
+  } else {
+    node.manager()->ShowContextMenu(node);
+  }
+}
+
+// Returns true if `node` is a spin button that's part of a date or
+// date/time control, e.g. the month, day, or year field of an
+// <input type=date> or <input type=datetime-local>.
+bool IsDateOrDateTimeSpinButton(const ui::BrowserAccessibility& node) {
+  if (node.GetRole() != ax::mojom::Role::kSpinButton) {
+    return false;
+  }
+  for (ui::BrowserAccessibility* ancestor = node.PlatformGetParent(); ancestor;
+       ancestor = ancestor->PlatformGetParent()) {
+    if (ancestor->GetRole() == ax::mojom::Role::kDate ||
+        ancestor->GetRole() == ax::mojom::Role::kInputTime ||
+        ancestor->GetRole() == ax::mojom::Role::kDateTime) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
 namespace ui {
 void EnableAXCustomActionNamesForTestingProjection() {
   g_enable_ax_custom_action_names_for_testing_projection = true;
@@ -599,7 +645,7 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
   // wrappers.
   BrowserAccessibility* browserAccessibility =
       static_cast<BrowserAccessibility*>([self nodeDelegate]);
-  const std::vector<int32_t>& indirectChildIds = _owner->GetIntListAttribute(
+  base::span<const int32_t> indirectChildIds = _owner->GetIntListAttribute(
       ax::mojom::IntListAttribute::kIndirectChildIds);
 
   if (_children) {
@@ -838,8 +884,8 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
   if (![self instanceActive])
     return nil;
 
-  std::optional<int> column = _owner->node()->GetTableCellColIndex();
-  std::optional<int> colspan = _owner->node()->GetTableCellColSpan();
+  std::optional<int> column = _owner->node()->GetTableCellDomColIndex();
+  std::optional<int> colspan = _owner->node()->GetTableCellDomColSpan();
   if (column && colspan)
     return [NSValue valueWithRange:NSMakeRange(*column, *colspan)];
   return nil;
@@ -1024,6 +1070,9 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
 
 // LINT.IfChange
 - (NSInteger)accessibilityInsertionPointLineNumber {
+  // TODO(crbug.com/548552911): In a textarea created using `contenteditable`,
+  // this algorithm returns the wrong value.
+
   if (![self instanceActive]) {
     return NSNotFound;
   }
@@ -1045,7 +1094,7 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
   DCHECK(!caretPosition->IsNullPosition())
       << "Calling HasVisibleCaretOrSelection() should have ensured that there "
          "is a valid selection focus inside the current object.";
-  const std::vector<int> lineStarts =
+  base::span<const int> lineStarts =
       _owner->GetIntListAttribute(ax::mojom::IntListAttribute::kLineStarts);
 
   // Find the text offset that starts the next line after the current caret
@@ -1067,6 +1116,9 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
 
 // LINT.IfChange
 - (NSNumber*)AXInsertionPointLineNumber {
+  // TODO(crbug.com/548552911): In a textarea created using `contenteditable`,
+  // this algorithm returns the wrong value.
+
   if (![self instanceActive])
     return nil;
   if (!_owner->HasVisibleCaretOrSelection())
@@ -1085,7 +1137,7 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
   DCHECK(!caretPosition->IsNullPosition())
       << "Calling HasVisibleCaretOrSelection() should have ensured that there "
          "is a valid selection focus inside the current object.";
-  const std::vector<int> lineStarts =
+  base::span<const int> lineStarts =
       _owner->GetIntListAttribute(ax::mojom::IntListAttribute::kLineStarts);
 
   // Find the text offset that starts the next line after the current caret
@@ -1210,6 +1262,10 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
     return unignored_parent;
   }
 
+  if (!_owner->manager()->IsRootFrameManager()) {
+    return nil;
+  }
+
   if (!_owner->IsWebContent()) {
     // PlatformGetParent crosses the tree boundary; for views, when we reach the
     // root of the view tree, there's really no other ancestor to hook up to.
@@ -1227,7 +1283,6 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
     DCHECK(false);
     return nil;
   }
-  SANITIZER_CHECK(manager->GetParentView());
   return manager->GetParentView();
 }
 
@@ -1428,7 +1483,7 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
   }
 
   // A table with no row headers.
-  if (isTableLike && !table->GetTableRowCount().has_value()) {
+  if (isTableLike && !table->GetTableDomRowCount().has_value()) {
     return nil;
   }
 
@@ -1438,7 +1493,7 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
     // Return the table's row headers.
     std::set<int32_t> headerIds;
 
-    int numberOfRows = table->GetTableRowCount().value();
+    int numberOfRows = table->GetTableDomRowCount().value();
 
     // Rows can have more than one row header cell. Also, we apparently need
     // to guard against duplicate row header ids. Storing in a set dedups.
@@ -1459,7 +1514,7 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
     // Otherwise this is a cell, return the row headers for this cell.
     for (int32_t nodeId : _owner->node()->GetTableCellRowHeaderNodeIds()) {
       BrowserAccessibility* cell = _owner->manager()->GetFromID(nodeId);
-      if (cell) {
+      if (cell && cell != _owner) {
         [rowHeaders addObject:cell->GetNativeViewAccessible().Get()];
       }
     }
@@ -1474,8 +1529,8 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
   if (![self instanceActive])
     return nil;
 
-  std::optional<int> row = _owner->node()->GetTableCellRowIndex();
-  std::optional<int> rowspan = _owner->node()->GetTableCellRowSpan();
+  std::optional<int> row = _owner->node()->GetTableCellDomRowIndex();
+  std::optional<int> rowspan = _owner->node()->GetTableCellDomRowSpan();
   if (row && rowspan)
     return [NSValue valueWithRange:NSMakeRange(*row, *rowspan)];
   return nil;
@@ -1845,8 +1900,24 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
   // Blink places the value of aria-valuetext in
   // ax::mojom::StringAttribute::kAriaValueText for objects that support range
   // values, i.e., progress bars, sliders and steppers.
-  return base::SysUTF8ToNSString(
-      _owner->GetStringAttribute(ax::mojom::StringAttribute::kAriaValueText));
+  if (_owner->HasStringAttribute(ax::mojom::StringAttribute::kAriaValueText)) {
+    return base::SysUTF8ToNSString(
+        _owner->GetStringAttribute(ax::mojom::StringAttribute::kAriaValueText));
+  }
+
+  // Date and date/time spin buttons might not have aria-valuetext set. If
+  // AXValueDescription is not exposed, VoiceOver will try to communicate a
+  // percentage, and percentages do not make sense for date spinners. As a
+  // fallback, surface a AXValueDescription equal to the kValueForRange to
+  // prevent this.
+  float value_for_range;
+  if (IsDateOrDateTimeSpinButton(*_owner) &&
+      _owner->GetFloatAttribute(ax::mojom::FloatAttribute::kValueForRange,
+                                &value_for_range)) {
+    return base::SysUTF8ToNSString(base::NumberToString(value_for_range));
+  }
+
+  return nil;
 }
 
 // LINT.IfChange
@@ -2005,7 +2076,7 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
     return NSNotFound;
   }
 
-  const std::vector<int> lineStarts =
+  base::span<const int> lineStarts =
       _owner->GetIntListAttribute(ax::mojom::IntListAttribute::kLineStarts);
   auto iterator = std::upper_bound(lineStarts.begin(), lineStarts.end(), index);
   if (iterator == lineStarts.begin()) {
@@ -2020,7 +2091,7 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
     return NSMakeRange(0, 0);
   }
 
-  const std::vector<int> lineStarts =
+  base::span<const int> lineStarts =
       _owner->GetIntListAttribute(ax::mojom::IntListAttribute::kLineStarts);
   std::u16string value = _owner->GetValueForControl();
   int valueLength = static_cast<int>(value.size());
@@ -2248,7 +2319,7 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
     }
 
     int textOffset = position->AsTextPosition()->text_offset();
-    const std::vector<int> lineStarts =
+    base::span<const int> lineStarts =
         _owner->GetIntListAttribute(ax::mojom::IntListAttribute::kLineStarts);
     const auto iterator =
         std::lower_bound(lineStarts.begin(), lineStarts.end(), textOffset);
@@ -2259,7 +2330,7 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
           isEqualToString:
               CFToNSPtrCast(kAXTextMarkerRangeForLineParameterizedAttribute)]) {
     int lineIndex = [(NSNumber*)parameter intValue];
-    const std::vector<int> lineStarts =
+    base::span<const int> lineStarts =
         _owner->GetIntListAttribute(ax::mojom::IntListAttribute::kLineStarts);
     int lineCount = static_cast<int>(lineStarts.size());
     if (lineIndex < 0 || lineIndex >= lineCount) {
@@ -2524,7 +2595,7 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
     //
     // Note that hard line breaks are on a line of their own.
     AXPosition startPosition = position->CreatePreviousLineStartPosition(
-        ui::AXMovementOptions(ui::AXBoundaryBehavior::kStopAtAnchorBoundary,
+        ui::AXMovementOptions(ui::AXBoundaryBehavior::kStopAtLastAnchorBoundary,
                               ui::AXBoundaryDetection::kCheckInitialPosition));
     AXPosition endPosition =
         startPosition->CreateNextLineStartPosition(ui::AXMovementOptions(
@@ -2967,16 +3038,35 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
     return [NSMutableArray array];
   }
 
-  NSMutableArray* actions = [NSMutableArray
-      arrayWithObjects:NSAccessibilityShowMenuAction,
-                       NSAccessibilityScrollToVisibleAction, nil];
+  NSMutableArray* actions = [NSMutableArray array];
 
   // VoiceOver expects the "press" action to be first.
-  if (_owner->IsClickable())
+  // Don't advertise AXPress for ax::mojom::DefaultActionVerb::kClickAncestor.
+  // ax::mojom::DefaultActionVerb::kClickAncestor is used when an element with a
+  // click listener is present in its ancestry chain, so the node itself isn't
+  // clickable.
+  if (_owner->HasDefaultAction() &&
+      _owner->GetData().GetDefaultActionVerb() !=
+          ax::mojom::DefaultActionVerb::kClickAncestor) {
     [actions insertObject:NSAccessibilityPressAction atIndex:0];
+  }
 
-  if (ui::IsMenuRelated(_owner->GetRole()))
+  if (SupportsShowMenuAction(*_owner)) {
+    [actions addObject:NSAccessibilityShowMenuAction];
+  }
+
+  // TODO(accessibility): Should Views descendants of a scroll area support
+  // AXScrollToVisible?
+  if (_owner->manager()->IsWebContentSource()) {
+    [actions addObject:NSAccessibilityScrollToVisibleAction];
+  }
+
+  // TODO(accessibility): Views should probably support this action to dismiss
+  // a menu too.
+  if (_owner->manager()->IsWebContentSource() &&
+      ui::IsMenuRelated(_owner->GetRole())) {
     [actions addObject:NSAccessibilityCancelAction];
+  }
 
   if ([self internalRole] == ax::mojom::Role::kSlider ||
       [self internalRole] == ax::mojom::Role::kSpinButton) {
@@ -3254,40 +3344,15 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
   BrowserAccessibility* actionTarget = [self actionTarget];
   BrowserAccessibilityManager* manager = actionTarget->manager();
   if ([action isEqualToString:NSAccessibilityPressAction]) {
-    // LINT.IfChange(NSAccessibilityPressAction)
-    ui::AXNode* node = actionTarget->node();
-    if (!node || !actionTarget->HasDefaultAction()) {
-      return;
-    }
-
-    manager->DoDefaultAction(*actionTarget);
-    if (actionTarget->GetData().GetRestriction() !=
-            ax::mojom::Restriction::kNone ||
-        ![self isCheckable]) {
-      return;
-    }
-
-    // Hack: preemptively set the checked state to what it should become,
-    // otherwise VoiceOver will very likely report the old, incorrect state to
-    // the user as it requests the value too quickly.
-    AXNodeData data(node->TakeData());  // Temporarily take data.
-    if (data.role == ax::mojom::Role::kRadioButton) {
-      data.SetCheckedState(ax::mojom::CheckedState::kTrue);
-    } else if (data.role == ax::mojom::Role::kCheckBox ||
-               data.role == ax::mojom::Role::kSwitch ||
-               data.role == ax::mojom::Role::kToggleButton) {
-      ax::mojom::CheckedState checkedState = data.GetCheckedState();
-      ax::mojom::CheckedState newCheckedState =
-          checkedState == ax::mojom::CheckedState::kFalse
-              ? ax::mojom::CheckedState::kTrue
-              : ax::mojom::CheckedState::kFalse;
-      data.SetCheckedState(newCheckedState);
-    }
-    node->SetData(data);  // Set the data back in the node.
-    // LINT.ThenChange(accessibilityPerformPress)
+    [self accessibilityPerformPress];
   } else if ([action isEqualToString:NSAccessibilityShowMenuAction]) {
-    manager->ShowContextMenu(*actionTarget);
+    if (SupportsShowMenuAction(*actionTarget)) {
+      PerformShowMenuAction(*actionTarget);
+    }
   } else if ([action isEqualToString:NSAccessibilityScrollToVisibleAction]) {
+    if (!actionTarget->manager()->IsWebContentSource()) {
+      return;
+    }
     ui::AXPlatformNodeBase* mac_obj =
         [ObjCCastStrict<BrowserAccessibilityCocoa>(
             actionTarget->GetNativeViewAccessible().Get()) node];
@@ -3299,7 +3364,6 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
   }
 }
 
-// LINT.IfChange(accessibilityPerformPress)
 - (BOOL)accessibilityPerformPress {
   if (![self instanceActive]) {
     return NO;
@@ -3314,9 +3378,11 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
   BrowserAccessibilityManager* manager = actionTarget->manager();
   manager->DoDefaultAction(*actionTarget);
   if (actionTarget->GetData().GetRestriction() !=
-          ax::mojom::Restriction::kNone ||
-      ![self isCheckable]) {
+      ax::mojom::Restriction::kNone) {
     return NO;
+  }
+  if (![self isCheckable]) {
+    return YES;
   }
 
   // Hack: preemptively set the checked state to what it should become,
@@ -3344,8 +3410,10 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
     return NO;
   }
   BrowserAccessibility* actionTarget = [self actionTarget];
-  BrowserAccessibilityManager* manager = actionTarget->manager();
-  manager->ShowContextMenu(*actionTarget);
+  if (!SupportsShowMenuAction(*actionTarget)) {
+    return NO;
+  }
+  PerformShowMenuAction(*actionTarget);
   return YES;
 }
 
@@ -3360,7 +3428,6 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
 
   return NSAccessibilityActionDescription(action);
 }
-// LINT.ThenChange(NSAccessibilityPressAction)
 
 - (NSArray<NSAccessibilityCustomAction*>*)accessibilityCustomActions {
   if (![self instanceActive]) {
@@ -3371,7 +3438,7 @@ bool IsAXCustomActionNamesForTestingProjectionEnabled() {
     return nil;
   }
 
-  const std::vector<int32_t>& action_ids =
+  base::span<const int32_t> action_ids =
       _owner->GetIntListAttribute(ax::mojom::IntListAttribute::kActionsIds);
   if (action_ids.empty()) {
     return nil;

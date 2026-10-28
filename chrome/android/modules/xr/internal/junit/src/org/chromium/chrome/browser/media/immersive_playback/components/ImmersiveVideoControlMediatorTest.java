@@ -4,8 +4,6 @@
 
 package org.chromium.chrome.browser.media.immersive_playback.components;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
-
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -17,6 +15,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.os.Handler;
 
 import org.junit.After;
@@ -26,7 +26,6 @@ import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
-import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -36,7 +35,6 @@ import java.util.concurrent.TimeUnit;
 
 /** Tests for {@link ImmersiveVideoControlMediator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class ImmersiveVideoControlMediatorTest {
     @Mock private ImmersiveVideoControlCoordinator.Delegate mDelegate;
 
@@ -86,9 +84,10 @@ public class ImmersiveVideoControlMediatorTest {
 
         mMediator.updateMediaPosition(
                 /* durationMs= */ 60_000, /* positionMs= */ 10_000, /* playbackRate= */ 2.0);
+        int hiddenModelUpdateCountAfterPositionChange = mModelUpdateCount;
         ShadowLooper.idleMainLooper(1_000, TimeUnit.MILLISECONDS);
         assertEquals(hiddenProgress, getProgress());
-        assertEquals(hiddenModelUpdateCount, mModelUpdateCount);
+        assertEquals(hiddenModelUpdateCountAfterPositionChange, mModelUpdateCount);
 
         mMediator.setVisible(true);
         assertEquals(12_000, getProgress());

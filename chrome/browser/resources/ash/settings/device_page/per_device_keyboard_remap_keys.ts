@@ -18,13 +18,12 @@ import './keyboard_six_pack_key_row.js';
 import type {I18nMixinInterface} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
 import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
 import {assert} from 'chrome://resources/js/assert.js';
-import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import type {PolymerElementProperties} from 'chrome://resources/polymer/v3_0/polymer/interfaces.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import type {RouteObserverMixinInterface} from '../common/route_observer_mixin.js';
 import {RouteObserverMixin} from '../common/route_observer_mixin.js';
-import type {Route} from '../router.js';
+import type {Route} from '../os_settings_routes.js';
 import {Router, routes} from '../router.js';
 
 import {getInputDeviceSettingsProvider} from './input_device_mojo_interface_provider.js';
@@ -320,23 +319,6 @@ export class SettingsPerDeviceKeyboardRemapKeysElement extends
         value: -1,
       },
 
-      isAltClickAndSixPackCustomizationEnabled: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean(
-              'enableAltClickAndSixPackCustomization');
-        },
-        readOnly: true,
-      },
-
-      areF11andF12KeyShortcutsEnabled: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean('enableF11AndF12KeyShortcuts');
-        },
-        readOnly: true,
-      },
-
       keyboardPolicies: {
         type: Object,
       },
@@ -388,8 +370,6 @@ export class SettingsPerDeviceKeyboardRemapKeysElement extends
 
   declare keyboard: Keyboard;
   declare protected keyboardPolicies: KeyboardPolicies;
-  declare isAltClickAndSixPackCustomizationEnabled: boolean;
-  declare areF11andF12KeyShortcutsEnabled: boolean;
   declare private keyboards: Keyboard[];
   declare protected keyboardId: number;
   declare protected defaultRemappings: {[key: number]: ModifierKey};
@@ -478,13 +458,11 @@ export class SettingsPerDeviceKeyboardRemapKeysElement extends
           this.setRemappedKey(originalKey);
         });
 
-    if (this.isAltClickAndSixPackCustomizationEnabled) {
-      this.setSixPackKeyRemappings();
+    this.setSixPackKeyRemappings();
 
-      // Potentially overrides some/all "six pack" settings based on
-      // the keyboard policies.
-      this.setSixPackKeyRemappingsForPolicies();
-    }
+    // Potentially overrides some/all "six pack" settings based on
+    // the keyboard policies.
+    this.setSixPackKeyRemappingsForPolicies();
 
     if (this.shouldShowFkeys()) {
       this.set('f11KeyPref.value', searchedKeyboard.settings?.f11);
@@ -558,9 +536,7 @@ export class SettingsPerDeviceKeyboardRemapKeysElement extends
     this.set('fakeCapsLockPref.value', ModifierKey.kCapsLock);
     this.set('fakeEscPref.value', ModifierKey.kEscape);
     this.set('fakeMetaPref.value', ModifierKey.kMeta);
-    if (loadTimeData.getBoolean('enableModifierSplit')) {
-      this.set('fakeQuickInsertPref.value', ModifierKey.kQuickInsert);
-    }
+    this.set('fakeQuickInsertPref.value', ModifierKey.kQuickInsert);
     if (this.hasFunctionKey) {
       this.set('fakeFunctionPref.value', ModifierKey.kFunction);
     }
@@ -626,14 +602,8 @@ export class SettingsPerDeviceKeyboardRemapKeysElement extends
     this.keyboard.settings = {
       ...this.keyboard.settings,
       modifierRemappings: this.getUpdatedRemappings(),
+      sixPackKeyRemappings: this.getSixPackKeyRemappings(),
     };
-
-    if (this.isAltClickAndSixPackCustomizationEnabled) {
-      this.keyboard.settings = {
-        ...this.keyboard.settings,
-        sixPackKeyRemappings: this.getSixPackKeyRemappings(),
-      };
-    }
 
     if (this.shouldShowFkeys()) {
       this.keyboard.settings = {
@@ -675,11 +645,9 @@ export class SettingsPerDeviceKeyboardRemapKeysElement extends
       updatedRemappings[ModifierKey.kMeta] = this.fakeMetaPref.value;
     }
 
-    if (loadTimeData.getBoolean('enableModifierSplit')) {
-      if (ModifierKey.kQuickInsert !== this.fakeQuickInsertPref.value) {
-        updatedRemappings[ModifierKey.kQuickInsert] =
-            this.fakeQuickInsertPref.value;
-      }
+    if (ModifierKey.kQuickInsert !== this.fakeQuickInsertPref.value) {
+      updatedRemappings[ModifierKey.kQuickInsert] =
+          this.fakeQuickInsertPref.value;
     }
 
     if (this.hasFunctionKey) {
@@ -715,15 +683,8 @@ export class SettingsPerDeviceKeyboardRemapKeysElement extends
     if (!this.keyboard?.name) {
       return '';
     }
-    const keyboardName = this.keyboard.isExternal ?
-        this.keyboard.name :
-        this.i18n('builtInKeyboardName');
-
-    if (this.isAltClickAndSixPackCustomizationEnabled) {
-      return keyboardName;
-    }
-
-    return this.i18n('remapKeyboardKeysDescription', keyboardName);
+    return this.keyboard.isExternal ? this.keyboard.name :
+                                      this.i18n('builtInKeyboardName');
   }
 
   private setSixPackKeyRemappings(): void {
@@ -770,10 +731,8 @@ export class SettingsPerDeviceKeyboardRemapKeysElement extends
   }
 
   protected shouldShowFkeys(): boolean {
-    return this.areF11andF12KeyShortcutsEnabled &&
-        (this.keyboard?.settings?.f11 != null &&
-         this.keyboard?.settings?.f12 != null) &&
-        !this.hasFunctionKey;
+    return this.keyboard?.settings?.f11 != null &&
+        this.keyboard?.settings?.f12 != null && !this.hasFunctionKey;
   }
 
   private getShortcutRowLabel(name: string): string {

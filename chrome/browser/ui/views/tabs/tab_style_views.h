@@ -10,6 +10,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
+#include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
 #include "components/split_tabs/split_tab_id.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -33,6 +34,7 @@ class BrowserFrameView;
 class BrowserWindowInterface;
 class GlowHoverController;
 class SkPath;
+struct TabPathFlags;
 
 namespace views {
 class View;
@@ -49,9 +51,11 @@ class TabStyleViewDelegate {
   virtual bool IsSelected() const = 0;
   virtual bool IsHovering() const = 0;
   virtual bool IsClosing() const = 0;
+  virtual bool IsDragging() const = 0;
   virtual std::optional<tab_groups::TabGroupId> GetGroup() const = 0;
   virtual std::optional<SkColor> GetGroupColor() const = 0;
   virtual bool IsInFocusedGroup() const = 0;
+  virtual bool IsGroupCollapsed() const = 0;
   virtual bool IsSplit() const = 0;
   virtual std::optional<split_tabs::SplitTabId> GetSplit() const = 0;
 
@@ -72,6 +76,8 @@ class TabStyleViewDelegate {
   virtual BrowserFrameView* GetBrowserFrameView() const = 0;
   virtual BrowserWindowInterface* GetBrowserWindowInterface() const = 0;
   virtual bool IsGlassFrame() const = 0;
+  virtual bool IsPinned() const = 0;
+  virtual bool ShouldPaintTabBackgroundColor() const = 0;
   virtual int GetStrokeThickness() const = 0;
 
   virtual GlowHoverController* GetHoverControllerForTesting() = 0;
@@ -91,7 +97,9 @@ class TabStyleViews {
  public:
   // Factory function allows to experiment with different variations on tab
   // style at runtime or via flag.
-  static std::unique_ptr<TabStyleViews> CreateForTab(Tab* tab);
+  static std::unique_ptr<TabStyleViews> Create(
+      std::unique_ptr<TabStyleViewDelegate> delegate,
+      TabStripOrientation orientation);
 
   TabStyleViews();
   virtual ~TabStyleViews();
@@ -104,6 +112,11 @@ class TabStyleViews {
                          float scale,
                          const TabPathFlags& flags) const = 0;
 
+  // Gets the path that children should be clipped to. Returns `nullopt` if
+  // children shouldn't be clipped.
+  virtual std::optional<SkPath> GetChildClipPath(
+      float paint_recording_scale) const = 0;
+
   // Paints the tab.
   virtual void PaintTab(gfx::Canvas* canvas) const = 0;
 
@@ -114,6 +127,9 @@ class TabStyleViews {
   // tab. Only active tabs may have a stroke, and not in all cases. If there
   // is no stroke, returns 0.
   virtual int GetStrokeThickness() const = 0;
+
+  // Returns the path of the overline of the active tab.
+  virtual SkPath GetOverlinePath(float scale) const = 0;
 
   // Returns whether the tab appears more like the active opacity than the
   // inactive opacity.
@@ -128,6 +144,9 @@ class TabStyleViews {
   virtual double GetHoverAnimationValue() const = 0;
 
   virtual GlowHoverController* GetHoverControllerForTesting() = 0;
+
+  virtual TabStyle::SeparatorOpacities GetSeparatorOpacitiesForTesting()
+      const = 0;
 
   const TabStyle* tab_style() const { return tab_style_; }
 

@@ -20,6 +20,7 @@ import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarUtils;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
@@ -39,14 +40,33 @@ public final class HubColors {
             new int[][] {new int[] {-android.R.attr.state_enabled}, new int[] {}};
     private static final int[][] HOVERED_STATE =
             new int[][] {new int[] {android.R.attr.state_hovered}};
-    private static final int[][] FOCUSED_STATE =
-            new int[][] {new int[] {android.R.attr.state_focused}};
+    private static final int[][] FOCUSED_AND_NORMAL_STATES =
+            new int[][] {new int[] {android.R.attr.state_focused}, new int[] {}};
 
     private HubColors() {}
 
     /** Returns the color scheme from a pane with a fallback for null. */
     public static @HubColorScheme int getColorSchemeSafe(@Nullable Pane pane) {
         return pane == null ? HubColorScheme.DEFAULT : pane.getColorScheme();
+    }
+
+    /** Returns the {@link HubColorScheme} corresponding to the provided tab. */
+    public static @HubColorScheme int getColorSchemeForTab(@Nullable Tab tab) {
+        return tab != null && tab.isIncognito() ? HubColorScheme.INCOGNITO : HubColorScheme.DEFAULT;
+    }
+
+    /**
+     * Returns the {@link BrandedColorScheme} for the provided tab to sync the bottom bar on Hub
+     * exit.
+     *
+     * <p>For non-incognito tabs, {@link BottomBarUtils} resolves {@link
+     * BrandedColorScheme#APP_DEFAULT} using semantic colors (which adapt to light/dark mode), so
+     * only the incognito state needs to be checked.
+     */
+    public static @BrandedColorScheme int getBrandedColorSchemeForTab(@Nullable Tab tab) {
+        return tab != null && tab.isIncognito()
+                ? BrandedColorScheme.INCOGNITO
+                : BrandedColorScheme.APP_DEFAULT;
     }
 
     /** Returns the background color generic surfaces should use per the given color scheme. */
@@ -211,6 +231,12 @@ public final class HubColors {
         return IncognitoColors.getColorPrimary(context, colorScheme == HubColorScheme.INCOGNITO);
     }
 
+    /** Returns the hub toolbar action button focus stroke color as per the given color scheme. */
+    public static @ColorInt int getToolbarActionButtonFocusColor(
+            Context context, @HubColorScheme int colorScheme) {
+        return getToolbarActionButtonIconColor(context, colorScheme);
+    }
+
     /**
      * Adapts the given color to a color state list that supports enabled and disabled states.
      *
@@ -273,10 +299,10 @@ public final class HubColors {
 
     /**
      * Generates a {@link ColorStateList} with a specific color applied when the view is in a
-     * focused state.
+     * focused state, and transparent otherwise.
      */
     public static ColorStateList generateFocusStrokeColorStateList(@ColorInt int color) {
-        return new ColorStateList(FOCUSED_STATE, new int[] {color});
+        return new ColorStateList(FOCUSED_AND_NORMAL_STATES, new int[] {color, Color.TRANSPARENT});
     }
 
     private static ColorStateList generateDisabledAndNormalStatesColorStateList(

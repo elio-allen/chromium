@@ -15,7 +15,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/apps/app_service/app_registry_cache_waiter.h"
 #include "chrome/browser/profiles/profile_io_data.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -303,42 +302,43 @@ webapps::AppId WebAppNavigationBrowserTest::InstallTestWebApp(
   return app_id;
 }
 
-Browser* WebAppNavigationBrowserTest::OpenTestWebApp() {
+BrowserWindowInterface* WebAppNavigationBrowserTest::OpenTestWebApp() {
   GURL app_url =
       embedded_https_test_server().GetURL(GetAppUrlHost(), GetAppUrlPath());
   auto observer = GetTestNavigationObserver(app_url);
-  Browser* app_browser = LaunchWebAppBrowser(test_web_app_);
+  BrowserWindowInterface* app_browser = LaunchWebAppBrowser(test_web_app_);
   observer->Wait();
 
   return app_browser;
 }
 
-void WebAppNavigationBrowserTest::NavigateToLaunchingPage(Browser* browser) {
+void WebAppNavigationBrowserTest::NavigateToLaunchingPage(
+    BrowserWindowInterface* browser) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser, embedded_https_test_server().GetURL(GetLaunchingPageHost(),
                                                    GetLaunchingPagePath())));
 }
 
 bool WebAppNavigationBrowserTest::ExpectLinkClickNotCapturedIntoAppBrowser(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     const GURL& target_url,
     const std::string& rel) {
   content::WebContents* initial_tab =
-      browser->tab_strip_model()->GetActiveWebContents();
-  int num_tabs = browser->tab_strip_model()->count();
+      browser->GetTabStripModel()->GetActiveWebContents();
+  int num_tabs = browser->GetTabStripModel()->count();
   size_t num_browsers =
       ProfileBrowserCollection::GetForProfile(browser->GetProfile())->GetSize();
 
-  ClickLinkAndWait(browser->tab_strip_model()->GetActiveWebContents(),
+  ClickLinkAndWait(browser->GetTabStripModel()->GetActiveWebContents(),
                    target_url, LinkTarget::SELF, rel);
 
-  EXPECT_EQ(num_tabs, browser->tab_strip_model()->count());
+  EXPECT_EQ(num_tabs, browser->GetTabStripModel()->count());
   EXPECT_EQ(num_browsers,
             ProfileBrowserCollection::GetForProfile(browser->GetProfile())
                 ->GetSize());
   EXPECT_EQ(browser,
             GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser());
-  EXPECT_EQ(initial_tab, browser->tab_strip_model()->GetActiveWebContents());
+  EXPECT_EQ(initial_tab, browser->GetTabStripModel()->GetActiveWebContents());
   EXPECT_EQ(target_url, initial_tab->GetLastCommittedURL());
 
   return !HasFailure();

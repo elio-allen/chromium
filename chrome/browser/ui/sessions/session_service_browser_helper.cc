@@ -14,11 +14,14 @@
 #include "chrome/browser/sessions/session_service_lookup.h"
 #include "chrome/browser/sessions/tab_restore_service_factory.h"
 #include "chrome/browser/tab_list/tab_removed_reason.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sessions/core/tab_restore_service.h"
 #include "components/split_tabs/split_tab_id.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/split_tab_data.h"
 #include "components/tabs/public/tab_group.h"
 #include "content/public/browser/web_contents.h"
@@ -43,13 +46,23 @@ void UpdateTabGroupSessionMetadata(Profile& profile,
 
 }  // namespace
 
+DEFINE_USER_DATA(SessionServiceBrowserHelper);
+
+// static
+SessionServiceBrowserHelper* SessionServiceBrowserHelper::From(
+    BrowserWindowInterface* browser) {
+  return Get(browser->GetUnownedUserDataHost());
+}
+
 SessionServiceBrowserHelper::SessionServiceBrowserHelper(
     TabStripModel* tab_strip_model,
     SessionID session_id,
     BrowserWindowInterface::Type browser_type,
     Profile* profile,
-    const Browser::CreateParams* create_params)
-    : tab_strip_model_(CHECK_DEREF(tab_strip_model)),
+    const BrowserWindowCreateParams* create_params,
+    ui::UnownedUserDataHost& host)
+    : scoped_unowned_user_data_(host, *this),
+      tab_strip_model_(CHECK_DEREF(tab_strip_model)),
       session_id_(session_id),
       browser_type_(browser_type),
       profile_(CHECK_DEREF(profile)) {
@@ -174,8 +187,9 @@ void SessionServiceBrowserHelper::OnTabGroupChanged(
   // AppSessionService doesn't support SetTabGroupMetadata, so some
   // work to refactor the code to support that into SessionServiceBase
   // would be the best way to achieve that.
-  DCHECK(!IsRelevantToAppSessionService(browser_type_));
-  DCHECK(tab_strip_model_->group_model());
+  CHECK(!IsRelevantToAppSessionService(browser_type_),
+        base::NotFatalUntil::M162);
+  CHECK(tab_strip_model_->group_model(), base::NotFatalUntil::M162);
 
   if (change.type == TabGroupChange::kVisualsChanged) {
     UpdateTabGroupSessionMetadata(*profile_, *tab_strip_model_, session_id_,
@@ -207,6 +221,8 @@ void SessionServiceBrowserHelper::OnTabPinnedStateChanged(
     tabs::TabInterface* tab,
     int index) {
   // See comment in `OnTabGroupChanged`.
+  // TODO(crbug.com/575984047): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(!IsRelevantToAppSessionService(browser_type_));
   SessionService* session_service =
       SessionServiceFactory::GetForProfileIfExisting(&*profile_);
@@ -306,7 +322,8 @@ void SessionServiceBrowserHelper::UpdateTabGroupSessionDataForTab(
     tabs::TabInterface* tab,
     std::optional<tab_groups::TabGroupId> group) {
   // See comment in `OnTabGroupChanged`.
-  DCHECK(!IsRelevantToAppSessionService(browser_type_));
+  CHECK(!IsRelevantToAppSessionService(browser_type_),
+        base::NotFatalUntil::M162);
   SessionService* const session_service =
       SessionServiceFactory::GetForProfile(&*profile_);
   if (!session_service) {
@@ -321,7 +338,8 @@ void SessionServiceBrowserHelper::UpdateTabGroupSessionDataForTab(
 void SessionServiceBrowserHelper::UpdateSplitTabSessionData(
     tabs::TabInterface* tab,
     std::optional<split_tabs::SplitTabId> split_id) {
-  DCHECK(!IsRelevantToAppSessionService(browser_type_));
+  CHECK(!IsRelevantToAppSessionService(browser_type_),
+        base::NotFatalUntil::M162);
   SessionService* const session_service =
       SessionServiceFactory::GetForProfile(&*profile_);
   if (!session_service) {

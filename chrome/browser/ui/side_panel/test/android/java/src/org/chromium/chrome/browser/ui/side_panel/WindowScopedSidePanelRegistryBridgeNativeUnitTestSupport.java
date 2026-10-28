@@ -5,6 +5,9 @@
 package org.chromium.chrome.browser.ui.side_panel;
 
 import org.jni_zero.CalledByNativeForTesting;
+import org.jni_zero.JniPtr;
+
+import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask.NativeBrowserWindowInterface;
 
 /**
  * Supports {@code window_scoped_side_panel_registry_bridge_unittest.cc}.
@@ -18,16 +21,16 @@ import org.jni_zero.CalledByNativeForTesting;
  * </ul>
  */
 final class WindowScopedSidePanelRegistryBridgeNativeUnitTestSupport {
-    private final WindowScopedSidePanelRegistryBridgeImpl mBridge;
+    private final WindowScopedSidePanelRegistryBridge mBridge;
 
     @CalledByNativeForTesting
     private WindowScopedSidePanelRegistryBridgeNativeUnitTestSupport() {
-        mBridge = new WindowScopedSidePanelRegistryBridgeImpl();
+        mBridge = new WindowScopedSidePanelRegistryBridge();
     }
 
     @CalledByNativeForTesting
-    public long invokeCreateNativePtr(long nativeBrowserWindowPtr) {
-        return mBridge.createNativePtr(nativeBrowserWindowPtr);
+    public long invokeCreateNativePtr(JniPtr<NativeBrowserWindowInterface> browserWindow) {
+        return mBridge.createNativePtr(browserWindow);
     }
 
     @CalledByNativeForTesting

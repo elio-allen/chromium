@@ -19,6 +19,7 @@
 #include "base/sampling_heap_profiler/poisson_allocation_sampler.h"
 #include "base/synchronization/lock.h"
 #include "base/thread_annotations.h"
+#include "base/threading/platform_thread.h"
 #include "base/threading/thread_id_name_manager.h"
 #include "base/types/id_type.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
@@ -54,9 +55,14 @@ class BASE_EXPORT SamplingHeapProfiler
     const char* context = nullptr;
     // Name of the thread that made the sampled allocation.
     const char* thread_name = nullptr;
+    // Thread ID that made the sampled allocation.
+    PlatformThreadId tid = kInvalidThreadId;
     // Call stack of PC addresses responsible for the allocation.
     // RAW_PTR_EXCLUSION: executable addresses are never in PA partitions
     RAW_PTR_EXCLUSION std::vector<const void*> stack;
+    // Total resident bytes attributed to the sample in physical memory.
+    // Set to std::nullopt if the residency checks are disabled or unavailable.
+    std::optional<size_t> resident_total;
   };
 
   enum class StackUnwinder {
@@ -137,6 +143,7 @@ class BASE_EXPORT SamplingHeapProfiler
                    base::allocator::dispatcher::AllocationSubsystem type,
                    const char* context) override;
   void SampleRemoved(void* address) override;
+  void SampleMoved(void* from, void* to) override;
 
   void CaptureNativeStack(const char* context, Sample* sample);
   const char* RecordString(const char* string) EXCLUSIVE_LOCKS_REQUIRED(mutex_);

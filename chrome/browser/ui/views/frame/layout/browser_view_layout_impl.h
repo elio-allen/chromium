@@ -25,7 +25,6 @@
 class BrowserViewLayoutImpl : public BrowserViewLayout {
  public:
   BrowserViewLayoutImpl(std::unique_ptr<BrowserViewLayoutDelegate> delegate,
-                        Browser* browser,
                         BrowserViewLayoutViews views);
   ~BrowserViewLayoutImpl() override;
 
@@ -33,6 +32,7 @@ class BrowserViewLayoutImpl : public BrowserViewLayout {
   void Layout(views::View* host) final;
 
  protected:
+  using TabStripType = BrowserViewLayoutDelegate::TabStripType;
   using WindowState = BrowserViewLayoutDelegate::WindowState;
   static bool is_fullscreen(WindowState window_state) {
     return window_state == WindowState::kFullscreen ||

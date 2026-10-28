@@ -19,7 +19,6 @@
 #include "base/bit_cast.h"
 #include "base/check.h"
 #include "base/command_line.h"
-#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
@@ -33,6 +32,7 @@
 #include "base/process/launch.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_view_util.h"
 #include "base/test/bind.h"
 #include "base/test/multiprocess_test.h"
 #include "base/test/task_environment.h"
@@ -45,7 +45,6 @@
 #include "chromeos/ash/components/mojo_proxy/service/mojo_proxy_test.test-mojom-test-utils.h"
 #include "chromeos/ash/components/mojo_proxy/service/mojo_proxy_test.test-mojom.h"
 #include "chromeos/ash/components/mojo_proxy/service/switches.h"
-#include "mojo/core/embedder/embedder.h"
 #include "mojo/core/ipcz_api.h"
 #include "mojo/core/test/test_switches.h"
 #include "mojo/public/c/system/thunks.h"
@@ -89,15 +88,14 @@ std::string ReadWholeFile(base::File& file) {
 base::ReadOnlySharedMemoryRegion CreateMemory(std::string_view contents) {
   auto region = base::WritableSharedMemoryRegion::Create(contents.size());
   auto mapping = region.Map();
-  UNSAFE_TODO(memcpy(mapping.memory(), contents.data(), contents.size()));
+  base::span(mapping).copy_from(base::as_byte_span(contents));
   return base::WritableSharedMemoryRegion::ConvertToReadOnly(std::move(region));
 }
 
 // Returns the contents of a shared memory region as a string.
 std::string ReadMemory(base::ReadOnlySharedMemoryRegion region) {
   auto mapping = region.Map();
-  const char* data = static_cast<const char*>(mapping.memory());
-  return std::string{data, region.GetSize()};
+  return std::string(base::as_string_view(mapping));
 }
 
 // Returns the next message on a message pipe as a string.
@@ -209,11 +207,6 @@ class MojoProxyTest : public testing::Test {
 // Used to launch a test child process which will run a legacy Mojo app.
 class LegacyAppLauncher {
  public:
-  LegacyAppLauncher() {
-    // Make sure we're always launching from a process with ipcz enabled.
-    CHECK(mojo::core::IsMojoIpczEnabled());
-  }
-
   ~LegacyAppLauncher() {
     initial_remotes_.clear();
     if (app_process_.IsValid()) {

@@ -9,11 +9,10 @@
 
 #include "base/check.h"
 #include "base/time/time.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/content_settings/content_setting_image_model.h"
+#include "chrome/browser/ui/content_settings/content_setting_image_view_delegate.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/content_setting_bubble_contents.h"
 #include "chrome/browser/ui/views/page_info/page_info_bubble_specification.h"
 #include "chrome/browser/ui/views/page_info/page_info_bubble_view.h"
@@ -27,15 +26,43 @@
 #include "components/permissions/permission_indicators_tab_data.h"
 #include "components/permissions/permission_request_manager.h"
 #include "components/permissions/permission_uma_util.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_user_data.h"
+#include "ui/base/interaction/element_identifier.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/gfx/animation/animation.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 
 namespace {
+
+// Holds a `PermissionIndicatorsTabData` on non-tab `WebContents` (such as the
+// Contextual Tasks side panel) so that per-`WebContents` verbose indicator
+// state is preserved when a shared location bar switches between `WebContents`.
+class FallbackPermissionIndicatorsTabData
+    : public content::WebContentsUserData<FallbackPermissionIndicatorsTabData> {
+ public:
+  ~FallbackPermissionIndicatorsTabData() override = default;
+
+  permissions::PermissionIndicatorsTabData* data() { return &data_; }
+
+ private:
+  friend class content::WebContentsUserData<
+      FallbackPermissionIndicatorsTabData>;
+  explicit FallbackPermissionIndicatorsTabData(
+      content::WebContents* web_contents)
+      : content::WebContentsUserData<FallbackPermissionIndicatorsTabData>(
+            *web_contents),
+        data_(web_contents) {}
+
+  permissions::PermissionIndicatorsTabData data_;
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
+};
+
+WEB_CONTENTS_USER_DATA_KEY_IMPL(FallbackPermissionIndicatorsTabData);
 
 // This method updates indicators' visibility set in
 // `PageSpecificContentSettings`.
@@ -111,13 +138,20 @@ bool ShouldExpandChipIndicator(
 }
 
 permissions::PermissionIndicatorsTabData::IndicatorsType GetIndicatorsType(
-    ContentSettingImageModel::ImageType image_type) {
-  switch (image_type) {
+    const ContentSettingImageModel* indicator_model) {
+  switch (indicator_model->image_type()) {
     case ContentSettingImageModel::ImageType::kSensors:
-      return permissions::PermissionIndicatorsTabData::IndicatorsType::kSensors;
+      return indicator_model->is_blocked()
+                 ? permissions::PermissionIndicatorsTabData::IndicatorsType::
+                       kSensorsBlocked
+                 : permissions::PermissionIndicatorsTabData::IndicatorsType::
+                       kSensors;
     case ContentSettingImageModel::ImageType::kMediaStream:
-      return permissions::PermissionIndicatorsTabData::IndicatorsType::
-          kMediaStream;
+      return indicator_model->is_blocked()
+                 ? permissions::PermissionIndicatorsTabData::IndicatorsType::
+                       kMediaStreamBlocked
+                 : permissions::PermissionIndicatorsTabData::IndicatorsType::
+                       kMediaStream;
     default:
       NOTREACHED();
   }
@@ -176,6 +210,20 @@ bool SuppressVerboseState(ChipController* request_chip_controller) {
   // If there are pending permission requests in `PermissionRequestManager`,
   // then the expand animation should be suppressed.
   return prm.has_value() && prm.value()->has_pending_requests();
+}
+
+// Highlights the indicator chip while `bubble` is showing. If the location bar
+// has its own element context (e.g. a WebUI toolbar in the side panel), look
+// the chip up there. Otherwise, the ID would be resolved in the browser
+// window's context and could highlight the main toolbar's indicator chip.
+void HighlightIndicatorChip(views::BubbleDialogDelegate& bubble,
+                            const LocationBar& location_bar) {
+  if (ui::ElementContext context = location_bar.GetElementContext()) {
+    bubble.SetHighlightedElement(PermissionChipView::kIndicatorChipElementId,
+                                 context);
+  } else {
+    bubble.SetHighlightedElement(PermissionChipView::kIndicatorChipElementId);
+  }
 }
 }  // namespace
 
@@ -290,14 +338,9 @@ bool PermissionDashboardController::Update(
       // Blocked on the system level is an error case and should always be
       // animated.
       const permissions::PermissionIndicatorsTabData*
-          permission_indicators_tab_data =
-              location_bar_->GetBrowser()
-                  ->tab_strip_model()
-                  ->GetActiveTab()
-                  ->GetTabFeatures()
-                  ->permission_indicators_tab_data();
+          permission_indicators_tab_data = GetPermissionIndicatorsTabData();
       const permissions::PermissionIndicatorsTabData::IndicatorsType type =
-          GetIndicatorsType(indicator_model->image_type());
+          GetIndicatorsType(indicator_model);
       if (permission_indicators_tab_data &&
           permission_indicators_tab_data->IsVerboseIndicatorAllowed(type)) {
         indicator_chip->ResetAnimation(
@@ -360,15 +403,11 @@ void PermissionDashboardController::OnCollapseAnimationEnded() {
   }
 
   permissions::PermissionIndicatorsTabData* permission_indicators_tab_data =
-      location_bar_->GetBrowser()
-          ->tab_strip_model()
-          ->GetActiveTab()
-          ->GetTabFeatures()
-          ->permission_indicators_tab_data();
+      GetPermissionIndicatorsTabData();
 
   if (permission_indicators_tab_data && content_setting_image_model_) {
     permissions::PermissionIndicatorsTabData::IndicatorsType type =
-        GetIndicatorsType(content_setting_image_model_->image_type());
+        GetIndicatorsType(content_setting_image_model_);
     permission_indicators_tab_data->SetVerboseIndicatorDisplayed(type);
   }
 
@@ -385,8 +424,7 @@ void PermissionDashboardController::OnCollapseAnimationEnded() {
 }
 
 void PermissionDashboardController::OnMousePressed() {
-  should_suppress_reopening_page_info_ =
-      page_info_bubble_suppressor_.ShouldSuppress();
+  page_info_bubble_suppressor_.OnMousePressed();
 }
 
 bool PermissionDashboardController::SuppressVerboseIndicator() {
@@ -470,17 +508,23 @@ void PermissionDashboardController::HideIndicators() {
 void PermissionDashboardController::ShowBubble() {
   content::WebContents* web_contents = location_bar_->GetWebContents();
   if (web_contents && !page_info_bubble_suppressor_.IsShowing()) {
+    std::unique_ptr<ContentSettingBubbleModel> bubble_model =
+        content_setting_image_model_->CreateBubbleModel(
+            content_setting_image_delegate_
+                ->GetContentSettingBubbleModelDelegate(),
+            web_contents);
+    if (!bubble_model) {
+      // The state backing the indicator is gone; dismiss the stale indicator
+      // rather than showing an empty bubble.
+      HideIndicators();
+      return;
+    }
     ContentSettingBubbleContents* bubble_view_ =
         new ContentSettingBubbleContents(
-            content_setting_image_model_->CreateBubbleModel(
-                content_setting_image_delegate_
-                    ->GetContentSettingBubbleModelDelegate(),
-                web_contents),
-            web_contents,
+            std::move(bubble_model), web_contents,
             permission_dashboard_->GetIndicatorChip()->GetAnchor(),
             views::BubbleBorder::TOP_LEFT);
-    bubble_view_->SetHighlightedElement(
-        PermissionChipView::kIndicatorChipElementId);
+    HighlightIndicatorChip(*bubble_view_, *location_bar_);
     views::Widget* bubble_widget =
         views::BubbleDialogDelegateView::CreateBubble(bubble_view_);
     bubble_widget->Show();
@@ -489,7 +533,8 @@ void PermissionDashboardController::ShowBubble() {
   }
 }
 
-void PermissionDashboardController::ShowPageInfoDialog() {
+void PermissionDashboardController::ShowPageInfoDialog(
+    bool is_pointer_interaction) {
   content::WebContents* contents = location_bar_->GetWebContents();
   if (!contents) {
     return;
@@ -512,10 +557,8 @@ void PermissionDashboardController::ShowPageInfoDialog() {
     return;
   }
 
-  if (should_suppress_reopening_page_info_) {
-    // Reset the flag because `OnMousePressed()` is not called if the LHS
-    // indicator gets keyboard interaction.
-    should_suppress_reopening_page_info_ = false;
+  if (page_info_bubble_suppressor_.ShouldSuppressBubbleShow(
+          is_pointer_interaction)) {
     return;
   }
 
@@ -527,14 +570,13 @@ void PermissionDashboardController::ShowPageInfoDialog() {
 
   views::BubbleDialogDelegateView* const bubble =
       PageInfoBubbleView::CreatePageInfoBubble(std::move(specification));
-  bubble->SetHighlightedElement(PermissionChipView::kIndicatorChipElementId);
+  HighlightIndicatorChip(*bubble, *location_bar_);
   bubble->GetWidget()->Show();
   page_info_bubble_suppressor_.Observe(bubble->GetWidget());
 }
 
-
-
-void PermissionDashboardController::OnIndicatorsChipButtonPressed() {
+void PermissionDashboardController::OnIndicatorsChipButtonPressed(
+    bool is_pointer_interaction) {
   content::WebContents* contents = location_bar_->GetWebContents();
   if (!contents) {
     return;
@@ -552,7 +594,7 @@ void PermissionDashboardController::OnIndicatorsChipButtonPressed() {
       url.SchemeIs(dom_distiller::kDomDistillerScheme)) {
     ShowBubble();
   } else {
-    ShowPageInfoDialog();
+    ShowPageInfoDialog(is_pointer_interaction);
   }
 
   if (content_setting_image_model_) {
@@ -657,4 +699,24 @@ std::u16string PermissionDashboardController::GetMediaStreamIndicatorTitle(
   }
 
   NOTREACHED();
+}
+
+permissions::PermissionIndicatorsTabData*
+PermissionDashboardController::GetPermissionIndicatorsTabData() {
+  content::WebContents* web_contents = location_bar_->GetWebContents();
+  if (!web_contents) {
+    return nullptr;
+  }
+  // For regular browser tabs, use the tab-scoped `PermissionIndicatorsTabData`
+  // owned by `TabFeatures`.
+  if (tabs::TabInterface* tab =
+          tabs::TabInterface::MaybeGetFromContents(web_contents)) {
+    return tab->GetTabFeatures()->permission_indicators_tab_data();
+  }
+  // Non-tab `WebContents` (e.g. side panels) do not have a `TabInterface`.
+  // Attach `PermissionIndicatorsTabData` to the `WebContents` so indicator
+  // state persists across task switches for the lifetime of that `WebContents`.
+  return FallbackPermissionIndicatorsTabData::GetOrCreateForWebContents(
+             web_contents)
+      ->data();
 }

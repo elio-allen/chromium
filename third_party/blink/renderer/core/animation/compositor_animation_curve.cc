@@ -7,6 +7,7 @@
 #include "third_party/blink/renderer/core/animation/animation.h"
 #include "third_party/blink/renderer/core/animation/keyframe_effect.h"
 #include "third_party/blink/renderer/core/animation/typed_interpolation_value.h"
+#include "third_party/blink/renderer/core/css/css_color_mix_value.h"
 #include "third_party/blink/renderer/core/css/css_value.h"
 
 namespace blink {
@@ -43,6 +44,12 @@ bool IsStyleDependent(const CSSValue* css_value) {
     }
   }
 
+  if (css_value->IsColorMixValue()) {
+    const auto* color_mix = To<cssvalue::CSSColorMixValue>(css_value);
+    return IsStyleDependent(&color_mix->Color1()) ||
+           IsStyleDependent(&color_mix->Color2());
+  }
+
   return false;
 }
 
@@ -69,7 +76,7 @@ bool CompositorAnimationCurve::PopulateKeyframes(Animation* animation,
     if (frame->IsCSSPropertySpecificKeyframe()) {
       const CSSValue* css_value =
           To<CSSPropertySpecificKeyframe>(frame.Get())->Value();
-      if (!value_filter(element, css_value, nullptr)) {
+      if (!value_filter(element, PropertyName(), css_value, nullptr)) {
         return false;
       }
       if (IsStyleDependent(css_value)) {
@@ -84,20 +91,27 @@ bool CompositorAnimationCurve::PopulateKeyframes(Animation* animation,
           To<TransitionKeyframe::PropertySpecificKeyframe>(frame.Get());
       const TypedInterpolationValue* interpolation_value =
           transition_keyframe->GetValue();
-      if (!value_filter(element, nullptr, interpolation_value)) {
+      if (!value_filter(element, PropertyName(), nullptr,
+                        interpolation_value)) {
         return false;
       }
       AddKeyframe(offset, timing_function, interpolation_value);
     }
   }
+  if (!style_dependent_keyframe_indices_.empty()) {
+    UpdateStyleDependencies(*element);
+  }
+
   return true;
 }
 
 scoped_refptr<CompositorAnimationCurve>
 CompositorAnimationCurve::UpdateKeyframeSnapshot(Animation* animation) {
+#if !EXPENSIVE_DCHECKS_ARE_ON()
   if (!HasStyleDependency()) {
     return base::WrapRefCounted(this);
   }
+#endif
 
   KeyframeEffect* effect = To<KeyframeEffect>(animation->effect());
   const KeyframeEffectModelBase* model = effect->Model();
@@ -114,6 +128,7 @@ CompositorAnimationCurve::UpdateKeyframeSnapshot(Animation* animation) {
   }
 
   if (maybe_copy) {
+    maybe_copy->UpdateStyleDependencies(*element);
     return maybe_copy;
   }
 

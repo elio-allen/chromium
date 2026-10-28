@@ -15,14 +15,14 @@ import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniRawPtr;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
-import org.chromium.android_webview.common.AwFeatureMap;
 import org.chromium.android_webview.common.Lifetime;
 import org.chromium.android_webview.common.MediaIntegrityApiStatus;
 import org.chromium.android_webview.common.MediaIntegrityProvider;
-import org.chromium.base.BaseFeatures;
+import org.chromium.android_webview.http_headers.AwHeaderInterceptorStore;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.StrictModeContext;
 import org.chromium.base.ThreadUtils;
@@ -103,6 +103,7 @@ public class AwBrowserContext implements BrowserContextHandle {
 
     private final AwPrefetchManager mPrefetchManager;
     private final AwPreconnector mPreconnector;
+    @NonNull private final AwHeaderInterceptorStore mHeaderInterceptorStore;
 
     /**
      * Cache key for MediaIntegrityProviders. Ensures that values are keyed by
@@ -177,6 +178,8 @@ public class AwBrowserContext implements BrowserContextHandle {
         mHttpCacheManager = httpCacheManager;
         mPrefetchManager = prefetchManager;
         mPreconnector = preconnector;
+        mHeaderInterceptorStore =
+                new AwHeaderInterceptorStore(this::supplyNativeHeaderInterceptorStore);
         mIsDefault = isDefault;
 
         try (StrictModeContext ignored = StrictModeContext.allowDiskWrites()) {
@@ -192,16 +195,16 @@ public class AwBrowserContext implements BrowserContextHandle {
                         new AwContentsLifecycleNotifier.Observer() {
                             @Override
                             public void onFirstWebViewCreated() {
-                                MemoryPressureMonitor.INSTANCE.enablePolling(
-                                        AwFeatureMap.isEnabled(
-                                                BaseFeatures
-                                                        .POST_GET_MY_MEMORY_STATE_TO_BACKGROUND));
+                                MemoryPressureMonitor.INSTANCE.enablePolling();
                             }
 
                             @Override
                             public void onLastWebViewDestroyed() {
                                 MemoryPressureMonitor.INSTANCE.disablePolling();
                             }
+
+                            @Override
+                            public void onAppStateChanged(@AppState int appState) {}
                         });
     }
 
@@ -309,6 +312,19 @@ public class AwBrowserContext implements BrowserContextHandle {
         return mPreconnector;
     }
 
+    @NonNull
+    public AwHeaderInterceptorStore getHeaderInterceptorStore() {
+        return mHeaderInterceptorStore;
+    }
+
+    private @Nullable JniRawPtr<AwHeaderInterceptorStore.Native>
+            supplyNativeHeaderInterceptorStore() {
+        return mNativeAwBrowserContext == 0
+                ? null
+                : AwBrowserContextJni.get()
+                        .getHeaderInterceptorStoreFromJava(mNativeAwBrowserContext);
+    }
+
     public void setOriginMatchedHeader(
             @NonNull String headerName, @NonNull String headerValue, @NonNull Set<String> rules) {
         ThreadUtils.assertOnUiThread();
@@ -387,7 +403,9 @@ public class AwBrowserContext implements BrowserContextHandle {
         ContentViewStatics.setWebKitSharedTimersSuspended(true);
     }
 
-    /** @see android.webkit.WebView#resumeTimers() */
+    /**
+     * @see android.webkit.WebView#resumeTimers()
+     */
     public void resumeTimers() {
         ContentViewStatics.setWebKitSharedTimersSuspended(false);
     }
@@ -501,24 +519,18 @@ public class AwBrowserContext implements BrowserContextHandle {
                 .isValidHttpHeaderName(headerName);
     }
 
-    public void addQuicHints(Set<String> origins) {
-        GURL[] gurls = new GURL[origins.size()];
-        int i = 0;
-        for (String origin : origins) {
-            GURL gurl = new GURL(origin);
-            if (GURL.isEmptyOrInvalid(gurl)) {
-                throw new IllegalArgumentException("Invalid origin: " + origin);
-            }
-
-            gurls[i++] = gurl;
-        }
-
-        AwBrowserContextJni.get().addQuicHints(mNativeAwBrowserContext, gurls);
+    public void addQuicHints(ParsedQuicHints parsedHints) {
+        AwBrowserContextJni.get()
+                .addQuicHints(
+                        mNativeAwBrowserContext,
+                        parsedHints.exactOrigins,
+                        parsedHints.wildcardSuffixes,
+                        parsedHints.tryQuicByDefault);
     }
 
     public void setCrossOriginIsolatedAllowList(@NonNull Set<String> originPatterns) {
         List<String> mismatched =
-                org.chromium.android_webview.AwBrowserContextJni.get()
+                AwBrowserContextJni.get()
                         .setCrossOriginIsolatedAllowList(mNativeAwBrowserContext, originPatterns);
         if (!mismatched.isEmpty()) {
             throw new IllegalArgumentException(
@@ -528,8 +540,7 @@ public class AwBrowserContext implements BrowserContextHandle {
 
     public @NonNull Set<String> getCrossOriginIsolatedAllowList() {
         return Set.copyOf(
-                org.chromium.android_webview.AwBrowserContextJni.get()
-                        .getCrossOriginIsolatedAllowList(mNativeAwBrowserContext));
+                AwBrowserContextJni.get().getCrossOriginIsolatedAllowList(mNativeAwBrowserContext));
     }
 
     @NativeMethods
@@ -592,7 +603,10 @@ public class AwBrowserContext implements BrowserContextHandle {
         boolean isValidHttpHeaderValue(@JniType("std::string") String headerValue);
 
         void addQuicHints(
-                long nativeAwBrowserContext, @JniType("std::vector<GURL>") GURL[] origins);
+                long nativeAwBrowserContext,
+                @JniType("std::vector<GURL>") GURL[] origins,
+                @JniType("std::vector<std::string>") String[] wildcardSuffixes,
+                boolean tryQuicByDefault);
 
         @JniType("std::vector<std::string>")
         List<String> setCrossOriginIsolatedAllowList(
@@ -601,5 +615,8 @@ public class AwBrowserContext implements BrowserContextHandle {
 
         @JniType("std::vector<std::string>")
         List<String> getCrossOriginIsolatedAllowList(long nativeAwBrowserContext);
+
+        JniRawPtr<AwHeaderInterceptorStore.Native> getHeaderInterceptorStoreFromJava(
+                long nativeAwBrowserContext);
     }
 }

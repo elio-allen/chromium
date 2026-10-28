@@ -18,10 +18,12 @@
 #include "base/compiler_specific.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/heap_array.h"
+#include "base/containers/linear_find.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/notimplemented.h"
+#include "base/synchronization/atomic_flag.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/threading/thread.h"
 #include "base/time/time.h"
@@ -159,11 +161,7 @@ class FakeV4L2Impl::OpenedDevice {
   int open_flags() const { return open_flags_; }
 
   FakeV4L2Buffer* LookupBufferFromOffset(off_t offset) {
-    auto buffer_iter =
-        std::ranges::find(device_buffers_, offset, &FakeV4L2Buffer::offset);
-    if (buffer_iter == device_buffers_.end())
-      return nullptr;
-    return &(*buffer_iter);
+    return base::LinearFind(device_buffers_, offset, &FakeV4L2Buffer::offset);
   }
 
   bool BlockUntilOutputQueueHasBuffer(int timeout_in_milliseconds) {

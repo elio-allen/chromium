@@ -68,7 +68,6 @@ void TreeScopeAdopter::MoveTreeToNewScope(Node& root) const {
   // Pre-check for scoped custom element registry handling during tree scope
   // changes (both cross-document adoption and within-document scope changes).
   bool handle_registry =
-      RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
       (old_document.ScopedCustomElementRegistryUsed() ||
        new_document.ScopedCustomElementRegistryUsed());
   if (handle_registry && will_move_to_new_document &&
@@ -187,9 +186,8 @@ void TreeScopeAdopter::MoveShadowTreeToNewDocument(
   // inclusiveDescendant's custom element registry to document's effective
   // global custom element registry.
   auto* shadow_root_registry = shadow_root.customElementRegistry();
-  if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
-      (old_document.ScopedCustomElementRegistryUsed() ||
-       new_document.ScopedCustomElementRegistryUsed())) {
+  if (old_document.ScopedCustomElementRegistryUsed() ||
+      new_document.ScopedCustomElementRegistryUsed()) {
     if ((!shadow_root_registry &&
          !shadow_root.ShouldKeepCustomElementRegistryNull()) ||
         (shadow_root_registry && shadow_root_registry->IsGlobalRegistry())) {
@@ -257,7 +255,6 @@ void TreeScopeAdopter::WillMoveTreeToNewDocument(Node& root) const {
       // the element's registry here to ensure the knowledge is kept even with
       // the scope change.
       if (old_document.ScopedCustomElementRegistryUsed()) {
-        DCHECK(RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled());
         auto* registry = element->customElementRegistry();
         if (registry && registry == old_document.customElementRegistry()) {
           element->SetCustomElementRegistry(
@@ -294,6 +291,8 @@ inline void TreeScopeAdopter::UpdateTreeScope(Node& node) const {
   DCHECK(!node.IsTreeScope());
   DCHECK(node.GetTreeScope() == OldScope());
   node.SetTreeScope(new_scope_);
+  node.SetFlag(new_scope_->RootNode().IsShadowRoot(),
+               Node::kIsInShadowTreeFlag);
 }
 
 inline void TreeScopeAdopter::MoveNodeToNewDocument(
@@ -311,7 +310,7 @@ inline void TreeScopeAdopter::MoveNodeToNewDocument(
       if (rare_data->NodeLists()) {
         rare_data->NodeLists()->AdoptDocument(old_document, new_document);
       }
-      if (old_document.HasMutationObservers()) {
+      if (old_document.MayHaveMutationObservers()) {
         node.MoveMutationObserversToNewDocument(new_document);
       }
     }
@@ -335,7 +334,7 @@ inline void TreeScopeAdopter::MoveNodeToNewDocument(
     DCHECK(!old_document.HasNodeIterators());
     DCHECK(!old_document.HasRanges());
     DCHECK(!old_document.HasAnyNodeWithEventListeners());
-    DCHECK(!old_document.HasMutationObservers());
+    DCHECK(!old_document.MayHaveMutationObservers());
     DCHECK(!old_document.ShouldInvalidateNodeListCaches());
     DCHECK(!old_document.HasCachedAttrAssociatedElements());
   }
@@ -360,7 +359,7 @@ inline bool TreeScopeAdopter::IsDocumentEligibleForFastAdoption(
     Document& old_document) const {
   return !old_document.HasNodeIterators() && !old_document.HasRanges() &&
          !old_document.HasAnyNodeWithEventListeners() &&
-         !old_document.HasMutationObservers() &&
+         !old_document.MayHaveMutationObservers() &&
          !old_document.ShouldInvalidateNodeListCaches() &&
          !old_document.HasCachedAttrAssociatedElements();
 }

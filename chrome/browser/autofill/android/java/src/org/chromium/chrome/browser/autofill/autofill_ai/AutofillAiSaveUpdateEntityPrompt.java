@@ -7,11 +7,10 @@ package org.chromium.chrome.browser.autofill.autofill_ai;
 import android.app.Activity;
 import android.content.Context;
 import android.graphics.Paint;
+import android.text.SpannableStringBuilder;
 import android.text.TextUtils;
 import android.text.method.LinkMovementMethod;
-import android.text.style.ForegroundColorSpan;
-import android.text.style.RelativeSizeSpan;
-import android.text.style.SuperscriptSpan;
+import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.LinearLayout;
@@ -19,6 +18,7 @@ import android.widget.TextView;
 
 import androidx.annotation.VisibleForTesting;
 import androidx.appcompat.content.res.AppCompatResources;
+import androidx.fragment.app.FragmentActivity;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JniType;
@@ -27,12 +27,15 @@ import org.chromium.base.ResettersForTesting;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.autofill.AutofillUiUtils;
 import org.chromium.chrome.browser.autofill.R;
 import org.chromium.chrome.browser.autofill.editors.autofill_ai.EntityEditorCoordinator;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.components.autofill.autofill_ai.AutofillAiWalletNoticeFunnelEvents;
 import org.chromium.components.autofill.autofill_ai.EntityInstance;
-import org.chromium.components.browser_ui.styles.SemanticColorUtils;
+import org.chromium.components.autofill.payments.LegalMessageLine;
+import org.chromium.components.browser_ui.styles.NewLabelUtils;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -41,7 +44,6 @@ import org.chromium.ui.modaldialog.SimpleModalDialogController;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.text.ChromeClickableSpan;
 import org.chromium.ui.text.SpanApplier;
-import org.chromium.ui.text.SpanApplier.SpanInfo;
 
 import java.util.List;
 
@@ -51,6 +53,10 @@ public class AutofillAiSaveUpdateEntityPrompt implements EntityEditorCoordinator
     @VisibleForTesting
     public static final String ENTITY_EDITOR_OPENED_HISTOGRAM =
             "Autofill.Ai.EntityEditor.OpenedFromSaveUpdatePrompt";
+
+    @VisibleForTesting
+    public static final String WALLET_NOTICE_SAVE_FUNNEL_HISTOGRAM =
+            "Autofill.Ai.WalletNotice.Save.Funnel";
 
     private final AutofillAiSaveUpdateEntityPromptController mController;
     private final ModalDialogManager mModalDialogManager;
@@ -66,7 +72,7 @@ public class AutofillAiSaveUpdateEntityPrompt implements EntityEditorCoordinator
     public AutofillAiSaveUpdateEntityPrompt(
             AutofillAiSaveUpdateEntityPromptController controller,
             ModalDialogManager modalDialogManager,
-            Activity activity,
+            FragmentActivity activity,
             Profile profile,
             EntityInstance entityInstance) {
         mController = controller;
@@ -87,7 +93,9 @@ public class AutofillAiSaveUpdateEntityPrompt implements EntityEditorCoordinator
                                 ModalDialogProperties.ButtonStyles.PRIMARY_FILLED_NEGATIVE_OUTLINE)
                         .with(ModalDialogProperties.CUSTOM_VIEW, mDialogView);
         mDialogModel = builder.build();
-        mEntityEditor = new EntityEditorCoordinator(activity, this, profile, entityInstance);
+        mEntityEditor =
+                new EntityEditorCoordinator(
+                        activity, this, profile, entityInstance, /* detailsForUpsertPass= */ null);
     }
 
     @Override
@@ -124,10 +132,18 @@ public class AutofillAiSaveUpdateEntityPrompt implements EntityEditorCoordinator
             @JniType("autofill::EntityInstanceAndroid") EntityInstance entityInstance) {
         @Nullable Activity activity = windowAndroid.getActivity().get();
         @Nullable ModalDialogManager modalDialogManager = windowAndroid.getModalDialogManager();
-        if (activity == null || modalDialogManager == null) return null;
+        if (activity == null
+                || modalDialogManager == null
+                || !(activity instanceof FragmentActivity)) {
+            return null;
+        }
 
         return new AutofillAiSaveUpdateEntityPrompt(
-                controller, modalDialogManager, activity, browserProfile, entityInstance);
+                controller,
+                modalDialogManager,
+                (FragmentActivity) activity,
+                browserProfile,
+                entityInstance);
     }
 
     /**
@@ -151,6 +167,10 @@ public class AutofillAiSaveUpdateEntityPrompt implements EntityEditorCoordinator
             mDialogModel.set(
                     ModalDialogProperties.TITLE_END_ICON,
                     AppCompatResources.getDrawable(mContext, R.drawable.google_wallet_24dp));
+            if (ChromeFeatureList.isEnabled(
+                    ChromeFeatureList.AUTOFILL_AI_WALLET_PASS_BRANDING_2026)) {
+                mDialogModel.set(ModalDialogProperties.TITLE_END_ICON_GRAVITY, Gravity.TOP);
+            }
         }
     }
 
@@ -244,18 +264,13 @@ public class AutofillAiSaveUpdateEntityPrompt implements EntityEditorCoordinator
 
         TextView attributeValue = attributeInfo.findViewById(R.id.attribute_value);
         attributeValue.setText(
-                SpanApplier.applySpans(
+                NewLabelUtils.withBadge(
+                        mContext,
                         mContext.getString(
                                         R.string
                                                 .autofill_ai_save_or_update_entity_new_attribute_with_badge)
                                 .replace("$1", updateDetails.getAttributeValue()),
-                        new SpanInfo(
-                                "<new>",
-                                "</new>",
-                                new SuperscriptSpan(),
-                                new RelativeSizeSpan(0.6f),
-                                new ForegroundColorSpan(
-                                        SemanticColorUtils.getDefaultTextColorAccent1(mContext)))));
+                        /* relativeTextSize= */ 0.6f));
     }
 
     private void configureUpdatedAttribute(
@@ -311,12 +326,42 @@ public class AutofillAiSaveUpdateEntityPrompt implements EntityEditorCoordinator
                                 "<link>",
                                 "</link>",
                                 new ChromeClickableSpan(
-                                        mContext,
-                                        view -> {
-                                            mController.onWalletLinkClicked();
-                                        })));
+                                        mContext, _ -> mController.onWalletLinkClicked())));
         sourceNoticeView.setText(sourceNoticeWithLink, TextView.BufferType.SPANNABLE);
         sourceNoticeView.setMovementMethod(LinkMovementMethod.getInstance());
+    }
+
+    /**
+     * Sets the legal message in the prompt.
+     *
+     * @param legalMessageLines the list of legal message lines to display.
+     */
+    @CalledByNative
+    @VisibleForTesting
+    void setPublicPassesNotice(
+            @JniType("std::vector<autofill::LegalMessageLine>")
+                    List<LegalMessageLine> legalMessageLines) {
+        TextView legalMessageView = mDialogView.findViewById(R.id.autofill_ai_public_passes_notice);
+        if (legalMessageLines.isEmpty()) {
+            legalMessageView.setVisibility(View.GONE);
+            return;
+        }
+
+        SpannableStringBuilder stringBuilder =
+                AutofillUiUtils.getSpannableStringForLegalMessageLines(
+                        mContext,
+                        legalMessageLines,
+                        /* underlineLinks= */ true,
+                        url -> {
+                            RecordHistogram.recordEnumeratedHistogram(
+                                    WALLET_NOTICE_SAVE_FUNNEL_HISTOGRAM,
+                                    AutofillAiWalletNoticeFunnelEvents.LINK_CLICKED,
+                                    AutofillAiWalletNoticeFunnelEvents.MAX_VALUE + 1);
+                            AutofillUiUtils.openLink(mContext, url);
+                        });
+        legalMessageView.setText(stringBuilder);
+        legalMessageView.setVisibility(View.VISIBLE);
+        legalMessageView.setMovementMethod(LinkMovementMethod.getInstance());
     }
 
     /** Dismisses the prompt without returning any user response. */

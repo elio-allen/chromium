@@ -25,7 +25,6 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import org.chromium.base.CallbackController;
 import org.chromium.base.CallbackUtils;
-import org.chromium.base.DeviceInfo;
 import org.chromium.base.Log;
 import org.chromium.base.TimeUtils;
 import org.chromium.base.TraceEvent;
@@ -85,7 +84,6 @@ import org.chromium.chrome.browser.suggestions.SuggestionsUiDelegateImpl;
 import org.chromium.chrome.browser.suggestions.tile.Tile;
 import org.chromium.chrome.browser.suggestions.tile.TileGroup;
 import org.chromium.chrome.browser.suggestions.tile.TileGroupDelegateImpl;
-import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabHidingType;
 import org.chromium.chrome.browser.tab.TabObserver;
@@ -115,6 +113,7 @@ import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteInput.AutocompleteState;
 import org.chromium.components.omnibox.AutocompleteRequestType;
+import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.components.omnibox.OmniboxFocusReason;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.search_engines.TemplateUrlService.TemplateUrlServiceObserver;
@@ -162,6 +161,7 @@ public class NewTabPage
     protected final NewTabPageManagerImpl mNewTabPageManager;
     protected final TileGroup.Delegate mTileGroupDelegate;
     private final boolean mIsLff;
+    private final boolean mIsNtpCustomizationSyncEnabled;
     private final BrowserControlsStateProvider mBrowserControlsStateProvider;
     private final BottomSheetController mBottomSheetController;
     private final NewTabPageLayout mNewTabPageLayout;
@@ -285,7 +285,7 @@ public class NewTabPage
         public void focusSearchBox(
                 boolean beginVoiceSearch,
                 @AutocompleteRequestType int requestType,
-                boolean showFuseboxPopup,
+                @OmniboxFocusReason int focusReason,
                 @Nullable String pastedText) {
             if (mIsDestroyed) return;
             FeedReliabilityLogger feedReliabilityLogger =
@@ -303,16 +303,13 @@ public class NewTabPage
                     feedReliabilityLogger.onOmniboxFocused();
                 }
 
-                @OmniboxFocusReason
-                int focusReason =
-                        pastedText == null
-                                ? OmniboxFocusReason.FAKE_BOX_TAP
-                                : OmniboxFocusReason.FAKE_BOX_LONG_PRESS;
                 @AutocompleteState int autocompleteState = AutocompleteState.ENABLED;
-                if (requestType == AutocompleteRequestType.AI_MODE) {
-                    focusReason = OmniboxFocusReason.NTP_AI_MODE;
-                } else if (showFuseboxPopup) {
-                    focusReason = OmniboxFocusReason.FAKE_BOX_PLUS_BUTTON_TAP;
+                if (focusReason == OmniboxFocusReason.FAKE_BOX_PLUS_BUTTON_TAP) {
+                    autocompleteState =
+                            OmniboxFeatures.sFocusFuseboxFromNtpPlusButton.getValue()
+                                    ? AutocompleteState.ENABLED
+                                    : AutocompleteState.STANDBY_NO_FOCUS;
+                } else if (focusReason == OmniboxFocusReason.NTP_GALLERY_CHIP_CLICKED) {
                     autocompleteState = AutocompleteState.STANDBY_NO_FOCUS;
                 }
 
@@ -335,7 +332,7 @@ public class NewTabPage
             Tab currentTab = mActivityTabProvider.get();
             if (currentTab == null) return null;
             NativePage nativePage = currentTab.getNativePage();
-            return (nativePage instanceof NewTabPage) ? (NewTabPage) nativePage : null;
+            return (nativePage instanceof NewTabPage newTabPage) ? newTabPage : null;
         }
 
         @Override
@@ -349,6 +346,8 @@ public class NewTabPage
 
             // If not visible when loading completes, wait until onShown is received.
             if (!mTab.isHidden()) recordNtpShown();
+
+            maybeUpdateCustomBackgroundFromDeviceSync();
         }
 
         @Override
@@ -408,7 +407,7 @@ public class NewTabPage
      * @param shareDelegateSupplier Supplies the Delegate used to open SharingHub.
      * @param windowAndroid The containing window of this page.
      * @param toolbarSupplier Supplies the {@link Toolbar}.
-     * @param homeSurfaceTracker Used to decide whether we are the home surface.
+     * @param homeSurfaceTracker Tracker recording whether this NTP acts as the home surface.
      * @param activityResultTracker Tracker of activity results.
      * @param tabStripHeightSupplier Supplier for the tab strip height.
      * @param moduleRegistrySupplier Supplier for the {@link ModuleRegistry}.
@@ -458,6 +457,7 @@ public class NewTabPage
         mBrowserControlsStateProvider = browserControlsStateProvider;
         mBottomSheetController = bottomSheetController;
         mIsInNightMode = isInNightMode;
+        mIsNtpCustomizationSyncEnabled = NtpCustomizationUtils.isNTPCustomizationSyncEnabled();
         mTabStripHeightSupplier = tabStripHeightSupplier;
         mTopInsetProvider = topInsetProvider;
 
@@ -483,13 +483,14 @@ public class NewTabPage
         mTemplateUrlService.addObserver(this);
 
         mTabObserver =
-                new EmptyTabObserver() {
+                new TabObserver() {
                     @Override
                     public void onShown(Tab tab, @TabSelectionType int type) {
                         // Showing the NTP is only meaningful when the page has been loaded already.
                         if (mIsLoaded) {
                             recordNtpShown();
                         }
+                        maybeUpdateCustomBackgroundFromDeviceSync();
                         mNewTabPageCoordinator.maybeUpdateHomeModules(mIsLoaded);
                         mNewTabPageCoordinator.onSwitchToForeground();
                     }
@@ -510,6 +511,7 @@ public class NewTabPage
                 new PauseResumeWithNativeObserver() {
                     @Override
                     public void onResumeWithNative() {
+                        maybeUpdateCustomBackgroundFromDeviceSync();
                         mNewTabPageCoordinator.maybeUpdateHomeModules(mIsLoaded);
                     }
 
@@ -547,7 +549,8 @@ public class NewTabPage
                         mTabStripHeightSupplier,
                         sideUiStateProviderSupplier,
                         homeSurfaceTracker,
-                        backPressManager);
+                        backPressManager,
+                        mTemplateUrlService);
 
         initializeFeedSurfaceProvider(
                 activity,
@@ -581,18 +584,21 @@ public class NewTabPage
 
         mSupportsEnableEdgeToEdgeOnTop =
                 NtpCustomizationUtils.supportsEnableEdgeToEdgeOnTop(windowAndroid, mIsLff);
+
+        // Initialize NTP theme customization state before setting up top inset observers so that
+        // the initial customized theme state is known before observers start listening. The
+        // listener to observe custom background changes is added in all form factors as long as the
+        // feature is enabled.
+        if (NtpCustomizationUtils.isNtpThemeCustomizationEnabled()) {
+            setIsUseEdgeToEdgeForCustomizedTheme();
+            initHomepageStateListener();
+        }
+
         if (mSupportsEnableEdgeToEdgeOnTop) {
             // Apply edge-to-edge adjustments exclusively to phones. These are not required for LFF
             // devices.
             initTopInsetProviderObserver();
             initUseLightIconTint();
-        }
-
-        // The listener to observe custom background changes are added in all form factors as long
-        // as the feature is enabled.
-        if (NtpCustomizationUtils.isNtpThemeCustomizationEnabled()) {
-            setIsUseEdgeToEdgeForCustomizedTheme();
-            initHomepageStateListener();
         }
 
         NewTabPageUma.recordContentSuggestionsDisplayStatus(profile);
@@ -604,8 +610,7 @@ public class NewTabPage
                 mFeedSurfaceProvider.getScrollDelegate(),
                 mFeedSurfaceProvider.getTouchEnabledDelegate(),
                 mFeedSurfaceProvider.getUiConfig(),
-                lifecycleDispatcher,
-                () -> assumeNonNull(mTemplateUrlService.getComposeplateUrl()));
+                lifecycleDispatcher);
 
         sTotalCount++;
         NewTabPageUma.recordSimultaneousNtpCount(sTotalCount);
@@ -626,13 +631,6 @@ public class NewTabPage
                     if (mRecordedFcp) return;
                     mRecordedFcp = true;
                     long durationMs = SystemClock.uptimeMillis() - mNavigationStartMs;
-                    if (DeviceInfo.isDesktop()) {
-                        // Keep collecting this histogram for Android desktop to avoid losing data.
-                        // TODO(crbug.com/531793117): Remove this histogram once we have finished
-                        // the study for Android desktop.
-                        RecordHistogram.recordMediumTimesHistogram(
-                                "NewTabPage.LoadTime.FirstContentfulPaint", durationMs);
-                    }
                     // LINT.IfChange(page_load_histogram)
                     RecordHistogram.recordCustomTimesHistogram(
                             "NewTabPage.LoadTime.FirstContentfulPaint2",
@@ -653,8 +651,11 @@ public class NewTabPage
      * @param snackbarManager {@link SnackbarManager} object.
      * @param isInNightMode {@code true} if the night mode setting is on.
      * @param shareDelegateSupplier Supplies a delegate used to open SharingHub.
+     * @param modalDialogManager Manager for displaying modal dialogs.
      * @param edgeToEdgeControllerSupplier The supplier to {@link EdgeToEdgeController}.
      * @param startupMetricsTracker Used to record NTP startup metric.
+     * @param tabModelSelector Selector for accessing tab models.
+     * @param moduleRegistrySupplier Supplier providing the module registry.
      */
     @EnsuresNonNull({"mFeedSurfaceProvider"})
     protected void initializeFeedSurfaceProvider(
@@ -756,6 +757,41 @@ public class NewTabPage
                 };
         NtpCustomizationConfigManager.getInstance()
                 .addListener(mHomepageStateListener, mContext, /* skipNotify= */ false);
+    }
+
+    /**
+     * Compares standard SharedPreferences with our active in-memory cached state and applies
+     * updates from background sync.
+     *
+     * <p>This method is invoked during:
+     *
+     * <ul>
+     *   <li>Cold/Warm Starts (via {@link #onLoadingComplete} and {@link TabObserver#onShown}):
+     *       Updating background state once native initialization and page loading finish.
+     *   <li>Hot Starts / Foregrounding (via {@link
+     *       PauseResumeWithNativeObserver#onResumeWithNative}): When returning to an already-loaded
+     *       NTP.
+     *   <li>Tab Switching (via {@link TabObserver#onShown}): When switching back to an
+     *       already-loaded NTP tab.
+     * </ul>
+     */
+    private void maybeUpdateCustomBackgroundFromDeviceSync() {
+        if (!mIsNtpCustomizationSyncEnabled) {
+            return;
+        }
+
+        // Defer background state updates until native initialization has completed.
+        // During Cold/Warm starts, onResumeWithNative and onShown run early while native
+        // initialization is still in-flight. Skipping early calls prevents tearing down the
+        // Activity mid-startup. Once native initialization finishes, subsequent checks trigger
+        // cleanly.
+        if (mActivityLifecycleDispatcher == null
+                || !mActivityLifecycleDispatcher.isNativeInitializationFinished()) {
+            return;
+        }
+
+        NtpCustomizationConfigManager.getInstance()
+                .maybeApplyBackgroundUpdateFromDeviceSync(mActivity);
     }
 
     private void onBackgroundChangedImpl(boolean applyWhiteBackgroundOnSearchBox) {
@@ -918,6 +954,11 @@ public class NewTabPage
         mNewTabPageCoordinator.getSearchBoxBounds(bounds, translation, getView());
     }
 
+    /** Returns the fake search box view. */
+    public View getSearchBoxView() {
+        return mNewTabPageCoordinator.getSearchBoxView();
+    }
+
     /**
      * Get the vertical inset applied to the search box bounds.
      *
@@ -1035,6 +1076,7 @@ public class NewTabPage
         SuggestionsMetrics.recordSurfaceVisible();
         GlicHelper.maybeShowGlicTaskInProgressSnackbar(
                 this, mTab.getProfile(), mActivity, GlicHelper.Caller.NEW_TAB_PAGE);
+        mNewTabPageCoordinator.recordNtpShown();
     }
 
     /** Records UMA for the NTP being hidden and the time spent on it. */
@@ -1146,7 +1188,7 @@ public class NewTabPage
     }
 
     @Override
-    public boolean supportsEdgeToEdge() {
+    public boolean supportsEdgeToEdgeOnBottom() {
         return true;
     }
 
@@ -1214,6 +1256,11 @@ public class NewTabPage
 
     @Override
     public boolean shouldCaptureThumbnail() {
+        // A newly created (e.g. unfrozen) NTP must not overwrite the cached thumbnail until it has
+        // been drawn for display; otherwise the capture is blank, e.g. when restoring directly
+        // into the Hub after activity recreation.
+        if (!mFeedSurfaceProvider.hasDrawnFrame()) return false;
+
         return mNewTabPageCoordinator.shouldCaptureThumbnail()
                 || mFeedSurfaceProvider.shouldCaptureThumbnail()
                 || mSnapshotSingleTabCardChanged;
@@ -1325,12 +1372,13 @@ public class NewTabPage
     }
 
     private void updateNtpScrollListener(boolean attach) {
-        if (!(mFeedSurfaceProvider instanceof FeedSurfaceCoordinator)) return;
+        if (!(mFeedSurfaceProvider instanceof FeedSurfaceCoordinator feedSurfaceCoordinator)) {
+            return;
+        }
 
         if (!BottomBarConfigUtils.isNtpScrollOffEnabled(mTab, mContext)) return;
 
-        RecyclerView recyclerView =
-                ((FeedSurfaceCoordinator) mFeedSurfaceProvider).getRecyclerView();
+        RecyclerView recyclerView = feedSurfaceCoordinator.getRecyclerView();
         if (recyclerView == null) {
             if (mNtpScrollListener != null) {
                 mNtpScrollListener = null;
@@ -1377,9 +1425,7 @@ public class NewTabPage
             Tab tab = mTabRef.get();
             if (provider == null || context == null || tab == null) return;
             if (tab.isLoading()) return;
-            if (!(provider instanceof BrowserControlsVisibilityManager)) return;
-
-            BrowserControlsVisibilityManager manager = (BrowserControlsVisibilityManager) provider;
+            if (!(provider instanceof BrowserControlsVisibilityManager manager)) return;
 
             // If browser controls are locked persistently in the SHOWN state (e.g., during layout
             // transitions or background tab creation animations), ignore scroll events to prevent

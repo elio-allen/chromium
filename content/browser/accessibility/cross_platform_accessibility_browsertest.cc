@@ -15,6 +15,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
@@ -25,15 +26,19 @@
 #include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/render_widget_host_view.h"
+#include "content/public/common/content_switches.h"
 #include "content/public/common/isolated_world_ids.h"
 #include "content/public/test/accessibility_notification_waiter.h"
+#include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/public/test/scoped_accessibility_mode_override.h"
 #include "content/shell/browser/shell.h"
+#include "content/test/content_browser_test_utils_internal.h"
 #include "net/dns/mock_host_resolver.h"
+#include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "third_party/blink/public/common/features.h"
@@ -48,9 +53,7 @@
 #include "ui/base/buildflags.h"
 
 #if BUILDFLAG(IS_WIN)
-#include "base/win/atl.h"
 #include "base/win/scoped_com_initializer.h"
-#include "ui/base/win/atl_module.h"
 #endif
 
 #if BUILDFLAG(IS_MAC)
@@ -59,6 +62,10 @@
 
 #if BUILDFLAG(IS_ANDROID)
 #include "content/browser/accessibility/browser_accessibility_android.h"
+#endif
+
+#if BUILDFLAG(USE_ATK) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+#include "content/browser/accessibility/accessibility_content_browsertest.h"
 #endif
 
 using ::testing::ElementsAre;
@@ -73,6 +80,58 @@ constexpr int kDelayForDeferredUpdatesAfterPageLoad = 150;
 #endif
 
 namespace content {
+
+#if BUILDFLAG(USE_ATK) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+class AccessibilityBackForwardCacheBrowserTest
+    : public AccessibilityContentBrowserTest {
+ public:
+  AccessibilityBackForwardCacheBrowserTest() {
+    feature_list_.InitWithFeaturesAndParameters(
+        GetDefaultEnabledBackForwardCacheFeaturesForTesting(),
+        GetDefaultDisabledBackForwardCacheFeaturesForTesting());
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(AccessibilityBackForwardCacheBrowserTest,
+                       CachedDocumentNativeParent) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  WebContents* web_contents = GetWebContentsAndAssertNonNull();
+
+  // 1. Open the first page and check its document's native parent.
+  ASSERT_TRUE(
+      NavigateToURL(shell(), embedded_test_server()->GetURL("/title1.html")));
+  WaitForAccessibilityTreeToContainNodeWithName(web_contents,
+                                                "This page has no title.");
+  RenderFrameHostImplWrapper first_frame(web_contents->GetPrimaryMainFrame());
+  auto* first_document = GetRootAndAssertNonNull();
+  EXPECT_TRUE(first_document->GetParent());
+
+  // 2. Navigate away. The cached document must have no native parent.
+  ASSERT_TRUE(
+      NavigateToURL(shell(), embedded_test_server()->GetURL("/title2.html")));
+  WaitForAccessibilityTreeToContainNodeWithName(web_contents,
+                                                "Title Of Awesomeness");
+  ASSERT_TRUE(first_frame);
+  ASSERT_TRUE(first_frame->IsInBackForwardCache());
+  ASSERT_TRUE(first_frame->browser_accessibility_manager());
+  ASSERT_EQ(first_document, first_frame->browser_accessibility_manager()
+                                ->GetBrowserAccessibilityRoot());
+  EXPECT_FALSE(first_document->GetParent());
+
+  // 3. Go back. The same document must regain its native parent.
+  ASSERT_TRUE(HistoryGoBack(web_contents));
+  WaitForAccessibilityTreeToContainNodeWithName(web_contents,
+                                                "This page has no title.");
+  ASSERT_TRUE(first_frame);
+  ASSERT_EQ(first_frame.get(), web_contents->GetPrimaryMainFrame());
+  ASSERT_TRUE(first_frame->IsActive());
+  ASSERT_EQ(first_document, GetRootAndAssertNonNull());
+  EXPECT_TRUE(first_document->GetParent());
+}
+#endif
 
 class CrossPlatformAccessibilityBrowserTest : public ContentBrowserTest {
  public:
@@ -272,7 +331,6 @@ void CrossPlatformAccessibilityBrowserTest::ChooseFeatures(
 void CrossPlatformAccessibilityBrowserTest::SetUpOnMainThread() {
 #if BUILDFLAG(IS_WIN)
   com_initializer_ = std::make_unique<base::win::ScopedCOMInitializer>();
-  ui::win::CreateATLModuleIfNeeded();
 #endif
   // For OOPIF tests.
   host_resolver()->AddRule("*", "127.0.0.1");
@@ -1854,6 +1912,70 @@ IN_PROC_BROWSER_TEST_F(CrossPlatformAccessibilityBrowserTest,
     EXPECT_GT(popup_bounds.y(), 100);
   }
 }
+
+IN_PROC_BROWSER_TEST_F(CrossPlatformAccessibilityBrowserTest,
+                       GetBoundsRectIframesForDateTimePicker) {
+  LoadInitialAccessibilityTreeFromHtml(std::string(R"HTML(
+      <!DOCTYPE html>
+      <html>
+        <body>
+          <iframe style='border-width: 80px; padding: 20px;'
+            srcdoc="
+              <input type='datetime-local' aria-label='Input' />
+            ">
+          </iframe>
+        </body>
+      </html>)HTML"));
+  WaitForAccessibilityTreeToContainNodeWithName(shell()->web_contents(),
+                                                "Input");
+
+  ui::AXNode* root = GetManager()->GetRoot();
+  ASSERT_NE(nullptr, root);
+
+  const ui::AXNode* iframe = root->children()[0]->children()[0]->children()[0];
+  ASSERT_NE(nullptr, iframe);
+  ASSERT_EQ(iframe->GetRole(), ax::mojom::Role::kIframe);
+
+  const ui::AXTreeID iframe_tree_id = ui::AXTreeID::FromString(
+      iframe->GetStringAttribute(ax::mojom::StringAttribute::kChildTreeId));
+  ui::BrowserAccessibilityManager* iframe_manager =
+      ui::BrowserAccessibilityManager::FromID(iframe_tree_id);
+  ASSERT_NE(nullptr, iframe_manager);
+
+  ui::BrowserAccessibility* input =
+      FindNodeByRole(iframe_manager->GetBrowserAccessibilityRoot(),
+                     ax::mojom::Role::kDateTime);
+  ASSERT_NE(nullptr, input);
+  ui::BrowserAccessibility* popup_button =
+      FindNodeByRole(input, ax::mojom::Role::kPopUpButton);
+  ASSERT_NE(nullptr, popup_button);
+
+  {
+    AccessibilityNotificationWaiter waiter(shell()->web_contents(),
+                                           ax::mojom::Event::kClicked);
+
+    ui::AXActionData action_data;
+    action_data.action = ax::mojom::Action::kDoDefault;
+    popup_button->AccessibilityPerformAction(action_data);
+
+    ASSERT_TRUE(waiter.WaitForNotification());
+  }
+
+  const auto& controls_ids =
+      input->GetIntListAttribute(ax::mojom::IntListAttribute::kControlsIds);
+  ASSERT_EQ(1u, controls_ids.size());
+  ui::BrowserAccessibility* popup_area =
+      iframe_manager->GetFromID(controls_ids[0]);
+  ASSERT_NE(nullptr, popup_area);
+  const ui::BrowserAccessibility* previous_month_button =
+      FindFirstAccessibilityNodeWithNameOrValue(*popup_area,
+                                                "Show previous month");
+  ASSERT_NE(nullptr, previous_month_button);
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return !popup_area->GetLocation().IsEmpty(); }));
+  EXPECT_EQ(gfx::SizeF(28, 24), previous_month_button->GetLocation().size());
+}
 #endif  // !BUILDFLAG(IS_ANDROID) && !(BUILDFLAG(IS_IOS) &&
         // BUILDFLAG(USE_BLINK))
 
@@ -1994,8 +2116,8 @@ IN_PROC_BROWSER_TEST_F(CrossPlatformAccessibilityBrowserTest,
   EXPECT_EQ(static_cast<int>(ax::mojom::SortDirection::kOther),
             header3->GetIntAttribute(ax::mojom::IntAttribute::kSortDirection));
 
-  ASSERT_FALSE(
-      header4->HasIntAttribute(ax::mojom::IntAttribute::kSortDirection));
+  EXPECT_EQ(static_cast<int>(ax::mojom::SortDirection::kUnsorted),
+            header4->GetIntAttribute(ax::mojom::IntAttribute::kSortDirection));
   ASSERT_FALSE(
       header5->HasIntAttribute(ax::mojom::IntAttribute::kSortDirection));
 }
@@ -3377,7 +3499,7 @@ IN_PROC_BROWSER_TEST_F(CrossPlatformAccessibilityBrowserTest,
   ASSERT_NE(button_node, nullptr);
 
   ui::BrowserAccessibilityManager* manager = button_node->manager();
-  manager->ScrollToMakeVisible(*button_node, gfx::Rect());
+  manager->ScrollToMakeVisible(*button_node);
 
   EXPECT_EQ(manager->GetAccessibilityFocus(), button_node);
 }
@@ -3407,7 +3529,7 @@ IN_PROC_BROWSER_TEST_F(CrossPlatformAccessibilityBrowserTest,
   ASSERT_NE(button_node, nullptr);
 
   ui::BrowserAccessibilityManager* manager = button_node->manager();
-  manager->ScrollToMakeVisible(*button_node, gfx::Rect());
+  manager->ScrollToMakeVisible(*button_node);
 
   EXPECT_EQ(GetManager()->GetAccessibilityFocus(), button_node);
 }
@@ -3914,5 +4036,94 @@ IN_PROC_BROWSER_TEST_F(CanvasAccessibilityBrowserTest,
 #endif
 }
 #endif  // BUILDFLAG(HAS_NATIVE_ACCESSIBILITY) || BUILDFLAG(IS_ANDROID)
+
+class MenuElementsAccessibilityBrowserTest
+    : public CrossPlatformAccessibilityBrowserTest {
+ protected:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    CrossPlatformAccessibilityBrowserTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitchASCII(switches::kEnableBlinkFeatures,
+                                    "MenuElements");
+  }
+
+  // A <menulist> that violates its content model (because of the <button>),
+  // so its <menuitemradio>s are exposed as kRadioButton inside a kList.
+  // The menu's items are Copy, Invalid, Radio A, Radio B, Paste.
+  static constexpr char kViolatedMenuWithRadiosHtml[] = R"HTML(
+      <!DOCTYPE html>
+      <menulist id="menu">
+        <menuitem>Copy</menuitem>
+        <button>Invalid</button>
+        <fieldset>
+          <menuitemradio>Radio A</menuitemradio>
+          <menuitemradio>Radio B</menuitemradio>
+        </fieldset>
+        <menuitem>Paste</menuitem>
+      </menulist>)HTML";
+
+  void LoadAndOpenViolatedMenuWithRadios() {
+    LoadInitialAccessibilityTreeFromHtml(kViolatedMenuWithRadiosHtml);
+    ExecuteScript("document.getElementById('menu').showPopover();");
+    WaitForAccessibilityTreeToContainNodeWithName(shell()->web_contents(),
+                                                  "Radio B");
+  }
+};
+
+// Query a radio's PosInSet/SetSize before anything else in the menu, the way a
+// screen reader does when focus lands on the radio. The radio must be counted
+// among all of the menu's items, with the same values as in
+// ViolatedMenuListSetSizeQueriedFirst.
+IN_PROC_BROWSER_TEST_F(MenuElementsAccessibilityBrowserTest,
+                       ViolatedMenuRadioPosInSetQueriedFirst) {
+  LoadAndOpenViolatedMenuWithRadios();
+
+  ui::BrowserAccessibility* root = GetManager()->GetBrowserAccessibilityRoot();
+  ui::BrowserAccessibility* radio_a =
+      FindFirstAccessibilityNodeWithRoleAndNameOrValue(
+          *root, ax::mojom::Role::kRadioButton, "Radio A");
+  ASSERT_NE(nullptr, radio_a);
+  ui::BrowserAccessibility* radio_b =
+      FindFirstAccessibilityNodeWithRoleAndNameOrValue(
+          *root, ax::mojom::Role::kRadioButton, "Radio B");
+  ASSERT_NE(nullptr, radio_b);
+  ui::BrowserAccessibility* list =
+      FindFirstNodeWithRole(ax::mojom::Role::kList);
+  ASSERT_NE(nullptr, list);
+
+  EXPECT_EQ(std::optional<int>(3), radio_a->GetPosInSet());
+  EXPECT_EQ(std::optional<int>(5), radio_a->GetSetSize());
+  EXPECT_EQ(std::optional<int>(4), radio_b->GetPosInSet());
+  EXPECT_EQ(std::optional<int>(5), radio_b->GetSetSize());
+  EXPECT_EQ(std::optional<int>(5), list->GetSetSize());
+}
+
+// Same as ViolatedMenuRadioPosInSetQueriedFirst, but query the list before the
+// radios. The radios must get the same values as they do in
+// ViolatedMenuRadioPosInSetQueriedFirst.
+IN_PROC_BROWSER_TEST_F(MenuElementsAccessibilityBrowserTest,
+                       ViolatedMenuListSetSizeQueriedFirst) {
+  LoadAndOpenViolatedMenuWithRadios();
+
+  ui::BrowserAccessibility* list =
+      FindFirstNodeWithRole(ax::mojom::Role::kList);
+  ASSERT_NE(nullptr, list);
+
+  EXPECT_EQ(std::optional<int>(5), list->GetSetSize());
+
+  ui::BrowserAccessibility* root = GetManager()->GetBrowserAccessibilityRoot();
+  ui::BrowserAccessibility* radio_a =
+      FindFirstAccessibilityNodeWithRoleAndNameOrValue(
+          *root, ax::mojom::Role::kRadioButton, "Radio A");
+  ASSERT_NE(nullptr, radio_a);
+  ui::BrowserAccessibility* radio_b =
+      FindFirstAccessibilityNodeWithRoleAndNameOrValue(
+          *root, ax::mojom::Role::kRadioButton, "Radio B");
+  ASSERT_NE(nullptr, radio_b);
+
+  EXPECT_EQ(std::optional<int>(3), radio_a->GetPosInSet());
+  EXPECT_EQ(std::optional<int>(5), radio_a->GetSetSize());
+  EXPECT_EQ(std::optional<int>(4), radio_b->GetPosInSet());
+  EXPECT_EQ(std::optional<int>(5), radio_b->GetSetSize());
+}
 
 }  // namespace content

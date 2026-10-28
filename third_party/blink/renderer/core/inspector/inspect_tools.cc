@@ -262,8 +262,8 @@ bool SearchingForNodeTool::HandleMouseMove(const WebMouseEvent& event) {
 
   contrast_info_ = FetchContrast(node);
   if (hovered_node_changed) {
-    if (auto* flexbox = DynamicTo<LayoutFlexibleBox>(node->GetLayoutObject())) {
-      flexbox->SetNeedsLayoutForDevtools();
+    if (auto* layout_object = node->GetLayoutObject()) {
+      layout_object->SetNeedsDevtoolsInfo();
     }
     NodeHighlightRequested(node);
   }
@@ -359,8 +359,8 @@ NodeHighlightTool::NodeHighlightTool(
   std::tie(node_, content_visibility_state_) =
       DetermineContentVisibilityState(node);
   contrast_info_ = FetchContrast(node_);
-  if (auto* flexbox = DynamicTo<LayoutFlexibleBox>(node->GetLayoutObject())) {
-    flexbox->SetNeedsLayoutForDevtools();
+  if (auto* layout_object = node->GetLayoutObject()) {
+    layout_object->SetNeedsDevtoolsInfo();
   }
   overlay_->EnsureAXContext(node);
 }
@@ -837,8 +837,9 @@ void PausedInDebuggerTool::ExecuteOnV8Session(Action action) {
   }
 }
 
-void PausedInDebuggerTool::OnAgentDisable() {
-  v8_session_ = nullptr;
+void PausedInDebuggerTool::Dispose() {
+  v8_session_.reset();
+  weak_factory_.Invalidate();
 }
 
 void PausedInDebuggerTool::Trace(Visitor* visitor) const {

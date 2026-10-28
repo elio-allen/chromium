@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <string>
 #include <string_view>
@@ -20,6 +21,7 @@
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "content/browser/devtools/protocol/audits.h"
 #include "content/browser/preloading/prefetch/prefetch_key.h"
 #include "content/browser/preloading/prefetch/prefetch_service.h"
 #include "content/browser/preloading/prefetch/prefetch_status.h"
@@ -118,6 +120,18 @@ constexpr char kFedCmDisconnectScript[] = R"(IdentityCredential.disconnect({
   () => 'success',
   error => error.name + ': ' + error.message
 ))";
+constexpr char kFedCmActiveModeScript[] = R"(navigator.credentials.get({
+  identity: {
+    mode: 'active',
+    providers: [{
+      configURL: $1,
+      clientId: '1234'
+    }]
+  }
+}).then(
+  token => 'success',
+  error => error.name + ': ' + error.message
+))";
 constexpr char kIdpHost[] = "b.test";
 constexpr char kConfigPath[] = "/fedcm.json";
 constexpr char kWellKnownPath[] = "/.well-known/web-identity";
@@ -141,6 +155,13 @@ constexpr char kRequestWillBeSent[] = "Network.requestWillBeSent";
 constexpr char kRequestIdTokenHistogram[] = "Blink.FedCm.Status.RequestIdToken";
 constexpr char kIdpSigninMatchHistogram[] = "Blink.FedCm.Status.IdpSigninMatch";
 constexpr char kDisconnectHistogram[] = "Blink.FedCm.Status.Disconnect";
+constexpr char kRequestUrl[] = "request.url";
+constexpr char kRequestMethod[] = "request.method";
+constexpr char kIssueAdded[] = "Audits.issueAdded";
+constexpr char kIssueCode[] = "issue.code";
+constexpr char kFedCMIssueReasonStr[] =
+    "issue.details.federatedAuthRequestIssueDetails."
+    "federatedAuthRequestIssueReason";
 
 Matcher<WebContentsConsoleObserver::Message> HasConsoleMessage(
     const std::string& expected_substr) {
@@ -155,12 +176,23 @@ bool IsPrerender2FallbackPrefetchSpecRulesEnabled() {
       features::kPrerender2FallbackPrefetchSpecRules);
 }
 
-bool MatchesNetworkRequest(const std::string& expected_url,
-                           const std::string& expected_method,
-                           const base::DictValue& params) {
-  const std::string* url = params.FindStringByDottedPath("request.url");
-  const std::string* method = params.FindStringByDottedPath("request.method");
-  return url && *url == expected_url && method && *method == expected_method;
+using NotificationExpectations =
+    std::vector<std::pair<std::string, std::string>>;
+
+bool MatchesNotification(const NotificationExpectations& expectations,
+                         const base::DictValue& params) {
+  return std::ranges::all_of(
+      expectations,
+      [&params](const std::pair<std::string, std::string>& expectation) {
+        const std::string* value =
+            params.FindStringByDottedPath(expectation.first);
+        return value ? (*value == expectation.second) : false;
+      });
+}
+
+TestDevToolsProtocolClient::NotificationMatcher ExpectsNotification(
+    NotificationExpectations expectations) {
+  return base::BindRepeating(&MatchesNotification, std::move(expectations));
 }
 
 struct ResponseEntry {
@@ -3086,6 +3118,16 @@ class ConnectionAllowlistDevToolsTest : public ConnectionAllowlistTest,
  public:
   ConnectionAllowlistDevToolsTest() = default;
   ~ConnectionAllowlistDevToolsTest() override = default;
+
+  void SetUpOnMainThread() override {
+    ConnectionAllowlistTest::SetUpOnMainThread();
+    AttachToWebContents(shell()->web_contents());
+  }
+
+  void TearDownOnMainThread() override {
+    DetachProtocolClient();
+    ConnectionAllowlistTest::TearDownOnMainThread();
+  }
 };
 
 IN_PROC_BROWSER_TEST_F(ConnectionAllowlistDevToolsTest,
@@ -3107,9 +3149,6 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistDevToolsTest,
       embedded_https_test_server().GetURL("b.test", "/cross-origin-resource");
 
   EXPECT_TRUE(NavigateToURL(shell(), main_url));
-
-  AttachToWebContents(shell()->web_contents());
-
   SendCommandSync("Network.enable");
 
   // Load the cross-origin resource using DevTools
@@ -3141,8 +3180,6 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistDevToolsTest,
 
   EXPECT_EQ(resource->FindInt("netError").value_or(0),
             net::ERR_NETWORK_ACCESS_REVOKED);
-
-  DetachProtocolClient();
 }
 
 IN_PROC_BROWSER_TEST_F(
@@ -3173,8 +3210,6 @@ IN_PROC_BROWSER_TEST_F(
       embedded_https_test_server().GetURL("b.test", "/cross-origin-resource");
 
   EXPECT_TRUE(NavigateToURL(shell(), main_url));
-
-  AttachToWebContents(shell()->web_contents());
 
   // Enable auto-attach to attach the Service Worker.
   base::DictValue auto_attach_params;
@@ -3237,8 +3272,6 @@ IN_PROC_BROWSER_TEST_F(
 
   EXPECT_EQ(resource->FindInt("netError").value_or(0),
             net::ERR_NETWORK_ACCESS_REVOKED);
-
-  DetachProtocolClient();
 }
 
 // Verifies that if the initiating document's Connection-Allowlist blocks the
@@ -3608,6 +3641,30 @@ class ConnectionAllowlistEmbeddedEnforcementTest
         switches::kEnableBlinkFeatures,
         "ConnectionAllowlist,ConnectionAllowlistEmbeddedEnforcement");
   }
+
+ protected:
+  // Appends an iframe carrying `connectionallowlist` to the current document
+  // and waits for the framed document's navigation to finish. Returns whether
+  // that navigation committed, which is false when embedded enforcement blocks
+  // the response.
+  bool NavigateFramedDocument(std::string_view connectionallowlist,
+                              const GURL& child_url) {
+    TestNavigationManager manager(shell()->web_contents(), child_url);
+    if (!ExecJs(shell()->web_contents(),
+                JsReplace(R"(
+        const f = document.createElement('iframe');
+        f.setAttribute('connectionallowlist', $1);
+        f.src = $2;
+        document.body.appendChild(f);
+      )",
+                          connectionallowlist, child_url))) {
+      return false;
+    }
+    if (!manager.WaitForNavigationFinished()) {
+      return false;
+    }
+    return manager.was_successful();
+  }
 };
 
 // The renderer parses the `connectionallowlist` attribute into a
@@ -3731,6 +3788,9 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmbeddedEnforcementTest,
 // - Images (e.g., account avatar).
 // - Top-level navigation triggered by the "redirect_to" in the token endpoint
 //   response.
+// - Pop-up window navigation triggered by the "continue_on" in the token
+//   endpoint response.
+// - Pop-up window navigation triggered by the IdP login URL.
 // - Client metadata.
 // - Accounts.
 // - Disconnect.
@@ -3739,14 +3799,14 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmbeddedEnforcementTest,
 // matches the connection allowlist URL patterns, otherwise the request is
 // blocked.
 
-class ConnectionAllowlistFedCmTest : public ConnectionAllowlistTest,
-                                     public TestDevToolsProtocolClient {
+class ConnectionAllowlistFedCmTest : public ConnectionAllowlistDevToolsTest {
  public:
   ConnectionAllowlistFedCmTest() = default;
   ~ConnectionAllowlistFedCmTest() override = default;
 
   void SetUpOnMainThread() override {
-    ConnectionAllowlistTest::SetUpOnMainThread();
+    ConnectionAllowlistDevToolsTest::SetUpOnMainThread();
+    set_agent_host_can_close();
 
     test_browser_client_ =
         std::make_unique<webid::WebIdTestContentBrowserClient>();
@@ -3754,9 +3814,10 @@ class ConnectionAllowlistFedCmTest : public ConnectionAllowlistTest,
   }
 
   void SetTestIdentityRequestDialogController(
-      std::optional<std::string> dialog_selected_account) {
+      std::optional<std::string> dialog_selected_account,
+      WebContents* web_contents = nullptr) {
     auto controller = std::make_unique<FakeIdentityRequestDialogController>(
-        std::move(dialog_selected_account), /*web_contents=*/nullptr);
+        std::move(dialog_selected_account), web_contents);
     test_browser_client_->SetIdentityRequestDialogController(
         std::move(controller));
   }
@@ -3857,6 +3918,10 @@ class ConnectionAllowlistFedCmTest : public ConnectionAllowlistTest,
     return embedded_https_test_server().GetURL(kIdpHost, kDisconnectPath);
   }
 
+  GURL LoginURL() const {
+    return embedded_https_test_server().GetURL(kIdpHost, kLoginPath);
+  }
+
   void RegisterConnectionAllowlistResponse(std::string_view allowlist) {
     RegisterResponse(
         kSameOriginAllowlistedPage,
@@ -3901,9 +3966,8 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistFedCmTest, FedCmWellKnownBlocked) {
 
   ASSERT_NO_FATAL_FAILURE(RegisterFedCmResponses());
   EXPECT_TRUE(NavigateToURL(shell(), MainURL()));
-
-  AttachToWebContents(shell()->web_contents());
   SendCommandSync("Network.enable");
+  SendCommandSync("Audits.enable");
 
   std::optional<std::string> well_known_response_error =
       webid::ComputeConsoleMessageForHttpResponseCode(
@@ -3928,19 +3992,22 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistFedCmTest, FedCmWellKnownBlocked) {
 
   // Verify that DevTools received Network.requestWillBeSent for the blocked
   // well-known request and that its method is "GET".
-  auto matches_well_known_get = [](const std::string& expected_url,
-                                   const base::DictValue& params) {
-    const std::string* url = params.FindStringByDottedPath("request.url");
-    const std::string* method = params.FindStringByDottedPath("request.method");
-    return url && *url == expected_url && method && *method == "GET";
-  };
-  EXPECT_FALSE(
-      WaitForMatchingNotification(
-          kRequestWillBeSent,
-          base::BindRepeating(matches_well_known_get, WellKnownURL().spec()))
-          .empty());
+  EXPECT_FALSE(WaitForMatchingNotification(
+                   kRequestWillBeSent,
+                   ExpectsNotification({{kRequestUrl, WellKnownURL().spec()},
+                                        {kRequestMethod, "GET"}}))
+                   .empty());
 
-  DetachProtocolClient();
+  // Check the DevTools issues.
+  EXPECT_FALSE(WaitForMatchingNotification(
+                   kIssueAdded,
+                   ExpectsNotification(
+                       {{kIssueCode, protocol::Audits::InspectorIssueCodeEnum::
+                                         FederatedAuthRequestIssue},
+                        {kFedCMIssueReasonStr,
+                         protocol::Audits::FederatedAuthRequestIssueReasonEnum::
+                             WellKnownBlockedByConnectionAllowlist}}))
+                   .empty());
 
   // Verify the config file request completed successfully.
   ExpectRequestsSucceeded(monitor, {ConfigURL()});
@@ -4227,6 +4294,7 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistFedCmTest, FedCmConfigBlocked) {
 
   ASSERT_NO_FATAL_FAILURE(RegisterFedCmResponses());
   EXPECT_TRUE(NavigateToURL(shell(), MainURL()));
+  SendCommandSync("Audits.enable");
 
   std::optional<std::string> config_response_error =
       webid::ComputeConsoleMessageForHttpResponseCode(
@@ -4265,6 +4333,17 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistFedCmTest, FedCmConfigBlocked) {
   histogram_tester.ExpectUniqueSample(
       kRequestIdTokenHistogram,
       webid::RequestIdTokenStatus::kConfigBlockedByConnectionAllowlist, 1);
+
+  // Check the DevTools issues.
+  EXPECT_FALSE(WaitForMatchingNotification(
+                   kIssueAdded,
+                   ExpectsNotification(
+                       {{kIssueCode, protocol::Audits::InspectorIssueCodeEnum::
+                                         FederatedAuthRequestIssue},
+                        {kFedCMIssueReasonStr,
+                         protocol::Audits::FederatedAuthRequestIssueReasonEnum::
+                             ConfigBlockedByConnectionAllowlist}}))
+                   .empty());
 }
 
 // FedCM API's fetch of the well-known file and the config file are allowed by
@@ -4390,6 +4469,7 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistFedCmTest, FedCmAccountsBlocked) {
 
   ASSERT_NO_FATAL_FAILURE(RegisterFedCmResponses());
   EXPECT_TRUE(NavigateToURL(shell(), MainURL()));
+  SendCommandSync("Audits.enable");
 
   std::optional<std::string> accounts_response_error =
       webid::ComputeConsoleMessageForHttpResponseCode(
@@ -4430,6 +4510,17 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistFedCmTest, FedCmAccountsBlocked) {
   histogram_tester.ExpectUniqueSample(
       kIdpSigninMatchHistogram,
       webid::IdpSigninMatchStatus::kUnknownStatusWithoutAccounts, 1);
+
+  // Check the DevTools issues.
+  EXPECT_FALSE(WaitForMatchingNotification(
+                   kIssueAdded,
+                   ExpectsNotification(
+                       {{kIssueCode, protocol::Audits::InspectorIssueCodeEnum::
+                                         FederatedAuthRequestIssue},
+                        {kFedCMIssueReasonStr,
+                         protocol::Audits::FederatedAuthRequestIssueReasonEnum::
+                             AccountsBlockedByConnectionAllowlist}}))
+                   .empty());
 }
 
 // Same as test `FedCmAccountsBlocked`, but invokes `SetIdpSigninStatus` and
@@ -4552,9 +4643,8 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistFedCmTest, FedCmTokenBlocked) {
 
   ASSERT_NO_FATAL_FAILURE(RegisterFedCmResponses());
   EXPECT_TRUE(NavigateToURL(shell(), MainURL()));
-
-  AttachToWebContents(shell()->web_contents());
   SendCommandSync("Network.enable");
+  SendCommandSync("Audits.enable");
 
   std::optional<std::string> token_response_error =
       webid::ComputeConsoleMessageForHttpResponseCode(
@@ -4579,18 +4669,11 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistFedCmTest, FedCmTokenBlocked) {
 
   // Verify that DevTools received Network.requestWillBeSent for the blocked
   // token request and that its method is "POST".
-  auto matches_token_post = [](const std::string& expected_url,
-                               const base::DictValue& params) {
-    const std::string* url = params.FindStringByDottedPath("request.url");
-    const std::string* method = params.FindStringByDottedPath("request.method");
-    return url && *url == expected_url && method && *method == "POST";
-  };
   EXPECT_FALSE(WaitForMatchingNotification(
                    kRequestWillBeSent,
-                   base::BindRepeating(matches_token_post, TokenURL().spec()))
+                   ExpectsNotification({{kRequestUrl, TokenURL().spec()},
+                                        {kRequestMethod, "POST"}}))
                    .empty());
-
-  DetachProtocolClient();
 
   // The requests to well-known, config, and accounts should be allowed.
   ExpectRequestsSucceeded(monitor,
@@ -4606,6 +4689,17 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistFedCmTest, FedCmTokenBlocked) {
   histogram_tester.ExpectUniqueSample(
       kRequestIdTokenHistogram,
       webid::RequestIdTokenStatus::kIdTokenBlockedByConnectionAllowlist, 1);
+
+  // Check the DevTools issues.
+  EXPECT_FALSE(WaitForMatchingNotification(
+                   kIssueAdded,
+                   ExpectsNotification(
+                       {{kIssueCode, protocol::Audits::InspectorIssueCodeEnum::
+                                         FederatedAuthRequestIssue},
+                        {kFedCMIssueReasonStr,
+                         protocol::Audits::FederatedAuthRequestIssueReasonEnum::
+                             IdTokenBlockedByConnectionAllowlist}}))
+                   .empty());
 }
 
 // FedCM API's fetch of the account picture is allowed by the connection
@@ -4793,6 +4887,250 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistFedCmTest, FedCmRedirectToBlocked) {
       shell()->web_contents()->GetController().GetLastCommittedEntry();
   ASSERT_NE(entry, nullptr);
   EXPECT_EQ(entry->GetPageType(), PAGE_TYPE_ERROR);
+}
+
+// The FedCM `continue_on` initiates a pop-up window navigation. The navigation
+// URL is allowed by the connection allowlist.
+IN_PROC_BROWSER_TEST_F(ConnectionAllowlistFedCmTest, FedCmContinueOnAllowed) {
+  // Allow all required FedCM requests and the continue_on URL.
+  RegisterConnectionAllowlistResponse(R"(
+               (
+                 response-origin
+                 "*://b.test:*/fedcm.json"
+                 "*://b.test:*/.well-known/web-identity"
+                 "*://b.test:*/accounts"
+                 "*://b.test:*/client_metadata*"
+                 "*://b.test:*/avatar.png"
+                 "*://b.test:*/token"
+                 "*://b.test:*/login"
+                 "*://b.test:*/continue_on.html"
+               )
+             )");
+
+  ASSERT_NO_FATAL_FAILURE(RegisterFedCmResponses());
+
+  GURL continue_on_url =
+      embedded_https_test_server().GetURL(kIdpHost, "/continue_on.html");
+
+  // Token response returns the continue_on URL.
+  RegisterResponse(kTokenPath,
+                   ResponseEntry(absl::StrFormat(R"({"continue_on": "%s"})",
+                                                 continue_on_url.spec()),
+                                 {{"Content-Type", "application/json"}}));
+  RegisterResponse("/continue_on.html", ResponseEntry("Continue on", {}));
+  SetTestIdentityRequestDialogController(kAccountID, shell()->web_contents());
+
+  EXPECT_TRUE(NavigateToURL(shell(), MainURL()));
+  URLLoaderMonitor monitor(
+      {WellKnownURL(), ConfigURL(), AccountsURL(), TokenURL()});
+  TestNavigationObserver navigation_observer(continue_on_url);
+  navigation_observer.StartWatchingNewWebContents();
+
+  // Trigger FedCM.
+  ExecuteScriptAsync(shell()->web_contents(),
+                     JsReplace(kFedCmScript, ConfigURL()));
+
+  // Verify FedCM requests completed successfully.
+  ExpectRequestsSucceeded(
+      monitor, {WellKnownURL(), ConfigURL(), AccountsURL(), TokenURL()});
+
+  // Wait for the pop-up navigation triggered by `continue_on`. It should be
+  // allowed.
+  navigation_observer.Wait();
+  EXPECT_TRUE(navigation_observer.last_navigation_succeeded());
+  EXPECT_EQ(navigation_observer.last_net_error_code(), net::OK);
+  EXPECT_EQ(navigation_observer.last_navigation_url(), continue_on_url);
+}
+
+// The FedCM `continue_on` initiates a pop-up window navigation. The navigation
+// URL is not allowed by the connection allowlist.
+IN_PROC_BROWSER_TEST_F(ConnectionAllowlistFedCmTest, FedCmContinueOnBlocked) {
+  base::HistogramTester histogram_tester;
+  // Allow all required FedCM requests, but not the continue_on URL.
+  RegisterConnectionAllowlistResponse(R"(
+               (
+                 response-origin
+                 "*://b.test:*/fedcm.json"
+                 "*://b.test:*/.well-known/web-identity"
+                 "*://b.test:*/accounts"
+                 "*://b.test:*/client_metadata*"
+                 "*://b.test:*/avatar.png"
+                 "*://b.test:*/token"
+                 "*://b.test:*/login"
+               )
+             )");
+
+  ASSERT_NO_FATAL_FAILURE(RegisterFedCmResponses());
+
+  GURL continue_on_url =
+      embedded_https_test_server().GetURL(kIdpHost, "/continue_on.html");
+
+  // Token response returns the continue_on URL.
+  RegisterResponse(kTokenPath,
+                   ResponseEntry(absl::StrFormat(R"({"continue_on": "%s"})",
+                                                 continue_on_url.spec()),
+                                 {{"Content-Type", "application/json"}}));
+  RegisterResponse("/continue_on.html", ResponseEntry("target", {}));
+  SetTestIdentityRequestDialogController(kAccountID, shell()->web_contents());
+
+  EXPECT_TRUE(NavigateToURL(shell(), MainURL()));
+  SendCommandSync("Audits.enable");
+
+  // Observe the console error.
+  auto fedcm_console_observer =
+      CreateConsoleObserver(webid::GetConsoleErrorMessageFromResult(
+          FederatedRequestResult::kPopupBlockedByConnectionAllowlist));
+
+  URLLoaderMonitor monitor(
+      {WellKnownURL(), ConfigURL(), AccountsURL(), TokenURL()});
+
+  // Trigger FedCM. Because the continue_on URL is blocked by the connection
+  // allowlist, the request fails. And FedCM avoids exposing specific errors to
+  // the website, so all failures lead to "Error retrieving a token".
+  EXPECT_THAT(RunFedCmScript(shell()->web_contents()),
+              HasSubstr(webid::GetConsoleErrorMessageFromResult(
+                  FederatedRequestResult::kError)));
+
+  // Verify FedCM requests completed successfully.
+  ExpectRequestsSucceeded(
+      monitor, {WellKnownURL(), ConfigURL(), AccountsURL(), TokenURL()});
+
+  // There should be a console error on the blocked pop-up URL.
+  EXPECT_TRUE(fedcm_console_observer->Wait());
+
+  histogram_tester.ExpectUniqueSample(
+      kRequestIdTokenHistogram,
+      webid::RequestIdTokenStatus::kPopupBlockedByConnectionAllowlist, 1);
+
+  // Check the DevTools issues.
+  EXPECT_FALSE(WaitForMatchingNotification(
+                   kIssueAdded,
+                   ExpectsNotification(
+                       {{kIssueCode, protocol::Audits::InspectorIssueCodeEnum::
+                                         FederatedAuthRequestIssue},
+                        {kFedCMIssueReasonStr,
+                         protocol::Audits::FederatedAuthRequestIssueReasonEnum::
+                             PopupBlockedByConnectionAllowlist}}))
+                   .empty());
+}
+
+// The FedCM login pop-up window is initiated when there is an account mismatch
+// or when the user is signed out in active mode. The login URL is allowed by
+// the connection allowlist.
+IN_PROC_BROWSER_TEST_F(ConnectionAllowlistFedCmTest, FedCmLoginPopUpAllowed) {
+  // Allow all required FedCM requests and the login URL.
+  RegisterConnectionAllowlistResponse(R"(
+               (
+                 response-origin
+                 "*://b.test:*/fedcm.json"
+                 "*://b.test:*/.well-known/web-identity"
+                 "*://b.test:*/accounts"
+                 "*://b.test:*/client_metadata*"
+                 "*://b.test:*/avatar.png"
+                 "*://b.test:*/token"
+                 "*://b.test:*/login"
+               )
+             )");
+
+  ASSERT_NO_FATAL_FAILURE(RegisterFedCmResponses());
+
+  // Return empty accounts so that FedCM active mode triggers the login pop-up
+  // window.
+  RegisterResponse(kAccountPath,
+                   ResponseEntry(R"({"accounts": []})",
+                                 {{"Content-Type", "application/json"}}));
+
+  SetTestIdentityRequestDialogController(
+      /*dialog_selected_account=*/std::nullopt, shell()->web_contents());
+
+  EXPECT_TRUE(NavigateToURL(shell(), MainURL()));
+
+  URLLoaderMonitor monitor({WellKnownURL(), ConfigURL()});
+  TestNavigationObserver navigation_observer(LoginURL());
+  navigation_observer.StartWatchingNewWebContents();
+
+  // Trigger FedCM in active mode.
+  ExecuteScriptAsync(shell()->web_contents(),
+                     JsReplace(kFedCmActiveModeScript, ConfigURL()));
+
+  // Verify FedCM requests completed successfully.
+  ExpectRequestsSucceeded(monitor, {WellKnownURL(), ConfigURL()});
+
+  // Wait for the login pop-up navigation. It should be allowed.
+  navigation_observer.Wait();
+  EXPECT_TRUE(navigation_observer.last_navigation_succeeded());
+  EXPECT_EQ(navigation_observer.last_net_error_code(), net::OK);
+  EXPECT_EQ(navigation_observer.last_navigation_url(), LoginURL());
+}
+
+// The FedCM login pop-up window is initiated when there is an account mismatch
+// or when the user is signed out in active mode. The login URL is not allowed
+// by the connection allowlist.
+IN_PROC_BROWSER_TEST_F(ConnectionAllowlistFedCmTest, FedCmLoginPopUpBlocked) {
+  base::HistogramTester histogram_tester;
+  // Allow all required FedCM requests, but not the login URL.
+  RegisterConnectionAllowlistResponse(R"(
+               (
+                 response-origin
+                 "*://b.test:*/fedcm.json"
+                 "*://b.test:*/.well-known/web-identity"
+                 "*://b.test:*/accounts"
+                 "*://b.test:*/client_metadata*"
+                 "*://b.test:*/avatar.png"
+                 "*://b.test:*/token"
+               )
+             )");
+
+  ASSERT_NO_FATAL_FAILURE(RegisterFedCmResponses());
+
+  // Return empty accounts so that FedCM active mode triggers the login pop-up
+  // window.
+  RegisterResponse(kAccountPath,
+                   ResponseEntry(R"({"accounts": []})",
+                                 {{"Content-Type", "application/json"}}));
+
+  SetTestIdentityRequestDialogController(
+      /*dialog_selected_account=*/std::nullopt, shell()->web_contents());
+
+  EXPECT_TRUE(NavigateToURL(shell(), MainURL()));
+  SendCommandSync("Audits.enable");
+
+  // Observe the console error.
+  auto fedcm_console_observer =
+      CreateConsoleObserver(webid::GetConsoleErrorMessageFromResult(
+          FederatedRequestResult::kPopupBlockedByConnectionAllowlist));
+
+  URLLoaderMonitor monitor({WellKnownURL(), ConfigURL()});
+
+  // Trigger FedCM in active mode. It should fail because the login pop-up URL
+  // is blocked by the connection allowlist. And FedCM avoids exposing specific
+  // errors to the website, so all failures lead to "Error retrieving a token".
+  EXPECT_THAT(EvalJs(shell()->web_contents(),
+                     JsReplace(kFedCmActiveModeScript, ConfigURL()))
+                  .ExtractString(),
+              HasSubstr(webid::GetConsoleErrorMessageFromResult(
+                  FederatedRequestResult::kError)));
+
+  // Verify FedCM requests completed successfully.
+  ExpectRequestsSucceeded(monitor, {WellKnownURL(), ConfigURL()});
+
+  // There should be a console error on the blocked pop-up URL.
+  EXPECT_TRUE(fedcm_console_observer->Wait());
+
+  histogram_tester.ExpectUniqueSample(
+      kRequestIdTokenHistogram,
+      webid::RequestIdTokenStatus::kPopupBlockedByConnectionAllowlist, 1);
+
+  // Check the DevTools issues.
+  EXPECT_FALSE(WaitForMatchingNotification(
+                   kIssueAdded,
+                   ExpectsNotification(
+                       {{kIssueCode, protocol::Audits::InspectorIssueCodeEnum::
+                                         FederatedAuthRequestIssue},
+                        {kFedCMIssueReasonStr,
+                         protocol::Audits::FederatedAuthRequestIssueReasonEnum::
+                             PopupBlockedByConnectionAllowlist}}))
+                   .empty());
 }
 
 // FedCM API's fetch of the client metadata file is allowed by the connection
@@ -5143,8 +5481,7 @@ class EmailVerificationTestContentBrowserClient
 // allowed or blocked, depending on the value of connection allowlist's redirect
 // directive.
 class ConnectionAllowlistEmailVerificationTest
-    : public ConnectionAllowlistTest,
-      public TestDevToolsProtocolClient {
+    : public ConnectionAllowlistDevToolsTest {
  public:
   ConnectionAllowlistEmailVerificationTest() {
     email_verification_feature_list_.InitWithFeatures(
@@ -5155,7 +5492,7 @@ class ConnectionAllowlistEmailVerificationTest
   ~ConnectionAllowlistEmailVerificationTest() override = default;
 
   void SetUpOnMainThread() override {
-    ConnectionAllowlistTest::SetUpOnMainThread();
+    ConnectionAllowlistDevToolsTest::SetUpOnMainThread();
 
     test_browser_client_ =
         std::make_unique<EmailVerificationTestContentBrowserClient>();
@@ -5264,21 +5601,27 @@ class ConnectionAllowlistEmailVerificationTest
 
   std::optional<webid::EmailVerifier::Result> RunCheckIfVerifiable(
       const std::string& email = "jane@example.com") {
-    base::test::TestFuture<std::optional<webid::EmailVerifier::Result>> future;
+    base::test::TestFuture<std::optional<webid::EmailVerifier::Result>,
+                           blink::mojom::EmailVerificationRequestResult,
+                           base::TimeDelta>
+        future;
     webid::EmailVerifier::GetOrCreateForFrame(
         shell()->web_contents()->GetPrimaryMainFrame())
-        ->CheckIfVerifiable(email, future.GetCallback());
-    return future.Get();
+        ->CheckIfVerifiable(email, base::DoNothing(), future.GetCallback());
+    return future.Get<0>();
   }
 
   std::optional<std::string> RunVerify(
       const webid::EmailVerifier::Result& result,
       const std::string& nonce = "test_nonce") {
-    base::test::TestFuture<std::optional<std::string>> future;
+    base::test::TestFuture<std::optional<std::string>,
+                           blink::mojom::EmailVerificationRequestResult,
+                           base::TimeDelta>
+        future;
     webid::EmailVerifier::GetOrCreateForFrame(
         shell()->web_contents()->GetPrimaryMainFrame())
         ->Verify(result, nonce, future.GetCallback());
-    return future.Get();
+    return future.Get<0>();
   }
 
   // Returns the request URLs that are expected once `RunCheckIfVerifiable` is
@@ -5427,10 +5770,14 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmailVerificationTest,
 
   // Check if the email address is verifiable, which initiates requests to the
   // above 4 URLs.
-  base::test::TestFuture<std::optional<webid::EmailVerifier::Result>> future;
+  base::test::TestFuture<std::optional<webid::EmailVerifier::Result>,
+                         blink::mojom::EmailVerificationRequestResult,
+                         base::TimeDelta>
+      future;
   webid::EmailVerifier::GetOrCreateForFrame(
       shell()->web_contents()->GetPrimaryMainFrame())
-      ->CheckIfVerifiable("jane@example.com", future.GetCallback());
+      ->CheckIfVerifiable("jane@example.com", base::DoNothing(),
+                          future.GetCallback());
 
   // Redirect the request from `kDnsPath` to "/another/dns".
   controllable_response.WaitForRequest();
@@ -5440,7 +5787,7 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmailVerificationTest,
 
   // All 4 URLs are allowed by the connection allowlist, including the DNS
   // request which has been redirected.
-  EXPECT_TRUE(future.Get().has_value());
+  EXPECT_TRUE(future.Get<0>().has_value());
 
   ExpectRequestsSucceeded(monitor, GetCheckIfVerifiableURLs());
 }
@@ -5491,11 +5838,15 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmailVerificationTest,
       embedded_https_test_server().GetURL(kIdpHost, "/another/dns");
   URLLoaderMonitor monitor(ToSet(GetCheckIfVerifiableURLs()));
 
-  base::test::TestFuture<std::optional<webid::EmailVerifier::Result>> future;
+  base::test::TestFuture<std::optional<webid::EmailVerifier::Result>,
+                         blink::mojom::EmailVerificationRequestResult,
+                         base::TimeDelta>
+      future;
   base::HistogramTester histogram_tester;
   webid::EmailVerifier::GetOrCreateForFrame(
       shell()->web_contents()->GetPrimaryMainFrame())
-      ->CheckIfVerifiable("jane@example.com", future.GetCallback());
+      ->CheckIfVerifiable("jane@example.com", base::DoNothing(),
+                          future.GetCallback());
 
   // Redirect the request from `kDnsPath` to "/another/dns".
   controllable_response.WaitForRequest();
@@ -5504,7 +5855,7 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmailVerificationTest,
   controllable_response.Done();
 
   // The redirect is blocked by the connection allowlist.
-  EXPECT_FALSE(future.Get().has_value());
+  EXPECT_FALSE(future.Get<0>().has_value());
   histogram_tester.ExpectUniqueSample(
       "Blink.Evp.Status.IsVerifiable",
       EmailVerificationRequestResult::kDnsFetchFailed, 1);
@@ -5536,8 +5887,6 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmailVerificationTest,
 
   ASSERT_NO_FATAL_FAILURE(RegisterEmailVerificationResponses());
   EXPECT_TRUE(NavigateToURL(shell(), MainURL()));
-
-  AttachToWebContents(shell()->web_contents());
   SendCommandSync("Network.enable");
 
   URLLoaderMonitor monitor(ToSet(GetCheckIfVerifiableURLs()));
@@ -5551,13 +5900,12 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmailVerificationTest,
 
   // Verify that DevTools received Network.requestWillBeSent for the blocked
   // email verification well-known request and that its method is "GET".
-  base::DictValue notification = WaitForMatchingNotification(
-      kRequestWillBeSent,
-      base::BindRepeating(&MatchesNetworkRequest,
-                          EmailVerificationWellKnownURL().spec(), "GET"));
-  EXPECT_FALSE(notification.empty());
-
-  DetachProtocolClient();
+  EXPECT_FALSE(WaitForMatchingNotification(
+                   kRequestWillBeSent,
+                   ExpectsNotification(
+                       {{kRequestUrl, EmailVerificationWellKnownURL().spec()},
+                        {kRequestMethod, "GET"}}))
+                   .empty());
 
   // Verify the initial DNS request (`DnsURL()`) and the WebID well-known and
   // accounts requests (`WebIdentityWellKnownURL()` and `AccountsURL()`)
@@ -5709,8 +6057,6 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmailVerificationTest,
 
   ASSERT_NO_FATAL_FAILURE(RegisterEmailVerificationResponses());
   EXPECT_TRUE(NavigateToURL(shell(), MainURL()));
-
-  AttachToWebContents(shell()->web_contents());
   SendCommandSync("Network.enable");
 
   URLLoaderMonitor monitor(ToSet(GetAllRequestURLs()));
@@ -5734,12 +6080,11 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmailVerificationTest,
 
   // Verify that DevTools received Network.requestWillBeSent for the blocked
   // token request and that its method is "POST".
-  base::DictValue notification = WaitForMatchingNotification(
-      kRequestWillBeSent,
-      base::BindRepeating(&MatchesNetworkRequest, TokenURL().spec(), "POST"));
-  EXPECT_FALSE(notification.empty());
-
-  DetachProtocolClient();
+  EXPECT_FALSE(WaitForMatchingNotification(
+                   kRequestWillBeSent,
+                   ExpectsNotification({{kRequestUrl, TokenURL().spec()},
+                                        {kRequestMethod, "POST"}}))
+                   .empty());
 
   // The JWKS request is allowed.
   ExpectRequestsSucceeded(monitor, {JwksURL()});
@@ -6161,6 +6506,145 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistTest, SandboxedIframeOpaqueOrigin) {
   EXPECT_EQ(monitor.WaitForRequestCompletion(denied_url).error_code,
             net::ERR_NETWORK_ACCESS_REVOKED);
   EXPECT_EQ(monitor.WaitForRequestCompletion(allowed_url).error_code, net::OK);
+}
+
+// Each embedded enforcement outcome is recorded against the embedder via a
+// UseCounter, so that origin trial usage can be monitored.
+IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmbeddedEnforcementTest,
+                       UseCounterOptIn) {
+  RegisterResponse("/embedder.html",
+                   ResponseEntry("<html><body></body></html>", {}));
+  RegisterResponse("/child.html",
+                   ResponseEntry("<html><body>child</body></html>",
+                                 {{"Allow-Connection-Allowlist-From", "*"}}));
+  ASSERT_TRUE(embedded_https_test_server().Start());
+
+  GURL embedder_url =
+      embedded_https_test_server().GetURL("a.test", "/embedder.html");
+  GURL child_url = embedded_https_test_server().GetURL("a.test", "/child.html");
+  EXPECT_TRUE(NavigateToURL(shell(), embedder_url));
+
+  RenderFrameHost* embedder = shell()->web_contents()->GetPrimaryMainFrame();
+  // Unrelated features may also be counted during the navigation.
+  EXPECT_CALL(*content_browser_client_,
+              LogWebFeatureForCurrentPage(testing::_, testing::_))
+      .Times(testing::AnyNumber());
+  EXPECT_CALL(
+      *content_browser_client_,
+      LogWebFeatureForCurrentPage(
+          embedder,
+          blink::mojom::WebFeature::kConnectionAllowlistEmbeddedEnforcement));
+  EXPECT_CALL(
+      *content_browser_client_,
+      LogWebFeatureForCurrentPage(
+          embedder, blink::mojom::WebFeature::
+                        kConnectionAllowlistEmbeddedEnforcementAllowedByOptIn));
+
+  EXPECT_TRUE(NavigateFramedDocument("(response-origin)", child_url));
+}
+
+IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmbeddedEnforcementTest,
+                       UseCounterDeliveredAllowlist) {
+  RegisterResponse("/embedder.html",
+                   ResponseEntry("<html><body></body></html>", {}));
+  RegisterResponse(
+      "/child.html",
+      ResponseEntry("<html><body>child</body></html>",
+                    {{"Connection-Allowlist", "(response-origin)"}}));
+  ASSERT_TRUE(embedded_https_test_server().Start());
+
+  GURL embedder_url =
+      embedded_https_test_server().GetURL("a.test", "/embedder.html");
+  GURL child_url = embedded_https_test_server().GetURL("a.test", "/child.html");
+  EXPECT_TRUE(NavigateToURL(shell(), embedder_url));
+
+  RenderFrameHost* embedder = shell()->web_contents()->GetPrimaryMainFrame();
+  // Unrelated features may also be counted during the navigation.
+  EXPECT_CALL(*content_browser_client_,
+              LogWebFeatureForCurrentPage(testing::_, testing::_))
+      .Times(testing::AnyNumber());
+  EXPECT_CALL(
+      *content_browser_client_,
+      LogWebFeatureForCurrentPage(
+          embedder,
+          blink::mojom::WebFeature::kConnectionAllowlistEmbeddedEnforcement));
+  EXPECT_CALL(
+      *content_browser_client_,
+      LogWebFeatureForCurrentPage(
+          embedder,
+          blink::mojom::WebFeature::
+              kConnectionAllowlistEmbeddedEnforcementAllowedByDeliveredAllowlist));
+
+  EXPECT_TRUE(NavigateFramedDocument("(response-origin)", child_url));
+}
+
+IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmbeddedEnforcementTest,
+                       UseCounterBlocked) {
+  RegisterResponse("/embedder.html",
+                   ResponseEntry("<html><body></body></html>", {}));
+  RegisterResponse("/child.html",
+                   ResponseEntry("<html><body>child</body></html>", {}));
+  ASSERT_TRUE(embedded_https_test_server().Start());
+
+  GURL embedder_url =
+      embedded_https_test_server().GetURL("a.test", "/embedder.html");
+  GURL child_url = embedded_https_test_server().GetURL("a.test", "/child.html");
+  EXPECT_TRUE(NavigateToURL(shell(), embedder_url));
+
+  RenderFrameHost* embedder = shell()->web_contents()->GetPrimaryMainFrame();
+  // The blocked frame commits an error page, which counts unrelated features.
+  EXPECT_CALL(*content_browser_client_,
+              LogWebFeatureForCurrentPage(testing::_, testing::_))
+      .Times(testing::AnyNumber());
+  EXPECT_CALL(
+      *content_browser_client_,
+      LogWebFeatureForCurrentPage(
+          embedder,
+          blink::mojom::WebFeature::kConnectionAllowlistEmbeddedEnforcement));
+  EXPECT_CALL(
+      *content_browser_client_,
+      LogWebFeatureForCurrentPage(
+          embedder, blink::mojom::WebFeature::
+                        kConnectionAllowlistEmbeddedEnforcementBlocked));
+
+  EXPECT_FALSE(NavigateFramedDocument("(response-origin)", child_url));
+}
+
+// A frame with no embedder requirement records no embedded enforcement
+// UseCounter.
+IN_PROC_BROWSER_TEST_F(ConnectionAllowlistEmbeddedEnforcementTest,
+                       UseCounterNotRecordedWithoutRequirement) {
+  RegisterResponse("/embedder.html",
+                   ResponseEntry("<html><body></body></html>", {}));
+  RegisterResponse("/child.html",
+                   ResponseEntry("<html><body>child</body></html>", {}));
+  ASSERT_TRUE(embedded_https_test_server().Start());
+
+  GURL embedder_url =
+      embedded_https_test_server().GetURL("a.test", "/embedder.html");
+  GURL child_url = embedded_https_test_server().GetURL("a.test", "/child.html");
+  EXPECT_TRUE(NavigateToURL(shell(), embedder_url));
+
+  // Unrelated features may also be counted during the navigation.
+  EXPECT_CALL(*content_browser_client_,
+              LogWebFeatureForCurrentPage(testing::_, testing::_))
+      .Times(testing::AnyNumber());
+  EXPECT_CALL(
+      *content_browser_client_,
+      LogWebFeatureForCurrentPage(
+          testing::_,
+          blink::mojom::WebFeature::kConnectionAllowlistEmbeddedEnforcement))
+      .Times(0);
+
+  TestNavigationManager manager(shell()->web_contents(), child_url);
+  EXPECT_TRUE(ExecJs(shell()->web_contents(), JsReplace(R"(
+        const f = document.createElement('iframe');
+        f.src = $1;
+        document.body.appendChild(f);
+      )",
+                                                        child_url)));
+  EXPECT_TRUE(manager.WaitForNavigationFinished());
+  EXPECT_TRUE(manager.was_successful());
 }
 
 }  // namespace

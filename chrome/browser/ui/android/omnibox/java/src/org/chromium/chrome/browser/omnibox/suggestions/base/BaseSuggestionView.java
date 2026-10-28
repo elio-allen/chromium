@@ -12,7 +12,6 @@ import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityEvent;
 import android.widget.ImageView;
 
@@ -24,6 +23,7 @@ import org.chromium.build.annotations.CheckDiscard;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.omnibox.suggestions.ActivatableSuggestionView;
+import org.chromium.chrome.browser.omnibox.suggestions.SelectionController.TraversalMode;
 import org.chromium.chrome.browser.omnibox.suggestions.SimpleSelectionController;
 import org.chromium.components.browser_ui.widget.RoundedCornerOutlineProvider;
 import org.chromium.ui.base.KeyNavigationUtil;
@@ -101,9 +101,7 @@ public class BaseSuggestionView<T extends View> extends SuggestionLayout
 
         mActionButtonsHighlighter =
                 new SimpleSelectionController(
-                        this::highlightActionButton,
-                        0,
-                        SimpleSelectionController.Mode.SATURATING_WITH_SENTINEL);
+                        this::highlightActionButton, 0, TraversalMode.SATURATING_WITH_SENTINEL);
 
         mActionButtonTouchListener =
                 new View.OnTouchListener() {
@@ -141,9 +139,7 @@ public class BaseSuggestionView<T extends View> extends SuggestionLayout
         }
     }
 
-    /**
-     * @return List of Action views.
-     */
+    /** Returns the list of Action views. */
     public List<ActionButtonView> getActionButtons() {
         return mActionButtons;
     }
@@ -151,8 +147,8 @@ public class BaseSuggestionView<T extends View> extends SuggestionLayout
     /**
      * Applies / removes selection hairline from action button.
      *
-     * @param buttonIndex the index of an action button
-     * @param isSelected whether to apply hairline
+     * @param buttonIndex The index of an action button.
+     * @param isSelected Whether to apply hairline.
      */
     private void highlightActionButton(int buttonIndex, boolean isSelected) {
         if (buttonIndex < 0 || buttonIndex >= mActionButtons.size()) return;
@@ -208,7 +204,7 @@ public class BaseSuggestionView<T extends View> extends SuggestionLayout
 
     @Override
     public void setHovered(boolean hovered) {
-        // The suggestion view should remain in hovered drawing state when the action buttion is
+        // The suggestion view should remain in hovered drawing state when the action button is
         // hovered or pressed.
         hovered |= mAnyActionButtonHovered || mAnyActionButtonPressed;
         super.setHovered(hovered);
@@ -376,7 +372,7 @@ public class BaseSuggestionView<T extends View> extends SuggestionLayout
         return false;
     }
 
-    /** Set the lead-in spacing for the action chip carousel. */
+    /** Sets the lead-in spacing for the action chip carousel. */
     public void setActionChipLeadInSpacing(int spacing) {
         actionChipsView.setLeadInSpacing(spacing);
     }
@@ -386,7 +382,9 @@ public class BaseSuggestionView<T extends View> extends SuggestionLayout
      * SuggestionLayout#SuggestionLayout(Context)} for the exact size difference.
      */
     public void setUseLargeDecorationIcon(boolean useLargeDecorationIcon) {
-        ViewGroup.LayoutParams oldParams = decorationIcon.getLayoutParams();
+        LayoutParams oldParams = (LayoutParams) decorationIcon.getLayoutParams();
+        if (oldParams.isLargeDecoration() == useLargeDecorationIcon) return;
+
         if (useLargeDecorationIcon) {
             decorationIcon.setLayoutParams(SuggestionLayout.LayoutParams.forLargeDecorationIcon());
         } else {
@@ -398,7 +396,7 @@ public class BaseSuggestionView<T extends View> extends SuggestionLayout
         decorationIcon.getLayoutParams().height = oldParams.height;
     }
 
-    /** Control whether the decoration icon should be visible. */
+    /** Controls whether the decoration icon should be visible. */
     public void setShowDecorationIcon(boolean shouldShow) {
         decorationIcon.setVisibility(shouldShow ? VISIBLE : GONE);
     }

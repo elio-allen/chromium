@@ -12,7 +12,6 @@
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/ui/views/bubble/webui_bubble_reopen_suppressor.h"
-#include "chrome/browser/ui/views/location_bar/content_setting_image_view.h"
 #include "chrome/browser/ui/views/permissions/chip/permission_chip_interface.h"
 #include "content/public/browser/global_routing_id.h"
 #include "ui/views/mouse_constants.h"
@@ -21,7 +20,12 @@
 class LocationBar;
 class ChipController;
 class ContentSettingImageModel;
+class ContentSettingImageViewDelegate;
 class PermissionDashboardInterface;
+
+namespace permissions {
+class PermissionIndicatorsTabData;
+}  // namespace permissions
 
 class PermissionDashboardController : public PermissionChipInterface::Observer {
  public:
@@ -74,11 +78,16 @@ class PermissionDashboardController : public PermissionChipInterface::Observer {
                      ->GetContentsView()
                : nullptr;
   }
-  void ShowPageInfoDialogForTesting() { ShowPageInfoDialog(); }
+
+  void ShowPageInfoDialogForTesting() { ShowPageInfoDialog(true); }
 
   void DoNotCollapseForTesting();
 
   void HideIndicatorsForTesting() { HideIndicators(); }
+
+  ContentSettingImageModel* indicator_model_for_testing() {
+    return content_setting_image_model_;
+  }
 
   void SetSuppressionThresholdForTesting(base::TimeDelta threshold) {
     page_info_bubble_suppressor_.SetSuppressionThresholdForTesting(  // IN-TEST
@@ -90,12 +99,13 @@ class PermissionDashboardController : public PermissionChipInterface::Observer {
   void Collapse(bool hide);
   void HideIndicators();
   void ShowBubble();
-  void ShowPageInfoDialog();
+  void ShowPageInfoDialog(bool is_pointer_interaction);
   // Actions executed when the user closes the page info dialog.
-  void OnIndicatorsChipButtonPressed();
+  void OnIndicatorsChipButtonPressed(bool is_pointer_interaction);
   std::u16string GetIndicatorTitle(ContentSettingImageModel* model);
   std::u16string GetSensorsIndicatorTitle(ContentSettingImageModel* model);
   std::u16string GetMediaStreamIndicatorTitle(ContentSettingImageModel* model);
+  permissions::PermissionIndicatorsTabData* GetPermissionIndicatorsTabData();
 
   // The implementation of `LocationBar` owns this.
   raw_ptr<LocationBar> location_bar_ = nullptr;
@@ -119,7 +129,6 @@ class PermissionDashboardController : public PermissionChipInterface::Observer {
   bool is_verbose_ = false;
   bool blocked_on_system_level_ = false;
   content::GlobalRenderFrameHostId main_frame_id_;
-  bool should_suppress_reopening_page_info_ = false;
   WebUIBubbleReopenSuppressor page_info_bubble_suppressor_;
 
   base::ScopedObservation<PermissionChipInterface,

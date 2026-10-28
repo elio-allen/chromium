@@ -56,7 +56,6 @@
 #include "chrome/browser/ash/login/wizard_controller.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/login/login_display_host_common.h"
 #include "chrome/browser/ui/ash/login/login_screen_client_impl.h"
@@ -90,6 +89,7 @@
 #include "components/user_manager/user_type.h"
 #include "content/public/browser/web_contents.h"
 #include "google_apis/gaia/gaia_auth_util.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "ui/aura/window.h"
 #include "ui/compositor/layer.h"
 #include "ui/events/event.h"
@@ -189,12 +189,14 @@ LoginDisplayHostMojo::AuthState::~AuthState() = default;
 
 LoginDisplayHostMojo::LoginDisplayHostMojo(
     PrefService* local_state,
+    ::metrics::MetricsService* metrics_service,
     ApplicationLocaleStorage* application_locale_storage,
     scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
     policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
     DisplayedScreen displayed_screen,
     bool update_geolocation_usage_allowed)
     : LoginDisplayHostCommon(local_state,
+                             metrics_service,
                              application_locale_storage,
                              shared_url_loader_factory,
                              browser_policy_connector_ash,
@@ -204,6 +206,10 @@ LoginDisplayHostMojo::LoginDisplayHostMojo(
           application_locale_storage,
           std::move(shared_url_loader_factory),
           browser_policy_connector_ash,
+          // TODO(crbug.com/404133029): Avoid using g_browser_process.
+          g_browser_process->platform_part()
+              ->multi_user_sign_in_policy_controller(),
+          g_browser_process->platform_part()->GetSystemClock(),
           displayed_screen)),
       auth_performer_(UserDataAuthClient::Get()),
       system_info_updater_(std::make_unique<MojoSystemInfoDispatcher>(
@@ -336,7 +342,7 @@ void LoginDisplayHostMojo::SetUsers(const user_manager::UserList& users) {
 void LoginDisplayHostMojo::UseAlternativeAuthentication(
     std::unique_ptr<UserContext> user_context,
     bool online_password_mismatch) {
-  DCHECK(GetOobeUI());
+  CHECK(GetOobeUI(), base::NotFatalUntil::M162);
   // We only get here if the user already exist on the device,
   // so mark the flow as reauth:
   if (GetWizardContext()->knowledge_factor_setup.auth_setup_flow ==
@@ -388,7 +394,9 @@ void LoginDisplayHostMojo::OnLocalAuthenticationCompleted(
 void LoginDisplayHostMojo::HandleDisplayCaptivePortal() {
   EnsureOobeDialogLoaded();
   if (dialog_->IsVisible()) {
-    GetOobeUI()->GetErrorScreen()->FixCaptivePortal();
+    if (GetOobeUI()) {
+      GetOobeUI()->GetErrorScreen()->FixCaptivePortal();
+    }
   } else {
     dialog_->SetShouldDisplayCaptivePortal(true);
   }
@@ -443,7 +451,7 @@ void LoginDisplayHostMojo::OnFinalize() {
 void LoginDisplayHostMojo::StartWizard(OobeScreenId first_screen) {
   EnsureOobeDialogLoaded();
   OobeUI* oobe_ui = GetOobeUI();
-  DCHECK(oobe_ui);
+  CHECK(oobe_ui, base::NotFatalUntil::M162);
   // Dialog is not shown immediately, and will be shown only when a screen
   // change occurs. This prevents the dialog from showing when there are no
   // screens to show.
@@ -605,7 +613,7 @@ void LoginDisplayHostMojo::StartUserRecovery(
 void LoginDisplayHostMojo::ShowGaiaDialogImpl(
     const AccountId& prefilled_account) {
   EnsureOobeDialogLoaded();
-  DCHECK(GetOobeUI());
+  CHECK(GetOobeUI(), base::NotFatalUntil::M162);
 
   if (prefilled_account.is_valid()) {
     gaia_reauth_account_id_ = prefilled_account;
@@ -636,7 +644,7 @@ void LoginDisplayHostMojo::ShowRemoteActivityNotificationScreen() {
 }
 
 void LoginDisplayHostMojo::HideOobeDialog(bool saml_page_closed) {
-  DCHECK(dialog_);
+  CHECK(dialog_, base::NotFatalUntil::M162);
 
   // The dialog can be hidden if there are no users on the login screen only
   // on camera timeout during SAML login.
@@ -754,8 +762,9 @@ void LoginDisplayHostMojo::HandleAuthenticateUserWithPasswordOrPin(
     const std::string& password,
     bool authenticated_by_pin,
     base::OnceCallback<void(bool)> callback) {
-  DCHECK_EQ(account_id.GetUserEmail(),
-            gaia::SanitizeEmail(account_id.GetUserEmail()));
+  CHECK_EQ(account_id.GetUserEmail(),
+           gaia::SanitizeEmail(account_id.GetUserEmail()),
+           base::NotFatalUntil::M162);
 
   CHECK(!pending_auth_state_);
   pending_auth_state_ =
@@ -763,7 +772,7 @@ void LoginDisplayHostMojo::HandleAuthenticateUserWithPasswordOrPin(
 
   const user_manager::User* const user =
       user_manager::UserManager::Get()->FindUser(account_id);
-  DCHECK(user);
+  CHECK(user, base::NotFatalUntil::M162);
   UserContext user_context(*user);
   user_context.SetIsUsingPin(authenticated_by_pin);
   user_context.SetKey(Key(Key::KEY_TYPE_PASSWORD_PLAIN, "" /*salt*/, password));
@@ -875,7 +884,7 @@ void LoginDisplayHostMojo::OnOldEncryptionDetected(
 
 void LoginDisplayHostMojo::OnCurrentScreenChanged(OobeScreenId current_screen,
                                                   OobeScreenId new_screen) {
-  DCHECK(dialog_);
+  CHECK(dialog_, base::NotFatalUntil::M162);
   if (!dialog_->IsVisible()) {
     ShowDialog();
   }
@@ -887,14 +896,16 @@ void LoginDisplayHostMojo::OnDestroyingOobeUI() {
 
 // views::ViewObserver:
 void LoginDisplayHostMojo::OnViewBoundsChanged(views::View* observed_view) {
-  DCHECK(scoped_observation_.IsObservingSource(observed_view));
+  CHECK(scoped_observation_.IsObservingSource(observed_view),
+        base::NotFatalUntil::M162);
   for (auto& observer : observers_) {
     observer.WebDialogViewBoundsChanged(observed_view->GetBoundsInScreen());
   }
 }
 
 void LoginDisplayHostMojo::OnViewIsDeleting(views::View* observed_view) {
-  DCHECK(scoped_observation_.IsObservingSource(observed_view));
+  CHECK(scoped_observation_.IsObservingSource(observed_view),
+        base::NotFatalUntil::M162);
   scoped_observation_.Reset();
 }
 
@@ -920,10 +931,12 @@ void LoginDisplayHostMojo::EnsureOobeDialogLoaded() {
   // Should be created after dialog was created and OobeUI was loaded.
   // TODO(crbug.com/404133029): Avoid using g_browser_process.
   wizard_controller_ = std::make_unique<WizardController>(
-      &local_state_.get(), g_browser_process->metrics_service(),
+      &local_state_.get(), &metrics_service_.get(),
       &application_locale_storage_.get(), shared_url_loader_factory_.get(),
       &browser_policy_connector_ash_.get(),
       g_browser_process->platform_part()->component_manager_ash(),
+      g_browser_process->platform_part()
+          ->device_restriction_schedule_controller(),
       GetWizardContext());
 
   GetLoginScreenCertProviderService()->pin_dialog_manager()->AddPinDialogHost(
@@ -949,7 +962,7 @@ void LoginDisplayHostMojo::OnChallengeResponseKeysPrepared(
 
   const user_manager::User* const user =
       user_manager::UserManager::Get()->FindUser(account_id);
-  DCHECK(user);
+  CHECK(user, base::NotFatalUntil::M162);
   UserContext user_context(*user);
   *user_context.GetMutableChallengeResponseKeys() =
       std::move(challenge_response_keys);

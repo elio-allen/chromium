@@ -49,6 +49,9 @@ namespace {
 
 using SuggestionViewState = FilterUiController::SuggestionViewState;
 
+constexpr page_actions::PageActionPriorityCategory kMultistepFilterPriority =
+    page_actions::PageActionPriorityCategory::kContextualCue;
+
 constexpr std::string_view ViewStateToString(SuggestionViewState state) {
   switch (state) {
     case SuggestionViewState::kInactive:
@@ -231,10 +234,10 @@ void FilterUiController::NavigateTo(const UrlFilterSuggestion& suggestion) {
   if (!web_contents) {
     return;
   }
-  content::OpenURLParams params(suggestion.navigation_url, content::Referrer(),
-                                WindowOpenDisposition::CURRENT_TAB,
-                                ui::PAGE_TRANSITION_GENERATED,
-                                /*is_renderer_initiated=*/false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          suggestion.navigation_url, WindowOpenDisposition::kCurrentTab,
+          ui::PAGE_TRANSITION_GENERATED);
   web_contents->OpenURL(
       params, base::BindOnce(
                   [](UrlFilterSuggestion suggestion,
@@ -277,11 +280,11 @@ void FilterUiController::OpenSettings() {
   // navigation.
   if (content::WebContents* web_contents = tab().GetContents()) {
     GURL settings_url(chrome::kChromeUISettingsURL);
-    content::OpenURLParams params(
-        settings_url.Resolve(chrome::kSuggestionsSubPage), content::Referrer(),
-        WindowOpenDisposition::NEW_FOREGROUND_TAB,
-        ui::PAGE_TRANSITION_GENERATED,
-        /*is_renderer_initiated=*/false);
+    content::OpenURLParams params =
+        content::OpenURLParams::CreateBrowserInitiated(
+            settings_url.Resolve(chrome::kSuggestionsSubPage),
+            WindowOpenDisposition::kNewForegroundTab,
+            ui::PAGE_TRANSITION_GENERATED);
     web_contents->OpenURL(params,
                           base::BindOnce([](content::NavigationHandle&) {}));
   }
@@ -293,10 +296,10 @@ void FilterUiController::OpenFeedback() {
     return;
   }
   if (content::WebContents* web_contents = tab().GetContents()) {
-    content::OpenURLParams params(feedback_url, content::Referrer(),
-                                  WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                  ui::PAGE_TRANSITION_LINK,
-                                  /*is_renderer_initiated=*/false);
+    content::OpenURLParams params =
+        content::OpenURLParams::CreateBrowserInitiated(
+            feedback_url, WindowOpenDisposition::kNewForegroundTab,
+            ui::PAGE_TRANSITION_LINK);
     web_contents->OpenURL(params,
                           base::BindOnce([](content::NavigationHandle&) {}));
   }
@@ -383,8 +386,7 @@ void FilterUiController::ShowCueWithFavicon() {
   page_action_controller_->Show(kActionMultistepFilter);
 
   page_action_controller_->ShowAnchoredMessage(
-      kActionMultistepFilter,
-      {.priority = page_actions::PageActionPriorityCategory::kContextualCue});
+      kActionMultistepFilter, {.priority = kMultistepFilterPriority});
 }
 
 void FilterUiController::ClearCue() {
@@ -396,9 +398,21 @@ void FilterUiController::ClearCue() {
   page_action_controller_->ClearOverrideText(kActionMultistepFilter);
 }
 
+void FilterUiController::ShowSuggestionChip() {
+  if (!page_action_controller_ || !suggestion_state_) {
+    return;
+  }
+  page_action_controller_->OverrideText(
+      kActionMultistepFilter,
+      suggestion_state_->suggestion.short_suggestion_message);
+  page_action_controller_->ShowSuggestionChip(
+      kActionMultistepFilter, {.priority = kMultistepFilterPriority});
+}
+
 void FilterUiController::OnPageActionAnchoredMessageShown(
     const page_actions::PageActionState& page_action) {
-  DCHECK_EQ(page_action.action_id, kActionMultistepFilter);
+  CHECK_EQ(page_action.action_id, kActionMultistepFilter,
+           base::NotFatalUntil::M162);
   if (!suggestion_state_) {
     return;
   }
@@ -447,17 +461,20 @@ void FilterUiController::OnPageActionAnchoredMessageShown(
 
 void FilterUiController::OnPageActionAnchoredMessageHidden(
     const page_actions::PageActionState& page_action) {
-  DCHECK_EQ(page_action.action_id, kActionMultistepFilter);
+  CHECK_EQ(page_action.action_id, kActionMultistepFilter,
+           base::NotFatalUntil::M162);
   if (!suggestion_state_) {
     return;
   }
 
-  bool is_tab_hidden =
-      tab().GetContents() &&
-      tab().GetContents()->GetVisibility() != content::Visibility::VISIBLE;
-  if (is_tab_hidden) {
-    suggestion_state_->state_before_tab_hide = suggestion_state_->view_state;
-    suggestion_state_->view_state = SuggestionViewState::kTabHidden;
+  const bool is_tab_visible =
+      tab().IsActivated() && tab().GetContents() &&
+      tab().GetContents()->GetVisibility() == content::Visibility::VISIBLE;
+  if (!is_tab_visible) {
+    if (suggestion_state_->view_state != SuggestionViewState::kTabHidden) {
+      suggestion_state_->state_before_tab_hide = suggestion_state_->view_state;
+      suggestion_state_->view_state = SuggestionViewState::kTabHidden;
+    }
     return;
   }
 
@@ -468,22 +485,14 @@ void FilterUiController::OnPageActionAnchoredMessageHidden(
                            /*ui_shown=*/false, /*reason=*/"collapsed");
       suggestion_state_->view_state = SuggestionViewState::kCollapsedInOmnibox;
       ClosePromo(kDecision);
-      if (page_action_controller_) {
-        page_action_controller_->OverrideText(
-            kActionMultistepFilter,
-            suggestion_state_->suggestion.short_suggestion_message);
-      }
+      ShowSuggestionChip();
       break;
     case SuggestionViewState::kReopenedFromOmnibox:
       LogSuggestionUiShown(log_router_, suggestion_state_->suggestion,
                            /*ui_shown=*/false, /*reason=*/"collapsed");
       suggestion_state_->view_state =
           SuggestionViewState::kCollapsedInOmniboxAfterReopen;
-      if (page_action_controller_) {
-        page_action_controller_->OverrideText(
-            kActionMultistepFilter,
-            suggestion_state_->suggestion.short_suggestion_message);
-      }
+      ShowSuggestionChip();
       break;
     case SuggestionViewState::kInactive:
     case SuggestionViewState::kCollapsedInOmnibox:

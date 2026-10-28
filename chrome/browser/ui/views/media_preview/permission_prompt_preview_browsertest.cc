@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "base/path_service.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/permissions/permission_prompt_chip.h"
@@ -73,7 +74,7 @@ class PermissionPromptPreviewBrowserTest : public UiBrowserTest {
 
   void ShowUi(const std::string& name) override {
     GURL url = embedded_test_server()->GetURL(kTestHtmlPage);
-    TabStripModel* tab_strip = browser()->tab_strip_model();
+    TabStripModel* tab_strip = browser()->GetTabStripModel();
     content::WebContents* embedder_contents = tab_strip->GetActiveWebContents();
     ASSERT_TRUE(embedder_contents);
     content::RenderFrameHost* render_frame_host =

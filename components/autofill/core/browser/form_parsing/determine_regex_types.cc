@@ -19,7 +19,7 @@
 #include "build/buildflag.h"
 #include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/field_types.h"
-#include "components/autofill/core/browser/form_parsing/autofill_parsing_utils.h"
+#include "components/autofill/core/browser/form_parsing/autofill_parsing_util.h"
 #include "components/autofill/core/browser/form_parsing/field_candidates.h"
 #include "components/autofill/core/browser/form_parsing/form_field_parser.h"
 #include "components/autofill/core/browser/form_parsing/regex_patterns.h"
@@ -47,10 +47,13 @@ FieldCandidatesMap ParseFieldTypesWithPatterns(const FormData& form,
                                                bool ignore_small_forms) {
   FieldCandidatesMap field_type_map;
 
-  if (ShouldRunHeuristics(form, ignore_small_forms)) {
+  const DenseSet<FormParsingPermission> parsing_permissions =
+      GetFormParsingPermissions(form, ignore_small_forms);
+  if (parsing_permissions.contains(FormParsingPermission::kHeuristics)) {
     FormFieldParser::ParseFormFields(context, form.fields(), field_type_map,
                                      ignore_small_forms);
-  } else if (ShouldRunHeuristicsForSingleFields(form)) {
+  } else if (parsing_permissions.contains(
+                 FormParsingPermission::kSingleFieldHeuristics)) {
     FormFieldParser::ParseSingleFields(context, form.fields(), field_type_map);
     FormFieldParser::ParseStandaloneCVCFields(context, form.fields(),
                                               field_type_map);

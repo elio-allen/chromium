@@ -80,6 +80,11 @@ RenderFrameHostDelegate::GetGeolocationContext() {
   return nullptr;
 }
 
+SurfaceEmbedConnector* RenderFrameHostDelegate::GetSurfaceEmbedConnector()
+    const {
+  return nullptr;
+}
+
 #if BUILDFLAG(IS_ANDROID) || (BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_IOS_TVOS))
 void RenderFrameHostDelegate::GetNFC(
     RenderFrameHostImpl* render_frame_host,
@@ -115,7 +120,7 @@ FrameTree* RenderFrameHostDelegate::CreateNewWindow(
     const mojom::CreateNewWindowParams& params,
     bool is_new_browsing_instance,
     bool has_user_gesture,
-    SessionStorageNamespace* session_storage_namespace) {
+    SessionStorageNamespaceHandle* session_storage_namespace) {
   return nullptr;
 }
 
@@ -166,7 +171,9 @@ RenderFrameHostDelegate::GetClipboardTypesIfPolicyApplied(
   return std::nullopt;
 }
 
-bool RenderFrameHostDelegate::IsTransientActivationRequiredForHtmlFullscreen() {
+bool RenderFrameHostDelegate::IsTransientActivationRequiredForHtmlFullscreen(
+    RenderFrameHostImpl* requesting_frame,
+    bool is_xr_overlay) {
   return true;
 }
 

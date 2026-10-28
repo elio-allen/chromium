@@ -28,6 +28,7 @@
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "components/autofill/core/browser/autofill_field_test_api.h"
 #include "components/autofill/core/browser/crowdsourcing/test_votes_uploader.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager_test_api.h"
@@ -63,13 +64,13 @@
 #include "components/autofill/core/browser/strike_databases/payments/test_credit_card_save_strike_database.h"
 #include "components/autofill/core/browser/strike_databases/payments/test_strike_database.h"
 #include "components/autofill/core/browser/studies/autofill_experiments.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
 #include "components/autofill/core/common/autocomplete_parsing_util.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
-#include "components/autofill/core/common/autofill_test_utils.h"
+#include "components/autofill/core/common/autofill_test_util.h"
 #include "components/autofill/core/common/credit_card_network_identifiers.h"
 #include "components/autofill/core/common/credit_card_number_validation.h"
 #include "components/autofill/core/common/form_data.h"
@@ -297,10 +298,11 @@ class MockAutofillClient : public TestAutofillClient {
  public:
   MockAutofillClient() {
     TestPersonalDataManager& pdm = GetPersonalDataManager();
-    pdm.set_payments_data_manager(std::make_unique<MockPaymentsDataManager>());
+    pdm.set_payments_data_manager(
+        std::make_unique<testing::NiceMock<MockPaymentsDataManager>>());
     pdm.test_payments_data_manager().SetPrefService(GetPrefs());
     set_payments_autofill_client(
-        std::make_unique<MockPaymentsAutofillClient>(this));
+        std::make_unique<testing::NiceMock<MockPaymentsAutofillClient>>(this));
   }
   ~MockAutofillClient() override = default;
 };
@@ -311,10 +313,11 @@ class MockAutofillClient : public TestAutofillClient {
 
 class CreditCardSaveManagerTest
     : public testing::Test,
-      public WithTestAutofillClientDriverManager<MockAutofillClient,
-                                                 TestAutofillDriver,
-                                                 TestBrowserAutofillManager,
-                                                 MockPaymentsAutofillClient> {
+      public WithTestAutofillClientDriverManager<
+          MockAutofillClient,
+          TestAutofillDriver,
+          TestBrowserAutofillManager,
+          testing::NiceMock<MockPaymentsAutofillClient>> {
  public:
   void SetUp() override {
     // Change the year to be 20XX.
@@ -4167,6 +4170,50 @@ TEST_F(CreditCardSaveManagerTest,
       autofill_metrics::SaveCardPromptOffer::kCvcMissingForPotentialUpdate, 1);
 }
 
+TEST_F(CreditCardSaveManagerTest,
+       SaveCardPromptOfferMetric_UnionPay_CvcMissing) {
+  // Set up our credit card form data with a UnionPay card without CVC.
+  FormData credit_card_form = CreateTestCreditCardFormData();
+  FormsSeen(std::vector<FormData>(1, credit_card_form));
+
+  test_api(credit_card_form).field(0).set_value(u"Jane Doe");
+  test_api(credit_card_form).field(1).set_value(u"6247130048162403");
+  test_api(credit_card_form)
+      .field(2)
+      .set_value(ASCIIToUTF16(test::NextMonth()));
+  test_api(credit_card_form).field(3).set_value(ASCIIToUTF16(test::NextYear()));
+  test_api(credit_card_form).field(4).set_value(u"");
+
+  // Local save prompt should not be shown, and upload should not be offered.
+  EXPECT_CALL(payments_autofill_client(), ShowSaveCreditCardLocally).Times(0);
+  EXPECT_CALL(payments_autofill_client(), ShowSaveCreditCardToCloud).Times(0);
+
+  base::HistogramTester histogram_tester;
+  FormSubmitted(credit_card_form);
+
+  EXPECT_FALSE(credit_card_save_manager().CreditCardWasUploaded());
+
+  // Verify that platform-agnostic save card metric for prompt not shown is
+  // logged.
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.SaveCreditCardPromptOffer.Upload.FirstShow",
+      autofill_metrics::SaveCardPromptOffer::kCvcMissingForUnionPayUpload, 1);
+
+#if BUILDFLAG(IS_ANDROID)
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.SaveCreditCardPromptOffer.Android.Server",
+      autofill_metrics::SaveCardPromptOffer::kCvcMissingForUnionPayUpload, 1);
+#elif BUILDFLAG(IS_IOS)
+  histogram_tester.ExpectBucketCount(
+      "Autofill.SaveCreditCardPromptOffer.IOS.Server.BottomSheet",
+      autofill_metrics::SaveCardPromptOffer::kCvcMissingForUnionPayUpload, 1);
+#else  // BUILDFLAG(IS_DESKTOP)
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.SaveCreditCardPromptOffer.Desktop.Server",
+      autofill_metrics::SaveCardPromptOffer::kCvcMissingForUnionPayUpload, 1);
+#endif
+}
+
 TEST_F(CreditCardSaveManagerTest, NothingIfNothingFound) {
   // Set up our credit card form data.
   FormData credit_card_form = CreateTestCreditCardFormData();
@@ -6209,6 +6256,33 @@ TEST_F(CreditCardSaveManagerTest,
 }
 #endif
 
+class UpstreamStrikeDelayTest : public CreditCardSaveManagerTest,
+                                public testing::WithParamInterface<int> {
+ public:
+  void SetUp() override {
+    CreditCardSaveManagerTest::SetUp();
+    feature_list_.InitAndEnableFeatureWithParameters(
+        features::kAutofillUpstreamEnforceStrikeDelay,
+        {{"autofill_upstream_enforce_strike_delay_days",
+          base::NumberToString(GetParam())}});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_P(UpstreamStrikeDelayTest, StrikeDelay) {
+  TestCreditCardSaveStrikeDatabase credit_card_save_strike_database =
+      TestCreditCardSaveStrikeDatabase(&strike_database());
+  EXPECT_EQ(base::Days(GetParam()),
+            credit_card_save_strike_database.GetRequiredDelaySinceLastStrike()
+                .value());
+}
+
+INSTANTIATE_TEST_SUITE_P(CreditCardSaveManagerTest,
+                         UpstreamStrikeDelayTest,
+                         testing::Values(1, 3, 7));
+
 // Tests that adding a card clears all strikes for that card.
 TEST_F(CreditCardSaveManagerTest, LocallySaveCreditCard_ClearStrikesOnAdd) {
   credit_card_save_manager().SetCreditCardUploadEnabled(false);
@@ -7051,6 +7125,86 @@ TEST_P(ProceedWithSavingIfApplicableTest, ProceedWithSavingIfApplicable_Card) {
             CreditCardImportType() == payments::PaymentsFormDataImporter::
                                           CreditCardImportType::kNewCard &&
                 !IsCreditCardUpstreamEnabled());
+}
+
+// Tests that for a UnionPay card without CVC, upload save is never offered.
+// If the card was eligible for upload save, save is dropped completely.
+// If card upload prerequisites are not met, local save is still offered for
+// new cards.
+TEST_P(ProceedWithSavingIfApplicableTest,
+       ProceedWithSavingIfApplicable_UnionPayCard_WithoutCvc) {
+  FormData form;
+  FormStructure form_structure(form);
+  CreditCard card = test::CreateCreditCardWithInfo(
+      "Test User", "6247130048162403", test::NextMonth().c_str(),
+      test::NextYear().c_str(), "1");
+  ASSERT_EQ(card.network(), kUnionPay);
+  ASSERT_TRUE(card.cvc().empty());
+
+  bool save_initiated =
+      credit_card_save_manager().ProceedWithSavingIfApplicable(
+          form_structure, card, CreditCardImportType(),
+          IsCreditCardUpstreamEnabled(), ukm_source_id());
+
+  // Upload save is never offered for UnionPay cards without CVC.
+  EXPECT_FALSE(credit_card_save_manager().CreditCardWasUploaded());
+
+  // If card upload prerequisites are not met, local save is still offered for
+  // new cards. If upload prerequisites were met, save is dropped completely.
+  const bool expected_local_save =
+      !IsCreditCardUpstreamEnabled() &&
+      CreditCardImportType() ==
+          payments::PaymentsFormDataImporter::CreditCardImportType::kNewCard;
+  const bool expected_save_initiated =
+      (IsCreditCardUpstreamEnabled() &&
+       (CreditCardImportType() == payments::PaymentsFormDataImporter::
+                                      CreditCardImportType::kNewCard ||
+        CreditCardImportType() == payments::PaymentsFormDataImporter::
+                                      CreditCardImportType::kLocalCard)) ||
+      expected_local_save;
+  EXPECT_EQ(save_initiated, expected_save_initiated);
+  EXPECT_EQ(credit_card_save_manager().CardLocalSaveStarted(),
+            expected_local_save);
+}
+
+// Tests that for a UnionPay card with CVC, upload save is offered as normal
+// when upstream is enabled.
+TEST_P(ProceedWithSavingIfApplicableTest,
+       ProceedWithSavingIfApplicable_UnionPayCard_WithCvc) {
+  FormData form = CreateTestCreditCardFormData();
+  test_api(form).field(4).set_value(u"123");
+  FormStructure form_structure(form);
+  form_structure.field(4)->SetTypeTo(
+      AutofillType(FieldType::CREDIT_CARD_VERIFICATION_CODE),
+      AutofillPredictionSource::kHeuristics);
+  test_api(*form_structure.field(4)).set_initial_value(u"");
+  CreditCard card = test::CreateCreditCardWithInfo(
+      "Test User", "6247130048162403", test::NextMonth().c_str(),
+      test::NextYear().c_str(), "1", u"123");
+  ASSERT_EQ(card.network(), kUnionPay);
+  ASSERT_FALSE(card.cvc().empty());
+
+  bool save_initiated =
+      credit_card_save_manager().ProceedWithSavingIfApplicable(
+          form_structure, card, CreditCardImportType(),
+          IsCreditCardUpstreamEnabled(), ukm_source_id());
+
+  const bool expected_upload =
+      IsCreditCardUpstreamEnabled() &&
+      (CreditCardImportType() ==
+           payments::PaymentsFormDataImporter::CreditCardImportType::kNewCard ||
+       CreditCardImportType() == payments::PaymentsFormDataImporter::
+                                     CreditCardImportType::kLocalCard);
+  const bool expected_local_save =
+      CreditCardImportType() ==
+          payments::PaymentsFormDataImporter::CreditCardImportType::kNewCard &&
+      !IsCreditCardUpstreamEnabled();
+
+  EXPECT_EQ(save_initiated, expected_upload || expected_local_save);
+  EXPECT_EQ(credit_card_save_manager().CreditCardWasUploaded(),
+            expected_upload);
+  EXPECT_EQ(credit_card_save_manager().CardLocalSaveStarted(),
+            expected_local_save);
 }
 
 // Tests that ProceedWithSavingIfApplicable should initiate CVC save or upload

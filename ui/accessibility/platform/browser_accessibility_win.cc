@@ -5,6 +5,7 @@
 #include "ui/accessibility/platform/browser_accessibility_win.h"
 
 #include "base/memory/ptr_util.h"
+#include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/platform/ax_platform.h"
 #include "ui/accessibility/platform/browser_accessibility_manager.h"
 #include "ui/accessibility/platform/browser_accessibility_manager_win.h"
@@ -43,13 +44,16 @@ void BrowserAccessibilityWin::UpdatePlatformNode() {
 }
 
 void BrowserAccessibilityWin::UpdatePlatformAttributes() {
-  if (!GetCOM()) {
+  // Safe to use a raw pointer because Steps 1 and 2 do not pump synchronous
+  // events, and Step 3 holds a self-reference around `FireNativeEvent()`.
+  BrowserAccessibilityComWin* com_win = GetCOM();
+  if (!com_win || com_win->update_state_) {
     return;
   }
   BrowserAccessibilityComWin::UpdateState update_state;
-  GetCOM()->UpdateStep1ComputeWinAttributes(&update_state);
-  GetCOM()->UpdateStep2ComputeHypertext();
-  GetCOM()->UpdateStep3FireEvents();
+  com_win->UpdateStep1ComputeWinAttributes(&update_state);
+  com_win->UpdateStep2ComputeHypertext();
+  com_win->UpdateStep3FireEvents();
 }
 
 std::wstring BrowserAccessibilityWin::ComputeListItemNameFromContent() const {
@@ -108,6 +112,14 @@ void BrowserAccessibilityWin::OnLocationChanged() {
     return;
   }
   GetCOM()->FireNativeEvent(EVENT_OBJECT_LOCATIONCHANGE);
+
+  if (features::IsAccessibilityGroupLocationChangeByCommonAncestorEnabled()) {
+    auto* manager_win = manager()->ToBrowserAccessibilityManagerWin();
+    if (!manager_win) {
+      return;
+    }
+    manager_win->FireUiaAccessibilityEvent(UIA_LayoutInvalidatedEventId, this);
+  }
 }
 
 std::u16string BrowserAccessibilityWin::GetHypertext() const {

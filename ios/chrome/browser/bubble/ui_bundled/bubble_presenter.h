@@ -173,6 +173,14 @@ class DeviceSwitcherResultDispatcher;
 // Optionally presents a bubble associated with the reader mode options.
 - (void)presentReaderModeOptionsBubble;
 
+// Optionally presents a bubble associated with Send Tab to Self pointing to the
+// omnibox.
+- (void)presentSendTabToSelfOmniboxBubble;
+
+// Optionally presents a bubble associated with moving the omnibox to the
+// bottom.
+- (void)presentBottomOmniboxBubble;
+
 // Optionally presents a bubble associated with the Gemini image remix feature
 // (Page Action Menu entry point).
 - (void)presentGeminiImageRemixBubbleWithGeminiHandler:

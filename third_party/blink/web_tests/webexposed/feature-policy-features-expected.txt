@@ -6,7 +6,6 @@ ambient-light-sensor
 aria-notify
 autofill
 autoplay
-browsing-topics
 camera
 captured-surface-control
 ch-device-memory
@@ -51,10 +50,10 @@ fullscreen
 gamepad
 geolocation
 gyroscope
+haptics
 hid
 identity-credentials-get
 idle-detection
-interest-cohort
 keyboard-map
 language-detector
 language-model
@@ -75,7 +74,6 @@ private-state-token-issuance
 private-state-token-redemption
 publickey-credentials-create
 publickey-credentials-get
-record-ad-auction-events
 rewriter
 screen-wake-lock
 serial

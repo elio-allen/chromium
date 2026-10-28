@@ -18,17 +18,16 @@
 #include "components/prefs/pref_change_registrar.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
-#include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/remote.h"
 #include "ui/base/window_open_disposition.h"
 
 class MetricsReporter;
 class OmniboxController;
+class Profile;
 
 struct AiModeButtonUiConfig;
 
 namespace content {
-class WebUI;
+class WebContents;
 }  // namespace content
 
 // Handles bidirectional communication between NTP realbox JS and the browser.
@@ -40,7 +39,8 @@ class WebuiOmniboxHandler : public ContextualSearchboxHandler,
       mojo::PendingRemote<searchbox::mojom::Page> pending_page,
       MetricsReporter* metrics_reporter,
       OmniboxController* omnibox_controller,
-      content::WebUI* web_ui,
+      Profile* profile,
+      content::WebContents* web_contents,
       GetSessionHandleCallback get_session_callback);
 
   WebuiOmniboxHandler(const WebuiOmniboxHandler&) = delete;
@@ -49,16 +49,36 @@ class WebuiOmniboxHandler : public ContextualSearchboxHandler,
   ~WebuiOmniboxHandler() override;
 
   // searchbox::mojom::PageHandler:
-  void ActivateKeyword(uint8_t line,
-                       const GURL& url,
-                       base::TimeTicks match_selection_timestamp,
-                       bool is_mouse_event) override;
+  void ActivateKeyword(
+      uint8_t line,
+      const GURL& url,
+      base::TimeTicks match_selection_timestamp,
+      searchbox::mojom::KeywordActivationMethod activation_method) override;
   void OnThumbnailRemoved() override {}
   void OpenLensSearch() override;
   void AddTabContext(int32_t tab_id,
                      bool delay_upload,
                      searchbox::mojom::TabAttachmentSource source,
                      AddTabContextCallback) override;
+  // Queries autocomplete matches from the browser:
+  // - When the WebUI Omnibox full popup is enabled:
+  //   - If targeting the active tab (or if `tab_id` is nullopt), triggers
+  //     autocomplete and syncs the active native view text/caret.
+  //   - If targeting a background tab (e.g., an in-flight IPC arriving after a
+  //     tab switch), updates that background tab's saved draft state via
+  //     `SetUserTextForTab` without running autocomplete or mutating the active
+  //     view.
+  // - When the full popup is disabled, requires `!tab_id.has_value()` and
+  //   forwards directly to `SearchboxHandler::QueryAutocomplete`.
+  void QueryAutocomplete(int32_t query_id,
+                         std::optional<int32_t> tab_id,
+                         const std::u16string& input,
+                         bool prevent_inline_autocomplete,
+                         uint32_t cursor_position,
+                         omnibox::SuggestInventory suggest_inventory,
+                         bool is_on_focus,
+                         const std::string& keyword,
+                         searchbox::mojom::InputMethod input_method) override;
 
   void StepSelection(OmniboxPopupSelection::Direction direction,
                      OmniboxPopupSelection::Step step);
@@ -73,12 +93,13 @@ class WebuiOmniboxHandler : public ContextualSearchboxHandler,
       bool meta_key,
       bool shift_key,
       bool via_keyboard) override;
-  std::optional<searchbox::mojom::AutocompleteMatchPtr> CreateAutocompleteMatch(
+  bool ShouldShowFirstContextualDescription() const override;
+  bool SupportsKeywordMode() const override;
+  void SetPopupSelection(
+      searchbox::mojom::OmniboxPopupSelectionPtr selection) override;
+  void OverrideIconPaths(
       const AutocompleteMatch& match,
-      size_t line,
-      bookmarks::BookmarkModel* bookmark_model,
-      const omnibox::GroupConfigMap& suggestion_groups_map,
-      const TemplateURLService* turl_service) const override;
+      searchbox::mojom::AutocompleteMatch* mojom_match) const override;
   void OnFocusChanged(bool focused) override;
 
   // AutocompleteController::Observer:
@@ -105,6 +126,8 @@ class WebuiOmniboxHandler : public ContextualSearchboxHandler,
   void OnTabWillDetach(tabs::TabInterface* tab,
                        tabs::TabInterface::DetachReason reason);
   void OnTabDidInsert(tabs::TabInterface* tab);
+
+  void UpdateAimButtonVisibility();
 
   // Delegate to observe WebContents.
   // Managed as a separate class to prevent member naming conflicts

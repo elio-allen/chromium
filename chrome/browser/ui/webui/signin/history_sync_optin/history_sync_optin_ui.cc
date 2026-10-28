@@ -10,7 +10,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_avatar_icon_util.h"
 #include "chrome/browser/regional_capabilities/regional_capabilities_service_factory.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/webui/signin/history_sync_optin/history_sync_optin.mojom.h"
 #include "chrome/browser/ui/webui/signin/history_sync_optin/history_sync_optin_handler.h"
 #include "chrome/browser/ui/webui/signin/signin_url_utils.h"
@@ -100,6 +100,9 @@ HistorySyncOptinUI::HistorySyncOptinUI(content::WebUI* web_ui)
       is_first_run_desktop_refresh_enabled
           ? IDR_SIGNIN_HISTORY_SYNC_OPTIN_HISTORY_SYNC_OPTIN_REFRESH_HTML
           : IDR_SIGNIN_HISTORY_SYNC_OPTIN_HISTORY_SYNC_OPTIN_HTML);
+  source->AddResourcePath(
+      chrome::kChromeUIHistorySyncOptinLoadingPath,
+      IDR_SIGNIN_HISTORY_SYNC_OPTIN_SYNC_LOADING_CONFIRMATION_HTML);
 
   static constexpr webui::LocalizedString kLocalizedStrings[] = {
       {"historySyncOptInTitle", IDS_HISTORY_SYNC_OPT_IN_TITLE},
@@ -109,6 +112,7 @@ HistorySyncOptinUI::HistorySyncOptinUI(content::WebUI* web_ui)
       {"historySyncOptInRejectButtonLabel",
        IDS_HISTORY_SYNC_OPT_IN_REJECT_BUTTON},
       {"historySyncOptInDescription", IDS_HISTORY_SYNC_OPT_IN_DESCRIPTION},
+      {"syncLoadingConfirmationTitle", IDS_SYNC_LOADING_CONFIRMATION_TITLE},
   };
 
   // Refreshed UI doesn't need the background illustrations.
@@ -145,7 +149,7 @@ void HistorySyncOptinUI::BindInterface(
 }
 
 void HistorySyncOptinUI::Initialize(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     std::optional<bool> should_close_modal_dialog,
     HistorySyncOptinHelper::FlowCompletedCallback
         history_optin_completed_callback) {
@@ -168,7 +172,7 @@ void HistorySyncOptinUI::CreateHistorySyncOptinHandler(
 }
 
 void HistorySyncOptinUI::OnMojoHandlersReady(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     std::optional<bool> should_close_modal_dialog,
     HistorySyncOptinHelper::FlowCompletedCallback
         history_optin_completed_callback,

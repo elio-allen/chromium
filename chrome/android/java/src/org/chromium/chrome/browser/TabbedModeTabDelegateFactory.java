@@ -28,6 +28,7 @@ import org.chromium.chrome.browser.magic_stack.ModuleRegistry;
 import org.chromium.chrome.browser.metrics.StartupMetricsTracker;
 import org.chromium.chrome.browser.native_page.NativePageFactory;
 import org.chromium.chrome.browser.pdf.PdfInfo;
+import org.chromium.chrome.browser.recent_tabs.RecentlyClosedEntriesManager;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabContextMenuItemDelegate;
@@ -36,6 +37,7 @@ import org.chromium.chrome.browser.tab.TabStateBrowserControlsVisibilityDelegate
 import org.chromium.chrome.browser.tab.TabWebContentsDelegateAndroid;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabmodel.TabModelType;
 import org.chromium.chrome.browser.tasks.HomeSurfaceTracker;
 import org.chromium.chrome.browser.toolbar.top.Toolbar;
 import org.chromium.chrome.browser.ui.ExclusiveAccessManager;
@@ -43,6 +45,7 @@ import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.edge_to_edge.TopInsetProvider;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.native_page.NativePage;
+import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.util.BrowserControlsVisibilityDelegate;
 import org.chromium.components.browser_ui.util.ComposedBrowserControlsVisibilityDelegate;
@@ -86,8 +89,7 @@ public class TabbedModeTabDelegateFactory implements TabDelegateFactory {
     private final OneshotSupplier<ModuleRegistry> mModuleRegistrySupplier;
     private final MonotonicObservableSupplier<EdgeToEdgeController> mEdgeToEdgeControllerSupplier;
     private final TopInsetProvider mTopInsetProvider;
-    private final OneshotSupplier<org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider>
-            mSideUiStateProviderSupplier;
+    private final OneshotSupplier<SideUiStateProvider> mSideUiStateProviderSupplier;
     private final StartupMetricsTracker mStartupMetricsTracker;
     private final @Nullable ExclusiveAccessManager mExclusiveAccessManager;
     private @Nullable NativePageFactory mNativePageFactory;
@@ -120,8 +122,7 @@ public class TabbedModeTabDelegateFactory implements TabDelegateFactory {
             OneshotSupplier<ModuleRegistry> moduleRegistrySupplier,
             MonotonicObservableSupplier<EdgeToEdgeController> edgeToEdgeControllerSupplier,
             TopInsetProvider topInsetProvider,
-            OneshotSupplier<org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider>
-                    sideUiStateProviderSupplier,
+            OneshotSupplier<SideUiStateProvider> sideUiStateProviderSupplier,
             StartupMetricsTracker startupMetricsTracker,
             @Nullable ExclusiveAccessManager exclusiveAccessManager,
             BackPressManager backPressManager,
@@ -168,7 +169,7 @@ public class TabbedModeTabDelegateFactory implements TabDelegateFactory {
                 mBrowserControlsStateProvider,
                 mFullscreenManager,
                 mTabCreatorManager,
-                mTabModelSelectorSupplier,
+                (Supplier<@Nullable TabModelSelector>) mTabModelSelectorSupplier,
                 mCompositorViewHolderSupplier,
                 (Supplier<@Nullable ModalDialogManager>) mModalDialogManagerSupplier,
                 mSnackbarManagerSupplier,
@@ -238,5 +239,30 @@ public class TabbedModeTabDelegateFactory implements TabDelegateFactory {
     /** Destroy and unhook objects at destruction. */
     public void destroy() {
         if (mNativePageFactory != null) mNativePageFactory.destroy();
+    }
+
+    @Override
+    public @TabModelType int getTabModelType() {
+        return TabModelType.STANDARD;
+    }
+
+    @Override
+    public boolean isCustomTab() {
+        return false;
+    }
+
+    @Override
+    public boolean isTabInPwa() {
+        return false;
+    }
+
+    @Override
+    public boolean isTabInBrowser() {
+        return true;
+    }
+
+    @Override
+    public boolean isTabInPopup() {
+        return false;
     }
 }

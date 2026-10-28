@@ -193,6 +193,7 @@ found in the LICENSE file.
     <dimen name="chip_border_width">1dp</dimen>
     <dimen name="chip_corner_radius">8dp</dimen>
     <dimen name="chip_default_height">32dp</dimen>
+    <dimen name="chip_view_compact_padding">16dp</dimen>
     <dimen name="chip_view_start_padding">8dp</dimen>
     <dimen name="chip_view_extended_start_padding">16dp</dimen>
     <dimen name="chip_view_end_padding">16dp</dimen>
@@ -224,7 +225,6 @@ found in the LICENSE file.
     <dimen name="empty_state_subheading_padding_top">8dp</dimen>
 
     <!-- New Tab Page -->
-    <item name="home_surface_search_box_background_alpha" format="float" type="dimen">0.15</item>
     <dimen name="home_surface_ui_background_radius">24dp</dimen>
     <dimen name="home_surface_search_box_background_radius">100dp</dimen>
     <!-- Spacing between sections. -->
@@ -274,4 +274,18 @@ found in the LICENSE file.
 
     <!-- Containment -->
     <item name="containment_item_hover_alpha" format="float" type="dimen">0.04</item>
+
+    <!-- Navigation Pane dimensions -->
+    <dimen name="navigation_pane_header_padding_top">16dp</dimen>
+    <dimen name="navigation_pane_header_padding_bottom">8dp</dimen>
+    <dimen name="navigation_pane_divider_margin">8dp</dimen>
+
+    <dimen name="search_box_view_margin_end">16dp</dimen>
+
+    <!-- SearchBoxView Dimens -->
+    <dimen name="search_box_view_height_default">40dp</dimen>
+    <dimen name="search_box_view_height_desktop">48dp</dimen>
+    <dimen name="search_box_view_padding_end_default">0dp</dimen>
+    <dimen name="search_box_view_padding_horizontal_desktop">16dp</dimen>
+    <dimen name="search_box_view_padding_start">16dp</dimen>
 </resources>

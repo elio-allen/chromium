@@ -8,19 +8,19 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/notreached.h"
-#include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/repeating_test_future.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/ash/account_manager/account_apps_availability.h"
 #include "chrome/browser/ash/account_manager/account_apps_availability_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chromeos/ash/components/account_manager/account_manager_factory.h"
 #include "components/account_manager_core/account.h"
@@ -145,7 +145,8 @@ class SigninHelperTest : public InProcessBrowserTest,
         account_manager::AccountKey::FromGaiaId(kFakePrimaryGaiaId);
     account_manager()->UpsertAccount(kPrimaryAccountKey, kFakePrimaryEmail,
                                      "access_token");
-    base::RunLoop().RunUntilIdle();
+    ASSERT_TRUE(base::test::RunUntil(
+        [&] { return on_token_upserted_call_count_ > 0; }));
     on_token_upserted_call_count_ = 0;
     on_token_upserted_account_ = std::nullopt;
   }

@@ -4,15 +4,16 @@
 
 #include "chrome/browser/dictation/dictation_interactive_browser_test_base.h"
 
+#include "base/test/run_until.h"
 #include "chrome/browser/dictation/dictation_keyed_service.h"
 #include "chrome/browser/dictation/listener_stream_provider.h"
 #include "chrome/browser/dictation/session_controller.h"
 #include "chrome/browser/dictation/session_ui_impl.h"
 #include "chrome/browser/dictation/test_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/editable_level.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test_utils.h"
@@ -21,6 +22,11 @@ namespace dictation {
 
 DictationInteractiveBrowserTestBase::DictationInteractiveBrowserTestBase() =
     default;
+
+DictationInteractiveBrowserTestBase::DictationInteractiveBrowserTestBase(
+    bool session_ends_on_stream_end)
+    : InteractiveBrowserTestMixin<DictationBrowserTestBase>(
+          session_ends_on_stream_end) {}
 
 DictationInteractiveBrowserTestBase::~DictationInteractiveBrowserTestBase() =
     default;
@@ -67,7 +73,7 @@ DictationInteractiveBrowserTestBase::StartSession(
         tabs::TabInterface* tab =
             tabs::TabInterface::GetFromContents(web_contents);
         CHECK(tab);
-        dictation_service().StartSession(
+        dictation_service().StartSessionForTesting(
             *tab, target, DictationSessionEntryPoint::kContextMenu);
         if (dictation_service().session_controller()) {
           last_started_provider_ = static_cast<ListenerStreamProvider*>(
@@ -99,27 +105,55 @@ DictationInteractiveBrowserTestBase::MultiStep
 DictationInteractiveBrowserTestBase::StartSessionWithTarget(
     ui::ElementIdentifier web_contents_id,
     std::string_view query_selector) {
-  const DeepQuery where{std::string(query_selector)};
+  return StartSessionWithTargetInFrame(
+      web_contents_id,
+      base::BindRepeating(&content::RenderFrameHost::IsInPrimaryMainFrame),
+      query_selector);
+}
+
+DictationInteractiveBrowserTestBase::MultiStep
+DictationInteractiveBrowserTestBase::StartSessionWithTargetInFrame(
+    ui::ElementIdentifier web_contents_id,
+    base::RepeatingCallback<bool(content::RenderFrameHost*)> frame_predicate,
+    std::string_view query_selector) {
   auto target_details = std::make_unique<TargetDetails>();
   TargetDetails* raw_target_details = target_details.get();
   return Steps(
-      ExecuteJsAt(web_contents_id, where, "el => el.focus()"),
       WithElement(
           web_contents_id,
-          [raw_target_details,
+          [raw_target_details, frame_predicate = std::move(frame_predicate),
            selector_str = std::string(query_selector)](ui::TrackedElement* el) {
             content::WebContents* wc =
                 AsInstrumentedWebContents(el)->web_contents();
             CHECK(wc);
-            // TODO(mcnee): Don't assume the element is in the main frame.
-            std::optional<int> dom_node_id =
-                content::GetDOMNodeId(*wc->GetPrimaryMainFrame(), selector_str);
-            CHECK(dom_node_id.has_value());
+            content::RenderFrameHost* rfh = content::FrameMatchingPredicate(
+                wc->GetPrimaryPage(), frame_predicate);
+            CHECK(rfh);
+            CHECK(content::ExecJs(
+                rfh, content::JsReplace("document.querySelector($1).focus();",
+                                        selector_str)));
+            CHECK(base::test::RunUntil([&]() {
+              return rfh->GetFocusedEditableLevel() !=
+                     content::EditableLevel::kNotEditable;
+            }));
+            content::EditableLevel editable_level =
+                rfh->GetFocusedEditableLevel();
+            blink::DOMNodeIdType dom_node_id = rfh->GetFocusedDOMNodeId();
+            CHECK(!dom_node_id.is_null());
+            // For the main frame, where GetDOMNodeId is callable, additionally
+            // validate that the queried node is consistent with what's reported
+            // as focused.
+            if (rfh->IsInPrimaryMainFrame()) {
+              std::optional<int> queried_dom_node_id =
+                  content::GetDOMNodeId(*rfh, selector_str);
+              CHECK(queried_dom_node_id.has_value());
+              CHECK_EQ(dom_node_id.value(), queried_dom_node_id.value());
+            }
 
-            // TODO(mcnee): Set whether the target is richly editable.
-            *raw_target_details = TargetDetails(content::GlobalDOMNodeId{
-                wc->GetPrimaryMainFrame()->GetWeakDocumentPtr(),
-                blink::DOMNodeIdType(dom_node_id.value())});
+            *raw_target_details = TargetDetails(
+                content::GlobalDOMNodeId{rfh->GetWeakDocumentPtr(),
+                                         dom_node_id},
+                editable_level == content::EditableLevel::kRichlyEditable);
           }),
       StartSession(std::move(target_details)));
 }
@@ -131,6 +165,18 @@ DictationInteractiveBrowserTestBase::ExtensionAPISetStreamState(
     ASSERT_NE(last_started_provider_, nullptr);
     ExtensionSendStreamStateUpdate(
         profile(), last_started_provider_->stream_id_for_testing(), state);
+  }));
+}
+
+DictationInteractiveBrowserTestBase::MultiStep
+DictationInteractiveBrowserTestBase::ExtensionAPISetStreamState(
+    ExtensionStreamState state,
+    std::optional<int> error_code) {
+  return Steps(Do([this, state, error_code] {
+    ASSERT_NE(last_started_provider_, nullptr);
+    ExtensionSendStreamStateUpdate(
+        profile(), last_started_provider_->stream_id_for_testing(), state,
+        error_code);
   }));
 }
 

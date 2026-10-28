@@ -21,8 +21,8 @@
 #include "base/memory/weak_ptr.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/types/pass_key.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/db/util.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
 #include "components/safe_browsing/core/common/threat_enums.h"
 #include "url/gurl.h"
 
@@ -69,7 +69,7 @@ enum class AsyncMatch : int {
   kMaxValue = NO_MATCH,
 };
 
-struct V4ProtocolConfig;
+struct SBProtocolConfig;
 class V4GetHashProtocolManager;
 class V5GetHashProtocolManager;
 
@@ -118,9 +118,23 @@ class SafeBrowsingDatabaseManager
     virtual void OnCheckAllowlistUrlResult(bool did_match_allowlist) {}
 
     // Returns a WeakPtr to the V5GetHashProtocolManager for this client. This
-    // is passed in by the client because it is a profile-keyed service.
+    // is passed in by the client because V5GetHashProtocolManager is a
+    // profile-keyed service, whereas SafeBrowsingDatabaseManager is
+    // browser-wide.
+    //
+    // Providing a valid protocol manager is required for all clients. The only
+    // (temporary) exceptions are callers of `CheckCsdAllowlistUrl` or
+    // `CheckExtensionIDs`.
+    // TODO(crbug.com/372395685): Remove "exceptions" note once two callers are
+    // refactored to stop using `Client`.
     virtual base::WeakPtr<V5GetHashProtocolManager>
-    GetV5GetHashProtocolManager();
+    GetV5GetHashProtocolManager() = 0;
+
+    // Returns the UI thread task runner on which asynchronous database lookup
+    // replies for this client should be posted, or nullptr to use the caller's
+    // default task runner.
+    virtual scoped_refptr<base::SequencedTaskRunner>
+    GetCustomCallbackTaskRunner();
 
     // Returns a WeakPtr to this.
     base::WeakPtr<Client> GetWeakPtr();
@@ -297,7 +311,7 @@ class SafeBrowsingDatabaseManager
   // base class method at the top of it. This should be called on the UI thread.
   virtual void StartOnUIThread(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      const V4ProtocolConfig& config);
+      const SBProtocolConfig& config);
 
   //
   // Method to manage getting database updates of the DatabaseManager.

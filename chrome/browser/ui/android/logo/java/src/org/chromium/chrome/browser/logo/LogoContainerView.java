@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser.logo;
 
 import android.content.Context;
+import android.graphics.drawable.AnimatedImageDrawable;
 import android.graphics.drawable.Drawable;
 import android.util.AttributeSet;
 import android.widget.FrameLayout;
@@ -69,7 +70,7 @@ public class LogoContainerView extends FrameLayout {
         }
     }
 
-    void playAnimatedLogo(Object animatedLogo) {
+    void playAnimatedLogo(AnimatedImageDrawable animatedLogo) {
         mLoadingView.hideLoadingUi();
         mLogoView.playAnimatedLogo(animatedLogo);
     }
@@ -102,6 +103,14 @@ public class LogoContainerView extends FrameLayout {
 
     void setLogoTopMargin(int topMargin) {
         mLogoView.setLogoTopMargin(topMargin);
+    }
+
+    void setLogoTopPadding(int topPadding) {
+        mLogoView.setPaddingRelative(
+                mLogoView.getPaddingStart(),
+                topPadding,
+                mLogoView.getPaddingEnd(),
+                mLogoView.getPaddingBottom());
     }
 
     void setLogoBottomMargin(int bottomMargin) {

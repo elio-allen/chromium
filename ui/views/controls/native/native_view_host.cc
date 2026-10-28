@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "base/check.h"
+#include "build/build_config.h"
 #include "build/buildflag.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/cursor/cursor.h"
@@ -18,7 +19,6 @@
 #include "ui/views/controls/native/native_view_host_wrapper.h"
 #include "ui/views/painter.h"
 #include "ui/views/view_utils.h"
-#include "ui/views/views_features.h"
 #include "ui/views/widget/widget.h"
 
 namespace views {
@@ -26,9 +26,7 @@ namespace views {
 ////////////////////////////////////////////////////////////////////////////////
 // NativeViewHost, public:
 
-NativeViewHost::NativeViewHost()
-    : layer_managed_by_views_(base::FeatureList::IsEnabled(
-          views::features::kNativeViewHostManagesLayers)) {
+NativeViewHost::NativeViewHost() {
   set_suppress_default_focus_handling();
 }
 
@@ -50,11 +48,6 @@ void NativeViewHost::Attach(gfx::NativeView native_view) {
   // could be visible when |this| is not.
   if (!IsDrawn()) {
     native_wrapper_->HideWidget();
-  }
-
-  Widget* widget = Widget::GetWidgetForNativeView(native_view);
-  if (widget) {
-    widget->SetNativeWindowProperty(kWidgetNativeViewHostKey, this);
   }
 }
 
@@ -89,14 +82,6 @@ gfx::RoundedCornersF NativeViewHost::GetNativeViewCornerRadii() const {
                          : gfx::RoundedCornersF();
 }
 
-void NativeViewHost::SetHitTestTopInset(int top_inset) {
-  native_wrapper_->SetHitTestTopInset(top_inset);
-}
-
-int NativeViewHost::GetHitTestTopInset() const {
-  return native_wrapper_->GetHitTestTopInset();
-}
-
 void NativeViewHost::SetNativeViewSize(const gfx::Size& size) {
   if (native_view_size_ == size) {
     return;
@@ -105,21 +90,21 @@ void NativeViewHost::SetNativeViewSize(const gfx::Size& size) {
   InvalidateLayout();
 }
 
+#if BUILDFLAG(IS_CHROMEOS)
 void NativeViewHost::SetLayerManagedByViews(bool managed) {
   if (layer_managed_by_views_ == managed) {
     return;
   }
 
-  CHECK(!managed || base::FeatureList::IsEnabled(
-                        views::features::kNativeViewHostManagesLayers));
-
-  layer_managed_by_views_ = managed;
+  CHECK(!native_wrapper_);
   DCHECK(!native_view_);
+  layer_managed_by_views_ = managed;
 }
 
 void NativeViewHost::SetCreateLayer(bool create_layer) {
   create_layer_ = create_layer;
 }
+#endif
 
 gfx::NativeView NativeViewHost::GetNativeViewContainer() const {
   return native_view_ ? native_wrapper_->GetNativeViewContainer()
@@ -138,7 +123,15 @@ void NativeViewHost::SetBackgroundColorWhenClipped(
 }
 
 ui::Layer* NativeViewHost::GetUILayer() {
+#if BUILDFLAG(IS_CHROMEOS)
   return layer_managed_by_views() ? layer() : native_wrapper_->GetUILayer();
+#else
+  return layer();
+#endif
+}
+
+void NativeViewHost::SetMouseEventFallback(ui::EventHandler* handler) {
+  mouse_event_fallback_ = handler;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -289,18 +282,24 @@ void NativeViewHost::SetVisible(bool visible) {
   View::SetVisible(visible);
 }
 
-bool NativeViewHost::OnMousePressed(const ui::MouseEvent& event) {
-  // In the typical case the attached NativeView receives the events directly
-  // from the system and this function is not called. There are scenarios
-  // where that may not happen. For example, if the NativeView is configured
-  // not to receive events, then this function will be called. An additional
-  // scenario is if the WidgetDelegate overrides
-  // ShouldDescendIntoChildForEventHandling(). In that case the NativeView
-  // will not receive the events, and this function will be called. Regardless,
-  // this function does not need to forward to the NativeView, because it is
-  // expected to be done by the system, and the only cases where this is called
-  // is if the NativeView should not receive events.
-  return View::OnMousePressed(event);
+void NativeViewHost::OnMouseMoved(const ui::MouseEvent& event) {
+  if (mouse_event_fallback_) {
+    // Need a copy for mutability.
+    auto event_copy = event.Clone();
+    mouse_event_fallback_->OnMouseEvent(
+        static_cast<ui::MouseEvent*>(event_copy.get()));
+  } else {
+    views::View::OnMouseMoved(event);
+  }
+}
+
+void NativeViewHost::OnMouseEvent(ui::MouseEvent* event) {
+  if (mouse_event_fallback_) {
+    mouse_event_fallback_->OnMouseEvent(event);
+    event->SetHandled();
+  } else {
+    views::View::OnMouseEvent(event);
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -321,10 +320,6 @@ gfx::Rect NativeViewHost::GetNativeViewClipRect() const {
 void NativeViewHost::Detach(bool destroyed) {
   if (native_view_) {
     if (!destroyed) {
-      Widget* widget = Widget::GetWidgetForNativeView(native_view_);
-      if (widget) {
-        widget->SetNativeWindowProperty(kWidgetNativeViewHostKey, nullptr);
-      }
       ClearFocus();
     }
     native_wrapper_->NativeViewDetaching(destroyed);

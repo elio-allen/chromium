@@ -18,6 +18,7 @@
 #import "ios/chrome/browser/passwords/infobars/public/ios_chrome_password_infobar_metrics_recorder.h"
 #import "services/metrics/public/cpp/ukm_source_id.h"
 
+@protocol PrimaryAccountReauthCommands;
 @protocol SyncPresenterCommands;
 @protocol SettingsCommands;
 
@@ -43,6 +44,7 @@ class IOSChromeSavePasswordInfoBarDelegate : public ConfirmInfoBarDelegate {
       ukm::SourceId ukm_source_id,
       bool is_replacement,
       id<SyncPresenterCommands> sync_presenter_handler,
+      id<PrimaryAccountReauthCommands> primary_account_reauth_handler,
       id<SettingsCommands> settings_commands_handler,
       password_manager::PasswordStoreInterface* profile_store,
       password_manager::PasswordStoreInterface* account_store,
@@ -131,13 +133,17 @@ class IOSChromeSavePasswordInfoBarDelegate : public ConfirmInfoBarDelegate {
   // fixed, proceeds to save the password and dismisses the infobar. Otherwise,
   // replaces the infobar with a new one, so the user can retry fixing the
   // error.
-  void OnPasswordErrorFlowCompleted();
+  void OnPasswordErrorFlowCompleted(
+      password_manager::ActionableError handled_error);
 
   // The UKM source ID for the page.
   const ukm::SourceId ukm_source_id_;
 
   // Handler for sync presenter commands.
   __weak id<SyncPresenterCommands> sync_presenter_handler_ = nil;
+
+  // Handler for primary account reauth commands.
+  __weak id<PrimaryAccountReauthCommands> primary_account_reauth_handler_ = nil;
 
   // Handler for settings commands.
   __weak id<SettingsCommands> settings_commands_handler_ = nil;
@@ -163,6 +169,9 @@ class IOSChromeSavePasswordInfoBarDelegate : public ConfirmInfoBarDelegate {
 
   // True if the delegate is currently handling a password store error.
   bool handling_password_error_ = false;
+
+  // The actionable error that was resolved during this infobar session, if any.
+  std::optional<password_manager::ActionableError> resolved_error_;
 
   // True if this delegate is a replacement for a previous one. This only
   // happens when there is an error preventing passwords from being saved and

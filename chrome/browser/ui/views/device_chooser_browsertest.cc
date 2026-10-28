@@ -9,8 +9,8 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
@@ -35,27 +35,33 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "ui/base/page_transition_types.h"
+#include "ui/events/base_event_utils.h"
+#include "ui/views/controls/button/md_text_button.h"
+#include "ui/views/controls/table/table_view.h"
+#include "ui/views/test/button_test_api.h"
+#include "ui/views/view_utils.h"
+#include "ui/views/widget/any_widget_observer.h"
 
 namespace {
 
 void ShowChooserBubble(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     std::unique_ptr<permissions::ChooserController> controller) {
-  auto* contents = browser->tab_strip_model()->GetActiveWebContents();
+  auto* contents = browser->GetTabStripModel()->GetActiveWebContents();
   chrome::ShowDeviceChooserDialog(contents->GetPrimaryMainFrame(),
                                   std::move(controller));
 }
 
 void ShowChooserModal(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     std::unique_ptr<permissions::ChooserController> controller) {
-  auto* web_contents = browser->tab_strip_model()->GetActiveWebContents();
+  auto* web_contents = browser->GetTabStripModel()->GetActiveWebContents();
   constrained_window::ShowWebModalDialogViews(
       new ChooserDialogView(std::move(controller)), web_contents);
 }
 
 void ShowChooser(const std::string& test_name,
-                 Browser* browser,
+                 BrowserWindowInterface* browser,
                  std::unique_ptr<permissions::ChooserController> controller) {
   if (base::EndsWith(test_name, "Modal", base::CompareCase::SENSITIVE)) {
     ShowChooserModal(browser, std::move(controller));
@@ -273,7 +279,7 @@ IN_PROC_BROWSER_TEST_F(DeviceChooserBubbleTest,
                        ShowDeviceChooserDialogInSplitView) {
   ASSERT_TRUE(AddTabAtIndex(0, GetURL("example.com"),
                             ui::PageTransition::PAGE_TRANSITION_TYPED));
-  TabStripModel* const tab_strip_model = browser()->tab_strip_model();
+  TabStripModel* const tab_strip_model = browser()->GetTabStripModel();
   tab_strip_model->ActivateTabAt(0);
   tab_strip_model->AddToNewSplit(
       {1}, split_tabs::SplitTabVisualData(),
@@ -305,14 +311,112 @@ IN_PROC_BROWSER_TEST_F(DeviceChooserBubbleTest,
   ShowChooserBubble(browser(), std::make_unique<FakeUsbChooserController>(0));
 
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
-  FullscreenController* fullscreen_controller = browser()
-                                                    ->GetFeatures()
-                                                    .exclusive_access_manager()
-                                                    ->fullscreen_controller();
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  FullscreenController* fullscreen_controller =
+      ExclusiveAccessManager::From(browser())->fullscreen_controller();
 
   // While bubble is showing, tab fullscreen cannot be entered.
   EXPECT_FALSE(content::ExecJs(web_contents,
                                "document.documentElement.requestFullscreen()"));
   EXPECT_FALSE(fullscreen_controller->IsTabFullscreen());
+}
+
+IN_PROC_BROWSER_TEST_F(DeviceChooserBubbleTest,
+                       KeyjackingProtectionSafetyWindow) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetURL("example.com")));
+
+  views::NamedWidgetShownWaiter waiter(views::test::AnyWidgetTestPasskey{},
+                                       "ChooserBubbleUiViewDelegate");
+  ShowChooserBubble(browser(), std::make_unique<FakeUsbChooserController>(1));
+  views::Widget* bubble_widget = waiter.WaitIfNeededAndGet();
+  ASSERT_NE(bubble_widget, nullptr);
+
+  views::DialogDelegate* delegate =
+      bubble_widget->widget_delegate()->AsDialogDelegate();
+  ASSERT_NE(delegate, nullptr);
+  EXPECT_FALSE(delegate->ShouldAllowKeyEventsDuringInputProtection());
+
+  // Select the first device in the table so the OK ("Connect") button is
+  // enabled (`DialogDelegate::AcceptDialog()` DCHECKs `IsDialogButtonEnabled`).
+  auto find_table_view = [](this auto&& self,
+                            views::View* root) -> views::TableView* {
+    if (auto* table = views::AsViewClass<views::TableView>(root)) {
+      return table;
+    }
+    for (views::View* child : root->children()) {
+      if (auto* table = self(child)) {
+        return table;
+      }
+    }
+    return nullptr;
+  };
+  views::TableView* table_view = find_table_view(delegate->GetContentsView());
+  ASSERT_NE(table_view, nullptr);
+  table_view->Select(0);
+  ASSERT_TRUE(delegate->IsDialogButtonEnabled(ui::mojom::DialogButton::kOk));
+
+  views::MdTextButton* ok_button = delegate->GetOkButton();
+  ASSERT_NE(ok_button, nullptr);
+
+  // 1. Press Enter immediately (within the 500ms input protection window).
+  views::test::ButtonTestApi(ok_button).NotifyClick(
+      ui::KeyEvent(ui::EventType::kKeyPressed, ui::VKEY_RETURN, ui::EF_NONE,
+                   ui::EventTimeForNow()));
+
+  // Verify that the bubble did not close (the key event was ignored).
+  EXPECT_FALSE(bubble_widget->IsClosed());
+
+  // 2. A repeated Enter key event (holding Enter down) should also be ignored
+  // even after the 500ms safety window.
+  views::test::ButtonTestApi(ok_button).NotifyClick(ui::KeyEvent(
+      ui::EventType::kKeyPressed, ui::VKEY_RETURN, ui::EF_IS_REPEAT,
+      ui::EventTimeForNow() + base::Milliseconds(600)));
+  EXPECT_FALSE(bubble_widget->IsClosed());
+
+  // 3. A fresh Enter key press after the 500ms safety window (offset by 600ms)
+  // should succeed.
+  views::test::ButtonTestApi(ok_button).NotifyClick(
+      ui::KeyEvent(ui::EventType::kKeyPressed, ui::VKEY_RETURN, ui::EF_NONE,
+                   ui::EventTimeForNow() + base::Milliseconds(600)));
+
+  // Verify that the bubble accepted and closed.
+  EXPECT_TRUE(bubble_widget->IsClosed());
+}
+
+// TODO(crbug.com/578274851): Re-enable this test.
+IN_PROC_BROWSER_TEST_F(
+    DeviceChooserBubbleTest,
+    DISABLED_ChooserBubbleStaysOpenAfterExitingFullscreenAndClosesOnTabSwitch) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetURL("example.com")));
+
+  content::WebContents* web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  FullscreenController* fullscreen_controller =
+      ExclusiveAccessManager::From(browser())->fullscreen_controller();
+
+  // Enter tab fullscreen from script.
+  EXPECT_TRUE(content::ExecJs(web_contents,
+                              "document.documentElement.requestFullscreen()"));
+  ui_test_utils::FullscreenWaiter(browser(), {.tab_fullscreen = true}).Wait();
+  ASSERT_TRUE(fullscreen_controller->IsTabFullscreen());
+
+  // Showing the chooser bubble drops tab fullscreen and queues an asynchronous
+  // fullscreen state change notification. Create `fullscreen_waiter` before
+  // showing the bubble so `Wait()` waits for the asynchronous notification.
+  ui_test_utils::FullscreenWaiter fullscreen_waiter(browser(),
+                                                    {.tab_fullscreen = false});
+  views::NamedWidgetShownWaiter widget_waiter(
+      views::test::AnyWidgetTestPasskey{}, "ChooserBubbleUiViewDelegate");
+  ShowChooserBubble(browser(), std::make_unique<FakeUsbChooserController>(1));
+  views::Widget* bubble_widget = widget_waiter.WaitIfNeededAndGet();
+  ASSERT_NE(bubble_widget, nullptr);
+  fullscreen_waiter.Wait();
+  EXPECT_FALSE(fullscreen_controller->IsTabFullscreen());
+  EXPECT_FALSE(bubble_widget->IsClosed());
+  EXPECT_TRUE(bubble_widget->IsVisible());
+
+  // Switching to a new tab should cleanly close the chooser bubble.
+  ASSERT_TRUE(AddTabAtIndex(1, GetURL("example.com"),
+                            ui::PageTransition::PAGE_TRANSITION_TYPED));
+  EXPECT_TRUE(bubble_widget->IsClosed());
 }

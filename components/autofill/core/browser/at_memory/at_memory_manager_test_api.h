@@ -18,9 +18,11 @@ class AtMemoryManagerTestApi {
       : manager_(CHECK_DEREF(manager)) {}
 
   AtMemoryMetricsRecorder* at_memory_metrics_recorder() {
-    return manager_->session_state_
-               ? manager_->session_state_->metrics_recorder.get()
-               : nullptr;
+    return manager_->metrics_recorder();
+  }
+
+  AtMemoryPersistedStateManager* state_manager() {
+    return &manager_->state_manager_;
   }
 
  private:

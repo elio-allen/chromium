@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/containers/to_vector.h"
@@ -18,23 +19,33 @@
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "base/uuid.h"
+#include "build/build_config.h"
 #include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_i18n_api.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile_comparator.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_profile_test_api.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component.h"
 #include "components/autofill/core/browser/data_quality/addresses/profile_token_quality.h"
 #include "components/autofill/core/browser/data_quality/addresses/profile_token_quality_test_api.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/geo/autofill_country.h"
 #include "components/autofill/core/browser/geo/country_data.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/test_utils/test_profiles.h"
 #include "components/autofill/core/common/autofill_constants.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/form_field_data.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if BUILDFLAG(IS_ANDROID)
+
+#include "base/android/jni_android.h"
+#include "base/android/scoped_java_ref.h"
+#include "components/autofill/android/main_autofill_jni_headers/AutofillProfile_jni.h"
+
+#endif  // BUILDFLAG(IS_ANDROID)
 
 namespace autofill {
 
@@ -43,6 +54,8 @@ using testing::IsEmpty;
 using ObservationType = ProfileTokenQuality::ObservationType;
 
 namespace {
+
+using ProfileMergeResult = AutofillProfile::ProfileMergeResult;
 
 std::u16string GetSuggestionLabel(AutofillProfile* profile) {
   return AutofillProfile::CreateDifferentiatingLabels(
@@ -1569,6 +1582,97 @@ TEST_F(AutofillProfileTest, TestFinalizeAfterImportUserVerified) {
   }
 }
 
+// Tests that `FinalizeAfterImport` wipes invalid name subcomponents and
+// re-parses the full name even when `NAME_FULL` is not user-verified.
+TEST_F(AutofillProfileTest, TestFinalizeAfterImportWipeInvalidNameStructure) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      features::kAutofillWipeInvalidNameStructure};
+
+  AutofillProfile profile(i18n_model_definition::kLegacyHierarchyCountryCode);
+  profile.SetRawInfoWithVerificationStatus(NAME_FULL, u"Peter Pan",
+                                           VerificationStatus::kObserved);
+  profile.SetRawInfoWithVerificationStatus(NAME_FIRST, u"Peter",
+                                           VerificationStatus::kParsed);
+  profile.SetRawInfoWithVerificationStatus(NAME_LAST, u"A Pan",
+                                           VerificationStatus::kParsed);
+  profile.SetRawInfoWithVerificationStatus(NAME_LAST_SECOND, u"A Pan",
+                                           VerificationStatus::kParsed);
+
+  EXPECT_TRUE(profile.FinalizeAfterImport());
+  EXPECT_EQ(profile.GetRawInfo(NAME_FULL), u"Peter Pan");
+  EXPECT_EQ(profile.GetVerificationStatus(NAME_FULL),
+            VerificationStatus::kObserved);
+  EXPECT_EQ(profile.GetRawInfo(NAME_FIRST), u"Peter");
+  EXPECT_EQ(profile.GetVerificationStatus(NAME_FIRST),
+            VerificationStatus::kParsed);
+  EXPECT_EQ(profile.GetRawInfo(NAME_MIDDLE), u"");
+  EXPECT_EQ(profile.GetVerificationStatus(NAME_MIDDLE),
+            VerificationStatus::kParsed);
+  EXPECT_EQ(profile.GetRawInfo(NAME_LAST), u"Pan");
+  EXPECT_EQ(profile.GetVerificationStatus(NAME_LAST),
+            VerificationStatus::kParsed);
+  EXPECT_EQ(profile.GetRawInfo(NAME_LAST_FIRST), u"");
+  EXPECT_EQ(profile.GetVerificationStatus(NAME_LAST_FIRST),
+            VerificationStatus::kParsed);
+  EXPECT_EQ(profile.GetRawInfo(NAME_LAST_SECOND), u"Pan");
+  EXPECT_EQ(profile.GetVerificationStatus(NAME_LAST_SECOND),
+            VerificationStatus::kParsed);
+}
+
+// Tests that structured name subcomponents are preserved when `NAME_FULL` is
+// updated via `SetRawInfoWithVerificationStatus` to a token-equivalent value,
+// and wiped when updated to a non-token-equivalent value.
+TEST_F(AutofillProfileTest, ResetStructuredNameTokens) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      features::kAutofillWipeInvalidNameStructure};
+
+  AutofillProfile profile(i18n_model_definition::kLegacyHierarchyCountryCode);
+  profile.SetRawInfoWithVerificationStatus(NAME_FULL, u"Peter Pan",
+                                           VerificationStatus::kUserVerified);
+  profile.FinalizeAfterImport();
+
+  EXPECT_EQ(profile.GetRawInfo(NAME_FIRST), u"Peter");
+  EXPECT_EQ(profile.GetVerificationStatus(NAME_FIRST),
+            VerificationStatus::kParsed);
+  EXPECT_EQ(profile.GetRawInfo(NAME_LAST), u"Pan");
+  EXPECT_EQ(profile.GetVerificationStatus(NAME_LAST),
+            VerificationStatus::kParsed);
+
+  // Lift the verification status of the last name to be `kObserved`.
+  profile.SetRawInfoWithVerificationStatus(NAME_LAST, u"Pan",
+                                           VerificationStatus::kObserved);
+  EXPECT_EQ(profile.GetVerificationStatus(NAME_LAST),
+            VerificationStatus::kObserved);
+
+  // Set a new full name that has the same tokens in a different order.
+  profile.SetRawInfoWithVerificationStatus(NAME_FULL, u"Pan, Peter",
+                                           VerificationStatus::kUserVerified);
+
+  // After this operation, the structure should be maintained including the
+  // observed status of the last name.
+  EXPECT_EQ(profile.GetRawInfo(NAME_FIRST), u"Peter");
+  EXPECT_EQ(profile.GetVerificationStatus(NAME_FIRST),
+            VerificationStatus::kParsed);
+  EXPECT_EQ(profile.GetRawInfo(NAME_LAST), u"Pan");
+  EXPECT_EQ(profile.GetVerificationStatus(NAME_LAST),
+            VerificationStatus::kObserved);
+
+  // Now set a different full name.
+  profile.SetRawInfoWithVerificationStatus(NAME_FULL, u"Hook",
+                                           VerificationStatus::kUserVerified);
+
+  // Setting a non-equivalent full name should unset the child tokens.
+  EXPECT_EQ(profile.GetRawInfo(NAME_FIRST), u"");
+  EXPECT_EQ(profile.GetVerificationStatus(NAME_FIRST),
+            VerificationStatus::kNoStatus);
+  EXPECT_EQ(profile.GetRawInfo(NAME_LAST), u"");
+  EXPECT_EQ(profile.GetVerificationStatus(NAME_LAST),
+            VerificationStatus::kNoStatus);
+  EXPECT_EQ(profile.GetRawInfo(NAME_LAST_SECOND), u"");
+  EXPECT_EQ(profile.GetVerificationStatus(NAME_LAST_SECOND),
+            VerificationStatus::kNoStatus);
+}
+
 // Tests whether calling `FinalizeAfterImport` where a root node is user
 // verified to be empty, wipes the data from subcomponents.
 TEST_F(AutofillProfileTest, TestFinalizeAfterImportUserVerifiedEmpty) {
@@ -1671,7 +1775,8 @@ TEST_F(AutofillProfileTest, MergeDataFrom_DifferentProfile) {
   b.FinalizeAfterImport();
   a.FinalizeAfterImport();
 
-  EXPECT_TRUE(a.MergeDataFrom(b, "en-US"));
+  EXPECT_EQ(a.MergeDataFrom(b, "en-US"),
+            ProfileMergeResult::kMergeSucceededWithModification);
   // Merge has modified profile a, the validation is not updated.
   EXPECT_EQ(base::UTF16ToUTF8(a.GetRawInfo(ADDRESS_HOME_LINE2)),
             "Unit 5, area 51");
@@ -1693,7 +1798,8 @@ TEST_F(AutofillProfileTest, MergeDataFrom_SameProfile) {
   b.SetRawInfoWithVerificationStatus(NAME_FULL, b.GetRawInfo(NAME_FULL),
                                      VerificationStatus::kUserVerified);
   b.set_guid(base::Uuid::GenerateRandomV4().AsLowercaseString());
-  EXPECT_TRUE(a.MergeDataFrom(b, "en-US"));
+  EXPECT_EQ(a.MergeDataFrom(b, "en-US"),
+            ProfileMergeResult::kMergeSucceededWithModification);
   // Merge has modified profile a, the validation is not updated.
   EXPECT_EQ(1u, a.usage_history().use_count());
 
@@ -1702,9 +1808,25 @@ TEST_F(AutofillProfileTest, MergeDataFrom_SameProfile) {
   AutofillProfile c = a;
   c.set_guid(base::Uuid::GenerateRandomV4().AsLowercaseString());
   c.usage_history().set_use_count(3);
-  EXPECT_FALSE(a.MergeDataFrom(c, "en-US"));
+  EXPECT_EQ(a.MergeDataFrom(c, "en-US"),
+            ProfileMergeResult::kMergeSucceededWithoutModification);
   // Merge has not modified anything.
   EXPECT_EQ(3u, a.usage_history().use_count());
+}
+
+// Tests that merging two non-mergeable profiles fails and leaves the target
+// profile unchanged.
+TEST_F(AutofillProfileTest, MergeDataFrom_NotMergeable) {
+  AutofillProfile a = test::GetFullProfile();
+
+  AutofillProfile b = a;
+  b.SetRawInfo(EMAIL_ADDRESS, u"different@example.com");
+  a.FinalizeAfterImport();
+  b.FinalizeAfterImport();
+
+  const AutofillProfile expected_a = a;
+  EXPECT_EQ(a.MergeDataFrom(b, "en-US"), ProfileMergeResult::kMergeFailed);
+  EXPECT_EQ(a, expected_a);
 }
 
 // Tests that when merging two profiles, the token quality is merged.
@@ -1727,7 +1849,8 @@ TEST_F(AutofillProfileTest, MergeDataFrom_TokenQuality) {
   // Finalize, merge and verify expectations.
   a.FinalizeAfterImport();
   b.FinalizeAfterImport();
-  ASSERT_TRUE(a.MergeDataFrom(b, "en-US"));
+  ASSERT_EQ(a.MergeDataFrom(b, "en-US"),
+            ProfileMergeResult::kMergeSucceededWithModification);
   EXPECT_THAT(
       a.token_quality().GetObservationTypesForFieldType(ADDRESS_HOME_STATE),
       testing::UnorderedElementsAre(ObservationType::kAccepted));
@@ -1750,7 +1873,8 @@ TEST_F(AutofillProfileTest, OverwriteName_AddNameFull) {
                                      VerificationStatus::kUserVerified);
   b.FinalizeAfterImport();
 
-  EXPECT_TRUE(a.MergeDataFrom(b, "en-US"));
+  EXPECT_EQ(a.MergeDataFrom(b, "en-US"),
+            ProfileMergeResult::kMergeSucceededWithModification);
   EXPECT_EQ(a.GetRawInfo(NAME_FIRST), u"Marion");
   EXPECT_EQ(a.GetRawInfo(NAME_MIDDLE), u"Mitchell");
   EXPECT_EQ(a.GetRawInfo(NAME_LAST), u"Morrison");
@@ -1780,7 +1904,8 @@ TEST_F(AutofillProfileTest, OverwriteName_DifferentCase) {
   a.FinalizeAfterImport();
   b.FinalizeAfterImport();
 
-  EXPECT_TRUE(a.MergeDataFrom(b, "en-US"));
+  EXPECT_EQ(a.MergeDataFrom(b, "en-US"),
+            ProfileMergeResult::kMergeSucceededWithModification);
   EXPECT_EQ(a.GetRawInfo(NAME_FIRST), u"Marion");
   EXPECT_EQ(a.GetRawInfo(NAME_MIDDLE), u"Mitchell");
   EXPECT_EQ(a.GetRawInfo(NAME_LAST), u"Morrison");
@@ -2246,17 +2371,126 @@ TEST_F(AutofillProfileTest, ProfilesMerge_InvalidCountryCode) {
   AutofillProfile incoming(AddressCountryCode("XX"));
   incoming.SetRawInfo(PHONE_HOME_WHOLE_NUMBER, u"650-253-0000");
 
-  AutofillProfileComparator comparator("en-US");
-
   // They should be mergeable because:
   // 1. Phone numbers match (6502530000 vs 650-253-0000)
   // 2. Countries are mergeable because `existing` has no country.
-  ASSERT_TRUE(comparator.AreMergeable(existing, incoming));
-
   // This will call `MergeDataFrom(incoming, "en-US")` region hint will be "US"
   // (from app_locale).
-  ASSERT_TRUE(existing.MergeDataFrom(incoming, "en-US"));
+  ASSERT_EQ(existing.MergeDataFrom(incoming, "en-US"),
+            ProfileMergeResult::kMergeSucceededWithModification);
 }
+
+#if BUILDFLAG(IS_ANDROID)
+
+// Tests that the conversion of `AutofillProfile` between C++ and Java preserves
+// a profile when converting it back and forth.
+TEST_F(AutofillProfileTest, JavaObjectConversion_ExistingProfile) {
+  const AutofillProfile profile =
+      test::GetFullProfile(AddressCountryCode("DE"));
+  const base::android::ScopedJavaLocalRef<jobject> jprofile =
+      profile.CreateJavaObject("en-US");
+  ASSERT_TRUE(jprofile);
+
+  // Reconstruct C++ profile using `existing_profile`.
+  AutofillProfile reconstructed = AutofillProfile::CreateFromJavaObject(
+      jprofile, /*existing_profile=*/&profile, "en-US");
+
+  // Using `existing_profile` preserves the usage stats of a profile.
+  EXPECT_TRUE(test_api(reconstructed).EqualsIncludingUsageStats(profile));
+}
+
+// Tests that the conversion of `AutofillProfile` between C++ and Java works
+// while using `AutofillProfile::CreateFromJavaObject()` without
+// `existing_profile`.
+TEST_F(AutofillProfileTest, JavaObjectConversion_WithoutExistingProfile) {
+  const AutofillProfile profile =
+      test::GetFullProfile(AddressCountryCode("DE"));
+  const base::android::ScopedJavaLocalRef<jobject> jprofile =
+      profile.CreateJavaObject("en-US");
+  ASSERT_TRUE(jprofile);
+
+  const AutofillProfile reconstructed = AutofillProfile::CreateFromJavaObject(
+      jprofile, /*existing_profile=*/nullptr, "en-US");
+
+  // Check fields individually since the `VerificationStatus` does not match,
+  // e.g. `NAME_FIRST` is `kParsed` in `reconstructed` since it was deduced from
+  // `NAME_FULL`, while it is `kObserved` in `profile`.
+  EXPECT_EQ(reconstructed.guid(), profile.guid());
+  EXPECT_EQ(reconstructed.GetRawInfo(NAME_FULL), profile.GetRawInfo(NAME_FULL));
+  EXPECT_EQ(reconstructed.GetRawInfo(ADDRESS_HOME_STREET_ADDRESS),
+            profile.GetRawInfo(ADDRESS_HOME_STREET_ADDRESS));
+  EXPECT_EQ(reconstructed.GetRawInfo(ADDRESS_HOME_CITY),
+            profile.GetRawInfo(ADDRESS_HOME_CITY));
+  EXPECT_EQ(reconstructed.GetRawInfo(ADDRESS_HOME_STATE),
+            profile.GetRawInfo(ADDRESS_HOME_STATE));
+  EXPECT_EQ(reconstructed.GetRawInfo(ADDRESS_HOME_ZIP),
+            profile.GetRawInfo(ADDRESS_HOME_ZIP));
+  EXPECT_EQ(reconstructed.GetRawInfo(ADDRESS_HOME_COUNTRY), u"DE");
+  EXPECT_EQ(reconstructed.GetRawInfo(PHONE_HOME_WHOLE_NUMBER),
+            profile.GetRawInfo(PHONE_HOME_WHOLE_NUMBER));
+  EXPECT_EQ(reconstructed.GetRawInfo(EMAIL_ADDRESS),
+            profile.GetRawInfo(EMAIL_ADDRESS));
+}
+
+// Tests that `AutofillProfile.getInfo()` returns `GetRawInfo()` in Java except
+// for the full name.
+// TODO(crbug.com/40278253): Reconsider if this current behavior is the desired
+// behavior.
+TEST_F(AutofillProfileTest, JavaObjectConversion_getInfo) {
+  JNIEnv* env = base::android::AttachCurrentThread();
+  const AutofillProfile profile =
+      test::GetFullProfile(AddressCountryCode("DE"));
+  const base::android::ScopedJavaLocalRef<jobject> jprofile =
+      profile.CreateJavaObject("en-US");
+  ASSERT_TRUE(jprofile);
+
+  // In Java, `getInfo(NAME_FULL)` returns `GetInfo(NAME_FULL)`.
+  EXPECT_EQ(Java_AutofillProfile_getInfo(env, jprofile, NAME_FULL),
+            profile.GetInfo(NAME_FULL, "en-US"));
+  // In Java, `getInfo(ADDRESS_HOME_COUNTRY)` returns
+  // `GetRawInfo(ADDRESS_HOME_COUNTRY)` (e.g. "DE"), not the localized country
+  // name.
+  EXPECT_EQ(Java_AutofillProfile_getInfo(env, jprofile, ADDRESS_HOME_COUNTRY),
+            u"DE");
+}
+
+TEST_F(AutofillProfileTest,
+       JavaObjectConversion_PropagateModificationsFromJava) {
+  JNIEnv* env = base::android::AttachCurrentThread();
+  const AutofillProfile profile =
+      test::GetFullProfile(AddressCountryCode("DE"));
+  const base::android::ScopedJavaLocalRef<jobject> jprofile =
+      profile.CreateJavaObject("en-US");
+  ASSERT_TRUE(jprofile);
+
+  // Modify some fields in Java.
+  Java_AutofillProfile_setInfo(
+      env, jprofile, static_cast<int32_t>(ADDRESS_HOME_COUNTRY), u"US",
+      std::to_underlying(VerificationStatus::kUserVerified));
+  Java_AutofillProfile_setInfo(
+      env, jprofile, static_cast<int32_t>(NAME_FULL), u"Something Else",
+      std::to_underlying(VerificationStatus::kUserVerified));
+  Java_AutofillProfile_setInfo(
+      env, jprofile, static_cast<int32_t>(EMAIL_ADDRESS),
+      profile.GetRawInfo(EMAIL_ADDRESS),
+      std::to_underlying(VerificationStatus::kNoStatus));
+
+  AutofillProfile modified_profile =
+      AutofillProfile::CreateFromJavaObject(jprofile, &profile, "en-US");
+
+  EXPECT_EQ(modified_profile.GetRawInfo(ADDRESS_HOME_COUNTRY), u"US");
+  EXPECT_EQ(modified_profile.GetVerificationStatus(ADDRESS_HOME_COUNTRY),
+            VerificationStatus::kUserVerified);
+
+  EXPECT_EQ(modified_profile.GetInfo(NAME_FULL, "en-US"), u"Something Else");
+  EXPECT_EQ(modified_profile.GetRawInfo(NAME_FIRST), u"Something");
+  EXPECT_EQ(modified_profile.GetRawInfo(NAME_LAST), u"Else");
+
+  EXPECT_EQ(modified_profile.GetVerificationStatus(EMAIL_ADDRESS),
+            VerificationStatus::kNoStatus);
+}
+
+#endif  // BUILDFLAG(IS_ANDROID)
 
 }  // namespace
 

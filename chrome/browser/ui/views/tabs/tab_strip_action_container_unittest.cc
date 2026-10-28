@@ -5,11 +5,13 @@
 #include "chrome/browser/ui/views/tabs/tab_strip_action_container.h"
 
 #include <memory>
+#include <vector>
 
 #include "base/check_deref.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/glic/browser_ui/glic_nudge_controller.h"
 #include "chrome/browser/glic/browser_ui/glic_split_button_controller.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/test_support/glic_test_environment.h"
 #include "chrome/browser/glic/test_support/glic_test_util.h"
@@ -17,6 +19,7 @@
 #include "chrome/browser/ui/call_to_action/call_to_action_lock.h"
 #include "chrome/browser/ui/tabs/tab_list_bridge.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/test_tab_strip_model_delegate.h"
 #include "chrome/browser/ui/views/tabs/glic/tab_strip_glic_button.h"
 #include "chrome/browser/ui/views/tabs/tab_strip_nudge_button.h"
@@ -53,7 +56,8 @@ using testing::SizeIs;
 
 class TabStripActionContainerTest : public ChromeViewsTestBase {
  public:
-  TabStripActionContainerTest()
+  explicit TabStripActionContainerTest(
+      const std::vector<base::test::FeatureRef>& additional_features = {})
       : animation_mode_reset_(gfx::AnimationTestApi::SetRichAnimationRenderMode(
             gfx::Animation::RichAnimationRenderMode::FORCE_ENABLED)) {
     std::vector<base::test::FeatureRefAndParams> enabled_features = {
@@ -61,6 +65,9 @@ class TabStripActionContainerTest : public ChromeViewsTestBase {
         {features::kGlicActor, {}},
         {features::kGlicActorUi,
          {{features::kGlicActorUiTaskIconName, "true"}}}};
+    for (const auto& feature : additional_features) {
+      enabled_features.emplace_back(*feature, base::FieldTrialParams{});
+    }
     std::vector<base::test::FeatureRef> disabled_features;
     scoped_feature_list_.InitWithFeaturesAndParameters(enabled_features,
                                                        disabled_features);
@@ -202,12 +209,12 @@ class TabStripActionContainerTest : public ChromeViewsTestBase {
 
 TEST_F(TabStripActionContainerTest, MAYBE(GlicButtonDrawing)) {
   BuildGlicContainer(/*use_otr_profile=*/false);
-  EXPECT_TRUE(tab_strip_action_container_->GetGlicButton());
+  EXPECT_TRUE(tab_strip_action_container_->GetGlicButtonForTesting());
 }
 
 TEST_F(TabStripActionContainerTest, GlicButtonUnsupportedProfile) {
   BuildGlicContainer(/*use_otr_profile=*/true);
-  EXPECT_FALSE(tab_strip_action_container_->GetGlicButton());
+  EXPECT_FALSE(tab_strip_action_container_->GetGlicButtonForTesting());
 }
 
 TEST_F(TabStripActionContainerTest,
@@ -229,7 +236,7 @@ TEST_F(TabStripActionContainerTest,
             tab_strip_action_container_->glic_actor_button_container()
                 ->children()[1]);
 
-  ASSERT_EQ(tab_strip_action_container_->GetGlicButton(),
+  ASSERT_EQ(tab_strip_action_container_->GetGlicButtonForTesting(),
             tab_strip_action_container_->children()[1]);
 #endif  // !BUILDFLAG(IS_MAC)
 }
@@ -256,7 +263,7 @@ TEST_F(TabStripActionContainerTest, MAYBE(OrdersButtonsCorrectlyWhenShown)) {
       tab_strip_action_container_->glic_actor_button_container()->children(),
       SizeIs(3));
 
-  ASSERT_EQ(tab_strip_action_container_->GetGlicButton(),
+  ASSERT_EQ(tab_strip_action_container_->GetGlicButtonForTesting(),
             tab_strip_action_container_->glic_actor_button_container()
                 ->children()[1]);
   ASSERT_EQ(tab_strip_action_container_->glic_actor_task_icon(),
@@ -271,7 +278,8 @@ TEST_F(TabStripActionContainerTest, MAYBE(GlicButtonUpdateLabel)) {
   glic_nudge_controller()->UpdateNudgeLabel(
       web_contents(), "TEST", /*prompt_suggestion=*/std::nullopt,
       /*activity=*/std::nullopt, base::NullCallback());
-  ASSERT_EQ(tab_strip_action_container_->GetGlicButton()->GetText(), u"TEST");
+  ASSERT_EQ(tab_strip_action_container_->GetGlicButtonForTesting()->GetText(),
+            u"TEST");
 }
 
 TEST_F(TabStripActionContainerTest, MAYBE(GlicButtonHideNudgeOnTabChange)) {
@@ -282,10 +290,45 @@ TEST_F(TabStripActionContainerTest, MAYBE(GlicButtonHideNudgeOnTabChange)) {
       web_contents(), "TEST", /*prompt_suggestion=*/std::nullopt,
       /*activity=*/std::nullopt, base::NullCallback());
   ASSERT_TRUE(tab_strip_action_container_->GetIsShowingGlicNudge());
-  ASSERT_EQ(tab_strip_action_container_->GetGlicButton()->GetText(), u"TEST");
+  ASSERT_EQ(tab_strip_action_container_->GetGlicButtonForTesting()->GetText(),
+            u"TEST");
 
   SimulateActiveTabChanged();
   ASSERT_FALSE(tab_strip_action_container_->GetIsShowingGlicNudge());
-  ASSERT_EQ(tab_strip_action_container_->GetGlicButton()->GetText(),
+  ASSERT_EQ(tab_strip_action_container_->GetGlicButtonForTesting()->GetText(),
             u"Ask Gemini");
 }
+
+#if !BUILDFLAG(IS_MAC)
+class TabStripActionContainerWithToolbarButtonTest
+    : public TabStripActionContainerTest {
+ public:
+  TabStripActionContainerWithToolbarButtonTest()
+      : TabStripActionContainerTest(
+            {features::kGlicHorizontalTabToolbarButton}) {}
+};
+
+TEST_F(TabStripActionContainerWithToolbarButtonTest,
+       SeparatorHiddenWhenToolbarButtonEnabled) {
+  BuildGlicContainer(/*use_otr_profile=*/false);
+  EXPECT_EQ(tab_strip_action_container_->GetGlicButtonForTesting(), nullptr);
+  ASSERT_TRUE(tab_strip_action_container_->GetSeparatorForTesting());
+  EXPECT_FALSE(
+      tab_strip_action_container_->GetSeparatorForTesting()->GetVisible());
+  tab_strip_action_container_->SetGlicShowState(true);
+  EXPECT_FALSE(
+      tab_strip_action_container_->GetSeparatorForTesting()->GetVisible());
+}
+
+TEST_F(TabStripActionContainerTest, SeparatorVisibilityFollowsGlicButton) {
+  BuildGlicContainer(/*use_otr_profile=*/false);
+  ASSERT_TRUE(tab_strip_action_container_->GetSeparatorForTesting());
+  tab_strip_action_container_->SetGlicShowState(true);
+  EXPECT_TRUE(
+      tab_strip_action_container_->GetSeparatorForTesting()->GetVisible());
+
+  tab_strip_action_container_->SetGlicShowState(false);
+  EXPECT_FALSE(
+      tab_strip_action_container_->GetSeparatorForTesting()->GetVisible());
+}
+#endif  // !BUILDFLAG(IS_MAC)

@@ -20,6 +20,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
@@ -66,6 +67,7 @@ class URLLoaderFactoryBuilder;
 }  // namespace network
 
 namespace extensions {
+class ExtensionRegistry;
 class WebViewGuest;
 
 // Support class for the WebRequest API. Lives on the UI thread. Most of the
@@ -292,6 +294,10 @@ class WebRequestAPI : public BrowserContextKeyedAPI,
   // 'declarativeNetRequest' permission, or if proxying is forced for testing.
   bool HasWebRequestOrDeclarativeWebRequestExtension() const;
 
+  // Returns true if any installed extension has the 'webRequest' permission,
+  // or if proxying is forced for testing.
+  bool HasWebRequestExtension() const;
+
   // Returns true if requests from the given `render_frame_host` should be
   // proxied by the WebRequestAPI. If kOptimizeWebRequestProxy is enabled,
   // this performs a strict check based on whether the frame is a guest
@@ -422,6 +428,9 @@ class WebRequestAPI : public BrowserContextKeyedAPI,
   // |UpdateMayHaveProxies()|.
   bool may_have_proxies_;
 
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      extension_registry_observation_{this};
+
   base::WeakPtrFactory<WebRequestAPI> weak_factory_{this};
 };
 
@@ -495,20 +504,6 @@ class WebRequestInternalEventHandledFunction
       int extra_info_spec,
       std::unique_ptr<WebRequestEventRouter::EventResponse> response);
 
-  // ExtensionFunction:
-  ResponseAction Run() override;
-};
-
-class WebRequestInternalEventHandlingDoneFunction
-    : public WebRequestInternalFunction {
- public:
-  DECLARE_EXTENSION_FUNCTION("webRequestInternal.eventHandlingDone",
-                             WEBREQUESTINTERNAL_EVENTHANDLINGDONE)
-
- protected:
-  ~WebRequestInternalEventHandlingDoneFunction() override = default;
-
- private:
   // ExtensionFunction:
   ResponseAction Run() override;
 };

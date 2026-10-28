@@ -10,7 +10,7 @@
 #include "chrome/browser/sync/test/integration/sync_test.h"
 #include "chrome/browser/sync/test/integration/wallet_helper.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
-#include "components/autofill/core/browser/data_manager/payments/payments_data_manager_test_utils.h"
+#include "components/autofill/core/browser/data_manager/payments/payments_data_manager_test_util.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/sync/base/data_type.h"
@@ -56,9 +56,13 @@ ServerCvcChecker::ServerCvcChecker(const size_t expected_count)
 ServerCvcChecker::~ServerCvcChecker() = default;
 
 bool ServerCvcChecker::IsExitConditionSatisfied(std::ostream* os) {
-  return fake_server()
-             ->GetSyncEntitiesByDataType(syncer::AUTOFILL_WALLET_CREDENTIAL)
-             .size() == expected_count_;
+  const size_t actual_count =
+      fake_server()
+          ->GetSyncEntitiesByDataType(syncer::AUTOFILL_WALLET_CREDENTIAL)
+          .size();
+  *os << "Waiting for " << expected_count_
+      << " wallet credentials on server, actual: " << actual_count;
+  return actual_count == expected_count_;
 }
 
 #if !BUILDFLAG(IS_CHROMEOS)

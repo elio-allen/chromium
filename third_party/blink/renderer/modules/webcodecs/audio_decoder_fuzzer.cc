@@ -37,7 +37,10 @@ DEFINE_TEXT_PROTO_FUZZER(
   std::string serialized;
   CHECK(fuzzable_proto.SerializeToString(&serialized));
   wc_fuzzer::AudioDecoderApiInvocationSequence proto;
-  CHECK(proto.ParseFromString(serialized));
+  // Recursion limits can cause parsing to fail.
+  if (!proto.ParseFromString(serialized)) {
+    return;
+  }
 
   if (proto.invocations().size() > kMaxFuzzerProtoLength) {
     return;
@@ -102,7 +105,7 @@ DEFINE_TEXT_PROTO_FUZZER(
         case wc_fuzzer::AudioDecoderApiInvocation::kFlush: {
           // TODO(https://crbug.com/1119253): Fuzz whether to await resolution
           // of the flush promise.
-          audio_decoder->flush(IGNORE_EXCEPTION_FOR_TESTING);
+          audio_decoder->flush(script_state, IGNORE_EXCEPTION_FOR_TESTING);
           break;
         }
         case wc_fuzzer::AudioDecoderApiInvocation::kReset:

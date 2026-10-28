@@ -12,19 +12,25 @@
 #include "base/test/values_test_util.h"
 #include "base/values.h"
 #include "build/branding_buildflags.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
-#include "chrome/browser/ui/autofill/payments/chrome_payments_autofill_client.h"
-#include "chrome/browser/ui/autofill/payments/payments_churned_users_bubble_controller.h"
 #include "chrome/browser/ui/autofill/payments/virtual_card_enroll_bubble_controller_impl.h"
 #include "chrome/browser/ui/autofill/payments/virtual_card_enroll_bubble_controller_impl_test_api.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "chrome/test/base/scoped_browser_locale.h"
+#include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
+#include "components/autofill/core/browser/data_manager/payments/payments_data_manager_test_api.h"
+#include "components/autofill/core/browser/data_manager/personal_data_manager.h"
+#include "components/autofill/core/browser/data_model/payments/autofill_offer_data.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
+#include "components/autofill/core/browser/payments/autofill_error_dialog_context.h"
+#include "components/autofill/core/browser/payments/card_unmask_challenge_option.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
-#include "components/autofill/core/browser/test_utils/valuables_data_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
+#include "components/autofill/core/browser/test_utils/valuables_data_test_util.h"
+#include "components/autofill/core/browser/ui/payments/autofill_progress_ui_type.h"
 #include "components/autofill/core/browser/ui/payments/bnpl_ui_delegate.h"
 #include "components/autofill/core/browser/ui/payments/bubble_show_options.h"
+#include "components/autofill/core/browser/ui/payments/card_unmask_prompt_options.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
@@ -53,12 +59,13 @@
 #include "components/autofill/core/browser/payments/android_bnpl_strategy.h"
 #include "components/autofill/core/browser/payments/autofill_save_card_ui_info.h"
 #include "components/autofill/core/browser/payments/bnpl_util.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/feature_engagement/test/mock_tracker.h"
 #include "ui/android/window_android.h"
 #else  // !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/autofill/payments/offer_notification_bubble_controller_impl.h"
 #include "chrome/browser/ui/autofill/payments/omnibox_autofill_page_action_controller.h"
 #include "chrome/browser/ui/autofill/payments/save_card_bubble_controller_impl.h"
 #include "chrome/browser/ui/page_action/test_support/mock_page_action_controller.h"
@@ -184,31 +191,9 @@ class MockVirtualCardEnrollBubbleController
               (override));
 };
 
-class MockPaymentsChurnedUsersBubbleController
-    : public PaymentsChurnedUsersBubbleController {
- public:
-  explicit MockPaymentsChurnedUsersBubbleController(
-      tabs::TabInterface& tab_interface,
-      content::WebContents* web_contents)
-      : PaymentsChurnedUsersBubbleController(tab_interface, web_contents) {}
-  ~MockPaymentsChurnedUsersBubbleController() override = default;
-
-  MOCK_METHOD(void,
-              Show,
-              (base::OnceClosure accept_callback,
-               base::OnceClosure cancel_callback,
-               base::OnceClosure closed_callback,
-               AccountInfo account_info),
-              (override));
-};
-
 class ChromePaymentsAutofillClientTest
     : public ChromeRenderViewHostTestHarness {
  public:
-  ChromePaymentsAutofillClientTest() {
-    feature_list_.InitAndEnableFeature(
-        features::kAutofillEnablePrefetchingRiskDataForRetrieval);
-  }
 
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
@@ -319,7 +304,6 @@ class ChromePaymentsAutofillClientTest
 #endif
 
  private:
-  base::test::ScopedFeatureList feature_list_;
 #if BUILDFLAG(IS_ANDROID)
   base::MockCallback<AccessoryController::FillingSourceObserver>
       mock_filling_source_observer_;
@@ -855,19 +839,6 @@ TEST_F(ChromePaymentsAutofillClientTest, GetPaymentsWindowManager) {
     EXPECT_NE(chrome_payments_client()->GetPaymentsWindowManager(), nullptr);
 }
 
-TEST_F(ChromePaymentsAutofillClientTest, RiskDataCaching_DataCached) {
-  base::MockCallback<base::OnceCallback<void(const std::string&)>> callback1;
-  base::MockCallback<base::OnceCallback<void(const std::string&)>> callback2;
-  chrome_payments_client()->SetCachedRiskDataLoadedCallbackForTesting(
-      callback1.Get());
-  chrome_payments_client()->SetRiskDataForTesting("risk_data");
-
-  EXPECT_CALL(callback1, Run("risk_data")).Times(1);
-  EXPECT_CALL(callback2, Run).Times(0);
-
-  chrome_payments_client()->LoadRiskData(callback2.Get());
-}
-
 // Test that BNPL strategy is created and returned correctly.
 TEST_F(ChromePaymentsAutofillClientTest, GetBnplStrategy) {
   payments::BnplStrategy* strategy =
@@ -886,6 +857,41 @@ TEST_F(ChromePaymentsAutofillClientTest, GetBnplUiDelegate) {
 
   // Test that the same instance is returned on subsequent calls.
   EXPECT_EQ(ui_delegate, chrome_payments_client()->GetBnplUiDelegate());
+}
+
+// Test that Wallet Reminder Notice UI delegate is created and returned
+// correctly.
+TEST_F(ChromePaymentsAutofillClientTest, GetWalletReminderNoticeUiDelegate) {
+  payments::WalletReminderNoticeUiDelegate* ui_delegate =
+      chrome_payments_client()->GetWalletReminderNoticeUiDelegate();
+  ASSERT_NE(ui_delegate, nullptr);
+
+  // Test that the same instance is returned on subsequent calls.
+  EXPECT_EQ(ui_delegate,
+            chrome_payments_client()->GetWalletReminderNoticeUiDelegate());
+}
+
+// Test that Wallet Reminder Notice manager is created and returned correctly.
+TEST_F(ChromePaymentsAutofillClientTest, GetWalletReminderNoticeManager) {
+  payments::WalletReminderNoticeManager* manager =
+      chrome_payments_client()->GetWalletReminderNoticeManager();
+  ASSERT_NE(manager, nullptr);
+
+  // Test that the same instance is returned on subsequent calls.
+  EXPECT_EQ(manager,
+            chrome_payments_client()->GetWalletReminderNoticeManager());
+}
+
+// Test that Payments Churned Users UI delegate is created and returned
+// correctly.
+TEST_F(ChromePaymentsAutofillClientTest, GetPaymentsChurnedUsersUiDelegate) {
+  payments::PaymentsChurnedUsersUiDelegate* ui_delegate =
+      chrome_payments_client()->GetPaymentsChurnedUsersUiDelegate();
+  ASSERT_NE(ui_delegate, nullptr);
+
+  // Test that the same instance is returned on subsequent calls.
+  EXPECT_EQ(ui_delegate,
+            chrome_payments_client()->GetPaymentsChurnedUsersUiDelegate());
 }
 
 // Test that `DisablePaymentsAutofill` correctly disables the client's support
@@ -913,6 +919,67 @@ TEST_F(ChromePaymentsAutofillClientTest,
 
   EXPECT_FALSE(chrome_payments_client()->IsAutofillPaymentMethodsEnabled());
 }
+
+#if !BUILDFLAG(IS_ANDROID)
+class TestOfferNotificationBubbleController
+    : public OfferNotificationBubbleControllerImpl {
+ public:
+  explicit TestOfferNotificationBubbleController(
+      content::WebContents* web_contents)
+      : OfferNotificationBubbleControllerImpl(web_contents) {}
+
+ private:
+  // OfferNotificationBubbleControllerImpl:
+  void UpdatePageActionIcon() override {}
+  bool IsWebContentsActive() override { return false; }
+};
+
+// Enables the offer notification before the client is created, since the
+// client only observes the payments data if it is enabled.
+class ChromePaymentsAutofillClientOfferNotificationTest
+    : public ChromePaymentsAutofillClientTest {
+ public:
+  ChromePaymentsAutofillClientOfferNotificationTest() {
+    feature_list_.InitWithFeatures(
+        {features::kAutofillEnableWalletDirectOffers,
+         features::kAutofillEnableWalletDirectOffersNotificationBubble},
+        {});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+  // Wallet direct offers are only shown for supported locales.
+  ScopedBrowserLocale scoped_browser_locale_{"en-US"};
+};
+
+// Tests that offers arriving after the navigation update the offer
+// notification for the current page.
+TEST_F(ChromePaymentsAutofillClientOfferNotificationTest,
+       PaymentsDataChanged_UpdatesOfferNotification) {
+  tabs::MockTabInterface mock_tab_interface;
+  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(),
+                                                       &mock_tab_interface);
+  web_contents()->SetUserData(
+      OfferNotificationBubbleControllerImpl::UserDataKey(),
+      std::make_unique<TestOfferNotificationBubbleController>(web_contents()));
+  const OfferNotificationBubbleControllerImpl* const controller =
+      OfferNotificationBubbleControllerImpl::FromWebContents(web_contents());
+  PaymentsDataManager& payments_data_manager =
+      client()->GetPersonalDataManager().payments_data_manager();
+  payments_data_manager.SetSyncingForTest(true);
+  NavigateAndCommit(GURL("https://www.example.com/checkout"));
+  ASSERT_FALSE(controller->IsIconVisible());
+
+  const AutofillOfferData offer =
+      test::GetPromoCodeOfferData(GURL("https://www.example.com"));
+  test_api(payments_data_manager)
+      .AddOfferData(std::make_unique<AutofillOfferData>(offer));
+  test_api(payments_data_manager).NotifyObservers();
+
+  EXPECT_TRUE(controller->IsIconVisible());
+  EXPECT_EQ(*controller->GetOffer(), offer);
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_ANDROID)
 class ChromePaymentsAutofillClientWalletBrandingTest
@@ -1010,16 +1077,7 @@ TEST_P(ChromePaymentsAutofillClientWalletBrandingTest,
 
 #if !BUILDFLAG(IS_ANDROID)
 class ChromePaymentsAutofillIOSPromoClientTest
-    : public ChromePaymentsAutofillClientTest {
- public:
-  ChromePaymentsAutofillIOSPromoClientTest() {
-    feature_list_.InitAndEnableFeature(
-        features::kAutofillEnablePrefetchingRiskDataForRetrieval);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
+    : public ChromePaymentsAutofillClientTest {};
 
 // Test that calling `CreditCardUploadCompleted` still calls
 // SaveCardBubbleControllerImpl::ShowConfirmationBubbleView on card upload
@@ -1112,51 +1170,52 @@ TEST_F(ChromePaymentsAutofillClientOmniboxTest, HideOmniboxAutofillChip) {
   chrome_payments_client()->HideOmniboxAutofillChip();
 }
 
-TEST_F(ChromePaymentsAutofillClientTest,
-       ShowPaymentsChurnedUsersUI_WithAccountInfo) {
-  tabs::MockTabInterface mock_tab_interface;
-  ui::UnownedUserDataHost user_data_host;
-  ON_CALL(mock_tab_interface, GetUnownedUserDataHost())
-      .WillByDefault(testing::ReturnRef(user_data_host));
-
-  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(),
-                                                       &mock_tab_interface);
-
-  MockPaymentsChurnedUsersBubbleController controller(mock_tab_interface,
-                                                      web_contents());
-
-  signin::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(profile());
-  AccountInfo account_info = signin::MakePrimaryAccountAvailable(
-      identity_manager, "test@example.com", signin::ConsentLevel::kSignin);
-  signin::UpdateAccountInfoForAccount(
-      identity_manager, signin::WithGeneratedUserInfo(account_info, "Test"));
-
-  EXPECT_CALL(controller, Show).Times(1);
-
-  chrome_payments_client()->ShowPaymentsChurnedUsersUI(
-      base::DoNothing(), base::DoNothing(), base::DoNothing());
-}
-
-TEST_F(ChromePaymentsAutofillClientTest,
-       ShowPaymentsChurnedUsersUI_NoAccountInfo) {
-  tabs::MockTabInterface mock_tab_interface;
-  ui::UnownedUserDataHost user_data_host;
-  ON_CALL(mock_tab_interface, GetUnownedUserDataHost())
-      .WillByDefault(testing::ReturnRef(user_data_host));
-
-  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(),
-                                                       &mock_tab_interface);
-
-  MockPaymentsChurnedUsersBubbleController controller(mock_tab_interface,
-                                                      web_contents());
-
-  EXPECT_CALL(controller, Show).Times(0);
-
-  chrome_payments_client()->ShowPaymentsChurnedUsersUI(
-      base::DoNothing(), base::DoNothing(), base::DoNothing());
-}
-
 #endif  // !BUILDFLAG(IS_ANDROID)
+
+class TestPaymentsAutofillClientForWebContentsDestruction
+    : public payments::ChromePaymentsAutofillClient {
+ public:
+  explicit TestPaymentsAutofillClientForWebContentsDestruction(
+      ContentAutofillClient* client)
+      : payments::ChromePaymentsAutofillClient(client) {}
+
+  void ClearWebContentsForTesting() { Observe(nullptr); }
+};
+
+TEST_F(ChromePaymentsAutofillClientTest,
+       DialogsDoNotShowWhenWebContentsNullOrDestroyed) {
+  TestPaymentsAutofillClientForWebContentsDestruction payments_client(client());
+  // Simulate WebContents being destroyed/detached.
+  payments_client.ClearWebContentsForTesting();
+
+  // None of the following calls should crash or dereference null/dangling
+  // pointers.
+  payments_client.ShowUnmaskPrompt(
+      test::GetCreditCard(), CardUnmaskPromptOptions(),
+      /*delegate=*/base::WeakPtr<CardUnmaskDelegate>());
+
+  payments_client.ShowAutofillProgressDialog(
+      AutofillProgressUiType::kServerCardUnmaskProgressUi,
+      /*cancel_callback=*/base::DoNothing());
+
+  payments_client.ShowCardUnmaskOtpInputDialog(
+      CreditCard::RecordType::kVirtualCard, CardUnmaskChallengeOption(),
+      /*delegate=*/base::WeakPtr<OtpUnmaskDelegate>());
+
+  payments_client.ShowUnmaskAuthenticatorSelectionDialog(
+      /*challenge_options=*/{},
+      /*confirm_unmask_challenge_option_callback=*/base::DoNothing(),
+      /*cancel_unmasking_closure=*/base::DoNothing());
+
+  payments_client.ShowAutofillErrorDialog(AutofillErrorDialogContext());
+
+#if !BUILDFLAG(IS_ANDROID)
+  payments_client.ShowCreditCardLocalSaveAndFillDialog(
+      /*callback=*/base::DoNothing());
+
+  payments_client.ShowCreditCardSaveAndFillPendingDialog(
+      /*callback=*/base::DoNothing());
+#endif  // !BUILDFLAG(IS_ANDROID)
+}
 
 }  // namespace autofill

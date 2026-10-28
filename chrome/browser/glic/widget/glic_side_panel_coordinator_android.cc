@@ -18,6 +18,7 @@
 #include "chrome/browser/glic/android/jni_headers/GlicBottomSheetComponentProvider_jni.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/color/chrome_color_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/android/window_android.h"
@@ -40,7 +41,9 @@ GlicSidePanelCoordinatorAndroid::GlicSidePanelCoordinatorAndroid(
   views_bridge_ = std::make_unique<context_sharing::CoBrowseViewsBridge>(
       *tab, context_sharing::TabBottomSheetClientType::kGlic,
       context_sharing::CoBrowseContainerType::kBottomSheet,
-      CreateBottomSheetContentProvider());
+      CreateBottomSheetContentProvider(),
+      /*enable_pinch_to_zoom=*/false, kColorGlicBackground,
+      kColorGlicPlaceholderElem);
   tab_bottom_sheet_bridge_ =
       std::make_unique<context_sharing::TabBottomSheetBridge>(this, tab);
   manager_initialized_subscription_ =
@@ -72,7 +75,14 @@ void GlicSidePanelCoordinatorAndroid::Show(const ShowOptions& options) {
   // (e.g. during startup or activity recreation before layout inflation
   // completes), defer showing Glic until OnManagerInitialized.
   if (!tab_bottom_sheet_bridge_->IsManagerReady()) {
+    bool keep_expanded = pending_show_options_.has_value() &&
+                         pending_show_options_->initial_state ==
+                             ShowOptions::InitialState::kExpanded;
     pending_show_options_ = options;
+    if (keep_expanded) {
+      pending_show_options_->initial_state =
+          ShowOptions::InitialState::kExpanded;
+    }
     return;
   }
 
@@ -97,6 +107,7 @@ void GlicSidePanelCoordinatorAndroid::Show(const ShowOptions& options) {
     SetState(State::kClosed);
   }
   pending_show_options_.reset();
+  restore_expanded_on_recreation_ = false;
 }
 
 void GlicSidePanelCoordinatorAndroid::SetWebContents(
@@ -111,6 +122,7 @@ void GlicSidePanelCoordinatorAndroid::SetWebContents(
 
 void GlicSidePanelCoordinatorAndroid::Close(const CloseOptions& options) {
   pending_show_options_.reset();
+  restore_expanded_on_recreation_ = false;
   if (state_ == State::kClosed) {
     return;
   }
@@ -128,9 +140,9 @@ void GlicSidePanelCoordinatorAndroid::SuppressBottomSheetForTesting(  // IN-TEST
   tab_bottom_sheet_bridge_->SuppressBottomSheetForTesting(suppress);  // IN-TEST
 }
 
-std::optional<GlicSidePanelCoordinator::ShowOptions::InitialState>
-GlicSidePanelCoordinatorAndroid::GetInitialStateOverrideForTesting() const {
-  return initial_state_override_for_activity_recreation_;
+bool GlicSidePanelCoordinatorAndroid::GetRestoreExpandedOnRecreationForTesting()
+    const {
+  return restore_expanded_on_recreation_;
 }
 
 bool GlicSidePanelCoordinatorAndroid::IsShowing() const {
@@ -168,13 +180,10 @@ void GlicSidePanelCoordinatorAndroid::SetState(State state) {
 }
 
 void GlicSidePanelCoordinatorAndroid::SaveStateBeforeDeactivation() {
-  if (state_ == State::kShown) {
-    initial_state_override_for_activity_recreation_ =
-        ShowOptions::InitialState::kExpanded;
-  } else if (state_ == State::kPeek) {
-    initial_state_override_for_activity_recreation_ =
-        ShowOptions::InitialState::kPeeked;
+  if (state_ == State::kBackgrounded) {
+    return;
   }
+  restore_expanded_on_recreation_ = state_ == State::kShown;
 }
 
 void GlicSidePanelCoordinatorAndroid::OnTabDidActivate(
@@ -221,6 +230,7 @@ void GlicSidePanelCoordinatorAndroid::OnClosed() {
   if (state_ == State::kBackgrounded) {
     return;
   }
+  restore_expanded_on_recreation_ = false;
   SetState(State::kClosed);
 }
 
@@ -249,11 +259,8 @@ void GlicSidePanelCoordinatorAndroid::OnManagerInitialized(
                                        /*request_focus=*/false);
     ShowOptions options = std::exchange(pending_show_options_, std::nullopt)
                               .value_or(ShowOptions());
-    if (initial_state_override_for_activity_recreation_.has_value()) {
-      options.initial_state =
-          std::exchange(initial_state_override_for_activity_recreation_,
-                        std::nullopt)
-              .value();
+    if (std::exchange(restore_expanded_on_recreation_, false)) {
+      options.initial_state = ShowOptions::InitialState::kExpanded;
     }
     Show(options);
   }

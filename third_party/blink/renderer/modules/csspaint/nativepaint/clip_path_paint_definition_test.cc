@@ -162,7 +162,7 @@ class ClipPathPaintDefinitionTest : public PageTestBase {
     if (status != CompositedPaintStatus::kNoAnimation &&
         status != CompositedPaintStatus::kNotComposited) {
       // PaintLayer is required to paint a mask clip path.
-      EXPECT_TRUE(lo->StyleRef().HasCurrentClipPathAnimation());
+      EXPECT_TRUE(lo->Style().HasCurrentClipPathAnimation());
       EXPECT_TRUE(lo->HasLayer() || lo->IsSVG());
     }
 
@@ -449,8 +449,6 @@ class ClipPathPaintDefinitionTest : public PageTestBase {
   void SetUp() override {
     scoped_composite_clip_path_animation =
         std::make_unique<ScopedCompositeClipPathAnimationForTest>(true);
-    scoped_composite_bgcolor_animation =
-        std::make_unique<ScopedCompositeBGColorAnimationForTest>(false);
 
     layer_tree_ = std::make_unique<LayerTreeHostEmbedder>();
     chrome_client_ = MakeGarbageCollected<MockChromeClientWithAnimationHost>();
@@ -467,8 +465,6 @@ class ClipPathPaintDefinitionTest : public PageTestBase {
  private:
   std::unique_ptr<ScopedCompositeClipPathAnimationForTest>
       scoped_composite_clip_path_animation;
-  std::unique_ptr<ScopedCompositeBGColorAnimationForTest>
-      scoped_composite_bgcolor_animation;
 
   Persistent<MockChromeClientWithAnimationHost> chrome_client_;
   std::unique_ptr<LayerTreeHostEmbedder> layer_tree_;
@@ -971,6 +967,31 @@ TEST_F(ClipPathPaintDefinitionTest,
   target->setAttribute(html_names::kClassAttr, AtomicString("animation"));
 
   StartAndVerifyNonEligibleClipPathAnimation(target, 1000);
+}
+
+TEST_F(ClipPathPaintDefinitionTest, FallbackForRoundingFullyClipped) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+        @keyframes clippath {
+            0% {
+                clip-path: inset(0 100% 0 0 round 8px);
+            }
+            100% {
+                clip-path: inset(0 0 0 0 round 8px);
+            }
+        }
+        .animation {
+            animation: clippath 4s steps(4, jump-end);
+        }
+    </style>
+    <div id ="target" style="width: 100px; height: 100px">
+    </div>
+  )HTML");
+
+  Element* element = GetElementById("target");
+  element->setAttribute(html_names::kClassAttr, AtomicString("animation"));
+
+  StartAndVerifyNonEligibleClipPathAnimation(element, 1000);
 }
 
 /* ----------------------------------------- */

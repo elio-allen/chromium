@@ -17,7 +17,9 @@ export interface InvocationSourceOption {
 export interface OmniboxEverywhereDebugAppElement {
   $: {
     bgModeToggle: HTMLInputElement,
+    launchOnStartupToggle: HTMLInputElement,
     hotkeyToggle: HTMLInputElement,
+    ephemeralModelToggle: HTMLInputElement,
     sourceSelect: HTMLSelectElement,
   };
 }
@@ -38,15 +40,23 @@ export class OmniboxEverywhereDebugAppElement extends CrLitElement {
   static override get properties() {
     return {
       bgModeEnabled: {type: Boolean},
+      launchOnStartupEnabled: {type: Boolean},
       hotkeyEnabled: {type: Boolean},
+      ephemeralModelEnabled: {type: Boolean},
       selectedInvocationSource: {type: Number},
+      shortcutStatus: {type: String},
+      resetStatus: {type: String},
     };
   }
 
   protected accessor bgModeEnabled: boolean = false;
+  protected accessor launchOnStartupEnabled: boolean = false;
   protected accessor hotkeyEnabled: boolean = true;
+  protected accessor ephemeralModelEnabled: boolean = false;
   protected accessor selectedInvocationSource: InvocationSource =
       InvocationSource.kGlobalHotkey;
+  protected accessor shortcutStatus: string = '';
+  protected accessor resetStatus: string = '';
 
   private listenerIds_: number[] = [];
 
@@ -62,16 +72,36 @@ export class OmniboxEverywhereDebugAppElement extends CrLitElement {
             }));
 
     this.listenerIds_.push(
+        proxy.callbackRouter.onLaunchOnStartupChanged.addListener(
+            (enabled: boolean) => {
+              this.launchOnStartupEnabled = enabled;
+            }));
+
+    this.listenerIds_.push(
         proxy.callbackRouter.onHotkeyChanged.addListener((enabled: boolean) => {
           this.hotkeyEnabled = enabled;
         }));
+
+    this.listenerIds_.push(
+        proxy.callbackRouter.onEphemeralModelChanged.addListener(
+            (enabled: boolean) => {
+              this.ephemeralModelEnabled = enabled;
+            }));
 
     proxy.handler.getBackgroundModeEnabled().then(res => {
       this.bgModeEnabled = res.enabled;
     });
 
+    proxy.handler.getLaunchOnStartupEnabled().then(res => {
+      this.launchOnStartupEnabled = res.enabled;
+    });
+
     proxy.handler.getHotkeyEnabled().then(res => {
       this.hotkeyEnabled = res.enabled;
+    });
+
+    proxy.handler.getEphemeralModelEnabled().then(res => {
+      this.ephemeralModelEnabled = res.enabled;
     });
   }
 
@@ -102,9 +132,19 @@ export class OmniboxEverywhereDebugAppElement extends CrLitElement {
         this.$.bgModeToggle.checked);
   }
 
+  protected onLaunchOnStartupToggleChange() {
+    browserProxyFactory.getInstance().handler.setLaunchOnStartupEnabled(
+        this.$.launchOnStartupToggle.checked);
+  }
+
   protected onHotkeyToggleChange() {
     browserProxyFactory.getInstance().handler.setHotkeyEnabled(
         this.$.hotkeyToggle.checked);
+  }
+
+  protected onEphemeralModelToggleChange() {
+    browserProxyFactory.getInstance().handler.setEphemeralModelEnabled(
+        this.$.ephemeralModelToggle.checked);
   }
 
   protected onInvocationSourceChange() {
@@ -116,7 +156,47 @@ export class OmniboxEverywhereDebugAppElement extends CrLitElement {
     browserProxyFactory.getInstance().handler.invokeOmniboxEverywhere(
         this.selectedInvocationSource);
   }
+
+  protected onLaunchWithIphClick() {
+    browserProxyFactory.getInstance().handler.invokeOmniboxEverywhere(
+        this.selectedInvocationSource);
+    browserProxyFactory.getInstance().handler.showLensIph();
+  }
+
+  protected async onCreateShortcutClick() {
+    this.shortcutStatus = 'Creating Start Menu shortcut...';
+    const res = await browserProxyFactory.getInstance()
+                    .handler.createStartMenuShortcut();
+    this.shortcutStatus = res.success ?
+        'Start Menu shortcut created successfully.' :
+        'Failed to create Start Menu shortcut.';
+  }
+
+  protected async onPinToTaskbarClick() {
+    this.shortcutStatus = 'Requesting taskbar pin...';
+    const res = await browserProxyFactory.getInstance().handler.pinToTaskbar();
+    this.shortcutStatus = res.success ? 'Taskbar pin requested successfully.' :
+                                        'Failed to pin to taskbar.';
+  }
+
+  protected async onResetProfilePrefsClick() {
+    this.resetStatus = 'Resetting profile preferences...';
+    const res =
+        await browserProxyFactory.getInstance().handler.resetProfilePrefs();
+    this.resetStatus = res.success ?
+        'Profile preferences and IPH state reset successfully.' :
+        'Failed to reset profile preferences.';
+  }
+
+  protected async onResetAllPrefsClick() {
+    this.resetStatus = 'Resetting all Omnibox Everywhere preferences...';
+    const res = await browserProxyFactory.getInstance().handler.resetAllPrefs();
+    this.resetStatus = res.success ?
+        'All Omnibox Everywhere preferences reset successfully.' :
+        'Failed to reset all preferences.';
+  }
 }
+
 
 declare global {
   interface HTMLElementTagNameMap {

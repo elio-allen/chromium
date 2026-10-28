@@ -14,6 +14,7 @@
 #include "base/functional/callback.h"
 #include "base/location.h"
 #include "base/memory/ref_counted_memory.h"
+#include "base/no_destructor.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -130,6 +131,30 @@ SqlSharedCacheIsolatedDatabase::SqlSharedCacheIsolatedDatabase(
 
 SqlSharedCacheIsolatedDatabase::~SqlSharedCacheIsolatedDatabase() = default;
 
+base::expected<std::vector<uint32_t>, SqlSharedCacheIsolatedDatabase::Error>
+SqlSharedCacheIsolatedDatabase::GetAllUrlHashes() {
+  if (ShouldSimulateFailure(OperationForTesting::kRead)) {
+    return base::unexpected(Error::kFailedForTesting);
+  }
+  if (!db_assets_) {
+    return base::unexpected(Error::kFailedToOpenVfsFileSet);
+  }
+  if (!db_assets_->db().is_open()) {
+    return base::unexpected(Error::kDatabaseNotOpen);
+  }
+  sql::Statement statement(db_assets_->db().GetCachedStatement(
+      SQL_FROM_HERE, GetSharedCacheIsolatedDatabaseQuery(
+                         SharedCacheIsolatedDatabaseQuery::kSelectHashes)));
+  std::vector<uint32_t> hashes;
+  while (statement.Step()) {
+    hashes.push_back(statement.ColumnInt(0));
+  }
+  if (!statement.Succeeded()) {
+    return base::unexpected(Error::kFailedToExecuteStatement);
+  }
+  return hashes;
+}
+
 base::expected<sqlite_vfs::PendingFileSet,
                SqlSharedCacheIsolatedDatabase::Error>
 SqlSharedCacheIsolatedDatabase::GetSharedReadOnlyConnection() {
@@ -143,6 +168,24 @@ SqlSharedCacheIsolatedDatabase::GetSharedReadOnlyConnection() {
   return std::move(*pending_file_set);
 }
 
+namespace {
+SqlSharedCacheIsolatedDatabase::SimFailedCallback*
+    g_global_simulate_db_failure_callback = nullptr;
+}  // namespace
+
+// static
+void SqlSharedCacheIsolatedDatabase::
+    SetGlobalSimulateDbFailureCallbackForTesting(  // IN-TEST
+        SimFailedCallback callback) {
+  if (callback) {
+    static base::NoDestructor<SimFailedCallback> s_callback;
+    *s_callback = std::move(callback);
+    g_global_simulate_db_failure_callback = s_callback.get();
+  } else {
+    g_global_simulate_db_failure_callback = nullptr;
+  }
+}
+
 void SqlSharedCacheIsolatedDatabase::
     SetSimulateDbFailureCallbackForTesting(  // IN-TEST
         SimFailedCallback callback) {
@@ -151,6 +194,10 @@ void SqlSharedCacheIsolatedDatabase::
 
 bool SqlSharedCacheIsolatedDatabase::ShouldSimulateFailure(
     OperationForTesting op) const {
+  if (g_global_simulate_db_failure_callback &&
+      g_global_simulate_db_failure_callback->Run(op)) {
+    return true;
+  }
   return simulate_db_failure_callback_ && simulate_db_failure_callback_.Run(op);
 }
 

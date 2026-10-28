@@ -4,28 +4,25 @@
 
 #include "chrome/browser/ui/views/send_tab_to_self/send_tab_to_self_device_picker_bubble_view.h"
 
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_clock.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/views/send_tab_to_self/send_tab_to_self_bubble_controller.h"
 #include "chrome/browser/ui/views/send_tab_to_self/send_tab_to_self_bubble_device_button.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/views/chrome_views_test_base.h"
-#include "components/send_tab_to_self/features.h"
-#include "components/send_tab_to_self/target_device_info.h"
-#include "components/signin/public/identity_manager/account_info.h"
+#include "components/sync_device_info/remote_device_info.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_data.h"
-#include "ui/gfx/image/image_unittest_util.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/test/button_test_api.h"
 #include "ui/views/view_utils.h"
@@ -34,6 +31,13 @@ namespace send_tab_to_self {
 
 namespace {
 
+using FormFactor = syncer::DeviceInfo::FormFactor;
+using OsType = syncer::DeviceInfo::OsType;
+using syncer::RemoteDeviceInfo;
+
+constexpr char kDeviceGuid3[] = "device_guid_3";
+constexpr char kDeviceName3[] = "Device_3";
+
 class SendTabToSelfBubbleControllerMock : public SendTabToSelfBubbleController {
  public:
   explicit SendTabToSelfBubbleControllerMock(content::WebContents* web_contents)
@@ -41,22 +45,17 @@ class SendTabToSelfBubbleControllerMock : public SendTabToSelfBubbleController {
 
   ~SendTabToSelfBubbleControllerMock() override = default;
 
-  std::vector<TargetDeviceInfo> GetValidDevices() override {
+  std::vector<RemoteDeviceInfo> GetValidDevices() override {
     base::SimpleTestClock clock;
-    return {
-        {"Device_1", "device_guid_1", syncer::DeviceInfo::FormFactor::kDesktop,
-         clock.Now() - base::Days(0)},
-        {"Device_2", "device_guid_2", syncer::DeviceInfo::FormFactor::kDesktop,
-         clock.Now() - base::Days(1)},
-        {"Device_3", "device_guid_3", syncer::DeviceInfo::FormFactor::kPhone,
-         clock.Now() - base::Days(5)}};
-  }
-
-  AccountInfo GetSharingAccountInfo() override {
-    AccountInfo info;
-    info.email = "user@host.com";
-    info.account_image = gfx::Image(gfx::test::CreateImageSkia(96, 96));
-    return info;
+    return {{"Device_1", "device_guid_1", FormFactor::kDesktop, OsType::kLinux,
+             clock.Now() - base::Days(0),
+             /*has_high_precision_timestamp=*/false},
+            {"Device_2", "device_guid_2", FormFactor::kDesktop, OsType::kLinux,
+             clock.Now() - base::Days(1),
+             /*has_high_precision_timestamp=*/false},
+            {kDeviceName3, kDeviceGuid3, FormFactor::kPhone, OsType::kAndroid,
+             clock.Now() - base::Days(5),
+             /*has_high_precision_timestamp=*/false}};
   }
 
   MOCK_METHOD(void,
@@ -93,9 +92,11 @@ class SendTabToSelfDevicePickerBubbleViewTest : public ChromeViewsTestBase {
     web_contents_ =
         content::WebContentsTester::CreateTestWebContents(&profile_, nullptr);
     // Owned by WebContents.
-    controller_ = new SendTabToSelfBubbleControllerMock(web_contents_.get());
+    auto controller = std::make_unique<SendTabToSelfBubbleControllerMock>(
+        web_contents_.get());
+    controller_ = controller.get();
     web_contents_->SetUserData(SendTabToSelfBubbleControllerMock::UserDataKey(),
-                               base::WrapUnique(controller_.get()));
+                               std::move(controller));
 
     bubble_ = new SendTabToSelfDevicePickerBubbleView(
         views::BubbleAnchor(anchor_widget_->GetContentsView()),
@@ -118,14 +119,17 @@ class SendTabToSelfDevicePickerBubbleViewTest : public ChromeViewsTestBase {
   raw_ptr<SendTabToSelfBubbleControllerMock> controller_;
 };
 
+// Verifies that the first target device button in the list of options receives
+// initial keyboard focus when the dialog opens, and that all device buttons
+// share a group for arrow-key navigation.
 TEST_F(SendTabToSelfDevicePickerBubbleViewTest,
-       KeyboardAccessibilityConfigured) {
-  auto* container = bubble_->GetButtonContainerForTesting();
-
+       InitiallyFocusedViewIsFirstDevice) {
+  const views::View* container = bubble_->GetButtonContainerForTesting();
   ASSERT_EQ(3U, container->children().size());
 
-  // All three device entries should be grouped together, and the first one
-  // should receive initial keyboard focus.
+  // The first device entry should be the initially focused view for screen
+  // readers and keyboard navigation when the dialog opens, and all device
+  // entries should be grouped together.
   EXPECT_EQ(container->children()[0], bubble_->GetInitiallyFocusedView());
   EXPECT_NE(-1, container->children()[0]->GetGroup());
   EXPECT_EQ(container->children()[0]->GetGroup(),
@@ -134,45 +138,27 @@ TEST_F(SendTabToSelfDevicePickerBubbleViewTest,
             container->children()[2]->GetGroup());
 }
 
-TEST_F(SendTabToSelfDevicePickerBubbleViewTest, ButtonPressed) {
-  EXPECT_CALL(*controller_, OnDeviceSelected("device_guid_3", "Device_3"));
+// Verifies that clicking a target device button selects it and accepting the
+// dialog notifies the controller with the selected device.
+TEST_F(SendTabToSelfDevicePickerBubbleViewTest,
+       SelectDeviceAndAcceptNotifiesController) {
+  EXPECT_CALL(*controller_, OnDeviceSelected).Times(0);
   const views::View* button_container = bubble_->GetButtonContainerForTesting();
   ASSERT_EQ(3U, button_container->children().size());
 
-  // Simulate a click on the third device button.
-  views::test::ButtonTestApi(
-      static_cast<views::Button*>(button_container->children()[2]))
-      .NotifyDefaultMouseClick();
-}
+  auto* third_button = views::AsViewClass<SendTabToSelfBubbleDeviceButton>(
+      button_container->children()[2]);
+  views::test::ButtonTestApi(third_button).NotifyDefaultMouseClick();
+  EXPECT_TRUE(third_button->IsSelected());
 
-// Test fixture for SendTabToSelfDevicePickerBubbleView with the enhanced
-// desktop UI feature enabled.
-class SendTabToSelfDevicePickerBubbleViewEnhancedDesktopUITest
-    : public SendTabToSelfDevicePickerBubbleViewTest {
- public:
-  SendTabToSelfDevicePickerBubbleViewEnhancedDesktopUITest() = default;
-
- private:
-  base::test::ScopedFeatureList feature_list_{kSendTabToSelfEnhancedDesktopUI};
-};
-
-// Verifies that when enhanced desktop UI is enabled, the first target device
-// button in the list of options receives initial keyboard focus when the dialog
-// opens.
-TEST_F(SendTabToSelfDevicePickerBubbleViewEnhancedDesktopUITest,
-       InitiallyFocusedViewIsFirstDeviceWhenEnhancedUiEnabled) {
-  const views::View* container = bubble_->GetButtonContainerForTesting();
-  ASSERT_EQ(3U, container->children().size());
-
-  // The first device entry should be the initially focused view for screen
-  // readers and keyboard navigation when the dialog opens.
-  EXPECT_EQ(container->children()[0], bubble_->GetInitiallyFocusedView());
+  EXPECT_CALL(*controller_, OnDeviceSelected(kDeviceGuid3, kDeviceName3));
+  bubble_->AcceptDialog();
 }
 
 // Verifies that the first target device button is automatically selected on
 // open and its accessibility node data indicates that it is selected and has
 // listbox option roles for Windows AT compatibility.
-TEST_F(SendTabToSelfDevicePickerBubbleViewEnhancedDesktopUITest,
+TEST_F(SendTabToSelfDevicePickerBubbleViewTest,
        FirstDeviceIsSelectedAndAccessibleOnOpen) {
   const views::View* container = bubble_->GetButtonContainerForTesting();
   ASSERT_EQ(3U, container->children().size());
@@ -199,7 +185,7 @@ TEST_F(SendTabToSelfDevicePickerBubbleViewEnhancedDesktopUITest,
 // Verifies that selecting a different target device updates the selected state
 // and accessibility node data for both the newly selected and previously
 // selected target device buttons.
-TEST_F(SendTabToSelfDevicePickerBubbleViewEnhancedDesktopUITest,
+TEST_F(SendTabToSelfDevicePickerBubbleViewTest,
        SelectTargetDeviceUpdatesAccessibilitySelection) {
   const views::View* container = bubble_->GetButtonContainerForTesting();
   ASSERT_EQ(3U, container->children().size());

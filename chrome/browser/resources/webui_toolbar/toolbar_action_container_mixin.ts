@@ -4,6 +4,7 @@
 
 import {assertNotReached} from '//resources/js/assert.js';
 import type {CrLitElement, PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
+import {AnimationTracker} from '/shared/animation_tracker.js';
 
 // State pushed to Lit template for rendering.
 export interface KeyedActionState<T> {
@@ -12,41 +13,19 @@ export interface KeyedActionState<T> {
   key: string;
   // Most of the state of the Lit element.
   state: T;
+  // Is this element sliding in?
+  // If true, @starting-style will apply to transition it into view, and
+  // animateIn will be reset to false on transitionend/transitioncancel.
+  animateIn?: boolean;
   // Is this element sliding out (i.e. exiting)?
   // If true, this instance will be deleted from `keyedStates` when the
   // slide-out animation completes by `onTransitionDone_()`.
   exiting?: boolean;
-  // Should this element animate in (i.e. slide in)?
-  animateIn?: boolean;
   // Is this element currently being dragged (rendering as gap/placeholder)?
   dragPlaceholder?: boolean;
 }
 
 type Constructor<T> = new (...args: any[]) => T;
-
-// Class to track whether the user desires animations to be shown. This is
-// exposed via `AnimationTracker.showAnimations`. For testing, `showAnimations`
-// can be directly set, then `resetForTesting()` can be used to reset it during
-// test teardown.
-export class AnimationTracker {
-  private static reducedMotion_: MediaQueryList =
-      window.matchMedia('(prefers-reduced-motion: reduce)');
-
-  static showAnimations: boolean = !AnimationTracker.reducedMotion_.matches;
-
-  static {
-    AnimationTracker.reducedMotion_.addEventListener('change', () => {
-      AnimationTracker.showAnimations =
-          !AnimationTracker.reducedMotion_.matches;
-    });
-  }
-
-  // If tests directly modify `showAnimations`, the tests should call this
-  // method during teardown to reset it.
-  static resetForTesting() {
-    AnimationTracker.showAnimations = !AnimationTracker.reducedMotion_.matches;
-  }
-}
 
 export interface ToolbarActionContainerMixinInterface<T> {
   states: T[];
@@ -56,7 +35,8 @@ export interface ToolbarActionContainerMixinInterface<T> {
   allExiting(): boolean;
   animateInDivider(): boolean;
   reconcileKeys(): void;
-  isDivider(key: string): boolean;
+  onKeyedStatesChanged(): void;
+  isDraggable(state: T, index: number): boolean;
   onActionDragover(e: DragEvent): void;
   onActionDrop(e: DragEvent): void;
   moveItem(id: string, index: number): void;
@@ -71,17 +51,23 @@ export interface ToolbarActionContainerMixinInterface<T> {
  * actions and extensions) that manage a list of dynamic items with slide-in
  * and slide-out animations.
  *
- * It reconciles new state arrays (`state`) against internal keyed items
- * (`keyedStates`), automatically setting animation flags (`animateIn` for
- * newly added items, and `exiting` for removed items) while keeping exiting
- * items in the DOM until their CSS transitions complete.
+ * It reconciles new state arrays (`states`) against internal keyed items
+ * (`keyedStates`), automatically setting the `exiting` flag for removed items
+ * while keeping exiting items in the DOM until their CSS transitions complete.
  *
  * Usage:
  * 1. Mix in `ToolbarActionContainerMixin<T>` where `T` is your item state type.
  * 2. Implement `getKey(state: T): string` to return a unique key for each item.
- * 3. Optionally override `isInitialUpdate(newStates: T[]): boolean` to suppress
+ * 3. Implement `isDraggable(state: T, index: number): boolean` to specify
+ *    which items are draggable. Non-draggable items must be positioned
+ *    consecutively at the very end of the list, forming a fixed undraggable
+ *    suffix that drag-and-drop operations cannot reorder or enter.
+ * 4. Optionally override `isInitialUpdate(newStates: T[]): boolean` to suppress
  *    slide-in animations on initial load.
- * 4. In your Lit template (`.html.ts`), iterate over `this.keyedStates` using
+ * 5. Optionally override `onKeyedStatesChanged()` to recompute any state
+ *    derived from `keyedStates`. It is invoked on every change to
+ *    `keyedStates`, before any calls are made to isDraggable().
+ * 6. In your Lit template (`.html.ts`), iterate over `this.keyedStates` using
  *    the Lit `repeat()` directive, applying `animate-in` and `exiting` CSS
  *    classes based on `keyedState.animateIn` and `keyedState.exiting`.
  */
@@ -127,14 +113,35 @@ export const ToolbarActionContainerMixin =
           return assertNotReached();
         }
 
-        isDivider(_key: string): boolean {
+        isDraggable(_state: T, _index: number): boolean {
           return assertNotReached();
         }
 
+        /**
+         * The ID of the item currently being dragged locally. Null if no local
+         * drag is active.
+         */
         private draggedItemId_: string|null = null;
-        private dragEnterCount_ = 0;
+
+        /**
+         * True if the drag is currently over the host element.
+         */
+        private isDragOverHost_ = false;
+
+        /**
+         * True if a drop event occurred in this container, preventing revert
+         * on dragend.
+         */
         private didDrop_ = false;
+
+        /** The ID of the item to focus after the next render update. */
         private itemToFocusAfterUpdate_: string|null = null;
+
+        /**
+         * The number of draggable items in the container. Draggable items are
+         * always positioned consecutively at the beginning of the list.
+         */
+        draggableItemsCount: number = 0;
 
         // Channel to coordinate drag-and-drop state across different browser
         // windows.
@@ -146,27 +153,20 @@ export const ToolbarActionContainerMixin =
 
         private mouseMoveListener_ = (e: MouseEvent) =>
             this.onWindowMouseMove_(e);
-        private pointerDown_ = false;
-        private deferredUpdate_ = false;
-        private pointerDownListener_ = (e: PointerEvent) =>
-            this.onHostPointerdown_(e);
-        private pointerUpListener_ = () => this.onWindowPointerup_();
+
 
         override connectedCallback() {
           super.connectedCallback();
+          // Disable transitions initially to prevent entry animations on first
+          // render.
+          this.classList.add('initial-load');
           // Initialize the BroadcastChannel for cross-window drag sync.
           this.dragChannel_ =
               new BroadcastChannel(this.getBroadcastChannelName());
           this.dragChannel_.onmessage = (e) => this.onDragChannelMessage_(e);
-          // Mousemove and pointerup/cancel must be tracked globally to ensure
-          // we clean up state even if the interaction ends outside the
-          // container boundaries.
+          // Mousemove must be tracked globally to ensure we clean up state even
+          // if the interaction ends outside the container boundaries.
           window.addEventListener('mousemove', this.mouseMoveListener_);
-          window.addEventListener('pointerup', this.pointerUpListener_);
-          window.addEventListener('pointercancel', this.pointerUpListener_);
-          // We only care about pointerdown events that originate inside the
-          // container to start tracking user interaction for deferring updates.
-          this.addEventListener('pointerdown', this.pointerDownListener_);
         }
 
         override disconnectedCallback() {
@@ -176,10 +176,18 @@ export const ToolbarActionContainerMixin =
             this.dragChannel_ = null;
           }
           window.removeEventListener('mousemove', this.mouseMoveListener_);
-          this.removeEventListener('pointerdown', this.pointerDownListener_);
-          window.removeEventListener('pointerup', this.pointerUpListener_);
-          window.removeEventListener('pointercancel', this.pointerUpListener_);
         }
+
+        /**
+         * Invoked whenever `keyedStates` changes, before anything else
+         * consumes it during the update. Subclasses may override this to
+         * recompute values derived from `keyedStates`. Note that `keyedStates`
+         * is modified in a number of places besides reconcileKeys() (e.g. when
+         * exiting items finish animating out and are removed, or when items
+         * are reordered mid-drag), so derived values must not be computed in
+         * reconcileKeys() alone.
+         */
+        onKeyedStatesChanged() {}
 
         override willUpdate(changedProperties: PropertyValues<this>) {
           super.willUpdate(changedProperties);
@@ -187,46 +195,37 @@ export const ToolbarActionContainerMixin =
           const changedPrivateProperties =
               changedProperties as Map<PropertyKey, unknown>;
           if (changedPrivateProperties.has('states')) {
-            const oldState =
-                changedPrivateProperties.get('states') as T[] | undefined;
-            const newState = this.states;
-            const oldIds = (oldState || []).map(s => this.getKey(s));
-            const newIds = (newState || []).map(s => this.getKey(s));
-            const orderChanged = oldIds.length !== newIds.length ||
-                oldIds.some((id, index) => id !== newIds[index]);
+            const newIds = (this.states || []).map(s => this.getKey(s));
 
-            let shouldDefer = false;
-
-            if (this.isDragging_) {
-              if (orderChanged) {
-                // State updates invalidate the layout index order, making
-                // subsequent Mojo reorder calls unsafe. We must abort the drag
-                // session.
+            if (this.isDragging_ && this.draggedItemId_ !== null) {
+              if (!newIds.includes(this.draggedItemId_)) {
                 this.abortDrag_();
-                // Do not defer, apply immediately.
-                shouldDefer = false;
-              } else {
-                // Defer update.
-                shouldDefer = true;
               }
-            } else if (this.pointerDown_) {
-              // Pointer down but not dragging: defer.
-              shouldDefer = true;
             }
+            this.reconcileKeys();
+          }
 
-            if (shouldDefer) {
-              this.deferredUpdate_ = true;
-            } else {
-              this.reconcileKeys();
-              this.deferredUpdate_ = false;
+          // Note that reconcileKeys() assigns a new array to `keyedStates`, so
+          // when it runs above, `changedProperties` gains a `keyedStates` entry
+          // before it's checked here, and this block runs in the same update.
+          if (changedProperties.has('keyedStates')) {
+            this.onKeyedStatesChanged();
+
+            let draggableCount = 0;
+            for (let i = this.keyedStates.length - 1; i >= 0; i--) {
+              if (this.isDraggable(this.keyedStates[i]!.state, i)) {
+                draggableCount = i + 1;
+                break;
+              }
             }
+            this.draggableItemsCount = draggableCount;
           }
         }
 
         override firstUpdated(changedProperties: PropertyValues<this>) {
           super.firstUpdated(changedProperties);
-          // Add listener to shadow root to catch bubbled transitionend and
-          // transitioncancel events.
+          // Catch bubbled transition events to remove exiting items from the
+          // DOM once their collapse transition completes.
           this.shadowRoot.addEventListener(
               'transitionend',
               e => this.onTransitionDone_(e as TransitionEvent));
@@ -240,10 +239,7 @@ export const ToolbarActionContainerMixin =
           this.addEventListener('toolbar-action-drag-start', (e: Event) => {
             const customEvent = e as CustomEvent<{itemId: string}>;
             this.draggedItemId_ = customEvent.detail.itemId;
-            if (this.deferredUpdate_) {
-              this.abortDrag_();
-              return;
-            }
+            this.isDragOverHost_ = true;
             if (this.dragChannel_) {
               this.dragChannel_.postMessage({
                 type: 'drag-start',
@@ -275,7 +271,6 @@ export const ToolbarActionContainerMixin =
             }
             this.draggedItemId_ = null;
             this.didDrop_ = false;
-            this.pointerDown_ = false;
 
             if (aborted) {
               this.clearPlaceholderAndRevert_();
@@ -325,39 +320,33 @@ export const ToolbarActionContainerMixin =
               this.externallyDraggedItemId_ !== null;
         }
 
-        private getActiveAndSuffixStates_() {
-          const suffixLength = this.getFixedSuffixLength_();
-          const activeLength = this.keyedStates.length - suffixLength;
-          return {
-            active: this.keyedStates.slice(0, activeLength),
-            suffix: this.keyedStates.slice(activeLength),
-          };
+        private getSuffixStates_(): Array<KeyedActionState<T>> {
+          return this.keyedStates.slice(this.draggableItemsCount);
         }
 
         private getActiveStates_(): Array<KeyedActionState<T>> {
-          return this.getActiveAndSuffixStates_().active;
-        }
-
-        private getNonDividerActiveStates_(): Array<KeyedActionState<T>> {
-          return this.getActiveStates_().filter(s => !this.isDivider(s.key));
+          return this.keyedStates.slice(0, this.draggableItemsCount);
         }
 
         private getPlaceholderIndex_(): number {
-          return this.getNonDividerActiveStates_().findIndex(
-              s => s.dragPlaceholder);
+          return this.getActiveStates_().findIndex(s => s.dragPlaceholder);
         }
 
-        reconcileKeys() {
-          this.deferredUpdate_ = false;
-          const isInitial = this.isInitialUpdate(this.states);
-          const currentKeyedStates = this.keyedStates || [];
-
-          // 1. Map new mojo states to KeyedActionState (all active).
-          const newKeyedStates: Array<KeyedActionState<T>> =
-              this.states.map(state => {
+        private mapStates_(
+            states: T[], isInitial: boolean,
+            currentKeyedStates: Array<KeyedActionState<T>>):
+            Array<KeyedActionState<T>> {
+          return states.map(
+              state => {
                 const key = this.getKey(state);
+                // Animate in if this is not the initial load, animations are
+                // enabled, and the item is either not in `currentKeyedStates`
+                // or already animating. If it was already in
+                // `currentKeyedStates` and not animating, we use the
+                // transition to smoothly change to its desired width.
                 const animateIn = !isInitial &&
-                    !this.keyedStates.some(
+                    AnimationTracker.showAnimations &&
+                    !currentKeyedStates.some(
                         old => old.key === key && !old.animateIn);
                 const oldKeyedState =
                     currentKeyedStates.find(old => old.key === key);
@@ -365,6 +354,52 @@ export const ToolbarActionContainerMixin =
                     oldKeyedState ? oldKeyedState.dragPlaceholder : undefined;
                 return {key, state, animateIn, dragPlaceholder};
               });
+        }
+
+        reconcileKeys() {
+          // 1. Map new mojo states to KeyedActionState (all active).
+          const isInitial = this.isInitialUpdate(this.states);
+          if (!isInitial) {
+            // Enable transitions for subsequent updates after the initial load.
+            this.classList.remove('initial-load');
+          }
+          const currentKeyedStates = this.keyedStates || [];
+
+          let newKeyedStates: Array<KeyedActionState<T>>;
+
+          const draggedId =
+              this.draggedItemId_ ?? this.externallyDraggedItemId_;
+
+          if (this.isDragging_ && this.isDragOverHost_ && draggedId !== null) {
+            const localIndex =
+                this.keyedStates.findIndex(s => s.key === draggedId);
+
+            if (localIndex !== -1) {
+              const oldDraggedKeyedState = this.keyedStates[localIndex]!;
+              const mojoDraggedState =
+                  this.states.find(s => this.getKey(s) === draggedId);
+              const state = mojoDraggedState ?? oldDraggedKeyedState.state;
+              const draggedKeyedState = {
+                ...oldDraggedKeyedState,
+                state,
+              };
+
+              const statesWithoutDragged =
+                  this.states.filter(s => this.getKey(s) !== draggedId);
+
+              newKeyedStates = this.mapStates_(
+                  statesWithoutDragged, isInitial, currentKeyedStates);
+
+              const insertIndex = Math.min(localIndex, newKeyedStates.length);
+              newKeyedStates.splice(insertIndex, 0, draggedKeyedState);
+            } else {
+              newKeyedStates =
+                  this.mapStates_(this.states, isInitial, currentKeyedStates);
+            }
+          } else {
+            newKeyedStates =
+                this.mapStates_(this.states, isInitial, currentKeyedStates);
+          }
 
           // 2. Find which keys were in the old `keyedStates` but are not in
           // `newKeyedStates`. These are the ones that are "sliding-out".
@@ -378,16 +413,20 @@ export const ToolbarActionContainerMixin =
           if (AnimationTracker.showAnimations) {
             // Sort missing states by their original index to preserve order
             // during insertion
-            const oldKeyToIndex =
-                new Map(this.keyedStates.map((s, i) => [s.key, i]));
             missingOldStates.sort(
-                (a, b) => oldKeyToIndex.get(a.key)! - oldKeyToIndex.get(b.key)!,
+                (a, b) => this.keyedStates.findIndex(s => s.key === a.key) -
+                    this.keyedStates.findIndex(s => s.key === b.key),
             );
 
             // Insert them back with `exiting` set to true.
             for (const missing of missingOldStates) {
-              const exitingState = {...missing, exiting: true};
-              const originalIndex = oldKeyToIndex.get(missing.key)!;
+              const exitingState = {
+                ...missing,
+                exiting: true,
+                animateIn: false,
+              };
+              const originalIndex =
+                  this.keyedStates.findIndex(s => s.key === missing.key);
               const insertIndex =
                   Math.min(originalIndex, newKeyedStates.length);
               newKeyedStates.splice(insertIndex, 0, exitingState);
@@ -397,14 +436,17 @@ export const ToolbarActionContainerMixin =
           this.keyedStates = newKeyedStates;
           this.updateVisibility_();
 
-          // If the layout engine has already forced the exiting elements to 0
-          // width (preempting the transition), or if animations are disabled,
-          // remove them immediately.
+          // If CSS forces the exiting elements to 0 width immediately (e.g. if
+          // animations are disabled), remove them synchronously once the update
+          // completes. getBoundingClientRect() forces layout so we get the
+          // transitioning width if a transition is running.
           this.updateComplete.then(() => {
-            for (const el of this.shadowRoot.querySelectorAll<HTMLElement>(
-                     '.exiting')) {
-              // If it's already 0px wide, it won't transition.
-              if (el.getBoundingClientRect().width === 0) {
+            const exitingElements =
+                this.shadowRoot.querySelectorAll<HTMLElement>('.exiting');
+            for (const el of exitingElements) {
+              const width = el.getBoundingClientRect().width;
+              // If it's already 0px wide, it won't have a transitionend event.
+              if (width === 0) {
                 const key = el.dataset['key'];
                 if (key) {
                   // Extensions can only be unpinned one-at-a-time, so
@@ -418,27 +460,55 @@ export const ToolbarActionContainerMixin =
           });
         }
 
-        // When an element finishes "sliding-out", remove it from
-        // `keyedStates`.
+        // Handler for transition events. This is called for all transition
+        // events bubbled up to the container. It handles cleanup for both:
+        // 1. Sliding-out elements (exiting): removes them once they have
+        // collapsed
+        //    to 0 width.
+        // 2. Sliding-in elements (animateIn): clears the animateIn flag once
+        // the
+        //    entrance width transition finishes, so subsequent DOM moves don't
+        //    re-trigger @starting-style.
         private onTransitionDone_(e: TransitionEvent) {
-          // We only care about the width transition to trigger removal
+          // We only care about the width transition to trigger removal /
+          // animateIn cleanup.
           if (e.propertyName !== 'width') {
             return;
           }
 
           const target = e.target as HTMLElement;
-          if (!target.classList.contains('exiting')) {
-            return;
-          }
-
           const key = target.dataset['key'];
           if (!key) {
             return;
           }
 
-          // Remove the finished item (automatically triggers update)
-          this.keyedStates = this.keyedStates.filter(s => s.key !== key);
-          this.updateVisibility_();
+          if (target.classList.contains('exiting')) {
+            // If the transition was cancelled, or even if it ended, only remove
+            // the element if it reached 0 width. If cancelled because a new
+            // transition started (e.g. reversing), width will be non-zero.
+            if (target.getBoundingClientRect().width !== 0) {
+              return;
+            }
+
+            // Remove the finished item (automatically triggers update)
+            this.keyedStates = this.keyedStates.filter(s => s.key !== key);
+            this.updateVisibility_();
+            return;
+          }
+
+          if (target.classList.contains('animate-in')) {
+            const stateToUpdate = this.keyedStates.find(s => s.key === key);
+            if (!stateToUpdate || !stateToUpdate.animateIn) {
+              return;
+            }
+
+            this.keyedStates = this.keyedStates.map(s => {
+              if (s.key === key) {
+                return {...s, animateIn: false};
+              }
+              return s;
+            });
+          }
         }
 
         private updateVisibility_() {
@@ -491,29 +561,28 @@ export const ToolbarActionContainerMixin =
         }
 
         private abortDrag_() {
-          if (this.draggedItemId_ !== null && this.dragChannel_) {
-            this.dragChannel_.postMessage({
-              type: 'drag-end',
-              aborted: true,
-            });
-          }
-          const draggedItemId =
-              this.draggedItemId_ ?? this.externallyDraggedItemId_;
-          if (draggedItemId !== null) {
-            // HTML5 DND has no programmatic cancel method. Force-removing
-            // the drag source element from the DOM tells the browser to
-            // abort the native OS drag session. Lit will automatically
-            // recreate the element in its new position during the
-            // subsequent reconcileKeys update.
-            const el = this.shadowRoot.querySelector(
-                `${this.childTagName}[data-key="${draggedItemId}"]`);
+          if (this.draggedItemId_ !== null) {
+            const el = this.shadowRoot.querySelector<HTMLElement>(
+                `${this.childTagName}[data-key="${this.draggedItemId_}"]`);
             if (el) {
-              el.remove();
+              el.style.display = 'none';
             }
+            if (this.dragChannel_) {
+              this.dragChannel_.postMessage({
+                type: 'drag-end',
+                aborted: true,
+              });
+            }
+            // Remove the dragged item from keyedStates so reconcileKeys() does
+            // not retain it as an exiting state. Because display is set to
+            // 'none', no CSS transition will run or fire transitionend to clean
+            // it up.
+            this.keyedStates =
+                this.keyedStates.filter(s => s.key !== this.draggedItemId_);
           }
           this.draggedItemId_ = null;
           this.externallyDraggedItemId_ = null;
-          this.clearPlaceholderFlagsOnly_();
+          this.clearPlaceholderAndRevert_();
         }
 
         // Handles drag state updates broadcasted from other toolbar instances,
@@ -523,11 +592,12 @@ export const ToolbarActionContainerMixin =
             this.externallyDraggedItemId_ = e.data.itemId;
             // Guard against race: if the drag already entered this window
             // before we received the broadcast, apply the placeholder now.
-            if (this.dragEnterCount_ > 0) {
+            if (this.isDragOverHost_) {
               this.setPlaceholder_(e.data.itemId);
             }
           } else if (e.data.type === 'drag-end') {
             this.externallyDraggedItemId_ = null;
+            this.isDragOverHost_ = false;
             if (e.data.aborted) {
               this.clearPlaceholderAndRevert_();
             } else {
@@ -536,39 +606,6 @@ export const ToolbarActionContainerMixin =
           }
         }
 
-        private onHostPointerdown_(e: PointerEvent) {
-          if (!e.isPrimary) {
-            return;
-          }
-          const item =
-              e.composedPath().find(
-                  el => el instanceof HTMLElement &&
-                      el.localName === this.childTagName) as HTMLElement |
-              undefined;
-          if (item) {
-            // Track pointerdown on child items to delay state updates that
-            // could cause reordering, avoiding the button moving from under
-            // the pointer.
-            this.pointerDown_ = true;
-          }
-        }
-
-        private onWindowPointerup_() {
-          this.pointerDown_ = false;
-          this.applyDeferredUpdateIfAny_();
-        }
-
-        // Mojo updates are deferred during a drag and applied later by this
-        // function.
-        private applyDeferredUpdateIfAny_() {
-          if (this.pointerDown_ || this.isDragging_) {
-            return;
-          }
-          if (this.deferredUpdate_) {
-            this.deferredUpdate_ = false;
-            this.reconcileKeys();
-          }
-        }
 
         // A fallback listener to guard against the browser or OS failing to
         // fire the native 'dragend' event (e.g., if the drag is aborted over a
@@ -595,23 +632,6 @@ export const ToolbarActionContainerMixin =
           }
         }
 
-        // Gets the length of non-draggable extensions.
-        private getFixedSuffixLength_(): number {
-          let suffixLength = 0;
-          for (let i = this.keyedStates.length - 1; i >= 0; i--) {
-            const state = this.keyedStates[i]!;
-            const el = this.shadowRoot.querySelector<HTMLElement&{
-              isDraggable?: () => boolean,
-            }>(`${this.childTagName}[data-key="${state.key}"]`);
-            if (el && el.isDraggable && !el.isDraggable()) {
-              suffixLength++;
-            } else {
-              break;
-            }
-          }
-          return suffixLength;
-        }
-
         onActionDragover(e: DragEvent) {
           if (!e.dataTransfer) {
             return;
@@ -627,13 +647,14 @@ export const ToolbarActionContainerMixin =
           if (draggedItemId === null) {
             return;
           }
+
           e.preventDefault();
           e.dataTransfer.dropEffect = 'move';
           const target = e.currentTarget as HTMLElement;
 
           const key = target?.dataset['key'];
           const overState = this.keyedStates.find(s => s.key === key);
-          if (!overState || this.isDivider(overState.key)) {
+          if (!overState) {
             return;
           }
           // If the user hovers over the dragged action itself, do nothing. It
@@ -644,8 +665,8 @@ export const ToolbarActionContainerMixin =
 
           // Re-order the actions to show what would happen on drop.
 
-          const {active: activeStates, suffix: suffixStates} =
-              this.getActiveAndSuffixStates_();
+          const activeStates = this.getActiveStates_();
+          const suffixStates = this.getSuffixStates_();
 
           const fromIndex =
               activeStates.findIndex(s => s.key === draggedItemId);
@@ -664,8 +685,10 @@ export const ToolbarActionContainerMixin =
             if (moved) {
               const insertIndex = Math.min(toIndex, newActive.length);
               newActive.splice(insertIndex, 0, moved);
+              if (fromIndex !== insertIndex) {
+                this.keyedStates = [...newActive, ...suffixStates];
+              }
             }
-            this.keyedStates = [...newActive, ...suffixStates];
           }
         }
 
@@ -692,13 +715,12 @@ export const ToolbarActionContainerMixin =
             e.preventDefault();
             e.stopPropagation();
 
-            this.dragEnterCount_ = 0;
             this.didDrop_ = true;
 
             const placeholderIdx = this.getPlaceholderIndex_();
             const targetIndex = placeholderIdx !== -1 ?
                 placeholderIdx :
-                this.getNonDividerActiveStates_().length;
+                this.draggableItemsCount;
 
             this.moveItem(itemId, targetIndex);
           } catch (_err) {
@@ -711,13 +733,14 @@ export const ToolbarActionContainerMixin =
               !e.dataTransfer.types.includes(this.getMimeType())) {
             return;
           }
-          this.dragEnterCount_++;
-          if (this.dragEnterCount_ === 1) {
-            const draggedItemId =
-                this.draggedItemId_ ?? this.externallyDraggedItemId_;
-            if (draggedItemId !== null) {
-              this.setPlaceholder_(draggedItemId);
-            }
+          if (e.relatedTarget && this.contains(e.relatedTarget as Node)) {
+            return;
+          }
+          this.isDragOverHost_ = true;
+          const draggedItemId =
+              this.draggedItemId_ ?? this.externallyDraggedItemId_;
+          if (draggedItemId !== null) {
+            this.setPlaceholder_(draggedItemId);
           }
         }
 
@@ -726,10 +749,27 @@ export const ToolbarActionContainerMixin =
               !e.dataTransfer.types.includes(this.getMimeType())) {
             return;
           }
-          this.dragEnterCount_--;
-          if (this.dragEnterCount_ === 0) {
-            this.reconcileKeys();
+          if (e.relatedTarget && this.contains(e.relatedTarget as Node)) {
+            return;
           }
+
+          // If relatedTarget is null, the drag might have left the window or
+          // an element was removed/moved during reordering. Check coordinates
+          // as a fallback to verify if the pointer actually left the host.
+          if (!e.relatedTarget) {
+            const rect = this.getBoundingClientRect();
+            const buffer = 1;
+            const isOutside = e.clientX < rect.left - buffer ||
+                e.clientX > rect.right + buffer ||
+                e.clientY < rect.top - buffer ||
+                e.clientY > rect.bottom + buffer;
+            if (!isOutside) {
+              return;
+            }
+          }
+
+          this.isDragOverHost_ = false;
+          this.reconcileKeys();
         }
 
         private onHostDragover_(e: DragEvent) {
@@ -741,7 +781,6 @@ export const ToolbarActionContainerMixin =
         }
 
         private onHostDrop_(e: DragEvent) {
-          this.dragEnterCount_ = 0;
           if (this.didDrop_) {
             return;
           }

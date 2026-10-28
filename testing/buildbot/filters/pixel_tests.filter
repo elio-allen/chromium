@@ -29,16 +29,19 @@ BrowserViewTabbedLayoutImplUiTest.*
 BubbleFrameViewBrowserTest.*
 BubbleSignInPromoInteractiveUITest.*
 CaptionBubbleBrowserTest.*
+CastBrowserControllerTest.*
 ChromeLabs*UiTest.*
 ChromeSignoutConfirmationPromptPixelTest.*
 ChromeSignoutConfirmationPromptWithExtensionsPixelTest.*
 ConfirmBubbleTest.*
+ComposeboxDriveSignInPromoViewPixelTest.*
 ContentAnalysysDialogUiTest.*
 ContentSettingBubbleDialogTest.*
 CookieClearOnExitMigrationNoticePixelTest.*
 CookieControlsBubbleViewPixelTest.*
 *CreatePopupRowViewTest.*
 *CreatePopupRowViewWithNoUserEducationRateLimitTest.*
+CrossDeviceSigninQrBubbleUIPixelTest.*
 CryptoModulePasswordDialogTest.*
 *DataControlsDialogUiTest.*
 DashboardKombuchaInteractiveUITest.*
@@ -52,7 +55,9 @@ DeleteAddressProfileDialogControllerImplTest.InvokeUi_*
 DesktopBnplUiDelegateBrowserTest.*
 DesktopMediaPickerViewsBrowserTest.*
 DesktopPaymentsWindowManagerInteractiveUiTest*
-DocumentPictureInPicturePixelTest.*
+*DeviceSignalsDisclaimerModalPixelTest.*
+*DeviceSignalsDisclaimerProfilePickerPixelTest.*
+*DocumentPictureInPicturePixelTest.*
 EditAddressProfileDialogControllerImplTest.InvokeUi_*
 *EmbeddedPermissionPromptUiTest.InvokeUi_*
 MahiMenuPixelBrowserTest.*
@@ -70,6 +75,7 @@ FirstRunFinishOrContinuePixelTest.*
 FirstRunIntroPixelTest.*
 FirstRunSignInCelebrationPixelTest.*
 GlobalErrorBubbleTest.*
+*GmailOtpOptInBubbleViewBrowsertest.*
 HatsBubbleTest.*
 HistorySyncOptinUIDialogPixelTest.*
 HomeButtonUiTest.*
@@ -97,7 +103,8 @@ NewTabPageTest.*
 NtpPromoVisualUiTest.*
 NtpRealboxUiScreenshotTest.*
 OfferNotificationBubbleViewPixelBrowserTest.*
-OmniboxAimWebUiInteractiveTest.QueryWithTabContext*
+OmniboxAimWebUiEagerPopupInteractiveTest.QueryWithTabContext*
+OrganizerPanelPixelTest.*
 OutdatedUpgradeBubbleTest.*
 PageActionPixelIconsHiddenTest.*
 PageActionPixelShowIconTest.*
@@ -133,11 +140,7 @@ PermissionChipKombuchaInteractiveUITest.QuietestPermissionChipClickTest
 PermissionRequestChipBrowserUiTest.*
 *PermissionPromptBubble*View*BrowserTest.InvokeUi_*
 PermissionPromptPreviewBrowserTest.InvokeUi_*
-*PlusAddressCreationDialogUiVariationsTest*
-*PlusAddressCreationDialogUiVariationsOnboardingTest*
-PlusAddressCreationDialogWithNoticeTest.ShowNoticeAndCancel
 *PopupViewViewsBrowsertest*
-*PopupViewViewsPlusAddressSuggestionBrowsertest*
 PriceTrackingBubbleDialogViewBrowserTest.*
 ProfileMenuViewPixelTest.*
 ProfilePickerSigninToolbarUIPixelTest.*
@@ -154,9 +157,11 @@ ReportUnsafeSiteDialogInteractiveUiTest.ExcludeScreenshotPixelTest
 SafetyTipPageInfoBubbleViewDialogTest.*
 ScreenCaptureNotificationUiBrowserTest.*
 SearchEngineChoiceUIPixelTest.*
+SearchEnginePickerPixelBrowserTest.*
 SecurePaymentConfirmationDialogViewTest.InvokeUi_*
 *SendTabToSelfBubbleTest.*
 SendTabToSelfInteractiveUiTest.*
+SendTabToSelfIphInteractiveUiTest.CaptureTutorialScreenshots
 SendTabToSelfToolbarIconControllerInteractiveUiTest.*
 SessionCrashedBubbleViewTest.*
 SettingsOverriddenExplicitChoiceDialogInteractiveUiTest.*
@@ -186,6 +191,7 @@ WebAppConfirmViewBrowserTest.*
 WebAppInstallDialogBrowserTest.*
 WebAppMenuBrowserTest.*
 WebAppUpdateReviewDialog.*
+WebUIToolbarGlicPixelInteractiveUiTest.*
 WebUIToolbarPixelInteractiveUiTest.*
 ZoomBubbleDialogTest.*
 

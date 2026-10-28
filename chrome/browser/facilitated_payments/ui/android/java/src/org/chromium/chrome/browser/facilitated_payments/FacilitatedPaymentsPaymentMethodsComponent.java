@@ -60,12 +60,6 @@ interface FacilitatedPaymentsPaymentMethodsComponent {
          */
         void onPaymentAppSelected(String packageName, String activityName);
 
-        /** Called whenever the Pix account linking prompt is accepted. */
-        void onPixAccountLinkingPromptAccepted();
-
-        /** Called whenever the Pix account linking prompt is declined. */
-        void onPixAccountLinkingPromptDeclined();
-
         /** Called whenever an account linking prompt is shown. */
         void onAccountLinkingPromptShown(@FacilitatedPaymentsType int type);
 
@@ -98,8 +92,8 @@ interface FacilitatedPaymentsPaymentMethodsComponent {
      */
     void showSheetForPaymentLink(List<Ewallet> eWallets, List<ResolveInfo> apps);
 
-    /** Displays a progress screen in a bottom sheet. */
-    void showProgressScreen();
+    /** Displays a progress screen in a bottom sheet of the specified type. */
+    void showProgressScreen(@ProgressScreenType int type);
 
     /** Displays an error screen in a bottom sheet. */
     void showErrorScreen();
@@ -108,7 +102,7 @@ interface FacilitatedPaymentsPaymentMethodsComponent {
     void dismiss();
 
     /** Show the Pix account linking prompt in a bottom sheet. */
-    void showPixAccountLinkingPrompt(int strikeCount);
+    void showPixAccountLinkingPrompt(int strikeCount, String accountEmail);
 
     /** Displays the Pix account linking success screen in a bottom sheet. */
     void showPixAccountLinkingSuccessScreen();

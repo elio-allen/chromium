@@ -70,7 +70,7 @@ DECLARE_RESOURCE_ID(IDR_ANDROID_PASSWORD_MANAGER_LOGO_24DP,
 #endif
 
 // The icon shown when an update to GMSCore is needed.
-DECLARE_RESOURCE_ID(IDR_ANDROID_IC_ERROR, R.drawable.ic_error)
+DECLARE_RESOURCE_ID(IDR_ANDROID_IC_ERROR, R.drawable.ic_error_24dp)
 
 DECLARE_RESOURCE_ID(IDR_SEND_TAB_TO_SELF, R.drawable.send_tab)
 
@@ -79,6 +79,10 @@ DECLARE_RESOURCE_ID(IDR_ANDROID_AUTOFILL_ADDRESS,
                     R.drawable.ic_location_on_fill_24dp)
 DECLARE_RESOURCE_ID(IDR_ANDROID_AUTOFILL_UPLOAD_ADDRESS,
                     R.drawable.ic_cloud_upload_24dp)
+
+// Icon displayed in the email verification message on Android.
+DECLARE_RESOURCE_ID(IDR_ANDROID_AUTOFILL_EMAIL_VERIFIED,
+                    R.drawable.ic_mark_email_read_24dp)
 
 // We use PNG files for the following images.
 LINK_RESOURCE_ID(IDR_CREDIT_CARD_CVC_HINT_BACK, R.drawable.cvc_icon)

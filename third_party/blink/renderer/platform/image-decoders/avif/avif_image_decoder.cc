@@ -36,7 +36,6 @@
 #include "third_party/skia/include/core/SkTypes.h"
 #include "third_party/skia/include/private/SkXmp.h"
 #include "ui/gfx/color_space.h"
-#include "ui/gfx/icc_profile.h"
 
 #if defined(ARCH_CPU_BIG_ENDIAN)
 #error Blink assumes a little-endian target.
@@ -157,7 +156,7 @@ sk_sp<SkColorSpace> GetAltImageColorSpace(const crabbyavif::avifImage& image) {
       // Same ICC as the base image, no need to specify it.
       return nullptr;
     }
-    std::unique_ptr<ColorProfile> profile = ColorProfile::Create(
+    sk_sp<skia::ColorProfile> profile = skia::ColorProfile::Make(
         UNSAFE_TODO(base::span(gain_map->altICC.data, gain_map->altICC.size)));
     if (!profile) {
       DVLOG(1) << "Failed to parse gain map ICC profile";
@@ -269,8 +268,8 @@ wtf_size_t AVIFImageDecoder::DecodedYUVWidthBytes(cc::YUVIndex index) const {
   //
   // The comments for Dav1dPicAllocator in dav1d/picture.h require the pixel
   // width be padded to a multiple of 128 pixels.
-  wtf_size_t aligned_width = static_cast<wtf_size_t>(
-      base::bits::AlignUpDeprecatedDoNotUse(Size().width(), 128));
+  wtf_size_t aligned_width = (base::bits::AlignUp(
+      base::checked_cast<wtf_size_t>(Size().width()), wtf_size_t{128}));
   if (index == cc::YUVIndex::kU || index == cc::YUVIndex::kV) {
     aligned_width >>= chroma_shift_x_;
   }
@@ -855,7 +854,7 @@ bool AVIFImageDecoder::UpdateDemuxer() {
     // from the AV1 sequence header for the frames. If an ICC profile is
     // present, use it instead of the CICP color description.
     if (container->icc.size) {
-      std::unique_ptr<ColorProfile> profile = ColorProfile::Create(
+      sk_sp<skia::ColorProfile> profile = skia::ColorProfile::Make(
           UNSAFE_TODO(base::span(container->icc.data, container->icc.size)));
       if (!profile) {
         DVLOG(1) << "Failed to parse image ICC profile";
@@ -891,9 +890,8 @@ bool AVIFImageDecoder::UpdateDemuxer() {
         return false;
       }
 
-      skcms_ICCProfile profile;
-      sk_color_space->toProfile(&profile);
-      SetEmbeddedColorProfile(std::make_unique<ColorProfile>(profile));
+      SetEmbeddedColorProfile(
+          skia::ColorProfile::Make(std::move(sk_color_space)));
     }
   }
 

@@ -319,10 +319,8 @@ class ReadAloudAppModel {
   // Once the phrase segmentation has completed for a given sentence, update the
   // granularity with the phrase boundaries, and calculate phrases for the next
   // sentence.
-  // TODO(crbug.com/384820795): Investigate if a UID or hash
-  // can be used to avoid passing around the tokens.
-  void UpdatePhraseBoundaries(std::vector<std::string> tokens,
-                              std::vector<size_t> heads);
+  void UpdatePhraseBoundaries(std::u16string text,
+                              std::vector<int> phrase_boundaries);
 
   // Initiate phrase calculation from the first sentence.
   void StartPhraseCalculation();
@@ -362,6 +360,7 @@ class ReadAloudAppModel {
       {"Accessibility.ReadAnything.ReadAloudNextButtonSessionCount", 0},
       {"Accessibility.ReadAnything.ReadAloudPauseSessionCount", 0},
       {"Accessibility.ReadAnything.ReadAloudPlaySessionCount", 0},
+      {"Accessibility.ReadAnything.ReadAloudPlayFromLineFocusSessionCount", 0},
       {"Accessibility.ReadAnything.ReadAloudPlayFromSelectionSessionCount", 0},
       {"Accessibility.ReadAnything.ReadAloudPreviousButtonSessionCount", 0},
       {"Accessibility.ReadAnything.ReadAloud.VoiceLanguageChange", 0},
@@ -396,9 +395,6 @@ class ReadAloudAppModel {
   // currently being processed for phrases. -1 if none.
   int current_phrase_calculation_index_ = -1;
 
-  // TODO(crbug.com/40927698): Clear this when granularity changes.
-  // TODO(crbug.com/40927698): Use this to assist in navigating forwards /
-  // backwards.
   // Previously processed granularities on the current page.
   std::vector<a11y::ReadAloudCurrentGranularity>
       processed_granularities_on_current_page_;

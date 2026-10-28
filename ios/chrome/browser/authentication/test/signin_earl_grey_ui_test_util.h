@@ -35,27 +35,14 @@
 // screen. Taps the "Sign Out" button, dismisses the confirmation snackbar and
 // close the settings. Verifies the user is signed-out.
 + (void)signOut;
-// Opens the settings > sync > signout. If `expectClearDataConfirmation` is
-// true, expects the "Sign out and clear data?" confirmation dialog to show up,
-// and accepts it. If `expectsSnackbar`, dismisses it, otherwise check it does
-// not appears. If `closeSettings`, tap on "Done".  Verifies the user is
-// signed-out.
-+ (void)signOutWithClearDataConfirmation:(BOOL)expectClearDataConfirmation
-                          expectSnackbar:(BOOL)expectSnackbar
-                           closeSettings:(BOOL)closeSettings;
+// Opens the settings > sync > signout. If `expectSnackbar`, dismisses it,
+// otherwise check it does not appear. If `closeSettings`, tap on "Done".
+// Verifies the user is signed-out.
++ (void)signOutWithExpectSnackbar:(BOOL)expectSnackbar
+                    closeSettings:(BOOL)closeSettings;
 
 // dismisses the confirmation snackbar on sign-out.
 + (void)dismissSignoutSnackbar;
-
-// Opens the confirmation dialog to remove an account from the device, without
-// confirming it.
-+ (void)openRemoveAccountConfirmationDialogWithFakeIdentity:
-    (FakeSystemIdentity*)fakeIdentity;
-
-// Taps "Remove from this device" button and follow-up confirmation.
-// Assumes the user is on the Settings screen.
-+ (void)tapRemoveAccountFromDeviceWithFakeIdentity:
-    (FakeSystemIdentity*)fakeIdentity;
 
 // Opens the recent tabs and tap in the primary sign-in button.
 + (void)tapPrimarySignInButtonInRecentTabs;

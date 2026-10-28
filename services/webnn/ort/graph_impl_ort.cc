@@ -25,7 +25,6 @@
 #include "services/webnn/ort/scoped_ort_types.h"
 #include "services/webnn/ort/tensor_impl_ort.h"
 #include "services/webnn/public/cpp/context_properties.h"
-#include "services/webnn/public/cpp/execution_providers_info.h"
 #include "services/webnn/public/mojom/webnn_context_provider.mojom.h"
 #include "services/webnn/public/mojom/webnn_error.mojom.h"
 #include "services/webnn/public/mojom/webnn_graph.mojom.h"
@@ -153,8 +152,15 @@ BuildDescriptorsFromSession(
     descriptor_pairs.emplace_back(operand_name, std::move(descriptor.value()));
   }
 
-  return base::flat_map<std::string, OperandDescriptor>(
+  base::flat_map<std::string, OperandDescriptor> descriptors(
       std::move(descriptor_pairs));
+  if (descriptors.size() != operand_count) {
+    // Reject if any session I/O names collided when read as C strings (e.g. "x"
+    // and "x\0alias" both truncate to "x"), which would collapse distinct
+    // operands.
+    return std::nullopt;
+  }
+  return descriptors;
 }
 
 }  // namespace
@@ -289,11 +295,10 @@ GraphImplOrt::CreateAndBuildOnBackgroundThread(
   SCOPED_UMA_HISTOGRAM_TIMER("WebNN.ORT.TimingMs.Compilation");
 
   scoped_trace.AddStep("Create model info");
-  ASSIGN_OR_RETURN(std::unique_ptr<ModelEditor::ModelInfo> model_info,
-                   GraphBuilderOrt::CreateAndBuild(
-                       *graph_info, std::move(context_properties),
-                       std::move(constant_operands),
-                       session_options->batched_matmul_k_dimension_limit()));
+  std::unique_ptr<ModelEditor::ModelInfo> model_info =
+      GraphBuilderOrt::CreateAndBuild(*graph_info,
+                                      std::move(context_properties),
+                                      std::move(constant_operands));
 
   scoped_trace.AddStep("Create session from model");
   ScopedOrtSession session;

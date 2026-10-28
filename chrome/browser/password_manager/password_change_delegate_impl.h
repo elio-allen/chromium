@@ -20,6 +20,7 @@
 #include "chrome/browser/password_manager/password_change_delegate.h"
 #include "chrome/browser/ui/passwords/password_change_ui_controller.h"
 #include "components/password_manager/core/browser/password_form.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
@@ -42,9 +43,14 @@ class Profile;
 class PasswordChangeDelegateImpl : public PasswordChangeDelegate,
                                    public PasswordChangeActuator::Observer {
  public:
-  static char kFinalPasswordChangeStatusHistogram[];
-  static char kCoarseFinalPasswordChangeStatusHistogram[];
-  static char kPasswordChangeTimeOverallHistogram[];
+  static constexpr char kFinalPasswordChangeStatusHistogram[] =
+      "PasswordManager.FinalPasswordChangeStatus";
+  static constexpr char kCoarseFinalPasswordChangeStatusHistogram[] =
+      "PasswordManager.CoarseFinalPasswordChangeStatus";
+  static constexpr char kPasswordChangeTimeOverallHistogram[] =
+      "PasswordManager.PasswordChangeTimeOverall2";
+  static constexpr char kOtpPresentInMainTabHistogram[] =
+      "PasswordManager.OtpPresentInMainTab";
 
   PasswordChangeDelegateImpl(GURL change_password_url,
                              password_manager::PasswordForm credentials,
@@ -62,8 +68,9 @@ class PasswordChangeDelegateImpl : public PasswordChangeDelegate,
   PasswordChangeActuator* actuator() { return actuator_.get(); }
   PasswordChangeUIController* ui_controller() { return ui_controller_.get(); }
   ModelQualityLogsUploader* logs_uploader() { return logs_uploader_.get(); }
-  std::u16string generated_password() {
-    return actuator_ ? actuator_->GetGeneratedPassword() : std::u16string();
+  password_manager::PasswordString generated_password() const {
+    return actuator_ ? actuator_->GetGeneratedPassword()
+                     : password_manager::PasswordString();
   }
 
   void SetCustomUIController(
@@ -82,7 +89,8 @@ class PasswordChangeDelegateImpl : public PasswordChangeDelegate,
 #endif
 
   // PasswordChangeActuator::Observer impl
-  void OnActuationStateChanged(State new_state) override;
+  void OnActuationStateChanged(
+      PasswordChangeActuator::State new_state) override;
 
   // PasswordChangeDelegate Impl
   void StartPasswordChangeFlow() override;
@@ -95,6 +103,7 @@ class PasswordChangeDelegateImpl : public PasswordChangeDelegate,
   void OnPrivacyNoticeAccepted() override;
   void OnPasswordChangeDeclined() override;
   void RetryLoginCheck() override;
+  std::u16string GetDisplayOrigin() const override;
   void AddObserver(PasswordChangeDelegate::Observer* observer) override;
   void RemoveObserver(PasswordChangeDelegate::Observer* observer) override;
 
@@ -111,12 +120,13 @@ class PasswordChangeDelegateImpl : public PasswordChangeDelegate,
 
   bool IsPrivacyNoticeAcknowledged() const;
 
-  std::u16string GetDisplayOrigin() const;
-
   void OnCrossOriginNavigationDetected();
 
-  // Resets all helpers. `hidden_executor_` is kept as it is as user might want
-  // to open it.
+  // Marks an ongoing login check as interrupted, cancels the actuator, and
+  // resets all internal helpers.
+  void CancelOngoingFlow();
+
+  // Resets all internal helpers.
   void ResetInternalState();
 
   void ObserveCrossOriginNavigationInOriginator();

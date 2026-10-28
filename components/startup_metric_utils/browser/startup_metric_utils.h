@@ -9,6 +9,7 @@
 
 #include "base/component_export.h"
 #include "base/time/time.h"
+#include "base/timer/elapsed_timer.h"
 #include "components/startup_metric_utils/common/startup_metric_utils.h"
 
 // Utility functions to support metric collection for browser-process-specific
@@ -126,6 +127,14 @@ class COMPONENT_EXPORT(STARTUP_METRIC_UTILS)
   // recorded for this session. Records at most once per session.
   void RecordFirstWebContentsLargestContentfulPaint(base::TimeTicks lcp_ticks);
 
+  // Call this with the time when the PDF plugin in the first web contents
+  // painted document content for the first time. This is the PDF analogue of
+  // the first contentful paint: a full-page PDF never reports FCP or LCP
+  // because its content is painted by the plugin rather than by Blink layout.
+  // Records at most once per session.
+  void RecordFirstWebContentsPdfFirstContentPaint(
+      base::TimeTicks pdf_paint_ticks);
+
   // Call this with the time when the first web contents began navigating its
   // main frame / successfully committed its navigation for the main frame.
   // These functions must be called after RecordApplicationStartTime(), because
@@ -220,6 +229,7 @@ class COMPONENT_EXPORT(STARTUP_METRIC_UTILS)
   volatile bool main_window_startup_interrupted_ = false;
 
   base::TimeTicks message_loop_start_ticks_;
+  std::optional<base::ElapsedNoSleepTimer> message_loop_start_no_sleep_timer_;
 
   base::TimeTicks browser_window_display_ticks_;
 
@@ -239,6 +249,7 @@ class COMPONENT_EXPORT(STARTUP_METRIC_UTILS)
 
   bool did_record_startup_fcp_ = false;
   bool did_record_startup_lcp_ = false;
+  bool did_record_startup_pdf_first_content_paint_ = false;
 };
 
 COMPONENT_EXPORT(STARTUP_METRIC_UTILS)

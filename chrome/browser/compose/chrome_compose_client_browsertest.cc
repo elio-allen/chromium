@@ -28,9 +28,9 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/segmentation_platform/segmentation_platform_service_factory.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/hats/hats_service_factory.h"
 #include "chrome/browser/ui/hats/mock_hats_service.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/compose/compose.mojom.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
@@ -56,6 +56,7 @@
 #include "components/segmentation_platform/public/testing/mock_segmentation_platform_service.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "components/unified_consent/pref_names.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -1950,8 +1951,17 @@ IN_PROC_BROWSER_TEST_F(ChromeComposeClientBrowserTest,
                                    kAcceptedComposeSuggestion)));
 }
 
-IN_PROC_BROWSER_TEST_F(ChromeComposeClientBrowserTest,
-                       TestShouldTriggerProactiveNudgeBlockedBySegmentation) {
+// TODO(crbug.com/503556973): Flaky on Windows, Linux and Chrome OS.
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+#define MAYBE_TestShouldTriggerProactiveNudgeBlockedBySegmentation \
+  DISABLED_TestShouldTriggerProactiveNudgeBlockedBySegmentation
+#else
+#define MAYBE_TestShouldTriggerProactiveNudgeBlockedBySegmentation \
+  TestShouldTriggerProactiveNudgeBlockedBySegmentation
+#endif
+IN_PROC_BROWSER_TEST_F(
+    ChromeComposeClientBrowserTest,
+    MAYBE_TestShouldTriggerProactiveNudgeBlockedBySegmentation) {
   base::HistogramTester histograms;
 
   // Enable and trigger the proactive nudge.

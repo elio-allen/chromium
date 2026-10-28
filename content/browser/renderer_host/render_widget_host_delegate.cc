@@ -18,6 +18,16 @@ KeyboardEventProcessingResult RenderWidgetHostDelegate::PreHandleKeyboardEvent(
   return KeyboardEventProcessingResult::NOT_HANDLED;
 }
 
+bool RenderWidgetHostDelegate::PreHandleMouseEvent(
+    const blink::WebMouseEvent& event) {
+  return false;
+}
+
+bool RenderWidgetHostDelegate::PreHandleGestureEvent(
+    const blink::WebGestureEvent& event) {
+  return false;
+}
+
 bool RenderWidgetHostDelegate::HandleMouseEvent(
     const blink::WebMouseEvent& event) {
   return false;
@@ -39,11 +49,6 @@ bool RenderWidgetHostDelegate::ShouldIgnoreWebInputEvents(
 }
 
 bool RenderWidgetHostDelegate::ShouldIgnoreInputEvents() {
-  return false;
-}
-
-bool RenderWidgetHostDelegate::PreHandleGestureEvent(
-    const blink::WebGestureEvent& event) {
   return false;
 }
 
@@ -120,6 +125,10 @@ bool RenderWidgetHostDelegate::GetResizable() {
 #endif
 }
 
+bool RenderWidgetHostDelegate::GetIsAlwaysOnTopPopup() {
+  return false;
+}
+
 gfx::Rect RenderWidgetHostDelegate::GetWindowsControlsOverlayRect() const {
   return gfx::Rect();
 }
@@ -182,6 +191,11 @@ ukm::SourceId RenderWidgetHostDelegate::GetCurrentPageUkmSourceId() {
 
 bool RenderWidgetHostDelegate::IsShowingContextMenuOnPage() const {
   return false;
+}
+
+gfx::Rect RenderWidgetHostDelegate::ConstrainPopupBounds(
+    const gfx::Rect& bounds) {
+  return bounds;
 }
 
 int RenderWidgetHostDelegate::GetVirtualKeyboardResizeHeight() {

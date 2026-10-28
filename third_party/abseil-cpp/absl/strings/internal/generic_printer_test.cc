@@ -17,6 +17,8 @@
 #include <array>
 #include <cinttypes>
 #include <clocale>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -25,6 +27,7 @@
 #include <ostream>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -40,6 +43,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "absl/strings/string_view.h"
 #include "absl/strings/substitute.h"
 
 namespace generic_logging_test {
@@ -326,9 +330,9 @@ TEST(GenericPrinterTest, Map) {
 TEST(GenericPrinterTest, StreamAdapter) {
   std::stringstream ss;
   static_assert(
-      std::is_same<std::remove_reference_t<decltype(ss << GenericPrint())>,
-                   internal_generic_printer::GenericPrintStreamAdapter::Impl<
-                       std::stringstream>>::value,
+      std::is_same_v<std::remove_reference_t<decltype(ss << GenericPrint())>,
+                     internal_generic_printer::GenericPrintStreamAdapter::Impl<
+                         std::stringstream>>,
       "expected ostream << GenericPrint() to yield adapter impl");
 
   ss << GenericPrint() << "again, " << "back-up, " << "cue, "

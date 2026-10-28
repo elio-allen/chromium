@@ -14,7 +14,7 @@ import {loadTimeData} from 'chrome://settings/settings.js';
 
 import {TestExtensionControlBrowserProxy} from './test_extension_control_browser_proxy.js';
 import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
-import {createSampleOmniboxExtension, createSampleSearchEngine, TestSearchEnginesBrowserProxy} from './test_search_engines_browser_proxy.js';
+import {createSampleOmniboxExtension, createSampleSearchEngine, engineId, TestSearchEnginesBrowserProxy} from './test_search_engines_browser_proxy.js';
 // clang-format on
 
 function getInitialPrefs(): chrome.settingsPrivate.PrefObject[] {
@@ -168,7 +168,7 @@ suite('SearchEngineEntryTest', function() {
   test('Edit_Enabled', async function() {
     const engine = entry.engine;
     const editButton =
-        entry.shadowRoot.querySelector<HTMLButtonElement>(`#editIconButton`)!;
+        entry.shadowRoot.querySelector<HTMLButtonElement>('#editIconButton')!;
     assertTrue(isVisible(editButton));
 
     const promise = eventToPromise<ViewOrEditSearchEngineEvent>(
@@ -347,7 +347,7 @@ suite('EnterpriseSiteSearchEntryTests', function() {
    */
   const createSampleManagedSearchEngine = (): SearchEngine => {
     return createSampleSearchEngine({
-      id: 1,
+      id: engineId('db:1'),
       name: 'managed',
       canBeEdited: false,
       displayName: 'Managed',
@@ -361,7 +361,7 @@ suite('EnterpriseSiteSearchEntryTests', function() {
   const createSampleOverridableSearchEngine =
       (isFeatured: boolean): SearchEngine => {
         return createSampleSearchEngine({
-          id: 1,
+          id: engineId('db:1'),
           name: 'recommended',
           canBeEdited: !isFeatured,
           canBeRemoved: !isFeatured,
@@ -460,7 +460,7 @@ suite('EnterpriseSiteSearchEntryTests', function() {
     await microtasksFinished();
     const engineUnfeatured = entry.engine;
     const editButton =
-        entry.shadowRoot.querySelector<HTMLButtonElement>(`#editIconButton`)!;
+        entry.shadowRoot.querySelector<HTMLButtonElement>('#editIconButton')!;
     assertTrue(isVisible(editButton));
 
     const whenFired = eventToPromise<ViewOrEditSearchEngineEvent>(
@@ -577,7 +577,7 @@ suite('EnterpriseSiteSearchEntryTests', function() {
         const managedEngine = entry.engine;
         const viewDetailsButton =
             entry.shadowRoot.querySelector<HTMLButtonElement>(
-                `#viewDetailsButton`)!;
+                '#viewDetailsButton')!;
         assertTrue(isVisible(viewDetailsButton));
 
         const whenFired = eventToPromise<ViewOrEditSearchEngineEvent>(
@@ -611,22 +611,32 @@ suite('EnterpriseSiteSearchEntryTests', function() {
         /*shouldBeVisible=*/ true);
   });
 
-  // Verifies that the policy indicator is shown for all managed engines.
+  // Verifies that the policy indicator is shown for managed and recommended
+  // engines.
   test('PolicyIndicatorShown', async function() {
-    const assertSiteSearchPolicyIndicatorShown =
-        async (entry: SettingsSearchEngineEntryElement) => {
+    const assertSiteSearchPolicyIndicator = async (
+        entry: SettingsSearchEngineEntryElement, expectedType?: string) => {
       await microtasksFinished();
       const policyIndicator =
           entry.shadowRoot.querySelector('cr-policy-indicator');
-      assertTrue(isVisible(policyIndicator));
+      if (expectedType) {
+        assertTrue(isVisible(policyIndicator));
+        assertEquals(expectedType, policyIndicator!.indicatorType);
+      } else {
+        assertFalse(!!policyIndicator);
+      }
     };
 
     entry.engine = createSampleManagedSearchEngine();
-    await assertSiteSearchPolicyIndicatorShown(entry);
+    await assertSiteSearchPolicyIndicator(entry, 'userPolicy');
     entry.engine = createSampleOverridableSearchEngine(/*isFeatured=*/ true);
-    await assertSiteSearchPolicyIndicatorShown(entry);
+    await assertSiteSearchPolicyIndicator(entry, 'userPolicy');
     entry.engine = createSampleOverridableSearchEngine(/*isFeatured=*/ false);
-    await assertSiteSearchPolicyIndicatorShown(entry);
+    await assertSiteSearchPolicyIndicator(entry, 'userPolicy');
+    entry.engine = createSampleSearchEngine({isRecommendedFromPolicy: true});
+    await assertSiteSearchPolicyIndicator(entry, 'recommended');
+    entry.engine = createSampleSearchEngine();
+    await assertSiteSearchPolicyIndicator(entry);
   });
 });
 

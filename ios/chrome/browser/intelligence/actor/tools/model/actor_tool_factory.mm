@@ -4,12 +4,14 @@
 
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool_factory.h"
 
+#import "components/autofill/core/common/autofill_features.h"
 #import "components/optimization_guide/proto/features/actions_data.pb.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool_request.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/attempt_form_filling_tool.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/attempt_login_tool.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/click_tool.h"
+#import "ios/chrome/browser/intelligence/actor/tools/model/drag_and_release_tool.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/history_tool.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/navigate_tool.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/scroll_to_tool.h"
@@ -39,9 +41,11 @@ bool RequiresTabId(const ActorToolRequest& request) {
     case optimization_guide::proto::Action::kScroll:
     case optimization_guide::proto::Action::kScrollTo:
     case optimization_guide::proto::Action::kSelect:
+    case optimization_guide::proto::Action::kDragAndRelease:
     case optimization_guide::proto::Action::kAttemptLogin:
     case optimization_guide::proto::Action::kAttemptFormFilling:
     case optimization_guide::proto::Action::kCloseTab:
+    case optimization_guide::proto::Action::kActivateTab:
       return true;
     default:
       return false;
@@ -92,16 +96,21 @@ ActorToolFactory::CreateTool(const ActorToolRequest& request,
               ? tab_resolution->value().url_loader
               : nullptr;
       return NavigateTool::Create(target_web_state, request.action().navigate(),
-                                  url_loader);
+                                  url_loader, tool_delegate);
     }
     case optimization_guide::proto::Action::kClick:
       return ClickTool::Create(target_web_state, request.action().click());
     case optimization_guide::proto::Action::kBack:
-      return HistoryTool::Create(target_web_state, request.action().back());
+      return HistoryTool::Create(target_web_state, request.action().back(),
+                                 tool_delegate);
     case optimization_guide::proto::Action::kForward:
-      return HistoryTool::Create(target_web_state, request.action().forward());
+      return HistoryTool::Create(target_web_state, request.action().forward(),
+                                 tool_delegate);
     case optimization_guide::proto::Action::kSelect:
       return SelectTool::Create(target_web_state, request.action().select());
+    case optimization_guide::proto::Action::kDragAndRelease:
+      return DragAndReleaseTool::Create(target_web_state,
+                                        request.action().drag_and_release());
     case optimization_guide::proto::Action::kType:
       return TypeTool::Create(target_web_state, request.action().type());
     case optimization_guide::proto::Action::kWait:
@@ -115,15 +124,25 @@ ActorToolFactory::CreateTool(const ActorToolRequest& request,
       return AttemptLoginTool::Create(
           target_web_state, request.action().attempt_login(), tool_delegate);
     case optimization_guide::proto::Action::kAttemptFormFilling:
-      return AttemptFormFillingTool::Create(
-          target_web_state, request.action().attempt_form_filling(),
-          tool_delegate);
+      if (base::FeatureList::IsEnabled(
+              autofill::features::kGlicActorAutofill)) {
+        return AttemptFormFillingTool::Create(
+            target_web_state, request.action().attempt_form_filling(),
+            tool_delegate);
+      }
+      return base::unexpected(
+          ToolExecutionResult(mojom::ActionResultCode::kArgumentsInvalid,
+                              /*requires_page_stabilization=*/false,
+                              "Actor autofill feature not enabled."));
     case optimization_guide::proto::Action::kCloseTab:
       return TabManagementTool::CreateCloseTabTool(target_web_state,
                                                    target_web_state_list);
     case optimization_guide::proto::Action::kCreateTab:
       return TabManagementTool::CreateTabTool(request.action().create_tab(),
                                               tool_delegate);
+    case optimization_guide::proto::Action::kActivateTab:
+      return TabManagementTool::CreateActivateTabTool(target_web_state,
+                                                      target_web_state_list);
     default:
       return base::unexpected(
           ToolExecutionResult(InternalToolErrorCode::kUnsupportedAction));
@@ -149,10 +168,12 @@ ActorToolFactory::GetSupportedCapabilities() const {
       optimization_guide::proto::Action::kScroll,
       optimization_guide::proto::Action::kScrollTo,
       optimization_guide::proto::Action::kSelect,
+      optimization_guide::proto::Action::kDragAndRelease,
       optimization_guide::proto::Action::kAttemptLogin,
       optimization_guide::proto::Action::kAttemptFormFilling,
       optimization_guide::proto::Action::kCloseTab,
       optimization_guide::proto::Action::kCreateTab,
+      optimization_guide::proto::Action::kActivateTab,
   };
   // LINT.ThenChange(//ios/chrome/browser/intelligence/actor/tools/model/actor_tool_factory.mm:CreateTool)
 

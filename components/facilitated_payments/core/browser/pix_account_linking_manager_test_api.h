@@ -42,6 +42,9 @@ class PixAccountLinkingManagerTestApi {
   void DoOnClientTokenReceived(const std::vector<uint8_t>& client_token) {
     manager_->DoOnClientTokenReceived(client_token);
   }
+  void OnAccountLinkingResult(AccountLinkingResult result) {
+    manager_->OnAccountLinkingResult(result);
+  }
   void DoOnAccountLinkingResult(AccountLinkingResult result) {
     manager_->DoOnAccountLinkingResult(result);
   }
@@ -63,6 +66,10 @@ class PixAccountLinkingManagerTestApi {
   FacilitatedPaymentsApiClient* GetApiClient() {
     return manager_->GetApiClient();
   }
+  strike_database::StrikeDatabaseIntegratorBase* GetStrikeDatabase() {
+    return manager_->GetStrikeDatabase();
+  }
+  bool IsUserPrefEnabled() const { return manager_->IsUserPrefEnabled(); }
 
  private:
   const raw_ref<PixAccountLinkingManager> manager_;

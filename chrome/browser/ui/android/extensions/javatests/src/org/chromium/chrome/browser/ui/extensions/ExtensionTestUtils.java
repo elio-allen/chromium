@@ -13,6 +13,7 @@ import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Callback;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ThreadUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -40,6 +41,8 @@ public class ExtensionTestUtils {
     public static String loadUnpackedExtension(Profile profile, File rootDir) {
         ThreadUtils.assertOnBackgroundThread();
 
+        setAllowUnpackedWithoutDeveloperModeForTesting(true);
+
         CompletableFuture<String> future = new CompletableFuture<>();
         ThreadUtils.runOnUiThread(
                 () -> {
@@ -57,6 +60,28 @@ public class ExtensionTestUtils {
         } catch (InterruptedException | ExecutionException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    /**
+     * Sets whether unpacked extensions are allowed without developer mode for testing.
+     * Automatically registers a reset with {@link ResettersForTesting} to avoid state pollution.
+     *
+     * @param allow Whether to allow unpacked extensions without developer mode.
+     */
+    public static void setAllowUnpackedWithoutDeveloperModeForTesting(boolean allow) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    ExtensionTestUtilsJni.get()
+                            .setAllowUnpackedWithoutDeveloperModeForTesting(allow);
+                });
+        ResettersForTesting.register(
+                () -> {
+                    ThreadUtils.runOnUiThreadBlocking(
+                            () -> {
+                                ExtensionTestUtilsJni.get()
+                                        .setAllowUnpackedWithoutDeveloperModeForTesting(false);
+                            });
+                });
     }
 
     /**
@@ -83,6 +108,18 @@ public class ExtensionTestUtils {
                 () -> {
                     ExtensionTestUtilsJni.get().disableExtension(profile, extensionId);
                 });
+    }
+
+    /**
+     * Checks if the extension with the given ID is enabled.
+     *
+     * @param profile The profile the extension belongs to.
+     * @param extensionId The ID of the extension.
+     * @return True if the extension is enabled, false otherwise.
+     */
+    public static boolean isExtensionEnabled(Profile profile, String extensionId) {
+        return ThreadUtils.runOnUiThreadBlocking(
+                () -> ExtensionTestUtilsJni.get().isExtensionEnabled(profile, extensionId));
     }
 
     /**
@@ -383,6 +420,8 @@ public class ExtensionTestUtils {
                 @JniType("std::string") String rootDir,
                 Callback<String> callback);
 
+        void setAllowUnpackedWithoutDeveloperModeForTesting(boolean allow);
+
         void enableExtension(
                 @JniType("Profile*") Profile profile, @JniType("std::string") String extensionId);
 
@@ -390,6 +429,9 @@ public class ExtensionTestUtils {
                 @JniType("Profile*") Profile profile, @JniType("std::string") String extensionId);
 
         void uninstallExtension(
+                @JniType("Profile*") Profile profile, @JniType("std::string") String extensionId);
+
+        boolean isExtensionEnabled(
                 @JniType("Profile*") Profile profile, @JniType("std::string") String extensionId);
 
         void triggerInstallSuccessForTesting(

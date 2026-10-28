@@ -7,8 +7,8 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "components/safe_browsing/core/browser/db/database_manager.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/db/util.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/db/v5_get_hash_protocol_manager.h"
 #include "components/safe_browsing/core/browser/safe_browsing_lookup_mechanism.h"
 #include "components/safe_browsing/core/common/utils.h"
@@ -133,7 +133,8 @@ void HashRealTimeMechanism::PerformHashBasedCheck(
   hash_database_mechanism_ = std::make_unique<DatabaseManagerMechanism>(
       url, threat_types_, database_manager_,
       /*check_type=*/CheckBrowseUrlType::kHashDatabase,
-      /*check_allowlist=*/false, v5_get_hash_protocol_manager_);
+      /*check_allowlist=*/false, v5_get_hash_protocol_manager_,
+      /*custom_callback_task_runner=*/nullptr);
   auto result = hash_database_mechanism_->StartCheck(
       base::BindOnce(&HashRealTimeMechanism::OnHashDatabaseCompleteCheckResult,
                      weak_factory_.GetWeakPtr(), fallback_trigger));

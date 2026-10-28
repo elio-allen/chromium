@@ -120,6 +120,17 @@ class PageContext;
 // Whether the account requires capability-based restriction.
 @property(nonatomic, assign) BOOL needsAccountCapabilityRestriction;
 
+// Whether query submission should be blocked while page context is loading.
+@property(nonatomic, assign) BOOL blockQuerySubmissionWhileLoading;
+
+// Whether to display the page loading snackbar on the opening invocation while
+// page context is loading.
+@property(nonatomic, assign) BOOL showPageLoadingSnackbarOnOpeningInvocation;
+
+// Whether to automatically submit the prepopulated prompt upon presenting the
+// floaty.
+@property(nonatomic, assign) BOOL shouldAutoSubmit;
+
 @end
 
 #endif  // IOS_CHROME_BROWSER_INTELLIGENCE_BWG_MODEL_GEMINI_CONFIGURATION_H_

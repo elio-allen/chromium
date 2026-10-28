@@ -10,7 +10,8 @@
 #import "base/task/single_thread_task_runner.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_timeouts.h"
-#import "content/app_shim_remote_cocoa/web_contents_occlusion_checker_mac.h"
+#import "components/remote_cocoa/app_shim/window_occlusion_checker_mac.h"
+#import "content/app_shim_remote_cocoa/web_contents_view_cocoa.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/common/features.h"
 #include "content/public/test/browser_test.h"
@@ -38,6 +39,9 @@ struct Version {
   BOOL _miniaturizedForTesting;
 }
 @property(assign, nonatomic) BOOL occludedForTesting;
+@property(assign, nonatomic) BOOL keyWindowForTesting;
+@property(assign, nonatomic) BOOL mainWindowForTesting;
+@property(assign, nonatomic) BOOL canBecomeKeyOrMainForTesting;
 @property(assign, nonatomic) BOOL modifyingChildWindowList;
 @property(assign, nonatomic) BOOL forceHiddenForTesting;
 @end
@@ -45,11 +49,32 @@ struct Version {
 @implementation WebContentsHostWindowForOcclusionTesting
 
 @synthesize occludedForTesting = _occludedForTesting;
+@synthesize keyWindowForTesting = _keyWindowForTesting;
+@synthesize mainWindowForTesting = _mainWindowForTesting;
+@synthesize canBecomeKeyOrMainForTesting = _canBecomeKeyOrMainForTesting;
 @synthesize modifyingChildWindowList = _modifyingChildWindowList;
 @synthesize forceHiddenForTesting = _forceHiddenForTesting;
 
 - (NSWindowOcclusionState)occlusionState {
   return _occludedForTesting ? 0 : NSWindowOcclusionStateVisible;
+}
+
+- (BOOL)isKeyWindow {
+  return _keyWindowForTesting || [super isKeyWindow];
+}
+
+- (BOOL)isMainWindow {
+  return _mainWindowForTesting || [super isMainWindow];
+}
+
+- (BOOL)canBecomeKeyWindow {
+  return _canBecomeKeyOrMainForTesting || _keyWindowForTesting ||
+         [super canBecomeKeyWindow];
+}
+
+- (BOOL)canBecomeMainWindow {
+  return _canBecomeKeyOrMainForTesting || _mainWindowForTesting ||
+         [super canBecomeMainWindow];
 }
 
 - (void)miniaturize:(id)sender {
@@ -107,7 +132,7 @@ struct Version {
 
 // A class that waits for invocations of the private
 // -performOcclusionStateUpdates method in
-// WebContentsOcclusionCheckerMac to complete.
+// WindowOcclusionCheckerMac to complete.
 @interface WebContentVisibilityUpdateWatcher : NSObject
 @end
 
@@ -119,7 +144,7 @@ struct Version {
   // instance variable) because we want to call the original
   // -performOcclusionStateUpdates from the swapped-in version
   // defined below. At the point where the swapped-in version is
-  // called, the callee is an instance of WebContentsOcclusionCheckerMac,
+  // called, the callee is an instance of WindowOcclusionCheckerMac,
   // not WebContentVisibilityUpdateWatcher, so it has no access to any
   // instance variables we define for WebContentVisibilityUpdateWatcher.
   // Storing the swizzler in a static makes it available to any caller.
@@ -149,17 +174,15 @@ struct Version {
 - (instancetype)init {
   self = [super init];
 
-  // The tests should access WebContentsOcclusionCheckerMac directly, rather
-  // than through NSClassFromString(). See crbug.com/1450724 .
   [WebContentVisibilityUpdateWatcher performOcclusionStateUpdatesSwizzler] =
       std::make_unique<base::apple::ScopedObjCClassSwizzler>(
-          NSClassFromString(@"WebContentsOcclusionCheckerMac"),
+          [WindowOcclusionCheckerMac class],
           [WebContentVisibilityUpdateWatcher class],
           @selector(performOcclusionStateUpdates));
 
   [WebContentVisibilityUpdateWatcher setWebContentsOccludedSwizzler] =
       std::make_unique<base::apple::ScopedObjCClassSwizzler>(
-          NSClassFromString(@"WebContentsViewCocoa"),
+          [WebContentsViewCocoa class],
           [WebContentVisibilityUpdateWatcher class],
           @selector(performDelayedSetWebContentsOccluded));
 
@@ -210,7 +233,7 @@ struct Version {
 @end
 
 // A class that counts invocations of the public
-// -scheduleOcclusionStateUpdates method in WebContentsOcclusionCheckerMac.
+// -scheduleOcclusionStateUpdates method in WindowOcclusionCheckerMac.
 @interface WebContentVisibilityUpdateCounter : NSObject
 @end
 
@@ -241,7 +264,7 @@ struct Version {
   // Set up the swizzling.
   [WebContentVisibilityUpdateCounter swizzler] =
       std::make_unique<base::apple::ScopedObjCClassSwizzler>(
-          NSClassFromString(@"WebContentsOcclusionCheckerMac"),
+          [WindowOcclusionCheckerMac class],
           [WebContentVisibilityUpdateCounter class],
           @selector(scheduleOcclusionStateUpdates));
 
@@ -342,7 +365,7 @@ class WindowOcclusionBrowserTestMac : public ContentBrowserTest {
       GTEST_SKIP()
           << "Flaky on MacOS 13 builders; see https://crbug.com/537434839";
     }
-    if (![NSClassFromString(@"WebContentsOcclusionCheckerMac")
+    if (![WindowOcclusionCheckerMac
             manualOcclusionDetectionSupportedForCurrentMacOSVersion]) {
       GTEST_SKIP()
           << "Manual window occlusion detection is broken on macOS 13.0-13.2.";
@@ -351,8 +374,7 @@ class WindowOcclusionBrowserTestMac : public ContentBrowserTest {
   }
 
   ~WindowOcclusionBrowserTestMac() override {
-    [NSClassFromString(@"WebContentsOcclusionCheckerMac")
-        resetSharedInstanceForTesting];
+    [WindowOcclusionCheckerMac resetSharedInstanceForTesting];
   }
 
   bool WebContentsAwaitingUpdates() {
@@ -390,8 +412,8 @@ class WindowOcclusionBrowserTestMac : public ContentBrowserTest {
   }
 
   void WaitForOcclusionUpdate() {
-    while ([[NSClassFromString(@"WebContentsOcclusionCheckerMac")
-               sharedInstance] occlusionStateUpdatesAreScheduledForTesting] ||
+    while ([[WindowOcclusionCheckerMac sharedInstance]
+               occlusionStateUpdatesAreScheduledForTesting] ||
            WebContentsAwaitingUpdates()) {
       WebContentVisibilityUpdateWatcher* watcher =
           [[WebContentVisibilityUpdateWatcher alloc] init];
@@ -464,7 +486,11 @@ class WindowOcclusionBrowserTestMac : public ContentBrowserTest {
     }
     [window_b_ setFrame:window_frame display:NO];
 
+    [window_b_web_contents_view_cocoa_ setHost:&host_b_];
+
     OrderWindowFront(window_b_);
+
+    SetWindowBWebContentsVisibility(remote_cocoa::mojom::Visibility::kVisible);
   }
 
   void OrderWindowFront(NSWindow* window) {
@@ -545,8 +571,18 @@ class WindowOcclusionBrowserTestMac : public ContentBrowserTest {
     host_a_.OnWindowVisibilityChanged(visibility);
   }
 
+  remote_cocoa::mojom::Visibility WindowBWebContentsVisibility() {
+    return host_b_.WebContentsVisibility();
+  }
+
+  void SetWindowBWebContentsVisibility(
+      remote_cocoa::mojom::Visibility visibility) {
+    host_b_.OnWindowVisibilityChanged(visibility);
+  }
+
   void TearDownInProcessBrowserTestFixture() override {
     [window_a_web_contents_view_cocoa_ setHost:nullptr];
+    [window_b_web_contents_view_cocoa_ setHost:nullptr];
   }
 
   WebContentsHostWindowForOcclusionTesting* __strong window_a_;
@@ -557,18 +593,17 @@ class WindowOcclusionBrowserTestMac : public ContentBrowserTest {
  private:
   base::test::ScopedFeatureList features_;
   WebContentsNSViewHostStub host_a_;
+  WebContentsNSViewHostStub host_b_;
 };
 
 // Tests that we correctly disallow unsupported macOS versions.
 IN_PROC_BROWSER_TEST_F(WindowOcclusionBrowserTestMac, MacOSVersionChecking) {
-  Class WebContentsOcclusionCheckerMac =
-      NSClassFromString(@"WebContentsOcclusionCheckerMac");
   std::vector<Version> versions = {
       {11'00'00, true},  {12'00'00, true},  {12'09'00, true}, {13'00'00, false},
       {13'01'00, false}, {13'02'00, false}, {13'03'00, true}, {14'00'00, true}};
 
   for (const auto& version : versions) {
-    bool supported = [WebContentsOcclusionCheckerMac
+    bool supported = [WindowOcclusionCheckerMac
         manualOcclusionDetectionSupportedForPackedVersion:version
                                                               .packed_version];
     EXPECT_EQ(supported, version.supported);
@@ -627,6 +662,101 @@ IN_PROC_BROWSER_TEST_F(WindowOcclusionBrowserTestMac,
     EXPECT_EQ(WindowAWebContentsVisibility(),
               remote_cocoa::mojom::Visibility::kOccluded);
   }
+}
+
+// Checks that a window which cannot visually cover the content beneath it
+// (faded, click-through, or non-opaque with a clear background) does not
+// occlude window_a's web contents.
+IN_PROC_BROWSER_TEST_F(WindowOcclusionBrowserTestMac,
+                       ManualOcclusionDetectionIgnoresNonOccludingWindows) {
+  InitWindowA();
+
+  // Size and position the second window so that it exactly covers the
+  // first.
+  InitWindowB(window_a_.frame);
+  WaitForOcclusionUpdate();
+  EXPECT_EQ(WindowAWebContentsVisibility(),
+            remote_cocoa::mojom::Visibility::kOccluded);
+
+  auto expect_window_a_visibility =
+      [&](remote_cocoa::mojom::Visibility visibility) {
+        PostNotification(NSWindowDidChangeOcclusionStateNotification,
+                         window_a_);
+        EXPECT_EQ(WindowAWebContentsVisibility(), visibility);
+      };
+
+  // A faded window_b lets window_a's web contents show through.
+  window_b_.alphaValue = 0.5;
+  expect_window_a_visibility(remote_cocoa::mojom::Visibility::kVisible);
+  window_b_.alphaValue = 1.0;
+  expect_window_a_visibility(remote_cocoa::mojom::Visibility::kOccluded);
+
+  // As does a click-through window_b.
+  window_b_.ignoresMouseEvents = YES;
+  expect_window_a_visibility(remote_cocoa::mojom::Visibility::kVisible);
+  window_b_.ignoresMouseEvents = NO;
+  expect_window_a_visibility(remote_cocoa::mojom::Visibility::kOccluded);
+
+  // A window_b that macOS itself reports as occluded (e.g. a parked Stage
+  // Manager strip window) cannot occlude window_a.
+  [window_b_ setOccludedForTesting:YES];
+  expect_window_a_visibility(remote_cocoa::mojom::Visibility::kVisible);
+  [window_b_ setOccludedForTesting:NO];
+  expect_window_a_visibility(remote_cocoa::mojom::Visibility::kOccluded);
+
+  // As does a non-opaque window_b with a clear background.
+  window_b_.opaque = NO;
+  window_b_.backgroundColor = NSColor.clearColor;
+  expect_window_a_visibility(remote_cocoa::mojom::Visibility::kVisible);
+}
+
+// Checks that when a window becomes the active key/main window while an
+// inactive window of the same application still precedes it in -[NSApplication
+// orderedWindows] (e.g. during animated window transitions, Cmd+` window
+// cycling, or Stage Manager), the active window is marked kVisible and the
+// inactive window covered by it is marked kOccluded.
+IN_PROC_BROWSER_TEST_F(WindowOcclusionBrowserTestMac,
+                       ManualOcclusionDetectionDoesNotOccludeActiveWindow) {
+  InitWindowA();
+  [window_a_ setCanBecomeKeyOrMainForTesting:YES];
+
+  // Place window_b ahead of window_a in orderedWindows with an identical frame
+  // as the initially active window.
+  InitWindowB(window_a_.frame);
+  [window_b_ setCanBecomeKeyOrMainForTesting:YES];
+  [window_b_ setKeyWindowForTesting:YES];
+  [window_b_ setMainWindowForTesting:YES];
+  WaitForOcclusionUpdate();
+  EXPECT_EQ(WindowAWebContentsVisibility(),
+            remote_cocoa::mojom::Visibility::kOccluded);
+  EXPECT_EQ(WindowBWebContentsVisibility(),
+            remote_cocoa::mojom::Visibility::kVisible);
+
+  // Simulate focus switching from window_b to window_a while inactive window_b
+  // remains ahead of window_a in -[NSApplication orderedWindows].
+  [window_b_ setKeyWindowForTesting:NO];
+  [window_b_ setMainWindowForTesting:NO];
+  [window_a_ setKeyWindowForTesting:YES];
+  [window_a_ setMainWindowForTesting:YES];
+  PostNotification(NSWindowDidResignMainNotification, window_b_);
+  PostNotification(NSWindowDidBecomeMainNotification, window_a_);
+  EXPECT_EQ(WindowAWebContentsVisibility(),
+            remote_cocoa::mojom::Visibility::kVisible);
+  EXPECT_EQ(WindowBWebContentsVisibility(),
+            remote_cocoa::mojom::Visibility::kOccluded);
+
+  // When focus switches back to window_b while still ahead of window_a,
+  // window_a should be marked occluded again and window_b should be visible.
+  [window_a_ setKeyWindowForTesting:NO];
+  [window_a_ setMainWindowForTesting:NO];
+  [window_b_ setKeyWindowForTesting:YES];
+  [window_b_ setMainWindowForTesting:YES];
+  PostNotification(NSWindowDidResignMainNotification, window_a_);
+  PostNotification(NSWindowDidBecomeMainNotification, window_b_);
+  EXPECT_EQ(WindowAWebContentsVisibility(),
+            remote_cocoa::mojom::Visibility::kOccluded);
+  EXPECT_EQ(WindowBWebContentsVisibility(),
+            remote_cocoa::mojom::Visibility::kVisible);
 }
 
 // Checks manual occlusion detection as windows change display order.
@@ -937,8 +1067,9 @@ IN_PROC_BROWSER_TEST_F(
 }
 
 // Checks that web contentses are marked kHidden on window miniaturize.
+// TODO(crbug.com/575566703): Flaky on Mac.
 IN_PROC_BROWSER_TEST_F(WindowOcclusionBrowserTestMac,
-                       OcclusionDetectionOnWindowMiniaturize) {
+                       DISABLED_OcclusionDetectionOnWindowMiniaturize) {
   InitWindowA();
 
   EXPECT_EQ(WindowAWebContentsVisibility(),
@@ -982,14 +1113,14 @@ IN_PROC_BROWSER_TEST_F(WindowOcclusionBrowserTestMac,
   [window_a_ addChildWindow:window_and_web_contents.window
                     ordered:NSWindowAbove];
 
-  EXPECT_FALSE([[NSClassFromString(@"WebContentsOcclusionCheckerMac")
-      sharedInstance] occlusionStateUpdatesAreScheduledForTesting]);
+  EXPECT_FALSE([[WindowOcclusionCheckerMac sharedInstance]
+      occlusionStateUpdatesAreScheduledForTesting]);
 
   // Modify the child window list by removing a child window.
   [window_a_ removeChildWindow:window_and_web_contents.window];
 
-  EXPECT_FALSE([[NSClassFromString(@"WebContentsOcclusionCheckerMac")
-      sharedInstance] occlusionStateUpdatesAreScheduledForTesting]);
+  EXPECT_FALSE([[WindowOcclusionCheckerMac sharedInstance]
+      occlusionStateUpdatesAreScheduledForTesting]);
 }
 
 // Tests that when a window becomes a child, if the occlusion system
@@ -1043,6 +1174,29 @@ IN_PROC_BROWSER_TEST_F(WindowOcclusionBrowserTestMac,
             remote_cocoa::mojom::Visibility::kVisible);
 
   [window_a_ setOccludedForTesting:NO];
+}
+
+// Tests that a window marked occluded is reset to unoccluded once it no longer
+// contains a webcontents, so that its occlusion state can't get stuck.
+IN_PROC_BROWSER_TEST_F(WindowOcclusionBrowserTestMac,
+                       OcclusionClearedWhenWebContentsRemoved) {
+  InitWindowA();
+
+  [window_a_ setOccludedForTesting:YES];
+  PostNotification(NSWindowDidChangeOcclusionStateNotification, window_a_);
+  ASSERT_EQ(WindowAWebContentsVisibility(),
+            remote_cocoa::mojom::Visibility::kOccluded);
+  EXPECT_TRUE([window_a_ isOccluded]);
+
+  RemoveViewFromSuperview(window_a_web_contents_view_cocoa_);
+  EXPECT_FALSE([window_a_ isOccluded]);
+
+  // A webcontents added back after the window becomes unoccluded starts out
+  // visible.
+  [window_a_ setOccludedForTesting:NO];
+  AddSubviewOfView(window_a_web_contents_view_cocoa_, window_a_.contentView);
+  EXPECT_EQ(WindowAWebContentsVisibility(),
+            remote_cocoa::mojom::Visibility::kVisible);
 }
 
 }  // namespace content

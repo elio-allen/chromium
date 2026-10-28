@@ -23,6 +23,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import static org.chromium.chrome.test.util.browser.suggestions.mostvisited.FakeMostVisitedSites.createCustomLinkSiteSuggestion;
 import static org.chromium.chrome.test.util.browser.suggestions.mostvisited.FakeMostVisitedSites.createSiteSuggestion;
 
 import android.content.Context;
@@ -33,9 +34,8 @@ import android.view.ContextThemeWrapper;
 import android.view.View;
 import android.widget.TextView;
 
-import androidx.test.filters.SmallTest;
-
 import org.hamcrest.CoreMatchers;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -47,11 +47,18 @@ import org.mockito.junit.MockitoRule;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.DisabledTest;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.native_page.ContextMenuManager;
+import org.chromium.chrome.browser.ntp.NewTabPageUtils.LayoutType;
 import org.chromium.chrome.browser.offlinepages.OfflinePageBridge;
+import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
+import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.suggestions.ImageFetcher;
 import org.chromium.chrome.browser.suggestions.SiteSuggestion;
+import org.chromium.chrome.browser.suggestions.SuggestionsConfig;
 import org.chromium.chrome.browser.suggestions.SuggestionsConfig.TileStyle;
 import org.chromium.chrome.browser.suggestions.SuggestionsUiDelegate;
 import org.chromium.chrome.browser.suggestions.mostvisited.MostVisitedSites;
@@ -59,6 +66,7 @@ import org.chromium.chrome.test.util.browser.suggestions.mostvisited.FakeMostVis
 import org.chromium.components.favicon.IconType;
 import org.chromium.components.favicon.LargeIconBridge.LargeIconCallback;
 import org.chromium.url.GURL;
+import org.chromium.url.JUnitTestGURLs;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -66,9 +74,38 @@ import java.util.List;
 /** Unit tests for {@link TileGroup}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class TileGroupUnitTest {
+    private static class FakeImageFetcher extends ImageFetcher {
+        private final List<LargeIconCallback> mCallbackList = new ArrayList<>();
+
+        public FakeImageFetcher() {
+            super(null);
+        }
+
+        @Override
+        public void makeLargeIconRequest(GURL url, int size, LargeIconCallback callback) {
+            mCallbackList.add(callback);
+        }
+
+        public void fulfillLargeIconRequests(Bitmap bitmap, int color, boolean isColorDefault) {
+            for (LargeIconCallback callback : mCallbackList) {
+                callback.onLargeIconAvailable(bitmap, color, isColorDefault, IconType.INVALID);
+            }
+            mCallbackList.clear();
+        }
+
+        public int getPendingIconCallbackCount() {
+            return mCallbackList.size();
+        }
+
+        public void fulfillLargeIconRequests() {
+            fulfillLargeIconRequests(Bitmap.createBitmap(1, 1, Config.ALPHA_8), Color.BLACK, false);
+        }
+    }
+
     private static final int MAX_TILES_TO_FETCH = 4;
     private static final int TILE_TITLE_LINES = 1;
     private static final String[] URLS = {"https://www.google.com/", "https://tellmedadjokes.com/"};
+    private static final GURL AI_MODE_TEST_URL = JUnitTestGURLs.URL_1;
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private TileGroup.Observer mTileGroupObserver;
@@ -78,8 +115,6 @@ public class TileGroupUnitTest {
     @Mock private ContextMenuManager mContextMenuManager;
     @Mock private OfflinePageBridge mOfflinePageBridge;
     @Mock private ImageFetcher mMockImageFetcher;
-    @Mock private SuggestionsTileView mSuggestionsTileView1;
-    @Mock private SuggestionsTileView mSuggestionsTileView2;
 
     private Context mContext;
     private FakeMostVisitedSites mMostVisitedSites;
@@ -107,9 +142,13 @@ public class TileGroupUnitTest {
                 .setMostVisitedSitesObserver(any(MostVisitedSites.Observer.class), anyInt());
     }
 
+    @After
+    public void tearDown() {
+        ChromeSharedPreferences.getInstance()
+                .removeKey(ChromePreferenceKeys.NTP_MVT_AI_MODE_TILE_INDEX);
+    }
+
     @Test
-    @SmallTest
-    @DisabledTest(message = "https://crbug.com/40819365")
     public void testInitialiseWithTileList() {
         mMostVisitedSites.setTileSuggestionsPassive(URLS);
 
@@ -137,7 +176,6 @@ public class TileGroupUnitTest {
      * event though the data did not change (still empty just like before initialisation).
      */
     @Test
-    @SmallTest
     public void testInitialiseWithEmptyTileList() {
         TileGroup tileGroup =
                 new TileGroup(
@@ -159,7 +197,6 @@ public class TileGroupUnitTest {
     }
 
     @Test
-    @SmallTest
     // If this flakes again, refer to https://crbug.com/40848015.
     public void testReceiveNewTilesWithoutChanges() {
         TileGroup tileGroup = initialiseTileGroup(URLS);
@@ -173,7 +210,6 @@ public class TileGroupUnitTest {
     }
 
     @Test
-    @SmallTest
     @DisabledTest(message = "https://crbug.com/40848015")
     public void testReceiveNewTilesWithoutChanges_TrackLoad() {
         TileGroup tileGroup = initialiseTileGroup(/* deferLoad= */ true, URLS);
@@ -188,7 +224,6 @@ public class TileGroupUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testReceiveNewTilesWithDataChanges() {
         TileGroup tileGroup = initialiseTileGroup(URLS);
 
@@ -205,7 +240,6 @@ public class TileGroupUnitTest {
     }
 
     @Test
-    @SmallTest
     // If this flakes again, refer to https://crbug.com/40227230, https://crbug.com/40819839.
     public void testReceiveNewTilesWithDataChanges_TrackLoad() {
         TileGroup tileGroup = initialiseTileGroup(/* deferLoad= */ true, URLS);
@@ -224,7 +258,6 @@ public class TileGroupUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testReceiveNewTilesWithCountChanges() {
         TileGroup tileGroup = initialiseTileGroup(URLS);
 
@@ -238,7 +271,6 @@ public class TileGroupUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testTileLoadingWhenVisibleNotBlockedForInit() {
         SuggestionsUiDelegate uiDelegate = mSuggestionsUiDelegate;
         when(uiDelegate.isVisible()).thenReturn(true);
@@ -260,7 +292,26 @@ public class TileGroupUnitTest {
     }
 
     @Test
-    @SmallTest
+    public void testTileLoading_DataChanged_CancelsActiveDragSession() {
+        SuggestionsUiDelegate uiDelegate = mSuggestionsUiDelegate;
+        when(uiDelegate.isVisible()).thenReturn(true);
+        TileGroup tileGroup =
+                new TileGroup(
+                        mTileRenderer,
+                        uiDelegate,
+                        mContextMenuManager,
+                        mTileGroupDelegate,
+                        mTileDragDelegate,
+                        mTileGroupObserver,
+                        mOfflinePageBridge);
+        tileGroup.startObserving(MAX_TILES_TO_FETCH);
+
+        mMostVisitedSites.setTileSuggestionsPassive(URLS);
+
+        verify(mTileDragDelegate).cancelActiveSession();
+    }
+
+    @Test
     public void testTileLoadingWhenVisibleBlocked() {
         SuggestionsUiDelegate uiDelegate = mSuggestionsUiDelegate;
         when(uiDelegate.isVisible()).thenReturn(true);
@@ -291,7 +342,6 @@ public class TileGroupUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testTileLoadingWhenVisibleBlocked_2() {
         TileGroup tileGroup = initialiseTileGroup(true, URLS);
 
@@ -308,7 +358,6 @@ public class TileGroupUnitTest {
     }
 
     @Test
-    @SmallTest
     // If this flakes again, refer to https://crbug.com/40227230, https://crbug.com/40819839.
     public void testRenderTileView() {
         SuggestionsUiDelegate uiDelegate = mSuggestionsUiDelegate;
@@ -342,7 +391,6 @@ public class TileGroupUnitTest {
 
     /** Check for https://crbug.com/40511776: don't crash on duplicated URLs. */
     @Test
-    @SmallTest
     public void testRenderTileViewWithDuplicatedUrl() {
         SuggestionsUiDelegate uiDelegate = mSuggestionsUiDelegate;
         when(uiDelegate.getImageFetcher()).thenReturn(mMockImageFetcher);
@@ -368,7 +416,6 @@ public class TileGroupUnitTest {
     }
 
     @Test
-    @SmallTest
     // If this flakes again, refer to https://crbug.com/40815816.
     public void testRenderTileViewReplacing() {
         SuggestionsUiDelegate uiDelegate = mSuggestionsUiDelegate;
@@ -387,10 +434,10 @@ public class TileGroupUnitTest {
 
         // Initialise the layout with views whose URLs don't match the ones of the new tiles.
         MostVisitedTilesLayout layout = setupView();
-        SuggestionsTileView view1 = mSuggestionsTileView1;
+        SuggestionsTileView view1 = buildTileView(createSiteSuggestion("https://example.com/1"));
         layout.addView(view1);
 
-        SuggestionsTileView view2 = mSuggestionsTileView2;
+        SuggestionsTileView view2 = buildTileView(createSiteSuggestion("https://example.com/2"));
         layout.addView(view2);
 
         // The tiles should be updated, the old ones removed.
@@ -405,7 +452,6 @@ public class TileGroupUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testRenderTileViewRecycling() {
         mMostVisitedSites.setTileSuggestionsPassive(URLS);
         List<SiteSuggestion> sites = mMostVisitedSites.getCurrentSites();
@@ -422,12 +468,10 @@ public class TileGroupUnitTest {
 
         // Initialise the layout with views whose URLs match the ones of the new tiles.
         MostVisitedTilesLayout layout = new MostVisitedTilesLayout(mContext, null);
-        SuggestionsTileView view1 = mSuggestionsTileView1;
-        when(view1.getData()).thenReturn(sites.get(0));
+        SuggestionsTileView view1 = buildTileView(sites.get(0));
         layout.addView(view1);
 
-        SuggestionsTileView view2 = mSuggestionsTileView2;
-        when(view2.getData()).thenReturn(sites.get(1));
+        SuggestionsTileView view2 = buildTileView(sites.get(1));
         layout.addView(view2);
 
         // The tiles should be updated, the old ones reused.
@@ -440,7 +484,6 @@ public class TileGroupUnitTest {
     }
 
     @Test
-    @SmallTest
     @DisabledTest(message = "https://crbug.com/40227230, https://crbug.com/40819839")
     public void testIconLoadingForInit() {
         TileGroup tileGroup = initialiseTileGroup(URLS);
@@ -458,7 +501,6 @@ public class TileGroupUnitTest {
     }
 
     @Test
-    @SmallTest
     @DisabledTest(message = "Test is flaky, see crbug.com/40816947")
     public void testIconLoadingWhenTileNotRegistered() {
         TileGroup tileGroup = initialiseTileGroup();
@@ -475,7 +517,6 @@ public class TileGroupUnitTest {
     }
 
     @Test
-    @SmallTest
     @DisabledTest(message = "https://crbug.com/40227230, https://crbug.com/40819839")
     public void testIconLoading_Sync() {
         TileGroup tileGroup = initialiseTileGroup();
@@ -494,7 +535,6 @@ public class TileGroupUnitTest {
     }
 
     @Test
-    @SmallTest
     @DisabledTest(message = "https://crbug.com/40227230, https://crbug.com/40819839")
     public void testIconLoading_AsyncNoTrack() {
         TileGroup tileGroup = initialiseTileGroup(/* deferLoad= */ true);
@@ -514,7 +554,6 @@ public class TileGroupUnitTest {
     }
 
     @Test
-    @SmallTest
     @DisabledTest(message = "https://crbug.com/40227230, https://crbug.com/40819839")
     public void testIconLoading_AsyncTrack() {
         TileGroup tileGroup = initialiseTileGroup(/* deferLoad= */ true);
@@ -535,6 +574,11 @@ public class TileGroupUnitTest {
 
     private MostVisitedTilesLayout setupView() {
         return new MostVisitedTilesLayout(mContext, null);
+    }
+
+    private SuggestionsTileView buildTileView(SiteSuggestion site) {
+        return mTileRenderer.buildTileView(
+                new Tile(site, /* index= */ 0), setupView(), /* setupDelegate= */ null);
     }
 
     private void refreshData(TileGroup tileGroup) {
@@ -588,6 +632,166 @@ public class TileGroupUnitTest {
         return tileGroup;
     }
 
+    @Test
+    public void testCountCustomLinksBeforeIndex() {
+        List<Tile> tiles = new ArrayList<>();
+        assertEquals(0, TileGroup.countCustomLinksBeforeIndex(tiles, 0));
+        assertEquals(0, TileGroup.countCustomLinksBeforeIndex(tiles, 5));
+
+        Tile customTile1 =
+                new Tile(
+                        createCustomLinkSiteSuggestion("Custom 1", JUnitTestGURLs.URL_1.getSpec()),
+                        0);
+        Tile aiModeTile =
+                new Tile(createSiteSuggestion("AI Mode", JUnitTestGURLs.URL_2.getSpec()), 1);
+        Tile customTile2 =
+                new Tile(
+                        createCustomLinkSiteSuggestion("Custom 2", JUnitTestGURLs.URL_3.getSpec()),
+                        2);
+        Tile customTile3 =
+                new Tile(
+                        createCustomLinkSiteSuggestion("Custom 3", JUnitTestGURLs.RED_1.getSpec()),
+                        3);
+        Tile topSitesTile =
+                new Tile(createSiteSuggestion("Top 1", JUnitTestGURLs.BLUE_1.getSpec()), 4);
+
+        // Mix AI Mode tile between custom tiles: [Custom 1, AI Mode, Custom 2, Custom 3, Top 1].
+        tiles.add(customTile1);
+        tiles.add(aiModeTile);
+        tiles.add(customTile2);
+        tiles.add(customTile3);
+        tiles.add(topSitesTile);
+
+        // Before index 0: no tiles.
+        assertEquals(0, TileGroup.countCustomLinksBeforeIndex(tiles, -1));
+        assertEquals(0, TileGroup.countCustomLinksBeforeIndex(tiles, 0));
+
+        // Before index 1 (AI Mode): customTile1 -> 1 custom link.
+        assertEquals(1, TileGroup.countCustomLinksBeforeIndex(tiles, 1));
+
+        // Before index 2 (Custom 2, immediately after AI Mode): customTile1 -> still 1 custom link.
+        assertEquals(1, TileGroup.countCustomLinksBeforeIndex(tiles, 2));
+
+        // Before index 3 (Custom 3): customTile1, customTile2 -> 2 custom links.
+        assertEquals(2, TileGroup.countCustomLinksBeforeIndex(tiles, 3));
+
+        // Before index 4 (Top 1): customTile1, customTile2, customTile3 -> 3 custom links.
+        assertEquals(3, TileGroup.countCustomLinksBeforeIndex(tiles, 4));
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.NTP_AURORA_V2 + ":layout_type/" + LayoutType.INSIDE_MVT})
+    public void testAiModeTile_injectedAtSlotZeroByDefault() {
+        enableAiModeTileInsideMvt();
+        SiteSuggestion[] sites = createSiteSuggestions(8);
+
+        TileGroup tileGroup = initializeTileGroup(SuggestionsConfig.MAX_TILE_COUNT + 1, sites);
+        List<Tile> tiles = tileGroup.getTileSections().get(TileSectionType.PERSONALIZED);
+        assertThat(tiles).isNotNull();
+        // Capacity scales to 9 when injected.
+        assertEquals(9, tiles.size());
+        assertEquals(TileSource.AI_MODE, tiles.get(0).getSource());
+        assertEquals("AI Mode", tiles.get(0).getTitle());
+        assertEquals(AI_MODE_TEST_URL, tiles.get(0).getUrl());
+        assertEquals(0, tiles.get(0).getIndex());
+
+        // Organic top sites follow.
+        for (int i = 0; i < 8; i++) {
+            assertEquals("Site " + i, tiles.get(i + 1).getTitle());
+            assertEquals(i + 1, tiles.get(i + 1).getIndex());
+        }
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.NTP_AURORA_V2 + ":layout_type/" + LayoutType.INSIDE_MVT})
+    public void testAiModeTile_suppressedWhenSavedIndexNegativeOne() {
+        enableAiModeTileInsideMvt();
+        ChromeSharedPreferences.getInstance()
+                .writeInt(ChromePreferenceKeys.NTP_MVT_AI_MODE_TILE_INDEX, -1);
+
+        assertAiModeTileSuppressed(createSiteSuggestions(8));
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.NTP_AURORA_V2 + ":layout_type/" + LayoutType.INSIDE_MVT})
+    public void testAiModeTile_suppressedWhenUrlNull() {
+        enableAiModeTileInsideMvt();
+        when(mTileGroupDelegate.getAiModeTileUrl()).thenReturn(null);
+
+        assertAiModeTileSuppressed(createSiteSuggestions(8));
+    }
+
+    @Test
+    @DisableFeatures({ChromeFeatureList.NTP_AURORA_V2})
+    public void testAiModeTile_suppressedWhenFeatureDisabled() {
+        enableAiModeTileInsideMvt();
+
+        assertAiModeTileSuppressed(createSiteSuggestions(8));
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.NTP_AURORA_V2 + ":layout_type/" + LayoutType.INSIDE_MVT})
+    public void testAiModeTile_collisionCustomLinkTakesPrecedence() {
+        enableAiModeTileInsideMvt();
+        // CT > AIT: Custom link has AI Mode URL. Custom link takes precedence; AI Mode tile is
+        // suppressed.
+        SiteSuggestion[] sites = new SiteSuggestion[3];
+        sites[0] =
+                createCustomLinkSiteSuggestion(
+                        "My Gemini", AI_MODE_TEST_URL.getSpec()); // customized tile
+        sites[1] = createSiteSuggestion("Site 1", JUnitTestGURLs.URL_2.getSpec());
+        sites[2] = createSiteSuggestion("Site 2", JUnitTestGURLs.URL_3.getSpec());
+
+        TileGroup tileGroup = initializeTileGroup(SuggestionsConfig.MAX_TILE_COUNT, sites);
+        List<Tile> tiles = tileGroup.getTileSections().get(TileSectionType.PERSONALIZED);
+        assertThat(tiles).isNotNull();
+        // AI Mode tile should be suppressed; custom link remains.
+        assertEquals(3, tiles.size());
+        assertTrue(tiles.get(0).isCustomLink());
+        assertEquals("My Gemini", tiles.get(0).getTitle());
+        for (Tile tile : tiles) {
+            assertTrue(tile.getSource() != TileSource.AI_MODE);
+        }
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.NTP_AURORA_V2 + ":layout_type/" + LayoutType.INSIDE_MVT})
+    public void testAiModeTile_collisionOrganicTopSiteReplaced() {
+        enableAiModeTileInsideMvt();
+        // AIT > TST: Organic top site has AI Mode URL. AI Mode tile replaces organic top site.
+        SiteSuggestion[] sites = new SiteSuggestion[3];
+        sites[0] = createSiteSuggestion("Site 0", JUnitTestGURLs.URL_2.getSpec());
+        sites[1] = createSiteSuggestion("AI Mode", AI_MODE_TEST_URL.getSpec());
+        sites[2] = createSiteSuggestion("Site 2", JUnitTestGURLs.URL_3.getSpec());
+
+        TileGroup tileGroup = initializeTileGroup(SuggestionsConfig.MAX_TILE_COUNT + 1, sites);
+        List<Tile> tiles = tileGroup.getTileSections().get(TileSectionType.PERSONALIZED);
+        assertThat(tiles).isNotNull();
+        // Organic top site replaced; AI Mode tile injected at slot 0.
+        assertEquals(3, tiles.size());
+        assertEquals(TileSource.AI_MODE, tiles.get(0).getSource());
+        assertEquals("AI Mode", tiles.get(0).getTitle());
+        assertEquals("Site 0", tiles.get(1).getTitle());
+        assertEquals("Site 2", tiles.get(2).getTitle());
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.NTP_AURORA_V2 + ":layout_type/" + LayoutType.INSIDE_MVT})
+    public void testAiModeTile_editIgnored() {
+        enableAiModeTileInsideMvt();
+        SiteSuggestion[] sites = createSiteSuggestions(2);
+
+        TileGroup tileGroup = initializeTileGroup(SuggestionsConfig.MAX_TILE_COUNT + 1, sites);
+        List<Tile> tiles = tileGroup.getTileSections().get(TileSectionType.PERSONALIZED);
+        assertThat(tiles).isNotNull();
+        Tile aiTile = tiles.get(0);
+        assertTrue(aiTile.isAiMode());
+
+        tileGroup.getTileSetupDelegate().getCustomTileModificationDelegate().edit(aiTile.getData());
+
+        verify(mTileGroupDelegate, never()).createCustomTileEditCoordinator(any());
+    }
+
     private boolean isAddNewButton(View view) {
         View tileView = view.findViewById(R.id.tile_view_title);
         return tileView != null
@@ -595,31 +799,48 @@ public class TileGroupUnitTest {
                 && ((TextView) tileView).getText().toString().equals("Add new");
     }
 
-    private static class FakeImageFetcher extends ImageFetcher {
-        private final List<LargeIconCallback> mCallbackList = new ArrayList<>();
-
-        public FakeImageFetcher() {
-            super(null);
+    private SiteSuggestion[] createSiteSuggestions(int count) {
+        SiteSuggestion[] sites = new SiteSuggestion[count];
+        for (int i = 0; i < count; i++) {
+            sites[i] = createSiteSuggestion("Site " + i, "https://site" + i + ".com");
         }
+        return sites;
+    }
 
-        @Override
-        public void makeLargeIconRequest(GURL url, int size, LargeIconCallback callback) {
-            mCallbackList.add(callback);
-        }
+    private void enableAiModeTileInsideMvt() {
+        when(mTileGroupDelegate.getAiModeTileTitle()).thenReturn("AI Mode");
+        when(mTileGroupDelegate.getAiModeTileUrl()).thenReturn(AI_MODE_TEST_URL);
+    }
 
-        public void fulfillLargeIconRequests(Bitmap bitmap, int color, boolean isColorDefault) {
-            for (LargeIconCallback callback : mCallbackList) {
-                callback.onLargeIconAvailable(bitmap, color, isColorDefault, IconType.INVALID);
-            }
-            mCallbackList.clear();
-        }
+    private TileGroup initializeTileGroup(int maxResults, SiteSuggestion... suggestions) {
+        when(mSuggestionsUiDelegate.getImageFetcher()).thenReturn(mImageFetcher);
+        when(mSuggestionsUiDelegate.isVisible()).thenReturn(false);
 
-        public int getPendingIconCallbackCount() {
-            return mCallbackList.size();
-        }
+        mMostVisitedSites.setTileSuggestions(suggestions);
 
-        public void fulfillLargeIconRequests() {
-            fulfillLargeIconRequests(Bitmap.createBitmap(1, 1, Config.ALPHA_8), Color.BLACK, false);
+        TileGroup tileGroup =
+                new TileGroup(
+                        mTileRenderer,
+                        mSuggestionsUiDelegate,
+                        mContextMenuManager,
+                        mTileGroupDelegate,
+                        mTileDragDelegate,
+                        mTileGroupObserver,
+                        mOfflinePageBridge);
+        tileGroup.startObserving(maxResults);
+        refreshData(tileGroup);
+
+        return tileGroup;
+    }
+
+    private List<Tile> assertAiModeTileSuppressed(SiteSuggestion... sites) {
+        TileGroup tileGroup = initializeTileGroup(SuggestionsConfig.MAX_TILE_COUNT, sites);
+        List<Tile> tiles = tileGroup.getTileSections().get(TileSectionType.PERSONALIZED);
+        assertThat(tiles).isNotNull();
+        assertEquals(sites.length, tiles.size());
+        for (Tile tile : tiles) {
+            assertTrue(tile.getSource() != TileSource.AI_MODE);
         }
+        return tiles;
     }
 }

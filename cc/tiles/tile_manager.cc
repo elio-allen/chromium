@@ -346,7 +346,8 @@ gfx::ContentColorUsage GetContentColorUsageForPrioritizedTile(
     const PrioritizedTile& prioritized_tile) {
   return prioritized_tile.raster_source()
       ->GetDisplayItemList()
-      ->content_color_usage();
+      ->content_color_volume()
+      .GetContentColorUsage();
 }
 
 }  // namespace
@@ -1532,8 +1533,6 @@ scoped_refptr<TileTask> TileManager::CreateRasterTask(
   RasterSource::PlaybackSettings playback_settings;
   playback_settings.use_lcd_text = tile->can_use_lcd_text();
   playback_settings.msaa_sample_count = msaa_sample_count;
-  playback_settings.visible =
-      tile->required_for_activation() || tile->required_for_draw();
   playback_settings.hdr_headroom = target_color_params.GetHdrHeadroom();
 
   // Create and queue all image decode tasks that this tile depends on. Note
@@ -1735,7 +1734,18 @@ void TileManager::OnRasterTaskCompleted(
     return;
   }
 
-  resource_pool_->OnContentReplaced(resource, tile_id);
+  // Only register a content id if this resource holds a complete render. A
+  // raster that skipped checker-imaged images leaves gray placeholders
+  // behind, and a later partial raster on top of it would keep them forever.
+  // See crbug.com/515542787. Passing 0 also clears any content id the
+  // resource carries from a previous raster: pool resources are reused
+  // between tiles, and this tile itself may have rastered cleanly before a
+  // checker-imaged image was added to it. If the tile was destroyed while
+  // the task was still running, we cannot tell whether images were skipped,
+  // so play it safe and clear the content id too.
+  resource_pool_->OnContentReplaced(
+      resource,
+      (tile && !raster_task_was_scheduled_with_checker_images) ? tile_id : 0);
   ++raster_task_completion_stats_.completed_count;
 
   if (!tile) {
@@ -2119,6 +2129,7 @@ void TileManager::CheckPendingGpuWorkAndIssueSignals() {
 
   std::vector<const ResourcePool::InUsePoolResource*> required_for_activation;
   std::vector<const ResourcePool::InUsePoolResource*> required_for_draw;
+  bool ready_tile_required_for_draw = false;
 
   for (auto it = pending_gpu_work_tiles_.begin();
        it != pending_gpu_work_tiles_.end();) {
@@ -2136,7 +2147,8 @@ void TileManager::CheckPendingGpuWorkAndIssueSignals() {
         raster_buffer_provider_->IsResourceReadyToDraw(resource)) {
       tile->draw_info().set_resource_ready_for_draw();
       client_->NotifyTileStateChanged(tile, /*update_damage=*/true,
-                                      /*set_needs_redraw=*/true);
+                                      /*set_needs_redraw=*/false);
+      ready_tile_required_for_draw |= tile->required_for_draw();
       it = pending_gpu_work_tiles_.erase(it);
       continue;
     }
@@ -2174,6 +2186,18 @@ void TileManager::CheckPendingGpuWorkAndIssueSignals() {
                 &TileManager::CheckPendingGpuWorkAndIssueSignals,
                 ready_to_draw_callback_weak_ptr_factory_.GetWeakPtr()),
             pending_required_for_draw_callback_id_);
+  }
+
+  // Similar to MarkTilesOutOfMemory(), if we trigger SetNeedsRedraw() while
+  // iterating pending_gpu_work_tiles_, we may end up triggering
+  // Scheduler::ProcessScheduledActions(), which is inefficient and may in turn
+  // trigger ActivateSyncTree() and other actions that remove tiles still
+  // referenced by the loop iterator and the resource lists above, leading to
+  // UAF (crbug.com/534956586). Defer the redraw until the iteration is
+  // complete and the resource lists have been consumed.
+  if (ready_tile_required_for_draw) {
+    client_->SetNeedsRedraw(/*animation_only=*/false,
+                            /*skip_if_inside_draw=*/true);
   }
 
   // Update our signals now that we know whether we have pending resources.

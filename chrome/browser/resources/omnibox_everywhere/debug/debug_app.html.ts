@@ -19,11 +19,29 @@ export function getHtml(this: OmniboxEverywhereDebugAppElement) {
 </div>
 <div class="toggle-container">
   <label class="switch">
+    <input id="launchOnStartupToggle" type="checkbox"
+        .checked="${this.launchOnStartupEnabled}"
+        @change="${this.onLaunchOnStartupToggleChange}">
+    <span class="slider"></span>
+  </label>
+  <span class="toggle-label">Enable Launch On Startup</span>
+</div>
+<div class="toggle-container">
+  <label class="switch">
     <input id="hotkeyToggle" type="checkbox" .checked="${this.hotkeyEnabled}"
         @change="${this.onHotkeyToggleChange}">
     <span class="slider"></span>
   </label>
   <span class="toggle-label">Enable Global Hotkey</span>
+</div>
+<div class="toggle-container">
+  <label class="switch">
+    <input id="ephemeralModelToggle" type="checkbox"
+        .checked="${this.ephemeralModelEnabled}"
+        @change="${this.onEphemeralModelToggleChange}">
+    <span class="slider"></span>
+  </label>
+  <span class="toggle-label">Enable Ephemeral Model</span>
 </div>
 <div class="invoke-container">
   <label for="sourceSelect" class="invoke-label">Invocation Source:</label>
@@ -40,5 +58,47 @@ export function getHtml(this: OmniboxEverywhereDebugAppElement) {
   <button class="invoke-button" @click="${this.onInvokeClick}">
     Invoke Omnibox Everywhere
   </button>
+</div>
+<div class="iph-container">
+  <h2>IPH / User Education</h2>
+  <div class="button-row">
+    <button id="invokeWithIphBtn" class="action-button"
+        @click="${this.onLaunchWithIphClick}">
+      Invoke Omnibox Everywhere & Show IPH
+    </button>
+  </div>
+</div>
+<div class="shortcut-container">
+  <h2>Shortcut & Pinning Setup</h2>
+  <div class="button-row">
+    <button id="createShortcutBtn" class="action-button"
+        @click="${this.onCreateShortcutClick}">
+      Create Start Menu Shortcut
+    </button>
+    <button id="pinToTaskbarBtn" class="action-button"
+        @click="${this.onPinToTaskbarClick}">
+      Pin to Taskbar
+    </button>
+  </div>
+  ${this.shortcutStatus ? html`
+    <div class="status-message">${this.shortcutStatus}</div>
+  ` : ''}
+</div>
+<div class="reset-container">
+  <h2>State Reset & Simulation</h2>
+  <div class="button-row">
+    <button id="resetProfilePrefsBtn" class="action-button"
+        @click="${this.onResetProfilePrefsClick}">
+      Reset Profile OE State
+    </button>
+    <button id="resetAllPrefsBtn" class="action-button"
+        @click="${this.onResetAllPrefsClick}">
+      Reset All OE State (All Profiles + Local State)
+    </button>
+  </div>
+  ${this.resetStatus ? html`
+    <div class="status-message">${this.resetStatus}</div>
+  ` : ''}
 </div>`;
 }
+

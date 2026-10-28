@@ -51,8 +51,6 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/model/url/url_util.h"
-#import "ios/chrome/browser/shared/model/utils/first_run_util.h"
-#import "ios/chrome/browser/shared/model/utils/mime_type_util.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/help_commands.h"
 #import "ios/chrome/browser/shared/public/commands/location_bar_badge_commands.h"
@@ -60,6 +58,7 @@
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/public/provider/chrome/browser/bwg/gemini_api.h"
+#import "ios/web/public/content_type_util.h"
 #import "ios/web/public/navigation/navigation_context.h"
 #import "ios/web/public/web_state.h"
 #import "mojo/public/cpp/bindings/remote.h"
@@ -75,13 +74,8 @@ const base::TimeDelta kFullPageContextTimeout = base::Seconds(3);
 // Returns true if `mime_type` represents an extractable web page (HTML or
 // Image).
 bool IsExtractableMimeType(const std::string& mime_type) {
-  const std::string image = "image";
-  const bool is_image = mime_type.compare(0, image.size(), image) == 0;
-  return is_image ||
-         base::EqualsCaseInsensitiveASCII(mime_type,
-                                          kHyperTextMarkupLanguageMimeType) ||
-         base::EqualsCaseInsensitiveASCII(mime_type, kXHTMLMimeType) ||
-         base::EqualsCaseInsensitiveASCII(mime_type, kXMLMimeType);
+  return web::IsContentTypeHtml(mime_type) ||
+         web::IsContentTypeImage(mime_type);
 }
 
 // Helper to convert PageContextWrapperError to
@@ -205,16 +199,25 @@ void GeminiTabHelper::CancelPageContextGeneration() {
   page_loaded_callback_.Reset();
 }
 
-void GeminiTabHelper::ExecuteZeroStateSuggestions(
-    base::OnceCallback<void(NSArray<NSString*>*)> callback) {
+void GeminiTabHelper::FetchZeroStateSuggestions(
+    base::OnceCallback<void(NSArray<ZeroStateSuggestion*>*)> callback) {
   CHECK(IsZeroStateSuggestionsEnabled() ||
         IsZeroStateSuggestionsCentralizationEnabled());
-  if (gemini_contextual_eligibility_ == ContextualEligibility::kIneligible ||
-      !zero_state_suggestions_service_) {
+
+  if (!zero_state_suggestions_service_) {
     std::move(callback).Run(nil);
     return;
   }
 
+  bool is_model_led_eligible =
+      gemini_contextual_eligibility_ != ContextualEligibility::kIneligible;
+
+  zero_state_suggestions_service_->FetchZeroStateSuggestions(
+      std::move(callback), is_model_led_eligible);
+}
+
+void GeminiTabHelper::FetchZeroStateSuggestionsAsStrings(
+    base::OnceCallback<void(NSArray<NSString*>*)> callback) {
   base::OnceCallback<void(NSArray<ZeroStateSuggestion*>*)> conversion_callback =
       base::BindOnce(
           [](base::OnceCallback<void(NSArray<NSString*>*)> result_callback,
@@ -224,8 +227,7 @@ void GeminiTabHelper::ExecuteZeroStateSuggestions(
           },
           std::move(callback));
 
-  zero_state_suggestions_service_->FetchZeroStateSuggestions(
-      std::move(conversion_callback));
+  FetchZeroStateSuggestions(std::move(conversion_callback));
 }
 
 bool GeminiTabHelper::ShouldPreventContextualPanelEntryPoint() {
@@ -395,8 +397,7 @@ IOSGeminiInvocationPageType GeminiTabHelper::GetCurrentPageType() {
   }
 
   const std::string mime_type = web_state_->GetContentsMimeType();
-  if (base::EqualsCaseInsensitiveASCII(mime_type,
-                                       kAdobePortableDocumentFormatMimeType)) {
+  if (web::IsContentTypePdf(mime_type)) {
     return IOSGeminiInvocationPageType::kPdfDocument;
   }
 
@@ -526,7 +527,8 @@ void GeminiTabHelper::DidFinishNavigation(
 
   latest_load_contextual_cueing_metadata_.reset();
 
-  if (!optimization_guide_decider_ || !current_url.SchemeIsHTTPOrHTTPS()) {
+  if (!optimization_guide_decider_ || !current_url.SchemeIsHTTPOrHTTPS() ||
+      IsGeminiInsightsChipAblationEnabled()) {
     return;
   }
 
@@ -606,9 +608,7 @@ void GeminiTabHelper::PopulatePageContextFields() {
   }
 
   PageContextWrapperConfig config =
-      PageContextWrapperConfigBuilder()
-          .SetDefaultRichExtraction(IsGeminiRichAPCExtractionEnabled())
-          .Build();
+      PageContextWrapperConfigBuilder().SetDefaultRichExtraction(true).Build();
 
   // Create a new wrapper.
   page_context_wrapper_ = [[PageContextWrapper alloc]
@@ -617,8 +617,7 @@ void GeminiTabHelper::PopulatePageContextFields() {
       completionCallback:base::BindRepeating(
                              &GeminiTabHelper::OnPageContextWrapperResponse,
                              weak_ptr_factory_.GetWeakPtr())];
-  const bool is_pdf = base::EqualsCaseInsensitiveASCII(
-      web_state_->GetContentsMimeType(), kAdobePortableDocumentFormatMimeType);
+  const bool is_pdf = web::IsContentTypePdf(web_state_->GetContentsMimeType());
   if (is_pdf) {
     page_context_wrapper_.shouldGetFullPagePDF = YES;
     page_context_wrapper_.shouldGetAnnotatedPageContent = NO;
@@ -681,25 +680,6 @@ void GeminiTabHelper::OnCanApplyContextualCueingDecision(
 
   if (!web_state_ || !web_state_->IsVisible() ||
       !latest_load_contextual_cueing_metadata_) {
-    return;
-  }
-
-  ProfileIOS* profile =
-      ProfileIOS::FromBrowserState(web_state_->GetBrowserState());
-
-  // TODO(crbug.com/461595639): Remove pref checks to fully migrate logic to
-  // FET.
-  bool floaty_shown = profile->GetPrefs()->GetBoolean(prefs::kIOSBwgConsent);
-  bool should_wait_for_new_user =
-      !ShouldSkipBWGPromoNewUserDelay() && IsFirstRunRecent(base::Days(1));
-
-  // Show promo if eligible.
-  if (IsGeminiNavigationPromoEnabled() && !should_wait_for_new_user &&
-      !floaty_shown && !gemini::DidUserSeeGeminiPromo(profile->GetPrefs()) &&
-      feature_engagement::TrackerFactory::GetForProfile(profile)
-          ->WouldTriggerHelpUI(
-              feature_engagement::kIPHiOSGeminiFullscreenPromoFeature)) {
-    [gemini_handler_ showGeminiPromoIfPageIsEligible];
     return;
   }
 

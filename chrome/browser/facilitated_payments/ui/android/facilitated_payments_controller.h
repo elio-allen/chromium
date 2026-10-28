@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_FACILITATED_PAYMENTS_UI_ANDROID_FACILITATED_PAYMENTS_CONTROLLER_H_
 
 #include <memory>
+#include <string>
 #include <string_view>
 
 #include "base/android/scoped_java_ref.h"
@@ -56,7 +57,8 @@ class FacilitatedPaymentsController {
 
   // Asks the `view_` to show the progress screen. Virtual for overriding in
   // tests.
-  virtual void ShowProgressScreen();
+  virtual void ShowProgressScreen(
+      payments::facilitated::ProgressScreenType type);
 
   // Asks the `view_` to show the error screen. Virtual for overriding in tests.
   virtual void ShowErrorScreen();
@@ -78,10 +80,8 @@ class FacilitatedPaymentsController {
 
   void OnEwalletSelected(JNIEnv* env, int64_t instrument_id);
 
-  void OnPaymentAppSelected(
-      JNIEnv* env,
-      const base::android::JavaRef<jstring>& package_name,
-      const base::android::JavaRef<jstring>& activity_name);
+  void OnPaymentAppSelected(const std::string& package_name,
+                            const std::string& activity_name);
 
   // Asks the `view_` to show the PIX account linking prompt. Virtual for
   // overriding in tests.
@@ -89,6 +89,7 @@ class FacilitatedPaymentsController {
   // linking.
   virtual void ShowPixAccountLinkingPrompt(
       int strike_count,
+      const std::string& account_email,
       base::OnceCallback<void()> on_accepted,
       base::OnceCallback<void()> on_declined);
 
@@ -103,8 +104,7 @@ class FacilitatedPaymentsController {
   // - `on_dismissed`: Invoked upon dismissal/teardown only if no other action
   // (accept/decline) was taken. Note: Only one prompt can be shown at a time.
   // If another prompt is already showing, the call is gracefully dropped and
-  // incoming callbacks are ignored (not run) to avoid tearing down the active
-  // UI and causing race conditions.
+  // the `on_dismissed` callback is discarded.
   virtual void ShowAccountLinkingPrompt(
       const payments::facilitated::AccountLinkingParams& params,
       base::OnceCallback<void()> on_accepted,
@@ -115,14 +115,6 @@ class FacilitatedPaymentsController {
   // for overriding in tests.
   virtual void ShowAccountLinkingFailureNotification(
       payments::facilitated::FacilitatedPaymentsType fop_type);
-
-  // Called by the Java view to communicate acceptance of Pix account linking
-  // prompt.
-  void OnPixAccountLinkingPromptAccepted(JNIEnv* env);
-
-  // Called by the Java view to communicate that the Pix account linking prompt
-  // was declined.
-  void OnPixAccountLinkingPromptDeclined(JNIEnv* env);
 
   // Called by the Java view when an account linking prompt is shown.
   void OnAccountLinkingPromptShown(JNIEnv* env, int32_t type);
@@ -166,9 +158,6 @@ class FacilitatedPaymentsController {
   // Callback used to communicate view events to the feature.
   base::RepeatingCallback<void(payments::facilitated::UiEvent)>
       ui_event_listener_;
-
-  base::OnceCallback<void()> on_pix_account_linking_prompt_accepted_;
-  base::OnceCallback<void()> on_pix_account_linking_prompt_declined_;
 
   bool is_prompt_showing_ = false;
   base::TimeTicks account_linking_prompt_shown_time_;

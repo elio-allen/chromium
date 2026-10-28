@@ -53,7 +53,7 @@
 #include "url/gurl.h"
 
 #if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #endif
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
@@ -305,8 +305,14 @@ class PolicyTestHandlerTest : public base::test::WithFeatureOverride,
     }
   }
 
+  // PolicyPageClient implementation.
   void StatusUpdated(
       base::flat_map<std::string, policy::mojom::StatusPtr> status) override {}
+
+  void PoliciesUpdated(
+      base::flat_map<std::string, policy::mojom::PolicyGroupNamesPtr>
+          policy_names,
+      policy::mojom::PolicyGroupsResponsePtr policy_values) override {}
 
  private:
   content::TestWebUI web_ui_;

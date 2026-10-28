@@ -7,10 +7,16 @@
 
 #import <Foundation/Foundation.h>
 
-@protocol AtMemorySearchConsumer;
+#import "components/autofill/core/common/unique_ids.h"
+#import "ios/chrome/browser/autofill/atmemory/ui/at_memory_search_mutator.h"
 
 namespace autofill {
-class AtMemoryQueryService;
+class AtMemoryManager;
+class BrowserAutofillManager;
+}
+
+namespace personal_context {
+class PersonalContextFirstRunService;
 }
 
 namespace web {
@@ -18,23 +24,41 @@ class WebState;
 }
 
 @protocol AtMemoryFillCommands;
+@protocol AtMemorySearchConsumer;
+@protocol AtMemoryCommands;
+@protocol AtMemorySearchResultCommands;
+@protocol AutofillSettingsNavigator;
 
 // Mediator for AtMemory search feature page.
-@interface AtMemorySearchMediator : NSObject
+@interface AtMemorySearchMediator : NSObject <AtMemorySearchMutator>
 
 // Handler for filling commands.
 @property(nonatomic, weak) id<AtMemoryFillCommands> fillHandler;
 
+// Handler for actions related to the AtMemory search results.
+@property(nonatomic, weak) id<AtMemorySearchResultCommands> searchResultHandler;
+
+// Handler for AtMemory commands.
+@property(nonatomic, weak) id<AtMemoryCommands> atMemoryHandler;
+
+// Navigator used to open the Autofill settings pages.
+@property(nonatomic, weak) id<AutofillSettingsNavigator> settingsNavigator;
+
 // The consumer for this mediator.
 @property(nonatomic, weak) id<AtMemorySearchConsumer> consumer;
 
-// The designated initializer. `atMemoryQueryService` takes the string provided
-// by the user and provides results to the user if available. If not, the
-// service provides an empty result along with a status indicating the error.
-// `webState` is used to retrieve context like the current URL and page title.
-- (instancetype)initWithAtMemoryQueryService:
-                    (autofill::AtMemoryQueryService*)atMemoryQueryService
-                                    webState:(web::WebState*)webState
+// The designated initializer. `atMemoryManager` provides access to the
+// AtMemory manager. `autofillManager` provides the primary main frame autofill
+// manager. `webState` is used to retrieve context like the UKM source ID.
+// `firstRunService` is used to read and update notice confirmation states.
+// `fieldId` specifies the focused field that initiated AtMemory.
+- (instancetype)
+    initWithAtMemoryManager:(autofill::AtMemoryManager*)atMemoryManager
+            autofillManager:(autofill::BrowserAutofillManager*)autofillManager
+                   webState:(web::WebState*)webState
+            firstRunService:(personal_context::PersonalContextFirstRunService*)
+                                firstRunService
+                    fieldId:(autofill::FieldGlobalId)fieldId
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;

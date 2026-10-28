@@ -28,8 +28,13 @@ USE_PYTHON_AUDITOR = True
 # Threshold for the change list size to trigger full test.
 CHANGELIST_SIZE_TO_TRIGGER_FULL_TEST = 100
 
+# Maximum total length of file path arguments before triggering a full test,
+# to stay well below Windows cmd.exe's 8191-character limit when invoking
+# vpython3.bat.
+MAX_COMMAND_LINE_LENGTH = 6000
 
-class NetworkTrafficAnnotationChecker():
+
+class NetworkTrafficAnnotationChecker:
   EXTENSIONS = ['.cc', '.mm', '.java']
   IMPORTANT_FILES = {'annotations.xml', 'grouping.xml', 'safe_list.txt'}
 
@@ -55,7 +60,7 @@ class NetworkTrafficAnnotationChecker():
     traffic annotations."""
     return os.path.splitext(file_path)[1] in self.EXTENSIONS
 
-  def GetFilePaths(self, complete_run, limit):
+  def GetFilePaths(self, complete_run):
     if complete_run:
       return []
 
@@ -64,7 +69,8 @@ class NetworkTrafficAnnotationChecker():
     file_paths = self.tools.GetModifiedFiles() or []
 
     important_file_changed = any(
-        self.IsImportantFile(file_path) for file_path in file_paths)
+      self.IsImportantFile(file_path) for file_path in file_paths
+    )
 
     # If the annotations file has changed, trigger a full test to avoid
     # missing a case where the annotations file has changed, but not the
@@ -74,15 +80,20 @@ class NetworkTrafficAnnotationChecker():
       return []
 
     file_paths = [
-        file_path for file_path in file_paths if self.ShouldCheckFile(
-            file_path)]
+      file_path for file_path in file_paths if self.ShouldCheckFile(file_path)
+    ]
     if not file_paths:
       return None
 
-    # If the number of changed files in the CL exceeds a threshold, trigger
-    # full test to avoid sending very long list of arguments and possible
-    # failure in argument buffers.
-    if len(file_paths) > CHANGELIST_SIZE_TO_TRIGGER_FULL_TEST:
+    # If the number of changed files in the CL or the total command-line
+    # length exceeds a threshold, trigger full test to avoid sending a very
+    # long list of arguments and exceeding argument buffer limits (such as
+    # Windows cmd.exe's 8191-character limit when invoking vpython3.bat).
+    if (
+      len(file_paths) > CHANGELIST_SIZE_TO_TRIGGER_FULL_TEST
+      or sum(len(file_path) + 3 for file_path in file_paths)
+      > MAX_COMMAND_LINE_LENGTH
+    ):
       file_paths = []
 
     return file_paths
@@ -103,12 +114,14 @@ class NetworkTrafficAnnotationChecker():
       int Exit code of the network traffic annotation auditor.
     """
     if not self.tools.CanRunAuditor(use_python_auditor):
-      print("Network traffic annotation presubmit check was not performed. A "
-            "compiled build directory and traffic_annotation_auditor binary "
-            "are required to do it.")
+      print(
+        "Network traffic annotation presubmit check was not performed. A "
+        "compiled build directory and traffic_annotation_auditor binary "
+        "are required to do it."
+      )
       return 0
 
-    file_paths = self.GetFilePaths(complete_run, limit)
+    file_paths = self.GetFilePaths(complete_run)
     if file_paths is None:
       return 0
 
@@ -118,7 +131,8 @@ class NetworkTrafficAnnotationChecker():
     args += file_paths
 
     stdout_text, stderr_text, return_code = self.tools.RunAuditor(
-        args, use_python_auditor)
+      args, use_python_auditor
+    )
 
     if stdout_text:
       print(stdout_text)
@@ -133,32 +147,41 @@ def main():
     return 0
 
   parser = argparse.ArgumentParser(
-      description="Network Traffic Annotation Presubmit checker.")
+    description="Network Traffic Annotation Presubmit checker."
+  )
   parser.add_argument(
-      '--build-path',
-      help='Specifies a compiled build directory, e.g. out/Debug. If not '
-           'specified, the script tries to guess it. Will not proceed if not '
-           'found.')
+    '--build-path',
+    help='Specifies a compiled build directory, e.g. out/Debug. If not '
+    'specified, the script tries to guess it. Will not proceed if not '
+    'found.',
+  )
   parser.add_argument(
-      '--limit',
-      default=5,
-      type=int,
-      help='Limit for the maximum number of returned errors and warnings. '
-      'Default value is 5, use 0 for unlimited.')
+    '--limit',
+    default=5,
+    type=int,
+    help='Limit for the maximum number of returned errors and warnings. '
+    'Default value is 5, use 0 for unlimited.',
+  )
   parser.add_argument(
-      '--complete', action='store_true',
-      help='Run the test on the complete repository. Otherwise only the '
-           'modified files are tested.')
-  parser.add_argument('--errors-file',
-                      type=str,
-                      help='Optional path to a JSON output file with errors.')
+    '--complete',
+    action='store_true',
+    help='Run the test on the complete repository. Otherwise only the '
+    'modified files are tested.',
+  )
+  parser.add_argument(
+    '--errors-file',
+    type=str,
+    help='Optional path to a JSON output file with errors.',
+  )
 
   args = parser.parse_args()
   checker = NetworkTrafficAnnotationChecker(args.build_path)
-  exit_code = checker.CheckFiles(args.complete,
-                                 args.limit,
-                                 args.errors_file,
-                                 use_python_auditor=USE_PYTHON_AUDITOR)
+  exit_code = checker.CheckFiles(
+    args.complete,
+    args.limit,
+    args.errors_file,
+    use_python_auditor=USE_PYTHON_AUDITOR,
+  )
 
   return exit_code
 

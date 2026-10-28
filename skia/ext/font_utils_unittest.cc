@@ -4,51 +4,58 @@
 
 #include "skia/ext/font_utils.h"
 
-#include <memory>
-
+#include "base/base_paths.h"
+#include "base/files/file_path.h"
+#include "base/path_service.h"
+#include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkData.h"
+#include "third_party/skia/include/core/SkFontMgr.h"
+#include "third_party/skia/include/core/SkFourByteTag.h"
 #include "third_party/skia/include/core/SkStream.h"
+#include "third_party/skia/include/core/SkString.h"
 #include "third_party/skia/include/core/SkTypeface.h"
 
 namespace skia {
-namespace {
 
-TEST(SkiaFontUtilsTest, SanitizeTypefaceStream_NullOrEmpty) {
-  EXPECT_FALSE(SanitizeTypefaceStream(nullptr));
-  EXPECT_FALSE(SanitizeTypefaceStream(SkData::MakeEmpty()));
+#if !BUILDFLAG(IS_IOS)
+TEST(FontUtilsTest, InstantiateTypefaceFromSerializedStream) {
+  base::FilePath root_dir;
+  ASSERT_TRUE(base::PathService::Get(base::DIR_SRC_TEST_DATA_ROOT, &root_dir));
+  base::FilePath font_path = root_dir.AppendASCII("third_party")
+                                 .AppendASCII("test_fonts")
+                                 .AppendASCII("test_fonts")
+                                 .AppendASCII("Ahem.ttf");
+  sk_sp<SkData> font_data =
+      SkData::MakeFromFileName(font_path.AsUTF8Unsafe().c_str());
+  ASSERT_TRUE(font_data);
+
+  sk_sp<SkTypeface> orig_typeface =
+      DefaultFontMgr()->makeFromData(std::move(font_data));
+  ASSERT_TRUE(orig_typeface);
+
+  sk_sp<SkData> data =
+      orig_typeface->serialize(SkTypeface::SerializeBehavior::kDoIncludeData);
+  ASSERT_TRUE(data);
+
+  SkMemoryStream stream(data->data(), data->size());
+  sk_sp<SkTypeface> typeface = MakeTypefaceWithFontations(&stream);
+  ASSERT_TRUE(typeface);
+
+  SkString orig_family_name;
+  orig_typeface->getFamilyName(&orig_family_name);
+
+  SkString family_name;
+  typeface->getFamilyName(&family_name);
+  EXPECT_FALSE(family_name.isEmpty());
+  EXPECT_EQ(family_name, orig_family_name);
+
+  EXPECT_EQ(typeface->countGlyphs(), orig_typeface->countGlyphs());
+  EXPECT_GT(typeface->countGlyphs(), 0);
+
+  EXPECT_EQ(GetTypefaceFactoryIdForTesting(typeface.get()),
+            SkSetFourByteTag('f', 'n', 't', 'a'));
 }
+#endif  // !BUILDFLAG(IS_IOS)
 
-TEST(SkiaFontUtilsTest, SanitizeTypefaceStream_InvalidData) {
-  const char kJunk[] = "invalid_font_data_junk_bytes";
-  sk_sp<SkData> junk_data = SkData::MakeWithCopy(kJunk, sizeof(kJunk));
-  EXPECT_FALSE(SanitizeTypefaceStream(junk_data));
-}
-
-TEST(SkiaFontUtilsTest, SanitizeTypefaceStream_TooLarge) {
-  // 128 MB + 1 byte
-  constexpr size_t kTooLargeSize = 128 * 1024 * 1024 + 1;
-  sk_sp<SkData> large_data = SkData::MakeUninitialized(kTooLargeSize);
-  EXPECT_FALSE(SanitizeTypefaceStream(large_data));
-}
-
-TEST(SkiaFontUtilsTest, SanitizeTypefaceStream_ValidFont) {
-  auto default_typeface = DefaultTypeface();
-  ASSERT_TRUE(default_typeface);
-  int ttc_index = 0;
-  std::unique_ptr<SkStreamAsset> stream =
-      default_typeface->openStream(&ttc_index);
-  if (!stream) {
-    return;
-  }
-  sk_sp<SkData> original_data =
-      SkData::MakeFromStream(stream.get(), stream->getLength());
-  ASSERT_TRUE(original_data);
-
-  sk_sp<SkData> sanitized_data = SanitizeTypefaceStream(original_data);
-  EXPECT_TRUE(sanitized_data);
-  EXPECT_GT(sanitized_data->size(), 0u);
-}
-
-}  // namespace
 }  // namespace skia

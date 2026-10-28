@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/containers/span.h"
+#include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
 
 class PrefService;
@@ -76,7 +77,29 @@ std::unique_ptr<TemplateURLData> GetPrepopulatedEngineFromFullList(
     PrefService& prefs,
     const std::vector<raw_ptr<const PrepopulatedEngine>>&
         regional_prepopulated_engines,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>& regional_variants,
     int prepopulated_id);
+
+// Returns the prepopulated search engine with the given `keyword`
+// from the full list of known prepopulated search engines, or `nullptr` if
+// it's not known there.
+// The region-specific list is used to ensure we prioritise returning a search
+// engine relevant for the given country, for cases where the `keyword`
+// could be associated with multiple country-specific variants.
+std::unique_ptr<TemplateURLData> GetPrepopulatedEngineFromFullList(
+    PrefService& prefs,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>& regional_variants,
+    std::u16string_view keyword);
+
+// Returns every known prepopulated engine, deduplicated by ID. When several
+// definitions share an ID, the one from `regional_prepopulated_engines` is
+// preferred, matching `GetPrepopulatedEngineFromFullList()`.
+// Returns an empty list while search provider overrides are honored.
+std::vector<raw_ptr<const PrepopulatedEngine>> GetAllPrepopulatedEngines(
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines);
 
 // Returns the prepopulated search engine with the given `prepopulated_id`
 // from the full list of known prepopulated search engines, or `nullptr` if
@@ -89,7 +112,8 @@ std::unique_ptr<TemplateURLData> GetPrepopulatedEngineFromFullList(
 const PrepopulatedEngine* GetPrepopulatedEngineFromBuiltInData(
     int prepopulated_id,
     const std::vector<raw_ptr<const PrepopulatedEngine>>&
-        regional_prepopulated_engines);
+        regional_prepopulated_engines,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>& regional_variants);
 
 // Returns the prepopulated search engine with the given `keyword`
 // from the full list of known prepopulated search engines, or `nullptr` if
@@ -99,7 +123,8 @@ const PrepopulatedEngine* GetPrepopulatedEngineFromBuiltInData(
 const PrepopulatedEngine* GetPrepopulatedEngineFromBuiltInData(
     std::u16string_view keyword,
     const std::vector<raw_ptr<const PrepopulatedEngine>>&
-        regional_prepopulated_engines);
+        regional_prepopulated_engines,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>& regional_variants);
 
 #if BUILDFLAG(IS_ANDROID)
 // Returns the prepopulated URLs associated with `country_code`.

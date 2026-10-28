@@ -26,6 +26,7 @@
 #include "components/safe_browsing/core/browser/intelligent_scan_delegate.h"
 #include "components/safe_browsing/core/common/visual_utils.h"
 #include "content/public/browser/global_routing_id.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "mojo/public/cpp/base/proto_wrapper.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
@@ -38,10 +39,6 @@
 
 class PrefService;
 class SkBitmap;
-
-namespace base {
-class TickClock;
-}
 
 namespace history {
 class HistoryService;
@@ -65,6 +62,9 @@ class ClientSideDetectionHost
       public permissions::PermissionRequestManager::Observer,
       public AsyncCheckTracker::Observer {
  public:
+  using AsyncCheckTriggerForceRequestResult =
+      ClientSideDetectionHostBase::AsyncCheckTriggerForceRequestResult;
+
   // ClientSideDetectionHostBase overrides:
   GURL GetCurrentUrl() const override;
   ClientSideDetectionFeatureCacheBase* GetFeatureCache() override;
@@ -74,6 +74,7 @@ class ClientSideDetectionHost
   ChromeUserPopulation GetUserPopulation() override;
   bool IsAccountSignedIn() override;
   bool IsErrorDocument() override;
+  std::optional<double> GetSiteEngagementScore(const GURL& url) const override;
   void GetInnerText(HostInnerTextCallback callback) override;
   void MaybeStartImageEmbedding(
       std::unique_ptr<ClientPhishingRequest> verdict,
@@ -87,16 +88,6 @@ class ClientSideDetectionHost
       std::optional<bool> did_match_high_confidence_allowlist) override;
   void MaybeStartPreClassification(
       safe_browsing::ClientSideDetectionType request_type) override;
-
-  // These values are persisted to logs. Entries should not be renumbered and
-  // numeric values should never be reused.
-  enum class AsyncCheckTriggerForceRequestResult {
-    kTriggered = 0,
-    kSkippedTriggerModelsPingNotSkipped = 1,  // DEPRECATED
-    kSkippedNotForced = 2,
-    kSkippedTriggerModelsPingSentAsForceRequest = 3,
-    kMaxValue = kSkippedTriggerModelsPingSentAsForceRequest,
-  };
 
   // These values are persisted to logs. Entries should not be renumbered and
   // numeric values should never be reused.
@@ -359,22 +350,50 @@ class ClientSideDetectionHost
                            TestTriggerModelsConvertedToForceRequestAtRequest);
 
   // ClientSideDetectionHostBase overrides:
-  void ClassifyPhishingThroughThresholds(
-      ClientPhishingRequest* verdict) override;
   void CancelPendingRequests() override;
-  void MaybeShowPhishingWarning(
-      bool is_from_cache,
-      ClientSideDetectionType request_type,
-      std::optional<bool> did_match_high_confidence_allowlist,
+  void ShowBlockingPage(
       GURL phishing_url,
+      ClientSideDetectionType request_type,
+      std::optional<IntelligentScanVerdict> intelligent_scan_verdict,
       bool is_phishing,
-      std::optional<net::HttpStatusCode> response_code,
-      std::optional<IntelligentScanVerdict> intelligent_scan_verdict) override;
+      bool should_show_scam_warning) override;
+  void UpdateDebuggingMetadataWithNetworkResult(
+      GURL phishing_url,
+      net::HttpStatusCode response_code) override;
   void AddReferrerChain(ClientPhishingRequest* verdict) override;
   void MaybeFillScreenshotData(ClientPhishingRequest* request) override;
   void AddMiscellaneousMetadataToClientPhishingRequest(
       ClientPhishingRequest* verdict,
       bool is_invalid_ip) override;
+  void MaybeCaptureScreenshotAndStartIntelligentScan(
+      std::unique_ptr<ClientPhishingRequest> verdict,
+      std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip,
+      std::string inner_text) override;
+
+  // Returns true if the observed WebContents is currently visible and its
+  // committed URL matches `url`.
+  bool IsTabVisibleAndOnUrl(const GURL& url) const;
+
+  // Called when the viewport screenshot capture completes. Validates that the
+  // tab is still visible and on the same URL, then posts a background task to
+  // encode the bitmap as PNG bytes before starting the intelligent scan.
+  void OnScreenshotTaken(
+      std::unique_ptr<ClientPhishingRequest> verdict,
+      std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip,
+      std::string inner_text,
+      const content::CopyFromSurfaceResult& result);
+
+  // Called when the captured screenshot has been encoded into PNG bytes on a
+  // background thread. Validates that the tab is still visible and on the same
+  // URL before passing the PNG bytes to `StartIntelligentScan`.
+  void OnScreenshotEncoded(
+      std::unique_ptr<ClientPhishingRequest> verdict,
+      std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip,
+      std::string inner_text,
+      std::string png_bytes);
 
   // Called when pre-classification checks are done for the phishing
   // classifiers. |request_type| is passed in to specify the process that
@@ -420,19 +439,11 @@ class ClientSideDetectionHost
       std::optional<mojo_base::ProtoWrapper> image_feature_embedding,
       std::optional<mojo_base::ProtoWrapper> visual_features);
 
-  // Sets a test tick clock only for testing.
-  void set_tick_clock_for_testing(const base::TickClock* tick_clock) {
-    tick_clock_ = tick_clock;
-  }
-
   // Sets the primary account signed in callback for testing.
   void set_account_signed_in_for_testing(
       const PrimaryAccountSignedIn& account_signed_in_callback) {
     account_signed_in_callback_ = account_signed_in_callback;
   }
-
-  void set_high_confidence_allowlist_acceptance_rate_for_testing(
-      float acceptance_rate);
 
   void set_delegate_for_testing(std::unique_ptr<Delegate> delegate) {
     delegate_ = std::move(delegate);
@@ -454,9 +465,6 @@ class ClientSideDetectionHost
   // triggering the classification. Detection should not go further than
   // recording metrics.
   bool ShouldStopAtPreClassification();
-
-  // Check if sample ping can be sent to Safe Browsing.
-  bool CanSendSamplePing();
 
   // The callback for the report a scam dialog.
   base::OnceClosure user_report_callback_;
@@ -494,10 +502,6 @@ class ClientSideDetectionHost
   bool did_first_visually_non_empty_paint_ = false;
   bool on_first_contentful_paint_ = false;
 
-  // Records the start time of when image embedding started.
-  base::TimeTicks image_embedding_start_time_;
-  raw_ptr<const base::TickClock> tick_clock_;
-
   std::unique_ptr<Delegate> delegate_;
 
   // Callback for checking if the user is signed in, before fetching
@@ -517,10 +521,6 @@ class ClientSideDetectionHost
 
   // A boolean indicates whether TRIGGER_MODELS request is sent via
   // FORCE_REQUEST. This is used to decide whether async check is allowed to
-
-  // Modified through tests only. Initial value is set to the const
-  // kProbabilityForAcceptingHCAllowlistTrigger.
-  float probability_for_accepting_hc_allowlist_trigger_;
 
   base::ScopedObservation<AsyncCheckTracker, AsyncCheckTracker::Observer>
       async_check_observation_{this};

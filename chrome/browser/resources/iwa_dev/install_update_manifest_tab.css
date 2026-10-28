@@ -5,7 +5,6 @@
 /* #css_wrapper_metadata_start
  * #type=style-lit
  * #import=//resources/cr_elements/cr_shared_vars.css.js
- * #import=//resources/cr_elements/md_select_lit.css.js
  * #css_wrapper_metadata_end */
 
 :host {
@@ -26,33 +25,12 @@
   margin-top: 24px;
 }
 
-.dropdown-container {
-  margin-bottom: 24px;
-}
-
-.dropdown-container label {
-  display: block;
-}
-
-select.md-select {
-  background-color: var(--cr-menu-background-color);
-  border-radius: 8px;
-  font-size: 0.85rem;
-  padding: 8px 12px;
-  width: 100%;
-}
-
-select.md-select option {
-  background-color: var(--cr-menu-background-color);
-  color: var(--cr-primary-text-color);
-}
-
 #details {
   display: flex;
   flex-direction: column;
   justify-content: center;
   margin-top: 8px;
-  min-height: 60px;
+  min-height: 80px;
 }
 
 #dropdowns-row {
@@ -61,9 +39,8 @@ select.md-select option {
   width: 100%;
 }
 
-#dropdowns-row .dropdown-container {
+#dropdowns-row iwa-dev-combobox {
   flex: 1;
-  margin-bottom: 0;
 }
 
 .success-message {

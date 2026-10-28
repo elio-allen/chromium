@@ -51,7 +51,10 @@ bool ShouldSkipLocale(const LanguageTag& locale_tag) {
 const base::flat_set<LanguageTag>& GetSupportedIcuLocales() {
   static const base::NoDestructor<base::flat_set<LanguageTag>>
       kAvailableICULocales([]() {
-        std::vector<LanguageTag> locales;
+        // Add additional locales that do not get picked up by the
+        // `GetLineage()` algorithm.
+        std::vector<LanguageTag> locales{GetKnownLanguageTag("zh-CN"),
+                                         GetKnownLanguageTag("zh-TW")};
         int num_locales = uloc_countAvailable();
         for (int i = 0; i < num_locales; ++i) {
           std::string_view locale_name = uloc_getAvailable(i);
@@ -61,13 +64,9 @@ const base::flat_set<LanguageTag>& GetSupportedIcuLocales() {
               ShouldSkipLocale(*locale_tag)) {
             continue;
           }
-          locales.push_back(*locale_tag);
-
           // Add the parents as ICU locales as well.
-          for (std::optional<LanguageTag> parent = locale_tag->GetParentTag();
-               parent; parent = parent->GetParentTag()) {
-            locales.push_back(*parent);
-          }
+          std::vector<LanguageTag> lineage = locale_tag->GetLineage();
+          locales.insert(locales.end(), lineage.begin(), lineage.end());
         }
 
         locales.shrink_to_fit();

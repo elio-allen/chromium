@@ -72,6 +72,9 @@ NativeViewHostMac::~NativeViewHostMac() {
 }
 
 NativeWidgetMacNSWindowHost* NativeViewHostMac::GetNSWindowHost() const {
+  if (!host_->GetWidget()) {
+    return nullptr;
+  }
   return NativeWidgetMacNSWindowHost::GetFromNativeWindow(
       host_->GetWidget()->GetNativeWindow());
 }
@@ -105,6 +108,13 @@ void NativeViewHostMac::OnHostableViewDestroying() {
   DCHECK(native_view_hostable_);
   host_->NativeViewDestroyed();
   DCHECK(!native_view_hostable_);
+}
+
+base::ScopedClosureRunner NativeViewHostMac::CreateVideoCaptureLock() {
+  if (auto* window_host = GetNSWindowHost()) {
+    return window_host->CreateVideoCaptureLock();
+  }
+  return base::ScopedClosureRunner();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -238,15 +248,6 @@ gfx::RoundedCornersF NativeViewHostMac::GetNativeViewCornerRadii() const {
 gfx::Rect NativeViewHostMac::GetNativeViewClipRect() const {
   ui::Layer* layer = GetUiLayer();
   return layer ? layer->clip_rect() : gfx::Rect();
-}
-
-void NativeViewHostMac::SetHitTestTopInset(int top_inset) {
-  NOTIMPLEMENTED();
-}
-
-int NativeViewHostMac::GetHitTestTopInset() const {
-  NOTIMPLEMENTED();
-  return 0;
 }
 
 void NativeViewHostMac::InstallClip(int x, int y, int w, int h) {

@@ -163,8 +163,8 @@ void RenderInputRouter::SetupInputRouter(float device_scale_factor) {
   TRACE_EVENT("input", "RenderInputRouter::SetupInputRouter");
 
   in_flight_event_count_ = 0;
-  hang_monitor_timer_state_ = HangMonitorTimerState::kStopped;
   StopInputEventAckTimeout();
+  delegate_->RendererIsResponsive();
 
   bool was_active = input_router_ && input_router_->IsActive();
 
@@ -343,10 +343,7 @@ blink::mojom::InputEventResultState RenderInputRouter::FilterInputEvent(
   // Right after a navigation, RenderWidgetHost keeps the InputRouter inactive
   // while browser paint-holding is active.  This is equivalent to a
   // non-existent input event consumer.
-  bool filter_for_paint_holding =
-      base::FeatureList::IsEnabled(
-          blink::features::kDropInputEventsWhilePaintHolding) &&
-      input_router_ && !input_router_->IsActive();
+  bool filter_for_paint_holding = input_router_ && !input_router_->IsActive();
   if (event.GetType() == WebInputEvent::Type::kGestureScrollBegin) {
     // If we filter a GSB for paint holding, we'd like to receive a new one -
     // see IsWheelScrollInProgress. Note that we leave is_in_gesture_scroll_ set
@@ -393,7 +390,6 @@ void RenderInputRouter::StartInputEventAckTimeout() {
 void RenderInputRouter::StopInputEventAckTimeout() {
   input_event_ack_timeout_.Stop();
   hang_monitor_timer_state_ = HangMonitorTimerState::kStopped;  // Reset state
-  delegate_->RendererIsResponsive();
 }
 
 void RenderInputRouter::RestartInputEventAckTimeoutIfNecessary() {
@@ -454,6 +450,7 @@ void RenderInputRouter::DecrementInFlightEventCount(
     // Cancel pending hung renderer checks since the renderer is
     // responsive.
     StopInputEventAckTimeout();
+    delegate_->RendererIsResponsive();
   } else {
     // Only restart the hang monitor timer if we got a response from the
     // main thread.
@@ -804,8 +801,12 @@ void RenderInputRouter::RenderProcessBlockedStateChanged(bool blocked) {
   }
 
   is_blocked_ = blocked;
-  is_blocked_ ? StopInputEventAckTimeout()
-              : RestartInputEventAckTimeoutIfNecessary();
+  if (is_blocked_) {
+    StopInputEventAckTimeout();
+    delegate_->RendererIsResponsive();
+  } else {
+    RestartInputEventAckTimeoutIfNecessary();
+  }
 }
 
 void RenderInputRouter::SetHungRendererDelay(base::TimeDelta delay) {

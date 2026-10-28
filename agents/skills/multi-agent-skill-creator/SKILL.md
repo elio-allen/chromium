@@ -179,7 +179,7 @@ Define loop limits for feedback cycles (e.g., maximum 3 iterations for review lo
 
 For complex workflows with detailed instructions, keeping all stage rules in a
 single `SKILL.md` will lead to context bloat. To optimize context usage (based
-on MAGI best practices):
+on workflow best practices):
 
 - **Minimal `SKILL.md`**: The main `SKILL.md` should only contain the high-level
   orchestration state machine, stage names, and routing logic.
@@ -208,7 +208,7 @@ templates in the [`templates/`](./templates/) directory:
 3. **Generate `run_presubmit.py`**: A helper script to run the presubmit checks
    locally (you can adapt the [`run_presubmit.py`](./run_presubmit.py) from this
    skill creator).
-4. **Generate Style Configurations**: Include [`.style.yapf`](./.style.yapf) and
+4. **Generate Style Configurations**: Include [`.ruff.toml`](./.ruff.toml) and
    [`.style.mdformat`](./.style.mdformat) (copied from this skill creator) to
    ensure formatting consistency.
 

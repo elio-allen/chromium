@@ -19,18 +19,12 @@ enum class TabSearchPosition {
   kVerticalTabstrip,
 };
 
-// Returns the default behavior per platform for tab search position.
-bool GetDefaultTabSearchRightAligned();
-
 // Registers Tab Strip specific prefs.
 void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
 
 // Ensures the hover card memory usage preference stays disabled if
 // it was disabled before.
 void MigrateHoverCardMemoryPref(PrefService* local_prefs);
-
-// Migrates kEverythingMenuPinnedToTabstrip once per profile.
-void MigrateEverythingMenuPinnedToTabstripPref(PrefService* profile_prefs);
 
 // Return the value of the preference for TabSearchPosition.
 TabSearchPosition GetTabSearchPosition(

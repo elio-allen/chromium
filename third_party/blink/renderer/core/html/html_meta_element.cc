@@ -741,6 +741,7 @@ void HTMLMetaElement::ProcessContent() {
     network::mojom::ReferrerPolicy new_referrer_policy =
         GetExecutionContext()->GetReferrerPolicy();
     if (old_referrer_policy != new_referrer_policy) {
+      GetDocument().ReferrerPolicyChanged();
       if (auto* document_rules =
               DocumentSpeculationRules::FromIfExists(GetDocument())) {
         document_rules->DocumentReferrerPolicyChanged();
@@ -769,11 +770,6 @@ void HTMLMetaElement::ProcessContent() {
 }
 
 bool HTMLMetaElement::IsAllowOrigins() const {
-  const AtomicString& allow_origins =
-      FastGetAttribute(html_names::kContentAttr);
-  if (allow_origins.IsNull()) {
-    return false;
-  }
   const Document& document = GetDocument();
   const LocalFrame* frame = document.GetFrame();
   if (!frame) {
@@ -793,6 +789,16 @@ bool HTMLMetaElement::IsAllowOrigins() const {
     return false;
   }
 
+  const AtomicString& content = FastGetAttribute(html_names::kContentAttr);
+  if (content.IsNull()) {
+    return false;
+  }
+  static constexpr const char kAllowOriginsPrefix[] = "allow-origins=";
+  if (!content.starts_with(kAllowOriginsPrefix)) {
+    return false;
+  }
+  constexpr wtf_size_t prefix_length = std::size(kAllowOriginsPrefix) - 1;
+  const StringView allow_origins(content, prefix_length);
   const network::mojom::blink::CSPSourceListPtr source_list =
       ParseAllowOrigins(allow_origins);
   if (!source_list) {

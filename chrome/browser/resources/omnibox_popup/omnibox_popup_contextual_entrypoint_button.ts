@@ -36,11 +36,7 @@ export class OmniboxPopupContextualEntrypointButtonElement extends
         type: Boolean,
         reflect: true,
       },
-      showSuggestionLabel: {
-        type: Boolean,
-        reflect: true,
-      },
-      hasPopupFocus: {
+      hasVirtualFocus: {
         type: Boolean,
         reflect: true,
       },
@@ -54,9 +50,12 @@ export class OmniboxPopupContextualEntrypointButtonElement extends
   accessor inputState: InputState|null = null;
   accessor applyContextButtonBackground: boolean = false;
   accessor isOblongShape: boolean = false;
-  accessor showSuggestionLabel: boolean = false;
-  accessor hasPopupFocus: boolean = false;
+  accessor hasVirtualFocus: boolean = false;
   protected accessor isMenuOpen_: boolean = false;
+  // Whether gaining virtual focus announces `getA11yLabel()`. Hosts that
+  // narrate virtual focus themselves set this to false, so the two don't
+  // compete.
+  announcesVirtualFocus: boolean = true;
 
   private browserProxy_: BrowserProxy;
   private eventTracker_ = new EventTracker();
@@ -91,7 +90,8 @@ export class OmniboxPopupContextualEntrypointButtonElement extends
   override updated(changedProperties: PropertyValues<this>) {
     super.updated(changedProperties);
 
-    if (changedProperties.has('hasPopupFocus') && this.hasPopupFocus) {
+    if (changedProperties.has('hasVirtualFocus') && this.hasVirtualFocus &&
+        this.announcesVirtualFocus) {
       this.announce_();
     }
 
@@ -131,12 +131,18 @@ export class OmniboxPopupContextualEntrypointButtonElement extends
     this.classList.remove('menu-open');
   }
 
-  private announce_() {
+  /** Returns the label screen readers narrate for this button. */
+  getA11yLabel(): string {
     const entrypoint =
         this.shadowRoot?.querySelector<ContextualEntrypointButtonElement>(
             'cr-composebox-contextual-entrypoint-button');
-    const message = entrypoint?.shadowRoot?.querySelector('#entrypoint')
-                        ?.getAttribute('aria-label');
+    return entrypoint?.shadowRoot?.querySelector('#entrypoint')
+               ?.getAttribute('aria-label') ||
+        '';
+  }
+
+  private announce_() {
+    const message = this.getA11yLabel();
     if (message) {
       if (this.ariaNotify) {
         this.ariaNotify(message);

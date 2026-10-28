@@ -47,10 +47,10 @@ import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.chrome.test.util.browser.signin.AccountManagerTestRule;
 import org.chromium.components.signin.SigninFeatures;
+import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.google_apis.gaia.CoreAccountId;
 import org.chromium.ui.test.util.BlankUiTestActivity;
-import org.chromium.ui.widget.ChromeImageView;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -96,6 +96,7 @@ public class ProfileDataCacheRenderTest {
     @Rule
     public final ChromeRenderTestRule mRenderTestRule =
             ChromeRenderTestRule.Builder.withPublicCorpus()
+                    .setRevision(1)
                     .setBugComponent(ChromeRenderTestRule.Component.SERVICES_SIGN_IN)
                     .build();
 
@@ -124,7 +125,7 @@ public class ProfileDataCacheRenderTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     mContentView = new FrameLayout(sActivity);
-                    mImageView = new ChromeImageView(sActivity);
+                    mImageView = new ImageView(sActivity);
                     mContentView.addView(
                             mImageView, LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
                     sActivity.setContentView(mContentView);
@@ -137,7 +138,6 @@ public class ProfileDataCacheRenderTest {
                                     /* subscriptionEligibilityService= */ null,
                                     mImageSize,
                                     /* ringThicknessPx= */ 0,
-                                    /* badgeConfig= */ null,
                                     /* aiTierRingEnabled= */ false,
                                     /* brandingDelegate= */ null);
                 });
@@ -147,11 +147,20 @@ public class ProfileDataCacheRenderTest {
     @MediumTest
     @Feature("RenderTest")
     public void testProfileDataPopulatedFromIdentityManagerObserver() throws IOException {
-        mAccountManagerTestRule.blockGetAccountsUpdate();
         ThreadUtils.runOnUiThreadBlocking(() -> mProfileDataCache.addObserver(mObserver));
-        mAccountManagerTestRule.addAccount(TestAccounts.ACCOUNT1);
+        var accountWithoutAvatar =
+                new AccountInfo.Builder(
+                                TestAccounts.ACCOUNT1.getEmail(), TestAccounts.ACCOUNT1.getGaiaId())
+                        .build();
+        mAccountManagerTestRule.addAccount(accountWithoutAvatar);
         CriteriaHelper.pollUiThread(
-                () -> mProfileDataCache.hasProfileDataForTesting(TestAccounts.ACCOUNT1.getId()));
+                () -> mProfileDataCache.hasProfileDataForTesting(accountWithoutAvatar.getId()));
+
+        // The avatar arrives from IdentityManager only and replaces the placeholder.
+        // TODO(crbug.com/573071894): Should use dedicated method in AccountManagerTestRule instead.
+        mAccountManagerTestRule
+                .getIdentityManager()
+                .addOrUpdateExtendedAccountInfo(TestAccounts.ACCOUNT1);
         ThreadUtils.runOnUiThreadBlocking(() -> checkImageIsScaled(TestAccounts.ACCOUNT1.getId()));
         mRenderTestRule.render(mImageView, "profile_data_cache_avatar" + mImageSize);
     }
@@ -172,7 +181,6 @@ public class ProfileDataCacheRenderTest {
                                     /* subscriptionEligibilityService= */ null,
                                     mImageSize,
                                     /* ringThicknessPx= */ 0,
-                                    /* badgeConfig= */ null,
                                     /* aiTierRingEnabled= */ false,
                                     /* brandingDelegate= */ null);
 
@@ -246,7 +254,6 @@ public class ProfileDataCacheRenderTest {
                                     mSubscriptionEligibilityServiceMock,
                                     mImageSize,
                                     RING_THICKNESS,
-                                    /* badgeConfig= */ null,
                                     /* aiTierRingEnabled= */ true,
                                     brandingDelegate);
                     mProfileDataCache.addObserver(mObserver);

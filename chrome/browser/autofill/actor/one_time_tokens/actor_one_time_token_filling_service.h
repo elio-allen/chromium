@@ -17,6 +17,7 @@
 #include "chrome/browser/autofill/actor/one_time_tokens/actor_login_context.h"
 #include "components/autofill/core/common/unique_ids.h"
 #include "components/one_time_tokens/core/browser/one_time_token_retrieval_error.h"
+#include "components/one_time_tokens/core/browser/user_data_processing_consent_states.h"
 #include "components/tabs/public/tab_interface.h"
 #include "url/origin.h"
 
@@ -48,6 +49,9 @@ enum class FormFillingContextStatus {
 // So far, this service is only intended for OTP filling.
 class ActorOneTimeTokenFillingService {
  public:
+  using FetchUserDataProcessingConsentCallback = base::OnceCallback<void(
+      std::optional<one_time_tokens::UserDataProcessingConsentStates>)>;
+
   virtual ~ActorOneTimeTokenFillingService() = default;
 
   // Records the start of a sign-in flow by observing navigations.
@@ -80,6 +84,13 @@ class ActorOneTimeTokenFillingService {
   // Retrieves and clears the tracked login context. Clearing the context
   // ensures that OTP tracking is only used once per actor login attempt.
   virtual std::optional<ActorLoginContext> ConsumeLoginContext() = 0;
+
+  // Returns the origin of the active login context, if any.
+  virtual std::optional<url::Origin> GetLoginContextOrigin() const = 0;
+
+  // Returns whether strong matching should be used for the active login
+  // context, or false if no active login context exists.
+  virtual bool GetLoginContextShouldUseStrongMatching() const = 0;
 
   // Asynchronously retrieves an OTP for the profile associated with the tab.
   //
@@ -116,6 +127,11 @@ class ActorOneTimeTokenFillingService {
   virtual FormFillingContextStatus ValidateFormFillingContext(
       tabs::TabHandle tab_handle,
       base::span<const FieldGlobalId> trigger_field_ids) const = 0;
+
+  // Asynchronously fetches user data processing consent states from the
+  // backend.
+  virtual void FetchUserDataProcessingConsent(
+      FetchUserDataProcessingConsentCallback callback) = 0;
 
   // Returns a weak pointer to this service.
   virtual base::WeakPtr<ActorOneTimeTokenFillingService> GetWeakPtr() = 0;

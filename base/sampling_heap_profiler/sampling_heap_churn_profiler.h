@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "base/base_export.h"
+#include "base/rand_util.h"
 #include "base/sampling_heap_profiler/sampling_heap_profiler.h"
 #include "base/synchronization/lock.h"
 #include "base/thread_annotations.h"
@@ -52,6 +53,7 @@ class BASE_EXPORT SamplingHeapChurnProfiler {
   Lock mutex_;
   std::vector<SamplingHeapProfiler::Sample> churn_samples_ GUARDED_BY(mutex_);
   double subsampling_chance_ = 0.005;
+  InsecureRandomGenerator generator_;
 
   // Number of running profiling sessions. Stored as an atomic to allow a fast,
   // lock-free check on the hot path when any sampled allocation is freed.

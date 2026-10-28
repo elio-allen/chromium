@@ -8,6 +8,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -50,7 +51,7 @@ using safe_search_api::ClassificationDetails;
 class FamilyLinkUrlFilterTest : public testing::Test {
  protected:
   FamilyLinkUrlFilterTest() {
-    EnableParentalControls(*supervised_user_test_environment_.pref_service());
+    supervised_user_test_environment_.EnableSupervisedAccount();
     supervised_user_test_environment_.SetWebFilterType(
         WebFilterType::kCertainSites);
   }
@@ -166,6 +167,8 @@ TEST_F(FamilyLinkUrlFilterTest, HostMatchesPattern) {
       FamilyLinkUrlFilter::HostMatchesPattern("www.google.com", "*google*"));
   EXPECT_FALSE(FamilyLinkUrlFilter::HostMatchesPattern("www.google.com",
                                                        "www.*.google.com"));
+  EXPECT_FALSE(FamilyLinkUrlFilter::HostMatchesPattern("", ".*"));
+  EXPECT_FALSE(FamilyLinkUrlFilter::HostMatchesPattern("www.", ".*"));
 }
 
 TEST_F(FamilyLinkUrlFilterTest, Reason) {
@@ -213,70 +216,6 @@ TEST_F(FamilyLinkUrlFilterTest, PlainWebFilterConfigurationWontDoAsyncCheck) {
       << "Plain filter configuration should classify urls as allowed";
 }
 
-TEST_F(FamilyLinkUrlFilterTest, StripOnDefaultFilteringBehaviour) {
-  EXPECT_EQ(GURL("http://example.com"),
-            supervised_user_test_environment_.family_link_url_filter()
-                ->GetEffectiveUrlToUnblock(
-                    {.url = GURL("http://www.example.com"),
-                     .behavior = FilteringBehavior::kBlock,
-                     .reason = FilteringBehaviorReason::DEFAULT}));
-}
-
-TEST_F(FamilyLinkUrlFilterTest,
-       StripOnManualFilteringBehaviourWithoutConflict) {
-  EXPECT_EQ(GURL("http://example.com"),
-            supervised_user_test_environment_.family_link_url_filter()
-                ->GetEffectiveUrlToUnblock(
-                    {.url = GURL("http://www.example.com"),
-                     .behavior = FilteringBehavior::kBlock,
-                     .reason = FilteringBehaviorReason::MANUAL}));
-}
-
-TEST_F(FamilyLinkUrlFilterTest,
-       SkipStripOnManualFilteringBehaviourWithConflict) {
-  GURL full_url("http://www.example.com");
-
-  // Add an conflicting entry in the blocklist.
-  supervised_user_test_environment_.SetManualFilterForHost(full_url.GetHost(),
-                                                           /*allowlist=*/false);
-
-  EXPECT_EQ(full_url,
-            supervised_user_test_environment_.family_link_url_filter()
-                ->GetEffectiveUrlToUnblock(
-                    {.url = full_url,
-                     .behavior = FilteringBehavior::kBlock,
-                     .reason = FilteringBehaviorReason::MANUAL}));
-}
-
-#if !BUILDFLAG(IS_CHROMEOS)
-TEST_F(FamilyLinkUrlFilterTest, NormalizesUnblockingUrls) {
-  GURL full_spec_url("http://admin:password@www.example.com/path?query#ref");
-
-  // First the url has normalized trivial domain, username, password, query and
-  // ref.
-  ASSERT_EQ(GURL("http://example.com/path"),
-            supervised_user_test_environment_.family_link_url_filter()
-                ->GetEffectiveUrlToUnblock(
-                    {.url = full_spec_url,
-                     .behavior = FilteringBehavior::kBlock,
-                     .reason = FilteringBehaviorReason::MANUAL}));
-
-  // Now add it to the manual blocklist.
-  supervised_user_test_environment_.SetManualFilterForHost(
-      full_spec_url.GetHost(),
-      /*allowlist=*/false);
-
-  // This time the url is normalized without trivial domain prefixes because it
-  // was added to the manual host blocklist.
-  EXPECT_EQ(GURL("http://www.example.com/path"),
-            supervised_user_test_environment_.family_link_url_filter()
-                ->GetEffectiveUrlToUnblock(
-                    {.url = full_spec_url,
-                     .behavior = FilteringBehavior::kBlock,
-                     .reason = FilteringBehaviorReason::MANUAL}));
-}
-#endif  // !BUILDFLAG(IS_CHROMEOS)
-
 struct MetricTestParam {
   // Context of filtering
   FilteringContext context;
@@ -293,13 +232,12 @@ class FamilyLinkUrlFilterMetricsTest
     : public testing::Test,
       public testing::WithParamInterface<MetricTestParam> {
  protected:
-  FamilyLinkUrlFilterMetricsTest() = default;
+  FamilyLinkUrlFilterMetricsTest() {
+    supervised_user_test_environment_.EnableSupervisedAccount();
+  }
 
   const MetricTestParam& GetTestCase() const { return GetParam(); }
 
-  void SetUp() override {
-    EnableParentalControls(*supervised_user_test_environment_.pref_service());
-  }
   void TearDown() override { supervised_user_test_environment_.Shutdown(); }
 
   base::HistogramTester histogram_tester_;
@@ -373,7 +311,7 @@ TEST_P(FamilyLinkUrlFilterMetricsTest, RecordsTopLevelMetricsForAsyncBlock) {
           base::DoNothing(),
           WebFilterMetricsOptions{.filtering_context = GetTestCase().context});
   supervised_user_test_environment_.family_link_url_checker_client()
-      .RunFirstCallack(safe_search_api::ClientClassification::kRestricted);
+      .RunFrontCallback(safe_search_api::ClientClassification::kRestricted);
 
   histogram_tester_.ExpectBucketCount(
       "ManagedUsers.TopLevelFilteringResult2",
@@ -390,7 +328,7 @@ TEST_P(FamilyLinkUrlFilterMetricsTest, RecordsTopLevelMetricsForAsyncAllow) {
           base::DoNothing(),
           WebFilterMetricsOptions{.filtering_context = GetTestCase().context});
   supervised_user_test_environment_.family_link_url_checker_client()
-      .RunFirstCallack(safe_search_api::ClientClassification::kAllowed);
+      .RunFrontCallback(safe_search_api::ClientClassification::kAllowed);
 
   histogram_tester_.ExpectBucketCount(
       "ManagedUsers.TopLevelFilteringResult2",
@@ -400,31 +338,31 @@ TEST_P(FamilyLinkUrlFilterMetricsTest, RecordsTopLevelMetricsForAsyncAllow) {
       SupervisedUserFilterTopLevelResult::kAllow, 1);
 }
 
-const MetricTestParam kMetricTestParams[] = {
-    {.context = FilteringContext::kNavigationThrottle,
-     .context_specific_histogram =
-         "ManagedUsers.TopLevelFilteringResult2.NavigationThrottle",
-     .label = "NavigationThrottleContext"},
-    {.context = FilteringContext::kDefault,
-     .context_specific_histogram =
-         "ManagedUsers.TopLevelFilteringResult2.Default",
-     .label = "DefaultContext"},
-    {.context = FilteringContext::kNavigationObserver,
-     .context_specific_histogram =
-         "ManagedUsers.TopLevelFilteringResult2.NavigationObserver",
-     .label = "NavigationObserverContext"},
-    {.context = FilteringContext::kFamilyLinkSettingsUpdated,
-     .context_specific_histogram =
-         "ManagedUsers.TopLevelFilteringResult2.FamilyLinkSettingsUpdated",
-     .label = "FamilyLinkSettingsUpdated"},
-};
+std::vector<MetricTestParam> GetMetricTestParams() {
+  return {
+      {.context = FilteringContext::kNavigationThrottle,
+       .context_specific_histogram =
+           "ManagedUsers.TopLevelFilteringResult2.NavigationThrottle",
+       .label = "NavigationThrottleContext"},
+      {.context = FilteringContext::kDefault,
+       .context_specific_histogram =
+           "ManagedUsers.TopLevelFilteringResult2.Default",
+       .label = "DefaultContext"},
+      {.context = FilteringContext::kNavigationObserver,
+       .context_specific_histogram =
+           "ManagedUsers.TopLevelFilteringResult2.NavigationObserver",
+       .label = "NavigationObserverContext"},
+      {.context = FilteringContext::kFamilyLinkSettingsUpdated,
+       .context_specific_histogram =
+           "ManagedUsers.TopLevelFilteringResult2.FamilyLinkSettingsUpdated",
+       .label = "FamilyLinkSettingsUpdated"},
+  };
+}
 
 INSTANTIATE_TEST_SUITE_P(,
                          FamilyLinkUrlFilterMetricsTest,
-                         testing::ValuesIn(kMetricTestParams),
-                         [](const auto& info) {
-                           return info.param.label;
-                         });
+                         testing::ValuesIn(GetMetricTestParams()),
+                         [](const auto& info) { return info.param.label; });
 
 TEST(FamilyLinkUrlFilterResultTest, IsFromManualList) {
   WebFilteringResult allow{GURL("http://example.com"),

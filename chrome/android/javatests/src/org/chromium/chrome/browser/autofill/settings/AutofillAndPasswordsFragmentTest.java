@@ -6,9 +6,9 @@ package org.chromium.chrome.browser.autofill.settings;
 
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
-import static androidx.test.espresso.action.ViewActions.scrollTo;
 import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
+import static androidx.test.espresso.matcher.ViewMatchers.hasDescendant;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.isEnabled;
 import static androidx.test.espresso.matcher.ViewMatchers.withEffectiveVisibility;
@@ -16,29 +16,38 @@ import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static org.hamcrest.CoreMatchers.allOf;
+import static org.hamcrest.CoreMatchers.is;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.only;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+
+import static org.chromium.base.test.transit.ViewFinder.waitForNoView;
+import static org.chromium.chrome.browser.settings.SettingsSearchTestUtils.assertPreferenceScreenMatchesIndex;
 
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.os.Bundle;
 
+import androidx.recyclerview.widget.RecyclerView;
 import androidx.test.core.app.ApplicationProvider;
+import androidx.test.espresso.contrib.RecyclerViewActions;
 import androidx.test.espresso.matcher.ViewMatchers.Visibility;
 import androidx.test.filters.MediumTest;
 import androidx.test.filters.SmallTest;
 
+import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
@@ -58,6 +67,7 @@ import org.chromium.chrome.browser.autofill.autofill_ai.EntityDataManagerFactory
 import org.chromium.chrome.browser.autofill.settings.AutofillAndPasswordsFragment.AutofillSettingsReferrer;
 import org.chromium.chrome.browser.autofill.settings.AutofillAndPasswordsFragment.YourSavedInfoDataCategory;
 import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsFragment;
+import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsReferrer;
 import org.chromium.chrome.browser.autofill.settings.personal_context.AutofillPersonalContextFragment;
 import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncher;
 import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncherFactory;
@@ -69,12 +79,11 @@ import org.chromium.chrome.browser.password_manager.PasswordManagerUtilBridge;
 import org.chromium.chrome.browser.password_manager.PasswordManagerUtilBridgeJni;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
-import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.settings.ChromeBaseSettingsFragment;
 import org.chromium.chrome.browser.settings.MainSettings;
-import org.chromium.chrome.browser.settings.SettingsActivity;
-import org.chromium.chrome.browser.settings.SettingsActivityTestRule;
+import org.chromium.chrome.browser.settings.SettingsInTab;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
+import org.chromium.chrome.browser.settings.SettingsTestRule;
 import org.chromium.chrome.browser.signin.SigninAndHistorySyncActivityLauncherImpl;
 import org.chromium.chrome.browser.signin.services.SigninPreferencesManager;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncCoordinator;
@@ -83,9 +92,7 @@ import org.chromium.chrome.browser.ui.signin.signin_promo.AutofillAndPasswordsPr
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.components.browser_ui.settings.SettingsNavigation;
-import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
 import org.chromium.components.policy.test.annotations.Policies;
-import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
 import org.chromium.components.signin.test.util.TestAccounts;
 
@@ -95,16 +102,14 @@ import org.chromium.components.signin.test.util.TestAccounts;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class AutofillAndPasswordsFragmentTest {
     @Rule(order = 0)
-    public SigninTestRule mSigninTestRule = new SigninTestRule();
+    public SigninTestRule mSigninTestRule = SigninTestRule.createWithCleanups();
 
     @Rule(order = 1)
-    public SettingsActivityTestRule<AutofillAndPasswordsFragment> mSettingsActivityTestRule =
-            new SettingsActivityTestRule<>(AutofillAndPasswordsFragment.class);
+    public SettingsTestRule<AutofillAndPasswordsFragment> mSettingsTestRule =
+            new SettingsTestRule<>(AutofillAndPasswordsFragment.class);
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    @Mock private SettingsIndexData mSearchIndexDataMock;
-    @Mock private Profile mProfileMock;
     @Mock private PasswordManagerUtilBridge.Natives mPasswordManagerUtilBridgeJniMock;
     @Mock private EntityDataManager mEntityDataManagerMock;
     @Mock private HelpAndFeedbackLauncher mHelpAndFeedbackLauncher;
@@ -179,13 +184,16 @@ public class AutofillAndPasswordsFragmentTest {
     @Test
     @SmallTest
     public void testHelpMenuTriggersAutofillHelp() {
-        SettingsActivity settingsActivity = mSettingsActivityTestRule.startSettingsActivity();
+        // Settings in a tab doesn't have a help button or menu.
+        Assume.assumeTrue(!SettingsInTab.shouldOpenSettingsInTab());
+
+        mSettingsTestRule.startSettingsActivity();
 
         onView(withId(R.id.menu_id_targeted_help)).perform(click());
 
         verify(mHelpAndFeedbackLauncher)
                 .show(
-                        settingsActivity,
+                        mSettingsTestRule.getActivity(),
                         ContextUtils.getApplicationContext()
                                 .getString(R.string.help_context_autofill),
                         /* url= */ null);
@@ -193,16 +201,11 @@ public class AutofillAndPasswordsFragmentTest {
 
     @Test
     @SmallTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN
-                + ":seamless-signin-promo-type/compact"
-                + "/seamless-signin-string-type/continueButton",
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
-    })
     public void testSignInPromoVisible_noAccount() {
         signInPromoDeclined(false);
 
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity(createFragmentArgs());
+        disableItemAnimation();
 
         onView(withId(R.id.signin_promo_view_container)).check(matches(isDisplayed()));
         onView(withId(R.id.signin_promo_title))
@@ -214,23 +217,18 @@ public class AutofillAndPasswordsFragmentTest {
                                         R.string
                                                 .signin_promo_description_autofill_and_passwords_seamless)));
         onView(withId(R.id.signin_promo_primary_button)).check(matches(isDisplayed()));
-        onView(withId(R.id.signin_promo_secondary_button)).check(doesNotExist());
+        onView(withId(R.id.account_picker_selected_account))
+                .check(matches(withEffectiveVisibility(Visibility.GONE)));
     }
 
     @Test
     @SmallTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN
-                + ":seamless-signin-promo-type/compact"
-                + "/seamless-signin-string-type/continueButton",
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
-    })
     public void testSignInPromoNotSelectable() {
         signInPromoDeclined(false);
 
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity(createFragmentArgs());
 
-        AutofillAndPasswordsFragment fragment = mSettingsActivityTestRule.getFragment();
+        AutofillAndPasswordsFragment fragment = mSettingsTestRule.getFragment();
         SigninPromoPreference preference =
                 (SigninPromoPreference)
                         fragment.findPreference(AutofillAndPasswordsFragment.PREF_SIGNIN_PROMO);
@@ -239,17 +237,12 @@ public class AutofillAndPasswordsFragmentTest {
 
     @Test
     @SmallTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN
-                + ":seamless-signin-promo-type/compact"
-                + "/seamless-signin-string-type/continueButton",
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
-    })
     public void testSignInPromoVisible_withAccount() {
         mSigninTestRule.addAccount(TestAccounts.ACCOUNT1);
         signInPromoDeclined(false);
 
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity(createFragmentArgs());
+        disableItemAnimation();
 
         onView(withId(R.id.signin_promo_view_container)).check(matches(isDisplayed()));
         onView(withId(R.id.signin_promo_title))
@@ -261,45 +254,25 @@ public class AutofillAndPasswordsFragmentTest {
                                         R.string
                                                 .signin_promo_description_autofill_and_passwords_seamless)));
         onView(withId(R.id.signin_promo_primary_button)).check(matches(isDisplayed()));
-        onView(withId(R.id.signin_promo_secondary_button)).check(doesNotExist());
+        onView(withId(R.id.account_picker_selected_account)).check(matches(isDisplayed()));
     }
 
     @Test
     @SmallTest
-    @EnableFeatures({ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID})
-    @DisableFeatures(SigninFeatures.ENABLE_SEAMLESS_SIGNIN)
-    public void testSignInPromoVisible_seamlessDisabled() {
-        mSigninTestRule.addAccount(TestAccounts.ACCOUNT1);
-        signInPromoDeclined(false);
-
-        mSettingsActivityTestRule.startSettingsActivity();
-
-        onView(withId(R.id.signin_promo_view_container)).check(matches(isDisplayed()));
-        onView(withId(R.id.sync_promo_title))
-                .check(matches(withText(R.string.signin_promo_title_autofill_and_passwords)));
-        onView(withId(R.id.sync_promo_description))
-                .check(matches(withText(R.string.signin_promo_description_autofill_and_passwords)));
-        onView(withId(R.id.sync_promo_choose_account_button)).check(matches(isDisplayed()));
-        onView(withId(R.id.sync_promo_signin_button)).check(matches(isDisplayed()));
-    }
-
-    @Test
-    @SmallTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN
-                + ":seamless-signin-promo-type/compact"
-                + "/seamless-signin-string-type/continueButton",
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
-    })
     public void testSignInPromoDismiss() {
         signInPromoDeclined(false);
 
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity(createFragmentArgs());
+        disableItemAnimation();
 
         onView(withId(R.id.signin_promo_view_container)).check(matches(isDisplayed()));
         onView(withId(R.id.signin_promo_dismiss_button)).perform(click());
 
-        onView(withId(R.id.signin_promo_view_container)).check(doesNotExist());
+        // Dismissing the promo hides the SigninPromoPreference, but PreferenceGroupAdapter
+        // applies visibility changes on a posted runnable and RecyclerView only detaches the
+        // row on a subsequent layout pass. Neither is covered by Espresso's idle detection, so
+        // poll for the removal instead of sampling the hierarchy once.
+        waitForNoView(withId(R.id.signin_promo_view_container));
         assertTrue(
                 ChromeSharedPreferences.getInstance()
                         .readBoolean(
@@ -309,17 +282,13 @@ public class AutofillAndPasswordsFragmentTest {
 
     @Test
     @SmallTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN
-                + ":seamless-signin-promo-type/compact"
-                + "/seamless-signin-string-type/continueButton",
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
-    })
     public void testSignInPromoClick() {
         signInPromoDeclined(false);
 
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity(createFragmentArgs());
+        disableItemAnimation();
 
+        onView(withId(R.id.signin_promo_view_container)).check(matches(isDisplayed()));
         onView(withId(R.id.signin_promo_primary_button)).perform(click());
 
         verify(mAutofillAndPasswordsSigninCoordinator).startSigninFlow(any());
@@ -327,12 +296,6 @@ public class AutofillAndPasswordsFragmentTest {
 
     @Test
     @SmallTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN
-                + ":seamless-signin-promo-type/compact"
-                + "/seamless-signin-string-type/continueButton",
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
-    })
     public void testSignInPromoMaxImpressions() {
         signInPromoDeclined(false);
         ChromeSharedPreferences.getInstance()
@@ -342,17 +305,27 @@ public class AutofillAndPasswordsFragmentTest {
                                         .AUTOFILL_AND_PASSWORDS),
                         AutofillAndPasswordsPromoDelegate.MAX_IMPRESSIONS);
 
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity(createFragmentArgs());
 
         onView(withId(R.id.signin_promo_view_container)).check(doesNotExist());
     }
 
     @Test
     @SmallTest
-    @EnableFeatures({ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID})
+    public void testSignInPromoNotVisible_whenLaunchedFromSearch() {
+        signInPromoDeclined(false);
+
+        mSettingsTestRule.startSettingsActivity(
+                createFragmentArgs(AutofillSettingsReferrer.SETTINGS_SEARCH));
+
+        onView(withId(R.id.signin_promo_view_container)).check(doesNotExist());
+    }
+
+    @Test
+    @SmallTest
     @Policies.Add({@Policies.Item(key = "PasswordManagerEnabled", string = "false")})
     public void testPasswordsItemManagedByOrganizationWhenDisabledByPolicy() {
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity();
 
         onView(
                         allOf(
@@ -369,13 +342,12 @@ public class AutofillAndPasswordsFragmentTest {
 
     @Test
     @SmallTest
-    @EnableFeatures({ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID})
     public void testPasswordsItemWhenNotManaged() {
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         "Autofill.YourSavedInfoSettingsPage.CategoryLinkClick",
                         YourSavedInfoDataCategory.PASSWORD_MANAGER);
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity();
 
         onView(withText(R.string.password_manager_settings_title))
                 .check(matches(isDisplayed()))
@@ -388,12 +360,11 @@ public class AutofillAndPasswordsFragmentTest {
 
     @Test
     @MediumTest
-    @EnableFeatures({ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID})
     public void testPasswordsPreferenceErrorState() {
         when(mPasswordManagerUtilBridgeJniMock.isPasswordManagerAvailable(anyBoolean()))
                 .thenReturn(false);
 
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity();
 
         onView(withText(R.string.gpm_stopped_working_subtitle)).check(matches(isDisplayed()));
     }
@@ -401,87 +372,52 @@ public class AutofillAndPasswordsFragmentTest {
     @Test
     @SmallTest
     @EnableFeatures({
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID,
         ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA,
         ChromeFeatureList.AUTOFILL_AMBIENT_AUTOFILL
     })
-    public void testSearchIndexWhenAllEnabled() {
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    AutofillAndPasswordsFragment.SEARCH_INDEX_DATA_PROVIDER
-                            .updateDynamicPreferences(
-                                    mSettingsActivityTestRule.getActivity(),
-                                    mSearchIndexDataMock,
-                                    mProfileMock);
-                });
+    @DisableFeatures(ChromeFeatureList.AUTOFILL_AI_WALLET_SHOPPING)
+    public void testPreferenceScreenMatchesSearchIndex_defaultFeatures() {
+        mSettingsTestRule.startSettingsActivity();
+        AutofillAndPasswordsFragment fragment = mSettingsTestRule.getFragment();
 
-        verify(mSearchIndexDataMock, only())
-                .removeEntry(
-                        AutofillAndPasswordsFragment.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
-                                AutofillAndPasswordsFragment.PREF_SIGNIN_PROMO));
+        assertPreferenceScreenMatchesIndex(fragment);
     }
 
     @Test
     @SmallTest
-    @DisableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
-    public void testSearchIndexEmptyWhenFeatureDisabled() {
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    AutofillAndPasswordsFragment.SEARCH_INDEX_DATA_PROVIDER
-                            .updateDynamicPreferences(
-                                    mSettingsActivityTestRule.getActivity(),
-                                    mSearchIndexDataMock,
-                                    mProfileMock);
-                });
+    @EnableFeatures({
+        ChromeFeatureList.AUTOFILL_AI_WALLET_SHOPPING,
+        ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA,
+        ChromeFeatureList.AUTOFILL_AMBIENT_AUTOFILL
+    })
+    public void testPreferenceScreenMatchesSearchIndex_allFeaturesEnabled() {
+        mSettingsTestRule.startSettingsActivity();
+        AutofillAndPasswordsFragment fragment = mSettingsTestRule.getFragment();
 
-        verify(mSearchIndexDataMock)
-                .removeEntry(
-                        AutofillAndPasswordsFragment.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
-                                AutofillAndPasswordsFragment.PREF_PASSWORDS));
-        verify(mSearchIndexDataMock)
-                .removeEntry(
-                        AutofillAndPasswordsFragment.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
-                                AutofillAndPasswordsFragment.PREF_AUTOFILL_PAYMENTS));
-        verify(mSearchIndexDataMock)
-                .removeEntry(
-                        AutofillAndPasswordsFragment.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
-                                AutofillAndPasswordsFragment.PREF_AUTOFILL_ADDRESSES));
-        verify(mSearchIndexDataMock)
-                .removeEntry(
-                        AutofillAndPasswordsFragment.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
-                                AutofillAndPasswordsFragment.PREF_AUTOFILL_SETTINGS));
-        verify(mSearchIndexDataMock)
-                .removeEntry(
-                        AutofillAndPasswordsFragment.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
-                                AutofillAndPasswordsFragment.PREF_AUTOFILL_IDENTITY_DOCS));
-        verify(mSearchIndexDataMock)
-                .removeEntry(
-                        AutofillAndPasswordsFragment.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
-                                AutofillAndPasswordsFragment.PREF_AUTOFILL_PERSONAL_CONTEXT));
-        verify(mSearchIndexDataMock)
-                .removeEntry(
-                        AutofillAndPasswordsFragment.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
-                                AutofillAndPasswordsFragment.PREF_AUTOFILL_TRAVEL));
-        verify(mSearchIndexDataMock)
-                .removeEntry(
-                        AutofillAndPasswordsFragment.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
-                                AutofillAndPasswordsFragment.PREF_AUTOFILL_SHOPPING));
-
-        verify(mSearchIndexDataMock)
-                .removeEntry(
-                        AutofillAndPasswordsFragment.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
-                                AutofillAndPasswordsFragment.PREF_SIGNIN_PROMO));
+        assertPreferenceScreenMatchesIndex(fragment);
     }
 
     @Test
     @SmallTest
-    @EnableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
+    @DisableFeatures({
+        ChromeFeatureList.AUTOFILL_AI_WALLET_SHOPPING,
+        ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA
+    })
+    public void testPreferenceScreenMatchesSearchIndex_dynamicFeaturesDisabled() {
+        mSettingsTestRule.startSettingsActivity();
+        AutofillAndPasswordsFragment fragment = mSettingsTestRule.getFragment();
+
+        assertPreferenceScreenMatchesIndex(fragment);
+    }
+
+    @Test
+    @SmallTest
     public void testClickPaymentsLaunchesPayments() {
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         "Autofill.YourSavedInfoSettingsPage.CategoryLinkClick",
                         YourSavedInfoDataCategory.PAYMENTS);
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity();
 
         testItemClick(R.string.autofill_payments_title, AutofillPaymentMethodsFragment.class);
         histogramWatcher.assertExpected();
@@ -489,13 +425,12 @@ public class AutofillAndPasswordsFragmentTest {
 
     @Test
     @SmallTest
-    @EnableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
     public void testClickContactInfoLaunchesContactInfo() {
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         "Autofill.YourSavedInfoSettingsPage.CategoryLinkClick",
                         YourSavedInfoDataCategory.CONTACT_INFO);
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity();
 
         testItemClick(R.string.autofill_contact_info_title, AutofillProfilesFragment.class);
         histogramWatcher.assertExpected();
@@ -503,25 +438,47 @@ public class AutofillAndPasswordsFragmentTest {
 
     @Test
     @SmallTest
-    @EnableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
+    @EnableFeatures({ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA})
     public void testClickAutofillSettingsLaunchesAutofillOptions() {
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity();
 
         testItemClick(R.string.autofill_settings_title, AutofillOptionsFragment.class);
+
+        ArgumentCaptor<Bundle> bundleCaptor = ArgumentCaptor.forClass(Bundle.class);
+        verify(mSettingsNavigation)
+                .startSettings(
+                        any(), eq(AutofillOptionsFragment.class), bundleCaptor.capture(), eq(true));
+        assertEquals(
+                AutofillOptionsReferrer.AUTOFILL_AND_PASSWORDS_FRAGMENT,
+                bundleCaptor.getValue().getInt(AutofillOptionsFragment.AUTOFILL_OPTIONS_REFERRER));
     }
 
     @Test
     @SmallTest
-    @EnableFeatures({
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID,
-        ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA
-    })
+    @DisableFeatures(ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA)
+    public void testClickAutofillServicesLaunchesAutofillOptions_autofillAiDisabled() {
+        mSettingsTestRule.startSettingsActivity();
+
+        testItemClick(R.string.autofill_options_title, AutofillOptionsFragment.class);
+
+        ArgumentCaptor<Bundle> bundleCaptor = ArgumentCaptor.forClass(Bundle.class);
+        verify(mSettingsNavigation)
+                .startSettings(
+                        any(), eq(AutofillOptionsFragment.class), bundleCaptor.capture(), eq(true));
+        assertEquals(
+                AutofillOptionsReferrer.AUTOFILL_AND_PASSWORDS_FRAGMENT,
+                bundleCaptor.getValue().getInt(AutofillOptionsFragment.AUTOFILL_OPTIONS_REFERRER));
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures({ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA})
     public void testClickIdentityDocsLaunchesIdentityDocs() {
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         "Autofill.YourSavedInfoSettingsPage.CategoryLinkClick",
                         YourSavedInfoDataCategory.IDENTITY_DOCS);
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity();
 
         testItemClick(R.string.autofill_identity_docs_title, AutofillIdentityDocsFragment.class);
         histogramWatcher.assertExpected();
@@ -529,26 +486,22 @@ public class AutofillAndPasswordsFragmentTest {
 
     @Test
     @SmallTest
-    @EnableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
     @DisableFeatures(ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA)
     public void testIdentityDocsNotVisibleAutofillAiDisabled() {
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity();
 
         onView(withText(R.string.autofill_identity_docs_title)).check(doesNotExist());
     }
 
     @Test
     @SmallTest
-    @EnableFeatures({
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID,
-        ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA
-    })
+    @EnableFeatures({ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA})
     public void testClickTravelLaunchesTravel() {
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         "Autofill.YourSavedInfoSettingsPage.CategoryLinkClick",
                         YourSavedInfoDataCategory.TRAVEL);
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity();
 
         testItemClick(R.string.autofill_travel_title, AutofillTravelFragment.class);
         histogramWatcher.assertExpected();
@@ -556,28 +509,39 @@ public class AutofillAndPasswordsFragmentTest {
 
     @Test
     @SmallTest
-    @EnableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
     @DisableFeatures(ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA)
     public void testTravelNotVisibleWhenAutofillAiDisabled() {
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity();
 
         onView(withText(R.string.autofill_travel_title)).check(doesNotExist());
     }
 
     @Test
     @SmallTest
-    @EnableFeatures({
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID,
-        ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA
-    })
+    @EnableFeatures({ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA})
     public void testReportsEventOnlyOnce() {
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         "Autofill.YourSavedInfoSettingsPage.VisitReferrer",
                         AutofillSettingsReferrer.SETTINGS_MENU);
 
-        mSettingsActivityTestRule.startSettingsActivity();
-        mSettingsActivityTestRule.recreateActivity();
+        mSettingsTestRule.startSettingsActivity(createFragmentArgs());
+        mSettingsTestRule.recreateActivity();
+
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures({ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA})
+    public void testReportsSearchReferrerEvent() {
+        var histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Autofill.YourSavedInfoSettingsPage.VisitReferrer",
+                        AutofillSettingsReferrer.SETTINGS_SEARCH);
+
+        mSettingsTestRule.startSettingsActivity(
+                createFragmentArgs(AutofillSettingsReferrer.SETTINGS_SEARCH));
 
         histogramWatcher.assertExpected();
     }
@@ -585,7 +549,6 @@ public class AutofillAndPasswordsFragmentTest {
     @Test
     @SmallTest
     @EnableFeatures({
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID,
         ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA,
         ChromeFeatureList.AUTOFILL_AMBIENT_AUTOFILL
     })
@@ -594,7 +557,7 @@ public class AutofillAndPasswordsFragmentTest {
                 HistogramWatcher.newSingleRecordWatcher(
                         "Autofill.YourSavedInfoSettingsPage.CategoryLinkClick",
                         YourSavedInfoDataCategory.SHOPPING);
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity();
 
         testItemClick(R.string.autofill_shopping_title, AutofillShoppingFragment.class);
         histogramWatcher.assertExpected();
@@ -602,14 +565,11 @@ public class AutofillAndPasswordsFragmentTest {
 
     @Test
     @SmallTest
-    @EnableFeatures({
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID,
-        ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA
-    })
+    @EnableFeatures({ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA})
     public void testClickPersonalContextLaunchesPersonalContext() {
         var userActionTester = new UserActionTester();
         try {
-            mSettingsActivityTestRule.startSettingsActivity();
+            mSettingsTestRule.startSettingsActivity();
 
             testItemClick(
                     R.string.personal_context_autofill_settings_title_android,
@@ -628,10 +588,9 @@ public class AutofillAndPasswordsFragmentTest {
 
     @Test
     @SmallTest
-    @EnableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
     @DisableFeatures(ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA)
     public void testPersonalContextNotVisibleWhenAutofillAiDisabled() {
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity();
 
         onView(withText(R.string.personal_context_autofill_settings_title_android))
                 .check(doesNotExist());
@@ -639,52 +598,13 @@ public class AutofillAndPasswordsFragmentTest {
 
     @Test
     @SmallTest
-    @EnableFeatures({
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID,
-        ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA
-    })
+    @EnableFeatures({ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA})
     public void testPersonalContextNotVisibleWhenCategoryNotVisible() {
         when(mEntityDataManagerMock.isPersonalContextPreferenceVisible()).thenReturn(false);
-        mSettingsActivityTestRule.startSettingsActivity();
+        mSettingsTestRule.startSettingsActivity();
 
         onView(withText(R.string.personal_context_autofill_settings_title_android))
                 .check(doesNotExist());
-    }
-
-    @Test
-    @SmallTest
-    @DisableFeatures({
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID,
-        ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA
-    })
-    public void testPersonalContextNotVisibleWhenFeaturesDisabled() {
-        mSettingsActivityTestRule.startSettingsActivity();
-
-        onView(withText(R.string.personal_context_autofill_settings_title_android))
-                .check(doesNotExist());
-    }
-
-    @Test
-    @SmallTest
-    @EnableFeatures({
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID,
-        ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA
-    })
-    public void testSearchIndexPersonalContextRemovedWhenCategoryNotVisible() {
-        when(mEntityDataManagerMock.isPersonalContextPreferenceVisible()).thenReturn(false);
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    AutofillAndPasswordsFragment.SEARCH_INDEX_DATA_PROVIDER
-                            .updateDynamicPreferences(
-                                    mSettingsActivityTestRule.getActivity(),
-                                    mSearchIndexDataMock,
-                                    mProfileMock);
-                });
-
-        verify(mSearchIndexDataMock)
-                .removeEntry(
-                        AutofillAndPasswordsFragment.SEARCH_INDEX_DATA_PROVIDER.getUniqueId(
-                                AutofillAndPasswordsFragment.PREF_AUTOFILL_PERSONAL_CONTEXT));
     }
 
     private static void signInPromoDeclined(boolean value) {
@@ -693,13 +613,40 @@ public class AutofillAndPasswordsFragmentTest {
                         ChromePreferenceKeys.SIGNIN_PROMO_AUTOFILL_AND_PASSWORDS_DISMISSED, value);
     }
 
+    private static Bundle createFragmentArgs(@AutofillSettingsReferrer int referrer) {
+        Bundle fragmentArgs = new Bundle();
+        fragmentArgs.putInt(AutofillAndPasswordsFragment.EXTRA_REFERRER, referrer);
+        return fragmentArgs;
+    }
+
+    private static Bundle createFragmentArgs() {
+        return createFragmentArgs(AutofillSettingsReferrer.SETTINGS_MENU);
+    }
+
     private void testItemClick(
             int titleRes, Class<? extends ChromeBaseSettingsFragment> expectedFragment) {
         // We need to set the testing instance right before the click, otherwise Settings tests
         // don't launch proper fragment to initiate tests.
         SettingsNavigationFactory.setInstanceForTesting(mSettingsNavigation);
-        onView(withText(titleRes)).perform(scrollTo(), click());
+        // Use RecyclerViewActions to scroll, since Espresso's scrollTo() cannot reach items that
+        // are off-screen and therefore not yet bound in the RecyclerView (e.g. on small or
+        // landscape screens).
+        onView(is(mSettingsTestRule.getFragment().getListView()))
+                .perform(RecyclerViewActions.scrollTo(hasDescendant(withText(titleRes))));
+        onView(withText(titleRes)).perform(click());
 
         verify(mSettingsNavigation).startSettings(any(), eq(expectedFragment), any(), eq(true));
+    }
+
+    /** Disable animation to reduce flakiness. */
+    private void disableItemAnimation() {
+        AutofillAndPasswordsFragment fragment = mSettingsTestRule.getFragment();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    RecyclerView listView = fragment.getListView();
+                    if (listView != null) {
+                        listView.setItemAnimator(null);
+                    }
+                });
     }
 }

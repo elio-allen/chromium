@@ -17,7 +17,6 @@
 #include "base/compiler_specific.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/scoped_policy.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notimplemented.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "components/viz/common/resources/shared_image_format_utils.h"
@@ -78,28 +77,6 @@ struct ScopedIOSurfaceLock {
   const IOSurfaceRef io_surface_;
   const IOSurfaceLockOptions options_;
 };
-
-// Returns planar format for given multiplanar `format`.
-viz::SharedImageFormat GetFormatForPlane(viz::SharedImageFormat format,
-                                         int plane) {
-  DCHECK(format.is_multi_plane());
-  DCHECK(format.IsValidPlaneIndex(plane));
-
-  // IOSurfaceBacking does not support external sampler use cases.
-  int num_channels = format.NumChannelsInPlane(plane);
-  DCHECK_LE(num_channels, 2);
-  switch (format.channel_format()) {
-    case viz::SharedImageFormat::ChannelFormat::k8:
-      return num_channels == 2 ? viz::SinglePlaneFormat::kRG_88
-                               : viz::SinglePlaneFormat::kR_8;
-    case viz::SharedImageFormat::ChannelFormat::k10:
-    case viz::SharedImageFormat::ChannelFormat::k16:
-    case viz::SharedImageFormat::ChannelFormat::k16F:
-      return num_channels == 2 ? viz::SinglePlaneFormat::kRG_1616
-                               : viz::SinglePlaneFormat::kR_16;
-  }
-  NOTREACHED();
-}
 
 wgpu::Texture CreateWGPUTexture(wgpu::SharedTextureMemory shared_texture_memory,
                                 SharedImageUsageSet shared_image_usage,
@@ -1291,8 +1268,6 @@ void IOSurfaceImageBacking::WaitForCommandsToBeScheduled(
     id<MTLDevice> waiting_device) {
   AssertLockAcquired();
   TRACE_EVENT0("gpu", "IOSurfaceImageBacking::WaitForCommandsToBeScheduled");
-  base::TimeDelta dawn_wait_time;
-  base::TimeDelta angle_wait_time;
 
   base::flat_map<wgpu::Device, wgpu::Future, WGPUDeviceCompare> futures_to_keep;
   for (const auto& [device, future] : wgpu_commands_scheduled_futures_) {
@@ -1304,13 +1279,11 @@ void IOSurfaceImageBacking::WaitForCommandsToBeScheduled(
 
     TRACE_EVENT0("gpu",
                  "IOSurfaceImageBacking::WaitForCommandsToBeScheduled::Dawn");
-    base::TimeTicks start_time = base::TimeTicks::Now();
     wgpu::WaitStatus status =
         device.GetAdapter().GetInstance().WaitAny(future, UINT64_MAX);
     if (status != wgpu::WaitStatus::Success) {
       LOG(ERROR) << "WaitAny on commandsScheduledFuture failed with " << status;
     }
-    dawn_wait_time += base::TimeTicks::Now() - start_time;
   }
   wgpu_commands_scheduled_futures_ = std::move(futures_to_keep);
 
@@ -1323,39 +1296,9 @@ void IOSurfaceImageBacking::WaitForCommandsToBeScheduled(
 
     TRACE_EVENT0("gpu",
                  "IOSurfaceImageBacking::WaitForCommandsToBeScheduled::ANGLE");
-    base::TimeTicks start_time = base::TimeTicks::Now();
     fence->ClientWait();
-    angle_wait_time += base::TimeTicks::Now() - start_time;
   }
   egl_commands_scheduled_fences_ = std::move(fences_to_keep);
-
-  // Record the time it takes to schedule the commands on Dawn and ANGLE.
-  // Here we use the same kWaitTimeMax from Compositing.Display.DrawToSwapUs.
-  static constexpr base::TimeDelta kWaitTimeMin = base::Microseconds(5);
-  static constexpr base::TimeDelta kWaitTimeMax = base::Milliseconds(50);
-  static constexpr uint32_t kCommandsScheduledBuckets = 50;
-
-  const base::TimeDelta total_wait_time = dawn_wait_time + angle_wait_time;
-
-  if (total_wait_time.is_positive() &&
-      base::ShouldRecordSubsampledMetric(0.01)) {
-    if (dawn_wait_time.is_positive()) {
-      UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES(
-          "GPU.IOSurface.WaitForCommandsToBeScheduledTimeUs.Dawn",
-          dawn_wait_time, kWaitTimeMin, kWaitTimeMax,
-          kCommandsScheduledBuckets);
-    }
-    if (angle_wait_time.is_positive()) {
-      UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES(
-          "GPU.IOSurface.WaitForCommandsToBeScheduledTimeUs.ANGLE",
-          angle_wait_time, kWaitTimeMin, kWaitTimeMax,
-          kCommandsScheduledBuckets);
-    }
-
-    UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES(
-        "GPU.IOSurface.WaitForCommandsToBeScheduledTimeUs", total_wait_time,
-        kWaitTimeMin, kWaitTimeMax, kCommandsScheduledBuckets);
-  }
 }
 
 IOSurfaceRef IOSurfaceImageBacking::GetIOSurface() {
@@ -1555,7 +1498,7 @@ bool IOSurfaceImageBacking::IsPurgeable() const {
   return purgeable_;
 }
 
-void IOSurfaceImageBacking::Update(std::unique_ptr<gfx::GpuFence> in_fence) {
+void IOSurfaceImageBacking::Update(gfx::GpuFenceHandle in_fence) {
   AutoLock auto_lock(this);
 #if BUILDFLAG(IS_IOS)
   {
@@ -1726,27 +1669,20 @@ bool IOSurfaceImageBacking::IOSurfaceBackingEGLStateBeginAccess(
     std::vector<std::unique_ptr<gl::ScopedEGLSurfaceIOSurface>> egl_surfaces;
     for (int plane_index = 0; plane_index < format().NumberOfPlanes();
          plane_index++) {
-      viz::SharedImageFormat plane_format;
-      if (format().is_single_plane()) {
-        plane_format = format();
-        // See comments in IOSurfaceImageBackingFactory::CreateSharedImage about
-        // RGBA versus BGRA when using Skia Ganesh GL backend or ANGLE.
-        if (io_surface_format_ == 'BGRA') {
-          if (plane_format == viz::SinglePlaneFormat::kRGBA_8888) {
-            plane_format = viz::SinglePlaneFormat::kBGRA_8888;
-          } else if (plane_format == viz::SinglePlaneFormat::kRGBX_8888) {
-            plane_format = viz::SinglePlaneFormat::kBGRX_8888;
-          }
+      viz::SharedImageFormat buffer_format = format();
+      // See comments in IOSurfaceImageBackingFactory::CreateSharedImage about
+      // RGBA versus BGRA when using Skia Ganesh GL backend or ANGLE.
+      if (io_surface_format_ == 'BGRA') {
+        if (buffer_format == viz::SinglePlaneFormat::kRGBA_8888) {
+          buffer_format = viz::SinglePlaneFormat::kBGRA_8888;
+        } else if (buffer_format == viz::SinglePlaneFormat::kRGBX_8888) {
+          buffer_format = viz::SinglePlaneFormat::kBGRX_8888;
         }
-      } else {
-        // For multiplanar formats (without external sampler) get planar buffer
-        // format.
-        plane_format = GetFormatForPlane(format(), plane_index);
       }
 
       auto egl_surface = gl::ScopedEGLSurfaceIOSurface::Create(
           egl_state->egl_display_, egl_state->GetGLTarget(), io_surface_.get(),
-          plane_index, plane_format);
+          plane_index, buffer_format);
       if (!egl_surface) {
         LOG(ERROR) << "Failed to create ScopedEGLSurfaceIOSurface.";
         EndAccess(readonly);

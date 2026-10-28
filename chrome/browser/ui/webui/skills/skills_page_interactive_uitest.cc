@@ -4,15 +4,14 @@
 
 #include <optional>
 
+#include "base/callback_list.h"
 #include "base/command_line.h"
 #include "base/test/gtest_util.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
-#include "base/callback_list.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
-#include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
@@ -27,6 +26,7 @@
 #include "chrome/common/channel_info.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
+#include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/skills/features.h"
@@ -38,6 +38,7 @@
 #include "components/sync/model/data_type_store_service.h"
 #include "components/zoom/zoom_controller.h"
 #include "content/public/test/browser_test.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "third_party/blink/public/common/features.h"
@@ -48,7 +49,7 @@
 
 namespace {
 // Baseline Gerrit CL number of the most recent CL that modified the UI.
-constexpr char kScreenshotBaselineCL[] = "7695055";
+constexpr char kScreenshotBaselineCL[] = "8239773";
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kSkillsPageElementId);
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kSkillsDialogElementId);
 DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kElementEvent);
@@ -69,8 +70,9 @@ class SkillsPageInteractiveUITest : public InteractiveBrowserTest {
 
   void SetUp() override {
     scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kSkillsEnabled, features::kSkillsServiceApi},
-        /*disabled_features=*/{});
+        /*enabled_features=*/{features::kSkillsEnabled,
+                              features::kSkillsServiceApi},
+        /*disabled_features=*/{features::kSkillsWebViewV2Enabled});
     InteractiveBrowserTest::SetUp();
   }
 
@@ -149,7 +151,7 @@ class SkillsPageInteractiveUITest : public InteractiveBrowserTest {
   InteractiveTestApi::MultiStep CheckToastIsShowing(ToastId toast_id) {
     return PollUntil(
         [this, toast_id]() {
-          auto* controller = browser()->GetFeatures().toast_controller();
+          auto* controller = ToastController::From(browser());
           return controller && controller->IsShowingToast() &&
                  controller->GetCurrentToastId() == toast_id;
         },
@@ -246,7 +248,7 @@ IN_PROC_BROWSER_TEST_F(SkillsPageInteractiveUITest, UndoFromDeletionFlow) {
       "skills-app", "user-skills-page", "skill-card"};
 
   SignIn("testskills@gmail.com");
-  glic::GlicEnabling::SetBypassEnablementChecksForTesting(true);
+  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass;
   RunTestSequence(
       OpenSkillsPage(GURL(chrome::kChromeUISkillsURL)
                          .Resolve(chrome::kChromeUISkillsYourSkillsPath)),
@@ -267,7 +269,7 @@ IN_PROC_BROWSER_TEST_F(SkillsPageInteractiveUITest, UndoFromDeletionFlow) {
 
 IN_PROC_BROWSER_TEST_F(SkillsPageInteractiveUITest, DialogZoomModeDisabled) {
   SignIn("testskills@gmail.com");
-  glic::GlicEnabling::SetBypassEnablementChecksForTesting(true);
+  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass;
 
   const InteractiveBrowserWindowTestApi::DeepQuery kAddButtonQuery{
       "skills-app", "user-skills-page", "cr-button#addSkillButton"};
@@ -313,7 +315,8 @@ class SkillsPageScreenshotInteractiveUITest
     } else {
       enabled_features = {features::kSkillsEnabled};
     }
-    scoped_feature_list_.InitWithFeatures(enabled_features, {});
+    scoped_feature_list_.InitWithFeatures(enabled_features,
+                                          {features::kSkillsWebViewV2Enabled});
     InteractiveBrowserTest::SetUp();
   }
 };
@@ -350,7 +353,7 @@ IN_PROC_BROWSER_TEST_P(SkillsPageScreenshotInteractiveUITest, ZeroStatePage) {
   std::string screenshot_name =
       IsDarkMode() ? "zero_state_dark" : "zero_state_light";
   SignIn("testskills@gmail.com");
-  glic::GlicEnabling::SetBypassEnablementChecksForTesting(true);
+  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass;
   RunTestSequence(
       SetOnIncompatibleAction(
           OnIncompatibleAction::kIgnoreAndContinue,
@@ -371,7 +374,7 @@ IN_PROC_BROWSER_TEST_P(SkillsPageScreenshotInteractiveUITest, NarrowPage) {
 
   std::string screenshot_name = IsDarkMode() ? "narrow_dark" : "narrow_light";
   SignIn("testskills@gmail.com");
-  glic::GlicEnabling::SetBypassEnablementChecksForTesting(true);
+  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass;
   RunTestSequence(
       SetOnIncompatibleAction(
           OnIncompatibleAction::kIgnoreAndContinue,
@@ -398,7 +401,7 @@ IN_PROC_BROWSER_TEST_P(SkillsPageScreenshotInteractiveUITest, YourSkillsPage) {
   std::string screenshot_name =
       IsDarkMode() ? "your_skills_dark" : "your_skills_light";
   SignIn("testskills@gmail.com");
-  glic::GlicEnabling::SetBypassEnablementChecksForTesting(true);
+  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass;
   RunTestSequence(
       SetOnIncompatibleAction(
           OnIncompatibleAction::kIgnoreAndContinue,
@@ -450,7 +453,7 @@ IN_PROC_BROWSER_TEST_P(SkillsPageScreenshotInteractiveUITest,
   std::string screenshot_name =
       IsDarkMode() ? "browse_skills_dark" : "browse_skills_light";
   SignIn("testskills@gmail.com");
-  glic::GlicEnabling::SetBypassEnablementChecksForTesting(true);
+  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass;
   RunTestSequence(
       SetOnIncompatibleAction(
           OnIncompatibleAction::kIgnoreAndContinue,
@@ -513,7 +516,7 @@ IN_PROC_BROWSER_TEST_P(SkillsPageScreenshotInteractiveUITest,
   std::string screenshot_name =
       IsDarkMode() ? "browse_skills_dark" : "browse_skills_light";
   SignIn("testskills@gmail.com");
-  glic::GlicEnabling::SetBypassEnablementChecksForTesting(true);
+  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass;
   RunTestSequence(
       SetOnIncompatibleAction(
           OnIncompatibleAction::kIgnoreAndContinue,

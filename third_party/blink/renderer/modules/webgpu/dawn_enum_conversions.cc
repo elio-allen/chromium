@@ -766,6 +766,8 @@ wgpu::FeatureName AsDawnEnum(const V8GPUFeatureName& webgpu_enum) {
       return wgpu::FeatureName::TextureCompressionUnaligned;
     case V8GPUFeatureName::Enum::kChromiumExperimentalSamplingResourceTable:
       return wgpu::FeatureName::ChromiumExperimentalSamplingResourceTable;
+    case V8GPUFeatureName::Enum::kAtomicVec2UMinMax:
+      return wgpu::FeatureName::AtomicVec2uMinMax;
   }
 }
 
@@ -932,6 +934,8 @@ wgpu::VertexFormat AsDawnEnum(const V8GPUVertexFormat& webgpu_enum) {
       return wgpu::VertexFormat::Sint32x4;
     case V8GPUVertexFormat::Enum::kUnorm1010102:
       return wgpu::VertexFormat::Unorm10_10_10_2;
+    case V8GPUVertexFormat::Enum::kSnorm1010102:
+      return wgpu::VertexFormat::Snorm10_10_10_2;
     case V8GPUVertexFormat::Enum::kUnorm8X4Bgra:
       return wgpu::VertexFormat::Unorm8x4BGRA;
   }
@@ -1133,6 +1137,8 @@ const char* FromDawnEnum(wgpu::WGSLLanguageFeatureName dawn_enum) {
       return "immediate_address_space";
     case wgpu::WGSLLanguageFeatureName::BufferView:
       return "buffer_view";
+    case wgpu::WGSLLanguageFeatureName::FragmentDepth:
+      return "fragment_depth";
 
     // Non-standard.
     case wgpu::WGSLLanguageFeatureName::ChromiumTestingUnimplemented:

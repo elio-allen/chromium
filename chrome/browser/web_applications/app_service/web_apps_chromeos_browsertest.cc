@@ -14,15 +14,15 @@
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
 #include "base/test/bind.h"
-#include "base/test/run_until.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/apps/app_service/app_registry_cache_waiter.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller_util.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/ui/web_applications/web_app_browsertest_base.h"
@@ -42,7 +42,7 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/prefs/pref_service.h"
 #include "components/webapps/common/web_app_id.h"
-#include "components/webapps/isolated_web_apps/public/iwa_runtime_data_provider.h"
+#include "components/webapps/isolated_web_apps/key_distribution/iwa_runtime_data_provider.h"
 #include "components/webapps/isolated_web_apps/test_support/signing_keys.h"
 #include "content/public/test/browser_test.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -288,7 +288,7 @@ IN_PROC_BROWSER_TEST_P(WebAppsPreventCloseChromeOsBrowserTest, CheckMenuModel) {
 
   PinAppWithIDToShelf(installed_app_id);
 
-  Browser* const browser = LaunchWebAppBrowser(installed_app_id);
+  BrowserWindowInterface* const browser = LaunchWebAppBrowser(installed_app_id);
   ASSERT_TRUE(browser);
 
   ash::ShelfModel* const shelf_model = ash::ShelfModel::Get();
@@ -338,17 +338,16 @@ IN_PROC_BROWSER_TEST_P(WebAppsPreventCloseChromeOsBrowserTest,
               .Set(web_app::kRunOnOsLogin, web_app::kRunWindowed)
               .Set(web_app::kPreventClose, IsPreventCloseEnabled())));
 
-  Browser* const browser = LaunchWebAppBrowserAndWait(installed_app_id);
+  BrowserWindowInterface* const browser =
+      LaunchWebAppBrowserAndWait(installed_app_id);
   ASSERT_TRUE(browser);
 
   chrome::CloseTab(browser);
 
   if (IsPreventCloseEnabled()) {
     EXPECT_EQ(1, browser->tab_strip_model()->count());
-    EXPECT_TRUE(base::test::RunUntil([&] {
-      return IsToastShown(
-          base::StrCat({"prevent_close_toast_id-", installed_app_id}));
-    }));
+    EXPECT_TRUE(IsToastShown(
+        base::StrCat({"prevent_close_toast_id-", installed_app_id})));
   } else {
     EXPECT_EQ(0, browser->tab_strip_model()->count());
   }
@@ -367,17 +366,16 @@ IN_PROC_BROWSER_TEST_P(WebAppsPreventCloseChromeOsBrowserTest,
               .Set(web_app::kRunOnOsLogin, web_app::kRunWindowed)
               .Set(web_app::kPreventClose, IsPreventCloseEnabled())));
 
-  Browser* const browser = LaunchWebAppBrowserAndWait(installed_app_id);
+  BrowserWindowInterface* const browser =
+      LaunchWebAppBrowserAndWait(installed_app_id);
   ASSERT_TRUE(browser);
 
   chrome::CloseWindow(browser);
 
   if (IsPreventCloseEnabled()) {
     EXPECT_EQ(1, browser->tab_strip_model()->count());
-    EXPECT_TRUE(base::test::RunUntil([&] {
-      return IsToastShown(
-          base::StrCat({"prevent_close_toast_id-", installed_app_id}));
-    }));
+    EXPECT_TRUE(IsToastShown(
+        base::StrCat({"prevent_close_toast_id-", installed_app_id})));
   } else {
     EXPECT_EQ(0, browser->tab_strip_model()->count());
   }

@@ -65,6 +65,7 @@
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/wtf/dynamic_annotations.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_position.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "v8/include/v8-profiler.h"
@@ -116,8 +117,7 @@ int GetModifierFromEvent(const UIEventWithKeyState& event) {
 }  //  namespace
 
 String ToHexString(const void* p) {
-  return String::Format("0x%" PRIx64,
-                        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(p)));
+  return Format("0x{:x}", reinterpret_cast<uintptr_t>(p));
 }
 uint64_t InspectorTraceEvents::GetNextSampleTraceId() {
   uint64_t sample_trace_id = base::trace_event::GetNextGlobalTraceId();
@@ -205,6 +205,7 @@ void InspectorTraceEvents::DidFinishLoading(uint64_t identifier,
                                             DocumentLoader* loader,
                                             base::TimeTicks finish_time,
                                             int64_t encoded_data_length,
+                                            uint64_t,
                                             int64_t decoded_body_length) {
   DEVTOOLS_TIMELINE_TRACE_EVENT_INSTANT(
       "ResourceFinish", inspector_resource_finish_event::Data, loader,
@@ -499,6 +500,8 @@ const char inspector_style_invalidator_invalidate_event::
 const char inspector_style_invalidator_invalidate_event::
     kInvalidationSetMatchedPart[] = "Invalidation set matched part";
 const char inspector_style_invalidator_invalidate_event::
+    kInvalidationSetMatchedFocused[] = "Invalidation set matched focused";
+const char inspector_style_invalidator_invalidate_event::
     kInvalidationSetInvalidatesTreeCounting[] =
         "Invalidation set invalidates tree-counting";
 const char inspector_style_invalidator_invalidate_event::
@@ -572,6 +575,8 @@ void inspector_style_invalidator_invalidate_event::SelectorPart(
         InvalidationSetToSelectorMap::SelectorFeatureType::kAttribute;
   } else if (reason == kInvalidationSetMatchedPart) {
     feature_type = InvalidationSetToSelectorMap::SelectorFeatureType::kPart;
+  } else if (reason == kInvalidationSetMatchedFocused) {
+    feature_type = InvalidationSetToSelectorMap::SelectorFeatureType::kFocused;
   } else if (reason == kInvalidationSetInvalidatesSubtree) {
     feature_type =
         InvalidationSetToSelectorMap::SelectorFeatureType::kWholeSubtree;
@@ -1191,6 +1196,18 @@ void inspector_evaluate_script_event::Data(perfetto::TracedValue context,
                                            const TextPosition& text_position) {
   auto dict = std::move(context).WriteDictionary();
   FillLocation(dict, url, v8::UnboundScript::kNoScriptId, text_position);
+  dict.Add("frame", IdentifiersFactory::FrameId(frame));
+  SetCallStack(isolate, dict);
+}
+
+void inspector_evaluate_module_event::Data(perfetto::TracedValue context,
+                                           v8::Isolate* isolate,
+                                           LocalFrame* frame,
+                                           const String& url,
+                                           int script_id,
+                                           const TextPosition& text_position) {
+  auto dict = std::move(context).WriteDictionary();
+  FillLocation(dict, url, script_id, text_position);
   dict.Add("frame", IdentifiersFactory::FrameId(frame));
   SetCallStack(isolate, dict);
 }

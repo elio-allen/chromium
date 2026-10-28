@@ -16,9 +16,10 @@
 #include "build/build_config.h"
 #include "components/autofill/content/renderer/autofill_agent_test_api.h"
 #include "components/autofill/content/renderer/autofill_renderer_test.h"
-#include "components/autofill/content/renderer/focus_test_utils.h"
+#include "components/autofill/content/renderer/focus_test_util.h"
 #include "components/autofill/content/renderer/form_autofill_util.h"
-#include "components/autofill/content/renderer/test_utils.h"
+#include "components/autofill/content/renderer/form_cache_test_api.h"
+#include "components/autofill/content/renderer/test_util.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/field_data_manager.h"
 #include "components/autofill/core/common/form_data_test_api.h"
@@ -44,8 +45,6 @@ using testing::UnorderedElementsAre;
 
 namespace autofill {
 namespace {
-
-using CheckStatus = FormFieldData::CheckStatus;
 
 auto HasId(FormRendererId expected_id) {
   return Property("renderer_id", &FormData::renderer_id, expected_id);
@@ -96,8 +95,10 @@ class FormCacheBrowserTest : public test::AutofillRendererTest {
                                         kCallTimerStateDummy);
   }
 
+  void ClearCache() { form_cache_->ClearCache(); }
+
   size_t num_extracted_forms() {
-    return std::ranges::count_if(form_cache_->extracted_forms(),
+    return std::ranges::count_if(test_api(*form_cache_).extracted_forms(),
                                  [](const auto& id_and_form) {
                                    const auto& [id, form] = id_and_form;
                                    return form != nullptr;
@@ -602,6 +603,22 @@ TEST_F(FormCacheBrowserTest, UpdateFormCacheMeasuresTotalTime) {
                                     2);
   histogram_tester.ExpectTotalCount(
       "Autofill.TimingPrecise.ExtractFormData.UpdateFormCache", 1);
+}
+
+TEST_F(FormCacheBrowserTest, ClearCache) {
+  LoadHTML(R"(<form id="f"><input></form>)");
+  FormCache::UpdateFormCacheResult result1 = UpdateFormCache();
+  EXPECT_THAT(result1.updated_forms, SizeIs(1));
+
+  // Running UpdateFormCache again without DOM changes returns no updated forms.
+  FormCache::UpdateFormCacheResult result2 = UpdateFormCache();
+  EXPECT_THAT(result2.updated_forms, IsEmpty());
+
+  // After ClearCache, UpdateFormCache returns the form again as updated.
+  ClearCache();
+  FormCache::UpdateFormCacheResult result3 = UpdateFormCache();
+  EXPECT_THAT(result3.updated_forms, SizeIs(1));
+  EXPECT_THAT(result3.removed_forms, IsEmpty());
 }
 
 }  // namespace

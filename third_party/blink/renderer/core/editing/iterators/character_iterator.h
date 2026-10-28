@@ -52,7 +52,6 @@ class CharacterIteratorAlgorithm {
 
   void Advance(wtf_size_t num_characters);
 
-  bool AtBreak() const { return at_break_; }
   bool AtEnd() const { return text_iterator_.AtEnd(); }
 
   wtf_size_t length() const { return text_iterator_.length() - run_offset_; }
@@ -90,9 +89,8 @@ class CharacterIteratorAlgorithm {
  private:
   void Initialize();
 
-  wtf_size_t offset_;
-  wtf_size_t run_offset_;
-  bool at_break_;
+  wtf_size_t offset_ = 0;
+  wtf_size_t run_offset_ = 0;
 
   TextIteratorAlgorithm<Strategy> text_iterator_;
 };

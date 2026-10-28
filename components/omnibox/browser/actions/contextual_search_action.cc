@@ -42,7 +42,7 @@ int GetOpenLensActionLabelId() {
 
 ContextualSearchFulfillmentAction::ContextualSearchFulfillmentAction(
     const GURL& url,
-    AutocompleteMatchType::Type match_type,
+    omnibox::AutocompleteMatchType match_type,
     bool is_zero_prefix_suggestion)
     : OmniboxAction(
           LabelStrings(
@@ -134,7 +134,8 @@ void ContextualSearchOpenLensAction::Execute(ExecutionContext& context) const {
   } else if (context.client_->ShouldOpenCoBrowsePanel()) {
     context.client_->OpenCoBrowsePanel();
   } else {
-    context.client_->OpenLensOverlay(/*show=*/true);
+    context.client_->OpenLensOverlay(
+        /*show=*/true, lens::LensOverlayInvocationSource::kOmniboxPageAction);
   }
 }
 

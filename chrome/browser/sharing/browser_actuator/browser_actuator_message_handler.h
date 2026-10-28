@@ -5,21 +5,14 @@
 #ifndef CHROME_BROWSER_SHARING_BROWSER_ACTUATOR_BROWSER_ACTUATOR_MESSAGE_HANDLER_H_
 #define CHROME_BROWSER_SHARING_BROWSER_ACTUATOR_BROWSER_ACTUATOR_MESSAGE_HANDLER_H_
 
-#include <memory>
-#include <string>
-
 #include "base/memory/raw_ptr.h"
 #include "components/sharing_message/sharing_message_handler.h"
 
 class Profile;
 
-namespace components_sharing_message {
-class GlicExperimentalTriggering;
-}  // namespace components_sharing_message
-
 // Handler for incoming initial SharingMessages for BrowserActuator service.
-// Processes initial opt-in messages to set up a TransportChannel and
-// TransportSession.
+// Processes initial opt-in or trigger actuation messages to set up a
+// TransportChannel and TransportSession.
 class BrowserActuatorMessageHandler : public SharingMessageHandler {
  public:
   explicit BrowserActuatorMessageHandler(Profile* profile);
@@ -33,13 +26,6 @@ class BrowserActuatorMessageHandler : public SharingMessageHandler {
                  DoneCallback done_callback) override;
 
  private:
-  void HandleGlicExperimentalTriggering(
-      const components_sharing_message::GlicExperimentalTriggering& triggering);
-
-  // Helper to initialize/get the TransportChannel and TransportSession for
-  // context_id.
-  void EnsureTransportSessionCreated(const std::string& context_id);
-
   const raw_ptr<Profile> profile_;
 };
 

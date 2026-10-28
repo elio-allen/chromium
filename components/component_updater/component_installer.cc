@@ -5,10 +5,8 @@
 #include "components/component_updater/component_installer.h"
 
 #include <algorithm>
-#include <cstdint>
 #include <optional>
 #include <string>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -207,7 +205,11 @@ Result ComponentInstaller::InstallHelper(const base::FilePath& unpack_path,
 
   // Acquire the ownership of the |local_install_path|.
   base::ScopedTempDir install_path_owner;
-  std::ignore = install_path_owner.Set(local_install_path);
+  if (!install_path_owner.Set(local_install_path)) {
+    VPLOG(0) << "ScopedTempDir::Set failed: " << local_install_path.value();
+    base::DeletePathRecursively(local_install_path);
+    return Result(InstallError::INSTALL_PATH_ERROR);
+  }
 
 #if BUILDFLAG(IS_CHROMEOS)
   if (!base::SetPosixFilePermissions(local_install_path, 0755)) {

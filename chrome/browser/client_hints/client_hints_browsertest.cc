@@ -38,8 +38,9 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_test_util.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -60,6 +61,7 @@
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/client_hints.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_view_host.h"
@@ -172,7 +174,7 @@ class ThirdPartyURLLoaderInterceptor {
       unique_request_count_seen_++;
     }
 
-    for (const auto& elem : network::GetClientHintToNameMap()) {
+    for (const auto& elem : network::kClientHintToNameMap) {
       const auto& header = elem.second;
       if (params->url_request.headers.HasHeader(header)) {
         client_hints_count_seen_++;
@@ -555,9 +557,10 @@ class ClientHintsBrowserTest : public policy::PolicyTest {
 
     http2_server_.AddDefaultHandlers();
 
-    std::vector<std::string> accept_ch_tokens;
-    for (const auto& pair : network::GetClientHintToNameMap())
+    std::vector<std::string_view> accept_ch_tokens;
+    for (const auto& pair : network::kClientHintToNameMap) {
       accept_ch_tokens.push_back(pair.second);
+    }
 
     http2_server_.SetAlpsAcceptCH("", base::JoinString(accept_ch_tokens, ","));
 
@@ -719,7 +722,8 @@ class ClientHintsBrowserTest : public policy::PolicyTest {
     web_contents->SetWebPreferences(prefs);
   }
 
-  void TestProfilesIndependent(Browser* browser_a, Browser* browser_b);
+  void TestProfilesIndependent(BrowserWindowInterface* browser_a,
+                               BrowserWindowInterface* browser_b);
   void TestSwitchWithNewProfile(const std::string& switch_value,
                                 size_t origins_stored);
 
@@ -1194,7 +1198,7 @@ class ClientHintsBrowserTest : public policy::PolicyTest {
       }
     }
 
-    for (const auto& elem : network::GetClientHintToNameMap()) {
+    for (const auto& elem : network::kClientHintToNameMap) {
       const auto& header = elem.second;
       if (request.headers.contains(header)) {
         base::AutoLock lock(count_headers_lock_);
@@ -1216,7 +1220,7 @@ class ClientHintsBrowserTest : public policy::PolicyTest {
 
   void VerifyClientHintsReceived(bool expect_client_hints,
                                  const net::test_server::HttpRequest& request) {
-    for (const auto& elem : network::GetClientHintToNameMap()) {
+    for (const auto& elem : network::kClientHintToNameMap) {
       const auto& header = elem.second;
       SCOPED_TRACE(testing::Message() << header);
       SCOPED_TRACE(testing::Message() << request.GetURL().spec());
@@ -1381,7 +1385,7 @@ INSTANTIATE_TEST_SUITE_P(
                     network::MetaCHType::HttpEquivDelegateCH));
 
 IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, CorsChecks) {
-  for (const auto& elem : network::GetClientHintToNameMap()) {
+  for (const auto& elem : network::kClientHintToNameMap) {
     const auto& header = elem.second;
     // Do not test for headers that have not been enabled on the blink "stable"
     // yet.
@@ -1391,8 +1395,8 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, CorsChecks) {
     // Save-Data can only have the 'on' value so it's tested below.
     if (header == "save-data")
       continue;
-    EXPECT_TRUE(
-        network::cors::IsCorsSafelistedHeader(header, "42" /* value */));
+    EXPECT_TRUE(network::cors::IsCorsSafelistedHeader(std::string(header),
+                                                      "42" /* value */));
   }
   EXPECT_FALSE(network::cors::IsCorsSafelistedHeader("not-a-client-hint-header",
                                                      "" /* value */));
@@ -1757,7 +1761,8 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
             count_client_hints_headers_seen());
 
   // OTR profile should get neither.
-  Browser* otr_browser = CreateIncognitoBrowser(browser()->GetProfile());
+  BrowserWindowInterface* otr_browser =
+      CreateIncognitoBrowser(browser()->GetProfile());
   SetClientHintExpectationsOnMainFrame(false);
   SetClientHintExpectationsOnSubresources(false);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(otr_browser,
@@ -2111,8 +2116,9 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, MergeAcceptCH_MetaDelegate) {
   EXPECT_EQ(expected_client_hints_number, count_client_hints_headers_seen());
 }
 
-void ClientHintsBrowserTest::TestProfilesIndependent(Browser* browser_a,
-                                                     Browser* browser_b) {
+void ClientHintsBrowserTest::TestProfilesIndependent(
+    BrowserWindowInterface* browser_a,
+    BrowserWindowInterface* browser_b) {
   const GURL gurl = accept_ch_url();
 
   blink::UserAgentMetadata ua = embedder_support::GetUserAgentMetadata();
@@ -3228,7 +3234,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
   const GURL gurl = accept_ch_url();
 
   base::HistogramTester histogram_tester;
-  Browser* incognito = CreateIncognitoBrowser();
+  BrowserWindowInterface* incognito = CreateIncognitoBrowser();
 
   ContentSettingsForOneType host_settings =
       HostContentSettingsMapFactory::GetForProfile(incognito->GetProfile())
@@ -4828,7 +4834,7 @@ void ClientHintsBrowserTest::TestSwitchWithNewProfile(
       client_hints::switches::kInitializeClientHintsStorage, switch_value);
 
   Profile* profile = GenerateNewProfile();
-  Browser* browser = CreateBrowser(profile);
+  BrowserWindowInterface* browser = CreateBrowser(profile);
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser, without_accept_ch_url()));
 
@@ -4875,9 +4881,10 @@ class ClientHintsCommandLineSwitchBrowserTest : public ClientHintsBrowserTest {
     std::string server_origin =
         url::Origin::Create(accept_ch_url()).Serialize();
 
-    std::vector<std::string> accept_ch_tokens;
-    for (const auto& pair : network::GetClientHintToNameMap())
+    std::vector<std::string_view> accept_ch_tokens;
+    for (const auto& pair : network::kClientHintToNameMap) {
       accept_ch_tokens.push_back(pair.second);
+    }
 
     cmd->AppendSwitchASCII(
         client_hints::switches::kInitializeClientHintsStorage,
@@ -4918,7 +4925,8 @@ IN_PROC_BROWSER_TEST_F(ClientHintsCommandLineSwitchBrowserTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), without_accept_ch_url()));
 
   // OTR profile should get neither.
-  Browser* otr_browser = CreateIncognitoBrowser(browser()->GetProfile());
+  BrowserWindowInterface* otr_browser =
+      CreateIncognitoBrowser(browser()->GetProfile());
   SetClientHintExpectationsOnMainFrame(false);
   SetClientHintExpectationsOnSubresources(false);
   ASSERT_TRUE(
@@ -5050,75 +5058,4 @@ IN_PROC_BROWSER_TEST_F(QUICClientHintsTest, BasicQUICAlps) {
   histogram_tester.ExpectBucketCount(
       "ClientHints.AcceptCHFrame",
       content::AcceptCHFrameRestart::kNavigationRestarted, 1);
-}
-
-class ClientHintsBrowserTestForBlockAcceptClientHintsExperiment
-    : public ClientHintsBrowserTest,
-      public testing::WithParamInterface<bool> {
- private:
-  void SetUpScopedFeatureList(
-      base::test::ScopedFeatureList& scoped_feature_list) override {
-    // Setup kBlockAcceptClientHints experiment, based on the test parameter.
-    if (GetParam()) {
-      scoped_feature_list.InitAndEnableFeatureWithParameters(
-          network::features::kBlockAcceptClientHints,
-          {{network::features::kBlockAcceptClientHintsBlockedSite.name,
-            url::Origin::Create(accept_ch_url()).Serialize()}});
-    }
-  }
-};
-INSTANTIATE_TEST_SUITE_P(
-    All,
-    ClientHintsBrowserTestForBlockAcceptClientHintsExperiment,
-    testing::Bool());
-
-IN_PROC_BROWSER_TEST_P(
-    ClientHintsBrowserTestForBlockAcceptClientHintsExperiment,
-    Block) {
-  base::HistogramTester histogram_tester;
-  ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
-          ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
-  EXPECT_EQ(0u, host_settings.size());
-
-  // Fetching `gurl` should persist the request for client hints iff using
-  // headers without the experiment targeting the URL.
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), accept_ch_url()));
-
-  const size_t expected_count = GetParam() ? 0 : 1;
-  histogram_tester.ExpectUniqueSample("ClientHints.UpdateEventCount", 1,
-                                      expected_count);
-
-  content::FetchHistogramsFromChildProcesses();
-  metrics::SubprocessMetricsProvider::MergeHistogramDeltasForTesting();
-  base::RunLoop().RunUntilIdle();
-
-  histogram_tester.ExpectUniqueSample(
-      "ClientHints.UpdateSize", expected_client_hints_number, expected_count);
-
-  // Clients hints preferences for one origin should be persisted iff the url is
-  // not targeted as the blocked site.
-  host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
-          ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
-  EXPECT_EQ(expected_count, host_settings.size());
-
-  // Expects extra sec-ch headers attached iff the url is not targeted as the
-  // blocked site.
-  SetClientHintExpectationsOnMainFrame(expected_count);
-  SetClientHintExpectationsOnSubresources(expected_count);
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), without_accept_ch_url()));
-
-  // The user agent hint is attached to all three requests regardless of the
-  // blocked site setting.
-  EXPECT_EQ(3u, count_user_agent_hint_headers_seen());
-  EXPECT_EQ(3u, count_ua_mobile_client_hints_headers_seen());
-  EXPECT_EQ(3u, count_ua_platform_client_hints_headers_seen());
-  EXPECT_EQ(0u, count_save_data_client_hints_headers_seen());
-
-  // Expected number of specified extra hints attached to the image request, and
-  // the same number to the main frame request. The expectation must be 0 iff
-  // the url is targeted as the blocked site.
-  EXPECT_EQ(expected_client_hints_number * 2 * expected_count,
-            count_client_hints_headers_seen());
 }

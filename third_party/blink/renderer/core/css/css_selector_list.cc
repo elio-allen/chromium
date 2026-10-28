@@ -26,21 +26,32 @@
 
 #include "third_party/blink/renderer/core/css/css_selector_list.h"
 
+#include <cstring>
 #include <memory>
 
 #include "base/compiler_specific.h"
 #include "third_party/blink/renderer/core/css/css_selector.h"
+#include "third_party/blink/renderer/platform/heap/persistent.h"
+#include "third_party/blink/renderer/platform/wtf/leak_annotations.h"
+#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+#include "third_party/blink/renderer/platform/wtf/thread_specific.h"
 
 namespace blink {
 
 CSSSelectorList* CSSSelectorList::Empty() {
-  CSSSelectorList* list =
-      MakeGarbageCollected<CSSSelectorList>(base::PassKey<CSSSelectorList>());
-  new (list->first_selector_) CSSSelector();
-  list->first_selector_[0].SetMatch(CSSSelector::kInvalidList);
-  DCHECK(list->IsInvalidWithoutUnparsed());
-  return list;
+  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<Persistent<CSSSelectorList>>,
+                                  empty_list, ());
+  Persistent<CSSSelectorList>& persistent = *empty_list;
+  if (!persistent) [[unlikely]] {
+    persistent =
+        MakeGarbageCollected<CSSSelectorList>(base::PassKey<CSSSelectorList>());
+    new (persistent->first_selector_) CSSSelector();
+    persistent->first_selector_[0].SetMatch(CSSSelector::kInvalidList);
+    DCHECK(persistent->IsInvalidWithoutUnparsed());
+    LEAK_SANITIZER_IGNORE_OBJECT(&persistent);
+  }
+  return persistent.Get();
 }
 
 CSSSelectorList* CSSSelectorList::Copy() const {
@@ -82,10 +93,20 @@ HeapVector<CSSSelector> CSSSelectorList::Copy(
 void CSSSelectorList::AdoptSelectorVector(
     base::span<CSSSelector> selector_vector,
     CSSSelector* selector_array) {
-  std::uninitialized_move(selector_vector.begin(), selector_vector.end(),
-                          selector_array);
-  UNSAFE_BUFFERS(selector_array[selector_vector.size() - 1])
-      .SetLastInSelectorList(true);
+  // CSSSelector's move constructor is a memcpy() of the source followed by
+  // a memset() of it (see its definition), so moving a whole range is the
+  // same as one memcpy() and one memset(). Doing it that way is
+  // considerably faster than std::uninitialized_move() element by element
+  // through checked iterators, and this runs once per style rule.
+  const size_t num_bytes = selector_vector.size() * sizeof(CSSSelector);
+  // SAFETY: The caller guarantees that selector_array has room for
+  // selector_vector.size() elements.
+  UNSAFE_BUFFERS({
+    memcpy(static_cast<void*>(selector_array), selector_vector.data(),
+           num_bytes);
+    memset(static_cast<void*>(selector_vector.data()), 0, num_bytes);
+    selector_array[selector_vector.size() - 1].SetLastInSelectorList(true);
+  });
 }
 
 CSSSelectorList* CSSSelectorList::AdoptSelectorVector(
@@ -95,7 +116,8 @@ CSSSelectorList* CSSSelectorList::AdoptSelectorVector(
   }
 
   CSSSelectorList* list = MakeGarbageCollected<CSSSelectorList>(
-      AdditionalBytes(sizeof(CSSSelector) * (selector_vector.size() - 1)),
+      AdditionalBytes(base::checked_cast<uint32_t>(
+          sizeof(CSSSelector) * (selector_vector.size() - 1))),
       base::PassKey<CSSSelectorList>());
   AdoptSelectorVector(selector_vector, list->first_selector_);
   return list;

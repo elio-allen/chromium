@@ -15,6 +15,7 @@
 
 #include "base/callback_list.h"
 #include "base/check_is_test.h"
+#include "base/containers/flat_set.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
@@ -142,6 +143,11 @@ class PermissionRequestManager
   void AddRequest(content::RenderFrameHost* source_frame,
                   std::unique_ptr<PermissionRequest> request);
 
+  // Cancels all queued or currently in-progress requests with `request_type.
+  // Note that if a matching request is currently being displayed together with
+  // other requests of other types, they will also be cancelled.
+  void CancelAllRequestsWithType(RequestType request_type);
+
   // Will reposition the bubble (may change parent if necessary).
   void UpdateAnchor();
 
@@ -184,9 +190,12 @@ class PermissionRequestManager
   void DOMContentLoaded(content::RenderFrameHost* render_frame_host) override;
   void WebContentsDestroyed() override;
   void OnVisibilityChanged(content::Visibility visibility) override;
+  void DidToggleFullscreenModeForTab(bool entered_fullscreen,
+                                     bool will_cause_resize) override;
 
   // PermissionPrompt::Delegate:
-  const std::vector<std::unique_ptr<PermissionRequest>>& Requests() override;
+  const std::vector<std::unique_ptr<PermissionRequest>>& Requests()
+      const override;
   GURL GetRequestingOrigin() const override;
   GURL GetEmbeddingOrigin() const override;
   void Accept(const PromptOptions& prompt_options) override;
@@ -218,9 +227,6 @@ class PermissionRequestManager
       const override;
   void CalculateCurrentVariantForEmbeddedPrompt() override;
   void AdvanceOrFinalizeEmbeddedPromptFlow() override;
-  // Returns true if there is a request in progress that is initiated by an
-  // embedded permission element.
-  bool IsCurrentRequestEmbeddedPermissionElementInitiated() const;
 
   // Returns the bounds of the active permission prompt view if we're
   // displaying one.
@@ -233,6 +239,16 @@ class PermissionRequestManager
       bool web_contents_supports_permission_requests) {
     web_contents_supports_permission_requests_ =
         web_contents_supports_permission_requests;
+  }
+
+  // Restricts which permission request types are allowed for this WebContents.
+  // Should be called before any requests are added, as it does not affect
+  // requests that are already queued or showing.
+  void set_allowlist_for_permission_requests(
+      std::optional<base::flat_set<RequestType>>
+          allowlist_for_permission_requests) {
+    allowlist_for_permission_requests_ =
+        std::move(allowlist_for_permission_requests);
   }
 
   // For testing only, used to override the default UI selectors and instead use
@@ -312,6 +328,10 @@ class PermissionRequestManager
 
   void set_embedding_origin_for_testing(const GURL& embedding_origin) {
     embedding_origin_for_testing_ = embedding_origin;
+  }
+
+  void set_requesting_origin_for_testing(const GURL& requesting_origin) {
+    requesting_origin_for_testing_ = requesting_origin;
   }
 
   base::ObserverList<
@@ -530,6 +550,10 @@ class PermissionRequestManager
 
   void RecordPostPromptSessionDuration();
 
+  void MaybeReportGeolocationPromptWithoutUserGestureInspectorIssue(
+      const PermissionRequest* request,
+      content::RenderFrameHost* source_frame);
+
   // Factory to be used to create views when needed.
   PermissionPrompt::Factory view_factory_;
 
@@ -664,6 +688,13 @@ class PermissionRequestManager
   // permission prompts.
   bool web_contents_supports_permission_requests_ = true;
 
+  // Optional allowlist of permission request types supported by the web
+  // contents associated with this request manager. If set, any request whose
+  // type is not in the allowlist will be cancelled. Ignored if
+  // `web_contents_supports_permission_requests_` is false, which takes
+  // priority.
+  std::optional<base::flat_set<RequestType>> allowlist_for_permission_requests_;
+
   // Whether the current request should be dismissed if the current tab is
   // closed.
   bool should_dismiss_current_request_ = false;
@@ -690,6 +721,8 @@ class PermissionRequestManager
   std::optional<bool> enabled_app_level_notification_permission_for_testing_;
 
   std::optional<GURL> embedding_origin_for_testing_;
+
+  std::optional<GURL> requesting_origin_for_testing_;
 
   // A timer is used to pre-ignore the permission request if it's been displayed
   // as a quiet chip.

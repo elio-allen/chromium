@@ -12,9 +12,11 @@
 #include "base/base_paths.h"
 #include "base/check_deref.h"
 #include "base/check_is_test.h"
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/i18n/legacy_language_tag_helpers.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/path_service.h"
 #include "base/strings/strcat.h"
@@ -57,8 +59,7 @@ namespace installer_downloader {
 
 namespace {
 
-constexpr const char kUrlPrefix[] =
-    "https://dl.google.com/tag/s/appguid%3D%7B";
+constexpr const char kUrlPrefix[] = "https://dl.google.com/tag/s/appguid%3D%7B";
 constexpr const char kUrlSuffix[] =
     "%7D%26iid%3D%7BIIDGUID%7D%26lang%3DLANGUAGE%26browser%3D4%26usagestats%"
     "3DSTATS%26appname%3DGoogle%2520Chrome%26needsadmin%3Dprefers%26ap%"
@@ -89,8 +90,7 @@ std::string GetDefaultInstallerDownloadUrlTemplate() {
 }
 
 std::optional<GURL> BuildInstallerDownloadUrl(bool is_metrics_enabled) {
-  std::string installer_url_template =
-      GetDefaultInstallerDownloadUrlTemplate();
+  std::string installer_url_template = GetDefaultInstallerDownloadUrlTemplate();
 
   base::ReplaceFirstSubstringAfterOffset(
       &installer_url_template, /*start_offset=*/0, "IIDGUID",
@@ -100,18 +100,25 @@ std::optional<GURL> BuildInstallerDownloadUrl(bool is_metrics_enabled) {
                                          /*start_offset=*/0, "STATS",
                                          is_metrics_enabled ? "1" : "0");
 
-  std::string_view language_code = l10n_util::GetLanguage(
-      g_browser_process->GetFeatures()->application_locale_storage()->Get());
-  CHECK(!language_code.empty());
-
-  base::ReplaceFirstSubstringAfterOffset(
-      &installer_url_template, /*start_offset=*/0, "LANGUAGE", language_code);
+  std::string_view language_subtag = g_browser_process->GetFeatures()
+                                         ->application_locale_storage()
+                                         ->GetTag()
+                                         .language_subtag();
+  CHECK(!language_subtag.empty());
+  base::ReplaceFirstSubstringAfterOffset(&installer_url_template,
+                                         /*start_offset=*/0, "LANGUAGE",
+                                         language_subtag);
 
   GURL installer_url(installer_url_template);
 
   return installer_url.is_valid()
              ? std::optional<GURL>(std::move(installer_url))
              : std::nullopt;
+}
+
+bool IsInfoBarMigrated() {
+  return infobars::IsInfoBarMigrated(
+      infobars::InfoBarDelegate::INSTALLER_DOWNLOADER_INFOBAR_DELEGATE);
 }
 
 }  // namespace
@@ -151,8 +158,7 @@ InstallerDownloaderController::InstallerDownloaderController(
 }
 
 void InstallerDownloaderController::RegisterInfoBar() {
-  if (!infobars::IsInfoBarMigrated(
-          infobars::InfoBarDelegate::INSTALLER_DOWNLOADER_INFOBAR_DELEGATE)) {
+  if (!IsInfoBarMigrated()) {
     return;
   }
 
@@ -167,12 +173,24 @@ void InstallerDownloaderController::RegisterInfoBar() {
           infobars::InfoBarDelegate::INSTALLER_DOWNLOADER_INFOBAR_DELEGATE)
           .SetMessageText(
               l10n_util::GetStringUTF16(IDS_INSTALLER_DOWNLOADER_DISCLAIMER))
-          .SetLinkText(l10n_util::GetStringUTF16(IDS_INSTALLER_DOWNLOADER_LINK))
+          .SetLinkText(
+              l10n_util::GetStringUTF16(IDS_INSTALLER_DOWNLOADER_LINK_TEXT))
+          .SetLinkAccessibleText(l10n_util::GetStringUTF16(
+              IDS_INSTALLER_DOWNLOADER_LINK_ACCESSIBLE_TEXT))
           .SetLinkNavigationUrl(GURL(kLearnMoreUrl))
           .SetIcon(features::IsRoundedIconsEnabled()
                        ? omnibox::kChromeProductIcon
                        : vector_icons::kProductRefreshIcon)
           .SetScope(infobars::InfoBarScope::kGlobal)
+          // The infobar should not be shown on guest profiles and non normal
+          // browser type.
+          .SetBrowserFilter(
+              base::BindRepeating([](BrowserWindowInterface* browser) {
+                return browser->GetType() ==
+                           BrowserWindowInterface::TYPE_NORMAL &&
+                       InstallerDownloaderController::IsEligibleProfile(
+                           *browser->GetProfile());
+              }))
           .SetExpireOnNavigation(false)
           // InstallerDownloaderController is registered as a global feature and
           // this controller is a global feature outliving any infobar
@@ -202,8 +220,7 @@ void InstallerDownloaderController::RegisterBrowserWindowEvents() {
           &InstallerDownloaderController::OnActiveBrowserWindowChanged,
           base::Unretained(this)));
 
-  if (!infobars::IsInfoBarMigrated(
-          infobars::InfoBarDelegate::INSTALLER_DOWNLOADER_INFOBAR_DELEGATE)) {
+  if (!IsInfoBarMigrated()) {
     removed_window_subscription_ =
         window_tracker_.RegisterRemovedWindowCallback(base::BindRepeating(
             &InstallerDownloaderController::OnRemovedBrowserWindow,
@@ -239,8 +256,7 @@ void InstallerDownloaderController::OnActiveBrowserWindowChanged(
     return;
   }
 
-  if (infobars::IsInfoBarMigrated(
-          infobars::InfoBarDelegate::INSTALLER_DOWNLOADER_INFOBAR_DELEGATE)) {
+  if (IsInfoBarMigrated()) {
     MaybeShowInfoBar();
     return;
   }
@@ -265,16 +281,17 @@ void InstallerDownloaderController::OnRemovedBrowserWindow(
   bwi_and_active_tab_tracker_map_.erase(bwi);
 }
 
+// static
+bool InstallerDownloaderController::IsEligibleProfile(const Profile& profile) {
+  return profile.IsRegularProfile();
+}
+
 bool InstallerDownloaderController::ShouldShowInfobarForCurrentProfile() {
   // The infobar should not be shown on guest profiles.
   BrowserWindowInterface* last_active_window =
       window_tracker_.get_last_active_window();
-  if (!last_active_window ||
-      last_active_window->GetProfile()->IsGuestSession()) {
-    return false;
-  }
-
-  return true;
+  return last_active_window &&
+         IsEligibleProfile(*last_active_window->GetProfile());
 }
 
 void InstallerDownloaderController::MaybeShowInfoBar() {
@@ -284,7 +301,13 @@ void InstallerDownloaderController::MaybeShowInfoBar() {
     return;
   }
 
-  if (!should_show_infobar_for_profile_callback_.Run()) {
+  if (IsInfoBarMigrated()) {
+    // Every window mirrors the same logical infobar, so once it is up there is
+    // nothing left for a subsequent trigger to do.
+    if (infobar_shown_) {
+      return;
+    }
+  } else if (!should_show_infobar_for_profile_callback_.Run()) {
     return;
   }
 
@@ -304,8 +327,7 @@ void InstallerDownloaderController::OnEligibilityReady(
     return;
   }
 
-  if (infobars::IsInfoBarMigrated(
-          infobars::InfoBarDelegate::INSTALLER_DOWNLOADER_INFOBAR_DELEGATE)) {
+  if (IsInfoBarMigrated()) {
     if (infobar_shown_) {
       return;
     }
@@ -334,6 +356,11 @@ void InstallerDownloaderController::OnEligibilityReady(
     model_->IncrementShowCount();
     base::UmaHistogramBoolean("Windows.InstallerDownloader.InfobarShown",
                               /*sample=*/true);
+    // Log cycle index with exclusive max of 8 to future-proof against
+    // increases in max cycle count. Current max is 3.
+    base::UmaHistogramExactLinear(
+        "Windows.InstallerDownloader.Reengagement.InfobarShown",
+        model_->GetCurrentCycle(), 8);
     return;
   }
 
@@ -387,6 +414,11 @@ void InstallerDownloaderController::OnEligibilityReady(
     model_->IncrementShowCount();
     base::UmaHistogramBoolean("Windows.InstallerDownloader.InfobarShown",
                               /*sample=*/true);
+    // Log cycle index with exclusive max of 8 to future-proof against
+    // increases in max cycle count. Current max is 3.
+    base::UmaHistogramExactLinear(
+        "Windows.InstallerDownloader.Reengagement.InfobarShown",
+        model_->GetCurrentCycle(), 8);
   }
 }
 
@@ -421,6 +453,11 @@ void InstallerDownloaderController::OnDownloadRequestAccepted(
     const base::FilePath& destination) {
   base::UmaHistogramBoolean("Windows.InstallerDownloader.RequestAccepted",
                             true);
+  // Log cycle index with exclusive max of 8 to future-proof against
+  // increases in max cycle count. Current max is 3.
+  base::UmaHistogramExactLinear(
+      "Windows.InstallerDownloader.Reengagement.RequestAccepted",
+      model_->GetCurrentCycle(), 8);
 
   user_initiated_info_bar_close_pending_ = true;
   infobar_closed_ = true;
@@ -432,6 +469,13 @@ void InstallerDownloaderController::OnDownloadRequestAccepted(
     return;
   }
 
+  // The active tab can differ from the one the infobar was accepted in. Never
+  // download for, or keep alive, a profile the infobar is not shown for.
+  auto* profile = Profile::FromBrowserContext(contents->GetBrowserContext());
+  if (!IsEligibleProfile(*profile)) {
+    return;
+  }
+
   std::optional<GURL> installer_url =
       BuildInstallerDownloadUrl(is_metrics_enabled_callback_.Run());
 
@@ -440,7 +484,6 @@ void InstallerDownloaderController::OnDownloadRequestAccepted(
   }
 
   // Keep the profile alive until the download completes.
-  auto* profile = Profile::FromBrowserContext(contents->GetBrowserContext());
   auto keep_alive = std::make_unique<ScopedProfileKeepAlive>(
       profile, ProfileKeepAliveOrigin::kDownloadInProgress);
 
@@ -458,6 +501,9 @@ void InstallerDownloaderController::OnDownloadCompleted(
   base::UmaHistogramBoolean("Windows.InstallerDownloader.DownloadSucceed",
                             success);
   model_->PreventFutureDisplay();
+  if (success) {
+    model_->RecordDownloadCompleted();
+  }
 }
 
 void InstallerDownloaderController::SetActiveWebContentsCallbackForTesting(
@@ -469,6 +515,12 @@ void InstallerDownloaderController::
     SetShouldShowInfobarForProfileCallbackForTesting(
         ShouldShowInfobarForProfileCallback callback) {
   should_show_infobar_for_profile_callback_ = std::move(callback);
+}
+
+void InstallerDownloaderController::ResetSessionStateForTesting() {
+  infobar_closed_ = false;
+  infobar_shown_ = false;
+  user_initiated_info_bar_close_pending_ = false;
 }
 
 void InstallerDownloaderController::OnInfoBarDismissed() {

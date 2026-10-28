@@ -7,12 +7,11 @@ import {html} from '//resources/lit/v3_0/lit.rollup.js';
 import type {SignalsDisclaimerElement} from './signals_disclaimer.js';
 
 export function getHtml(this: SignalsDisclaimerElement) {
-  // clang-format off
   return html`
 <!--_html_template_start_-->
 <main class="${this.isModalDialog ? 'modal-dialog' : 'profile-picker'}">
   <div id="header-container">
-    <div id="avatar-container" class="tangible-sync-style">
+    <div id="avatar-container">
       <img id="avatar" alt="" src="${this.pictureUrl}">
       <div class="work-badge">
         <cr-icon class="icon" icon="cr:domain"></cr-icon>
@@ -48,5 +47,4 @@ export function getHtml(this: SignalsDisclaimerElement) {
   </div>
 </main>
 <!--_html_template_end_-->`;
-  // clang-format on
 }

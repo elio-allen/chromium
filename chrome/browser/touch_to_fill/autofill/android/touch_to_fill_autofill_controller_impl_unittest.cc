@@ -19,8 +19,8 @@
 #include "components/autofill/core/browser/foundations/autofill_manager_test_api.h"
 #include "components/autofill/core/browser/foundations/test_browser_autofill_manager.h"
 #include "components/autofill/core/browser/integrators/touch_to_fill/touch_to_fill_autofill_delegate.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
-#include "components/autofill/core/common/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
+#include "components/autofill/core/common/autofill_test_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -33,11 +33,16 @@ class MockTouchToFillAutofillView : public TouchToFillAutofillView {
  public:
   MockTouchToFillAutofillView() {
     ON_CALL(*this, ShowPersonalContextNotice).WillByDefault(Return(true));
+    ON_CALL(*this, ShowPrivateInferenceNotice).WillByDefault(Return(true));
   }
   ~MockTouchToFillAutofillView() override = default;
 
   MOCK_METHOD(bool,
               ShowPersonalContextNotice,
+              (TouchToFillAutofillController * controller),
+              (override));
+  MOCK_METHOD(bool,
+              ShowPrivateInferenceNotice,
               (TouchToFillAutofillController * controller),
               (override));
   MOCK_METHOD(void, Hide, (), (override));
@@ -151,6 +156,13 @@ TEST_F(TouchToFillAutofillControllerImplTest, ShowNoticePassesToTheView) {
 
   EXPECT_CALL(*mock_view_, ShowPersonalContextNotice);
   EXPECT_TRUE(autofill_controller().ShowPersonalContextNotice(
+      std::move(mock_view_), ttf_delegate().GetWeakPointer()));
+}
+
+TEST_F(TouchToFillAutofillControllerImplTest,
+       ShowPrivateInferenceNoticePassesToTheView) {
+  EXPECT_CALL(*mock_view_, ShowPrivateInferenceNotice);
+  EXPECT_TRUE(autofill_controller().ShowPrivateInferenceNotice(
       std::move(mock_view_), ttf_delegate().GetWeakPointer()));
 }
 

@@ -57,14 +57,6 @@ constexpr CGFloat kMinTopPadding = 12.0;
 // Default percentage for the medium detent.
 constexpr NSInteger kDefaultMediumDetentPercentage = 50;
 
-// Returns the height for the medium detent, taking into account the
-// experimental setting percentage.
-NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
-  NSInteger percentage =
-      GetAssistantMediumDetentPercentage() ?: kDefaultMediumDetentPercentage;
-  return absoluteMax * (percentage / 100.0);
-}
-
 // Helper function to return the domain passkey used to mutate the layout state.
 inline LayoutStateAssistantPassKey PassKey() {
   return layout_state::AssistantContainerViewControllerPassKeyFactory::
@@ -141,6 +133,7 @@ inline LayoutStateAssistantPassKey PassKey() {
         AssistantContainerDetent::kMedium,
         AssistantContainerDetent::kLarge,
     };
+    _largestUndimmedDetent = kDefaultLargestUndimmedDetent;
   }
   return self;
 }
@@ -277,6 +270,12 @@ inline LayoutStateAssistantPassKey PassKey() {
     return it->second;
   }
   return kInvalidDetentHeight;
+}
+
+- (void)animateToDetent:(AssistantContainerDetent)detent {
+  [self animateToDetent:detent
+               duration:kAssistantSheetSpringDuration
+                  curve:UIViewAnimationCurveEaseInOut];
 }
 
 - (void)animateToDetent:(AssistantContainerDetent)detentIdentifier
@@ -456,9 +455,31 @@ inline LayoutStateAssistantPassKey PassKey() {
                                     availableDetents:self.detents];
 }
 
+- (void)setLargestUndimmedDetent:
+    (AssistantContainerDetent)largestUndimmedDetent {
+  if (_largestUndimmedDetent == largestUndimmedDetent) {
+    return;
+  }
+  _largestUndimmedDetent = largestUndimmedDetent;
+  if (_heightConstraint) {
+    [self updateContainerStylingForHeight:_heightConstraint.constant];
+  }
+}
+
 - (void)setMinimizedDetentHeight:(NSInteger)minimizedDetentHeight {
   _minimizedDetentHeight = minimizedDetentHeight;
   [self updateDetentHeights];
+}
+
+- (void)setMediumDetentHeight:(std::optional<NSInteger>)mediumDetentHeight {
+  if (_mediumDetentHeight == mediumDetentHeight) {
+    return;
+  }
+  _mediumDetentHeight = mediumDetentHeight;
+  [self updateDetentHeights];
+  if (_activeDetent == AssistantContainerDetent::kMedium && _hasAppeared) {
+    [self animateToDetent:AssistantContainerDetent::kMedium];
+  }
 }
 
 - (void)setGuideName:(GuideName*)guideName {
@@ -532,9 +553,7 @@ inline LayoutStateAssistantPassKey PassKey() {
 // Completes the orientation transition by animating to the active detent.
 - (void)completeOrientationTransitionWithDetent:
     (AssistantContainerDetent)detent {
-  [self animateToDetent:detent
-               duration:kAssistantSheetSpringDuration
-                  curve:UIViewAnimationCurveEaseInOut];
+  [self animateToDetent:detent];
 }
 
 // Resumes all the previously paused scroll views.
@@ -586,9 +605,11 @@ inline LayoutStateAssistantPassKey PassKey() {
       _detentHeights[AssistantContainerDetent::kMinimized];
   CGFloat mediumHeight = _detentHeights[AssistantContainerDetent::kMedium];
   CGFloat largeHeight = _detentHeights[AssistantContainerDetent::kLarge];
+  CGFloat largestUndimmedHeight = _detentHeights[self.largestUndimmedDetent];
 
-  ContainerMorphingConstraints constraints = CalculateMorphingConstraints(
-      height, minimizedHeight, mediumHeight, largeHeight);
+  ContainerMorphingConstraints constraints =
+      CalculateMorphingConstraints(height, minimizedHeight, mediumHeight,
+                                   largeHeight, largestUndimmedHeight);
 
   if (IsChromeNextIaEnabled()) {
     BOOL isAppBarAtBottom =
@@ -616,6 +637,8 @@ inline LayoutStateAssistantPassKey PassKey() {
       updateTopCornerRadius:constraints.top_corner_radius
          bottomCornerRadius:constraints.bottom_corner_radius];
   _dimmingView.alpha = constraints.background_dimming_alpha;
+  _assistantContainerView.accessibilityViewIsModal =
+      constraints.background_dimming_alpha > 0.0;
 
   _bottomCornerRadius = constraints.bottom_corner_radius;
   _bottomMargin = constraints.bottom_margin;
@@ -774,9 +797,7 @@ inline LayoutStateAssistantPassKey PassKey() {
 
   AssistantContainerDetent targetDetent = currentDetents[nextIndex];
 
-  [self animateToDetent:targetDetent
-               duration:kAssistantSheetSpringDuration
-                  curve:UIViewAnimationCurveEaseInOut];
+  [self animateToDetent:targetDetent];
 }
 
 // Handles the pan gesture on the header to resize the container.
@@ -816,18 +837,17 @@ inline LayoutStateAssistantPassKey PassKey() {
 
 // Handles the tap gesture on the dimming view.
 - (void)handleDimmingViewTap:(UITapGestureRecognizer*)gesture {
-  if (_activeDetent != AssistantContainerDetent::kLarge) {
+  if (!_activeDetent.has_value() ||
+      _activeDetent.value() <= self.largestUndimmedDetent) {
     return;
   }
 
   AssistantContainerDetent detent = self.detents.front();
-  if (detent == AssistantContainerDetent::kLarge) {
+  if (detent == _activeDetent.value()) {
     return;
   }
 
-  [self animateToDetent:detent
-               duration:kAssistantSheetSpringDuration
-                  curve:UIViewAnimationCurveEaseInOut];
+  [self animateToDetent:detent];
 }
 
 // Handles the state when the pan gesture begins.
@@ -1210,6 +1230,18 @@ inline LayoutStateAssistantPassKey PassKey() {
 
 // Configures the constraints for the panel layout.
 - (void)applyPanelLayoutConstraints {
+  // Bottom constraints are created in `layoutInParentView:` when moving to a
+  // parent view controller. Trait changes can fire earlier when the view is
+  // added to a parent view with different traits.
+  if (!_outerBottomConstraint || !_innerBottomConstraint) {
+    return;
+  }
+
+  CHECK(_leadingConstraint);
+  CHECK(_trailingConstraint);
+  CHECK(_heightConstraint);
+  CHECK(_widthRestrictedConstraints);
+
   UIView* view = self.view;
 
   [NSLayoutConstraint deactivateConstraints:_widthRestrictedConstraints];
@@ -1251,6 +1283,18 @@ inline LayoutStateAssistantPassKey PassKey() {
 
 // Configures the constraints for the sheet layout.
 - (void)applySheetLayoutConstraints {
+  // Bottom constraints are created in `layoutInParentView:` when moving to a
+  // parent view controller. Trait changes can fire earlier when the view is
+  // added to a parent view with different traits.
+  if (!_outerBottomConstraint || !_innerBottomConstraint) {
+    return;
+  }
+
+  CHECK(_leadingConstraint);
+  CHECK(_trailingConstraint);
+  CHECK(_heightConstraint);
+  CHECK(_widthRestrictedConstraints);
+
   UIView* view = self.view;
 
   [NSLayoutConstraint deactivateConstraints:_sidePanelConstraints];
@@ -1318,6 +1362,19 @@ inline LayoutStateAssistantPassKey PassKey() {
       }];
 }
 
+// Computes the height for the medium detent, taking into account optional
+// custom height and experimental setting percentage.
+- (NSInteger)computeMediumDetentHeight {
+  NSInteger absoluteMax = [self absoluteMaxHeight];
+  if (self.mediumDetentHeight.has_value()) {
+    return std::clamp(self.mediumDetentHeight.value(),
+                      self.minimizedDetentHeight, absoluteMax);
+  }
+  NSInteger percentage =
+      GetAssistantMediumDetentPercentage() ?: kDefaultMediumDetentPercentage;
+  return absoluteMax * (percentage / 100.0);
+}
+
 // Recomputes and caches the heights for all active detents.
 - (void)updateDetentHeights {
   _detentHeights[AssistantContainerDetent::kMinimized] = kInvalidDetentHeight;
@@ -1331,7 +1388,7 @@ inline LayoutStateAssistantPassKey PassKey() {
         _detentHeights[detent] = absoluteMax;
         break;
       case AssistantContainerDetent::kMedium:
-        _detentHeights[detent] = GetMediumDetentHeight(absoluteMax);
+        _detentHeights[detent] = [self computeMediumDetentHeight];
         break;
       case AssistantContainerDetent::kMinimized:
         _detentHeights[detent] = self.minimizedDetentHeight;
@@ -1350,9 +1407,7 @@ inline LayoutStateAssistantPassKey PassKey() {
 
 - (void)accessibilityManagerDidRequestDetentChange:
     (AssistantContainerDetent)detent {
-  [self animateToDetent:detent
-               duration:kAssistantSheetSpringDuration
-                  curve:UIViewAnimationCurveEaseInOut];
+  [self animateToDetent:detent];
 }
 
 #pragma mark - UIResponder
@@ -1367,9 +1422,7 @@ inline LayoutStateAssistantPassKey PassKey() {
     AssistantContainerDetent currentDetent =
         _activeDetent.value_or(currentDetents.front());
     if (currentDetent != AssistantContainerDetent::kMinimized) {
-      [self animateToDetent:AssistantContainerDetent::kMinimized
-                   duration:kAssistantSheetSpringDuration
-                      curve:UIViewAnimationCurveEaseInOut];
+      [self animateToDetent:AssistantContainerDetent::kMinimized];
       return YES;
     }
   }

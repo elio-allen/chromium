@@ -14,11 +14,14 @@
 #include "base/test/test_future.h"
 #include "base/types/expected.h"
 #include "components/enterprise/browser/identifiers/profile_id_service.h"
+#include "components/enterprise/net/core/auth_scope_metadata.h"
 #include "components/enterprise/net/core/enterprise_network_auth_service.h"
+#include "components/enterprise/net/core/scoped_extra_allowed_domains_for_testing.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "components/version_info/channel.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_request_headers.h"
@@ -65,6 +68,12 @@ class ProvisioningDomainFetcherTest : public testing::Test {
                                                  "en-US,en;q=0.9");
   }
 
+  void SetUp() override {
+    scoped_allowed_domains_ =
+        std::make_unique<ScopedExtraAllowedDomainsForTesting>(
+            std::vector<std::string>{"example.com"});
+  }
+
  protected:
   scoped_refptr<network::SharedURLLoaderFactory> GetURLLoaderFactory() {
     return base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
@@ -75,8 +84,9 @@ class ProvisioningDomainFetcherTest : public testing::Test {
     AccountInfo account_info = identity_test_env_.MakePrimaryAccountAvailable(
         email, signin::ConsentLevel::kSignin);
     identity_test_env_.SimulateSuccessfulFetchOfAccountInfo(
-        account_info.account_id, account_info.email, account_info.gaia,
-        "managed.com", "Full Name", "Given Name", "en-US", "picture_url");
+        account_info.GetAccountId(), account_info.GetEmail(),
+        account_info.GetGaiaId(), "managed.com", "Full Name", "Given Name",
+        "en-US", "picture_url");
   }
 
   // Synchronously executes fetch when no HTTP network call is expected (e.g.
@@ -158,13 +168,14 @@ class ProvisioningDomainFetcherTest : public testing::Test {
   network::TestURLLoaderFactory test_url_loader_factory_;
   TestingPrefServiceSimple pref_service_;
   enterprise::ProfileIdService profile_id_service_{"test_profile_id"};
+  std::unique_ptr<ScopedExtraAllowedDomainsForTesting> scoped_allowed_domains_;
 };
 
 TEST_F(ProvisioningDomainFetcherTest, FetchWithoutOAuth_Success) {
   base::HistogramTester histogram_tester;
   EnterpriseNetworkAuthService auth_service(
       identity_test_env_.identity_manager(), &pref_service_,
-      &profile_id_service_);
+      &profile_id_service_, version_info::Channel::UNKNOWN);
 
   ProvisioningDomainConfig policy;
   policy.pvd_id = kTestDomain;
@@ -211,7 +222,7 @@ TEST_F(ProvisioningDomainFetcherTest, FetchWithoutOAuth_Failures) {
   base::HistogramTester histogram_tester;
   EnterpriseNetworkAuthService auth_service(
       identity_test_env_.identity_manager(), &pref_service_,
-      &profile_id_service_);
+      &profile_id_service_, version_info::Channel::UNKNOWN);
   ProvisioningDomainConfig policy;
   policy.pvd_id = kTestDomain;
 
@@ -254,7 +265,7 @@ TEST_F(ProvisioningDomainFetcherTest, FetchWithOAuth_Success) {
   SetUpManagedPrimaryAccount();
   EnterpriseNetworkAuthService auth_service(
       identity_test_env_.identity_manager(), &pref_service_,
-      &profile_id_service_);
+      &profile_id_service_, version_info::Channel::UNKNOWN);
 
   ProvisioningDomainConfig policy;
   policy.pvd_id = kTestDomain;
@@ -307,7 +318,7 @@ TEST_F(ProvisioningDomainFetcherTest, MapsOAuthFetchErrors) {
 
   EnterpriseNetworkAuthService auth_service(
       identity_test_env_.identity_manager(), &pref_service_,
-      &profile_id_service_);
+      &profile_id_service_, version_info::Channel::UNKNOWN);
   SetUpManagedPrimaryAccount();
 
   // GAIA error state mappings
@@ -338,7 +349,7 @@ TEST_F(ProvisioningDomainFetcherTest, MapsOAuthFetchErrors) {
   {
     EnterpriseNetworkAuthService auth_service_for_cancel(
         identity_test_env_.identity_manager(), &pref_service_,
-        &profile_id_service_);
+        &profile_id_service_, version_info::Channel::UNKNOWN);
     ProvisioningDomainFetcher fetcher_for_cancel(
         policy, &auth_service_for_cancel, GetURLLoaderFactory());
 
@@ -364,7 +375,7 @@ TEST_F(ProvisioningDomainFetcherTest, ConcurrentFetchesQueueCallbacks) {
   SetUpManagedPrimaryAccount();
   EnterpriseNetworkAuthService auth_service(
       identity_test_env_.identity_manager(), &pref_service_,
-      &profile_id_service_);
+      &profile_id_service_, version_info::Channel::UNKNOWN);
 
   ProvisioningDomainConfig policy;
   policy.pvd_id = kTestDomain;
@@ -406,7 +417,7 @@ TEST_F(ProvisioningDomainFetcherTest,
        DelegateGetExtraHeadersResolvesConfigHeaders) {
   EnterpriseNetworkAuthService auth_service(
       identity_test_env_.identity_manager(), &pref_service_,
-      &profile_id_service_);
+      &profile_id_service_, version_info::Channel::UNKNOWN);
 
   ProvisioningDomainConfig policy;
   policy.pvd_id = kTestDomain;
@@ -430,6 +441,37 @@ TEST_F(ProvisioningDomainFetcherTest,
             headers.GetHeader("X-Variable-Profile-Id").value_or(""));
   EXPECT_EQ("en-US,en;q=0.9",
             headers.GetHeader("X-Variable-Lang").value_or(""));
+}
+
+TEST_F(ProvisioningDomainFetcherTest, FetchWithOAuth_InapplicableServer) {
+  SetUpManagedPrimaryAccount();
+  EnterpriseNetworkAuthService auth_service(
+      identity_test_env_.identity_manager(), &pref_service_,
+      &profile_id_service_, version_info::Channel::UNKNOWN);
+
+  ProvisioningDomainConfig policy;
+  policy.pvd_id = "attacker.com";
+  policy.auth_config = ProxyAuthConfig{AuthType::kProfileBearerToken,
+                                       AuthScope::kCloudSecureGateway};
+
+  ProvisioningDomainFetcher fetcher(policy, &auth_service,
+                                    GetURLLoaderFactory());
+
+  ProvisioningDomainFetchResult result =
+      base::unexpected(ProvisioningDomainFetchError(
+          ProvisioningDomainFetchResultStatus::kHttpError));
+  fetcher.Start(base::BindOnce(
+      [](ProvisioningDomainFetchResult* out,
+         ProvisioningDomainFetchResult res) { *out = std::move(res); },
+      base::Unretained(&result)));
+
+  // Rejection happens synchronously before any HTTP request is issued.
+  EXPECT_EQ(0, test_url_loader_factory_.NumPending());
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(ProvisioningDomainFetchResultStatus::kTokenFetchError,
+            result.error().status);
+  EXPECT_EQ(TokenFetchError::kInapplicableServer,
+            result.error().token_fetch_error);
 }
 
 }  // namespace

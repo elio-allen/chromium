@@ -148,6 +148,16 @@ class DocumentPipFrameView : public views::FrameView,
   // opener WebContents. Called by the host when media-capture state changes.
   void UpdateContentSettingsIcons();
 
+  // Helper functions for testing.
+  views::ImageButton* GetBackToTabButtonForTesting() {
+    return back_to_tab_button_;
+  }
+  views::ImageButton* GetCloseButtonForTesting() { return close_image_button_; }
+  views::Label* GetWindowTitleForTesting() { return window_title_; }
+  AutoPipSettingOverlayView* GetAutoPipSettingOverlayViewForTesting() {
+    return auto_pip_setting_overlay_;
+  }
+
   // Recomputes the outer window bounds now that the Widget (and thus the
   // platform border) exists, so a request that specifies an explicit inner
   // (web-contents) size is honored. Without this, the outer window equals the
@@ -162,6 +172,7 @@ class DocumentPipFrameView : public views::FrameView,
 
  private:
   friend class DocumentPipFrameViewTest;
+  friend class DocumentPipFrameViewTestApi;
   class WindowEventObserver;
   // Minimal LocationBarModelDelegate backed by the opener WebContents.
   class LocationBarModelDelegateImpl;

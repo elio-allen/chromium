@@ -7,14 +7,14 @@
 #include <array>
 #include <ostream>
 #include <string_view>
+#include <utility>
 
 #include "base/check.h"
 #include "base/check_op.h"
+#include "base/containers/fixed_flat_map.h"
 #include "base/logging.h"
-#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "components/sync/protocol/entity_specifics.pb.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace syncer {
 
@@ -227,24 +227,6 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .stable_lowercase_string = "autofill_wallet_metadata",
             .encryption_policy =
                 EncryptionPolicy::kEncryptedIfCustomPassphraseSet,
-            .priority = DataTypePriority::kRegular,
-            .communication_direction = CommunicationDirection::kRegularTwoWay,
-            .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
-            .unsynced_data_check_on_signout_policy =
-                UnsyncedDataCheckOnSignoutPolicy::kNone,
-            .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
-            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
-        },
-        {
-            .type = AUTOFILL_WALLET_OFFER,
-            .specifics_field_number =
-                sync_pb::EntitySpecifics::kAutofillOfferFieldNumber,
-            .debug_string = "Autofill Wallet Offer",
-            .histogram_suffix = "AUTOFILL_OFFER",
-            .stable_lowercase_string = "autofill_wallet_offer",
-            // Wallet data is not encrypted since it actually originates on the
-            // server.
-            .encryption_policy = EncryptionPolicy::kNeverEncrypted,
             .priority = DataTypePriority::kRegular,
             .communication_direction = CommunicationDirection::kRegularTwoWay,
             .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
@@ -647,23 +629,6 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
-            .type = WEB_APKS,
-            .specifics_field_number =
-                sync_pb::EntitySpecifics::kWebApkFieldNumber,
-            .debug_string = "Web Apks",
-            .histogram_suffix = "WEB_APK",
-            .stable_lowercase_string = "webapks",
-            .encryption_policy =
-                EncryptionPolicy::kEncryptedIfCustomPassphraseSet,
-            .priority = DataTypePriority::kRegular,
-            .communication_direction = CommunicationDirection::kRegularTwoWay,
-            .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
-            .unsynced_data_check_on_signout_policy =
-                UnsyncedDataCheckOnSignoutPolicy::kNone,
-            .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
-            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
-        },
-        {
             .type = OS_PREFERENCES,
             .specifics_field_number =
                 sync_pb::EntitySpecifics::kOsPreferenceFieldNumber,
@@ -889,24 +854,6 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
-            .type = PLUS_ADDRESS,
-            .specifics_field_number =
-                sync_pb::EntitySpecifics::kPlusAddressFieldNumber,
-            .debug_string = "Plus Address",
-            .histogram_suffix = "PLUS_ADDRESS",
-            .stable_lowercase_string = "plus_address",
-            // Plus addresses and their settings are never encrypted because
-            // they originate from outside Chrome.
-            .encryption_policy = EncryptionPolicy::kNeverEncrypted,
-            .priority = DataTypePriority::kRegular,
-            .communication_direction = CommunicationDirection::kRegularTwoWay,
-            .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
-            .unsynced_data_check_on_signout_policy =
-                UnsyncedDataCheckOnSignoutPolicy::kNone,
-            .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
-            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
-        },
-        {
             .type = PRODUCT_COMPARISON,
             .specifics_field_number =
                 sync_pb::EntitySpecifics::kProductComparisonFieldNumber,
@@ -931,24 +878,6 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .histogram_suffix = "COOKIE",
             .stable_lowercase_string = "cookies",
             .encryption_policy = EncryptionPolicy::kAlwaysEncrypted,
-            .priority = DataTypePriority::kRegular,
-            .communication_direction = CommunicationDirection::kRegularTwoWay,
-            .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
-            .unsynced_data_check_on_signout_policy =
-                UnsyncedDataCheckOnSignoutPolicy::kNone,
-            .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
-            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
-        },
-        {
-            .type = PLUS_ADDRESS_SETTING,
-            .specifics_field_number =
-                sync_pb::EntitySpecifics::kPlusAddressSettingFieldNumber,
-            .debug_string = "Plus Address Setting",
-            .histogram_suffix = "PLUS_ADDRESS_SETTING",
-            .stable_lowercase_string = "plus_address_setting",
-            // Plus addresses and their settings are never encrypted because
-            // they originate from outside Chrome.
-            .encryption_policy = EncryptionPolicy::kNeverEncrypted,
             .priority = DataTypePriority::kRegular,
             .communication_direction = CommunicationDirection::kRegularTwoWay,
             .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
@@ -1137,7 +1066,9 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             // Not encrypted by sync infra because it relies on
             // custom feature-specific encryption logic.
             .encryption_policy = EncryptionPolicy::kNeverEncrypted,
-            .priority = DataTypePriority::kRegular,
+            // Low priority ensures that ENCRYPTED_TAB_CONTEXT_CONTAINER
+            // (regular priority) is downloaded and committed before items.
+            .priority = DataTypePriority::kLow,
             .communication_direction = CommunicationDirection::kCommitOnly,
             .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
             .unsynced_data_check_on_signout_policy =
@@ -1229,31 +1160,45 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
             .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
+        {
+            .type = AUTOFILL_ENTITY_SUPPRESSION,
+            .specifics_field_number =
+                sync_pb::EntitySpecifics::kAutofillEntitySuppressionFieldNumber,
+            .debug_string = "Autofill Entity Suppression",
+            .histogram_suffix = "AUTOFILL_ENTITY_SUPPRESSION",
+            .stable_lowercase_string = "autofill_entity_suppression",
+            .encryption_policy = EncryptionPolicy::kAlwaysEncrypted,
+            .priority = DataTypePriority::kRegular,
+            .communication_direction = CommunicationDirection::kRegularTwoWay,
+            .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
+            .unsynced_data_check_on_signout_policy =
+                UnsyncedDataCheckOnSignoutPolicy::kNone,
+            .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
+        },
     }};
 
 // LINT.IfChange(DataTypeHistogramSuffix)
-static_assert(GetNumDataTypes() == 67,
+static_assert(GetNumDataTypes() == 64,
               "When adding a new type, update kDataTypeInfoTable, update "
               "histograms.xml and follow the integration checklist in "
               "https://www.chromium.org/developers/design-documents/sync/"
               "integration-checklist/");
-// LINT.ThenChange(/tools/metrics/histograms/metadata/sync/histograms.xml:DataTypeHistogramSuffix)
+// LINT.ThenChange(//tools/metrics/histograms/metadata/sync/histograms.xml:DataTypeHistogramSuffix)
 
-const DataTypeInfo& GetDataTypeInfo(DataType type) {
-  static const base::NoDestructor<
-      absl::flat_hash_map<DataType, const DataTypeInfo*>>
-      type_to_info([] {
-        absl::flat_hash_map<DataType, const DataTypeInfo*> map;
-        for (const auto& info : kDataTypeInfoTable) {
-          map.emplace(info.type, &info);
-        }
-        return map;
-      }());
+constexpr const DataTypeInfo& GetDataTypeInfo(DataType type) {
+  static constexpr auto kTypeToInfo = [] {
+    std::array<const DataTypeInfo*, GetNumDataTypes()> table{};
+    for (const DataTypeInfo& info : kDataTypeInfoTable) {
+      CHECK(!table[info.type]);
+      table[info.type] = &info;
+    }
+    return table;
+  }();
 
-  auto it = type_to_info->find(type);
-  CHECK(it != type_to_info->end())
-      << "Unknown data type: " << static_cast<int>(type);
-  return *it->second;
+  const size_t index = static_cast<size_t>(type);
+  CHECK_LT(index, kTypeToInfo.size()) << "Unknown data type: " << index;
+  return *kTypeToInfo[index];
 }
 
 }  // namespace
@@ -1286,9 +1231,6 @@ void AddDefaultFieldValue(DataType type, sync_pb::EntitySpecifics* specifics) {
       break;
     case AUTOFILL_WALLET_METADATA:
       specifics->mutable_wallet_metadata();
-      break;
-    case AUTOFILL_WALLET_OFFER:
-      specifics->mutable_autofill_offer();
       break;
     case AUTOFILL_WALLET_USAGE:
       specifics->mutable_autofill_wallet_usage();
@@ -1371,9 +1313,6 @@ void AddDefaultFieldValue(DataType type, sync_pb::EntitySpecifics* specifics) {
     case WEB_APPS:
       specifics->mutable_web_app();
       break;
-    case WEB_APKS:
-      specifics->mutable_web_apk();
-      break;
     case WIFI_CONFIGURATIONS:
       specifics->mutable_wifi_configuration();
       break;
@@ -1413,17 +1352,11 @@ void AddDefaultFieldValue(DataType type, sync_pb::EntitySpecifics* specifics) {
     case COLLABORATION_GROUP:
       specifics->mutable_collaboration_group();
       break;
-    case PLUS_ADDRESS:
-      specifics->mutable_plus_address();
-      break;
     case PRODUCT_COMPARISON:
       specifics->mutable_product_comparison();
       break;
     case COOKIES:
       specifics->mutable_cookie();
-      break;
-    case PLUS_ADDRESS_SETTING:
-      specifics->mutable_plus_address_setting();
       break;
     case AUTOFILL_VALUABLE:
       specifics->mutable_autofill_valuable();
@@ -1461,23 +1394,22 @@ void AddDefaultFieldValue(DataType type, sync_pb::EntitySpecifics* specifics) {
     case JOURNEY:
       specifics->mutable_journey();
       break;
+    case AUTOFILL_ENTITY_SUPPRESSION:
+      specifics->mutable_autofill_entity_suppression();
+      break;
   }
 }
 
 DataType GetDataTypeFromSpecificsFieldNumber(int field_number) {
-  static const base::NoDestructor<absl::flat_hash_map<int, DataType>>
-      field_number_to_type([] {
-        absl::flat_hash_map<int, DataType> map;
-        for (const auto& info : kDataTypeInfoTable) {
-          if (info.specifics_field_number != -1) {
-            map.emplace(info.specifics_field_number, info.type);
-          }
-        }
-        return map;
-      }());
+  static constexpr auto kFieldNumberToType =
+      []<size_t... I>(std::index_sequence<I...>) {
+        return base::MakeFixedFlatMap<int, DataType>(
+            {{kDataTypeInfoTable[I].specifics_field_number,
+              kDataTypeInfoTable[I].type}...});
+      }(std::make_index_sequence<GetNumDataTypes()>());
 
-  auto it = field_number_to_type->find(field_number);
-  return (it != field_number_to_type->end()) ? it->second : UNSPECIFIED;
+  auto it = kFieldNumberToType.find(field_number);
+  return (it != kFieldNumberToType.end()) ? it->second : UNSPECIFIED;
 }
 
 int GetSpecificsFieldNumberFromDataType(DataType data_type) {
@@ -1687,8 +1619,6 @@ DataTypeForHistograms DataTypeHistogramValue(DataType data_type) {
       return DataTypeForHistograms::kAutofillWalletData;
     case AUTOFILL_WALLET_METADATA:
       return DataTypeForHistograms::kAutofillWalletMetadata;
-    case AUTOFILL_WALLET_OFFER:
-      return DataTypeForHistograms::kAutofillWalletOffer;
     case AUTOFILL_WALLET_USAGE:
       return DataTypeForHistograms::kAutofillWalletUsage;
     case THEMES:
@@ -1741,8 +1671,6 @@ DataTypeForHistograms DataTypeHistogramValue(DataType data_type) {
       return DataTypeForHistograms::kWifiConfigurations;
     case WEB_APPS:
       return DataTypeForHistograms::kWebApps;
-    case WEB_APKS:
-      return DataTypeForHistograms::kWebApks;
     case OS_PREFERENCES:
       return DataTypeForHistograms::kOsPreferences;
     case OS_PRIORITY_PREFERENCES:
@@ -1769,14 +1697,10 @@ DataTypeForHistograms DataTypeHistogramValue(DataType data_type) {
       return DataTypeForHistograms::kSharedTabGroupData;
     case COLLABORATION_GROUP:
       return DataTypeForHistograms::kCollaborationGroup;
-    case PLUS_ADDRESS:
-      return DataTypeForHistograms::kPlusAddresses;
     case PRODUCT_COMPARISON:
       return DataTypeForHistograms::kProductComparison;
     case COOKIES:
       return DataTypeForHistograms::kCookies;
-    case PLUS_ADDRESS_SETTING:
-      return DataTypeForHistograms::kPlusAddressSettings;
     case AUTOFILL_VALUABLE:
       return DataTypeForHistograms::kAutofillValuable;
     case AUTOFILL_VALUABLE_METADATA:
@@ -1803,6 +1727,8 @@ DataTypeForHistograms DataTypeHistogramValue(DataType data_type) {
       return DataTypeForHistograms::kNotebook;
     case JOURNEY:
       return DataTypeForHistograms::kJourney;
+    case AUTOFILL_ENTITY_SUPPRESSION:
+      return DataTypeForHistograms::kAutofillEntitySuppression;
   }
   NOTREACHED();
 }

@@ -104,15 +104,14 @@ void VrpFlagsFactoryImpl::StartRendererForVrpFlags(
   }
 
   WindowOpenDisposition open_disposition =
-      WindowOpenDisposition::NEW_FOREGROUND_TAB;
+      WindowOpenDisposition::kNewForegroundTab;
   if (disposition == vrp_flags::mojom::VictimDisposition::kSpawnBackgroundTab) {
-    open_disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+    open_disposition = WindowOpenDisposition::kNewBackgroundTab;
   }
 
   GURL target_url(base::StringPrintf("http://victim.test:%u/poc.html", port));
-  OpenURLParams params(target_url, Referrer(), open_disposition,
-                       ui::PAGE_TRANSITION_LINK,
-                       /*is_renderer_initiated=*/false);
+  OpenURLParams params = OpenURLParams::CreateBrowserInitiated(
+      target_url, open_disposition, ui::PAGE_TRANSITION_LINK);
   web_contents->OpenURL(params, /*navigation_handle_callback=*/{});
 }
 

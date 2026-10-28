@@ -123,11 +123,6 @@ bool ShouldFireErrorCallback(PrerenderFinalStatus status) {
 
     // window.close() is called in a prerendered page.
     case PrerenderFinalStatus::kWindowClosed:
-      return false;
-
-    case PrerenderFinalStatus::kSlowNetwork:
-      return true;
-
     case PrerenderFinalStatus::kOtherPrerenderedPageActivated:
       return false;
 
@@ -143,6 +138,7 @@ bool ShouldFireErrorCallback(PrerenderFinalStatus status) {
       return false;
     case PrerenderFinalStatus::kFormSubmitWhenPrerendering:
     case PrerenderFinalStatus::kCrossDocumentRestart:
+    case PrerenderFinalStatus::kPrefetchFailedCrossOriginSubframe:
       return false;
   }
 }

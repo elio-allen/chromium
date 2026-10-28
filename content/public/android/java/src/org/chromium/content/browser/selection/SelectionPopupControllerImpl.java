@@ -53,6 +53,7 @@ import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
+import org.chromium.blink_public.common.BlinkFeatures;
 import org.chromium.build.annotations.EnsuresNonNullIf;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -74,6 +75,7 @@ import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.SelectAroundCaretResult;
 import org.chromium.content_public.browser.SelectionClient;
 import org.chromium.content_public.browser.SelectionMenuItem;
+import org.chromium.content_public.browser.SelectionMenuItem.ItemGroupOffset;
 import org.chromium.content_public.browser.SelectionPopupController;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContents.UserDataFactory;
@@ -86,6 +88,8 @@ import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.ViewAndroidDelegate;
 import org.chromium.ui.base.ViewAndroidDelegate.ContainerViewObserver;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.listmenu.ListItemType;
+import org.chromium.ui.listmenu.ListMenuItemProperties;
 import org.chromium.ui.listmenu.ListMenuSubmenuItemProperties;
 import org.chromium.ui.listmenu.MenuModelBridge;
 import org.chromium.ui.modelutil.MVCListAdapter;
@@ -402,6 +406,7 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
 
     private void reset() {
         dropFocus();
+        mSelectionMenuCachedResult = null;
         mContext = null;
         mWindowAndroid = null;
     }
@@ -533,14 +538,19 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
     }
 
     /**
-     * Returns true if a dropdown menu should be used based on the current state (i.e. mouse was
-     * used to invoke text selection menu).
+     * Returns true if a dropdown menu should be used based on the current state (i.e. mouse or
+     * keyboard was used to invoke text selection menu).
      */
     private boolean shouldUseDropdownMenu() {
         ensureView();
+        boolean isMouseOrKeyboardSource =
+                mMenuSourceType == MenuSourceType.MOUSE
+                        || (mMenuSourceType == MenuSourceType.KEYBOARD
+                                && ContentFeatureMap.isEnabled(
+                                        BlinkFeatures.ANDROID_KEYBOARD_CONTEXT_MENU));
         return mView != null
                 && mDropdownMenuDelegate != null
-                && mMenuSourceType == MenuSourceType.MOUSE
+                && isMouseOrKeyboardSource
                 && isWindowOnTablet();
     }
 
@@ -577,9 +587,6 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
         ensureView();
         mShowMenuStartTimeMs = SystemClock.elapsedRealtime();
         mMenuModelBridge = menuModelBridge;
-        RecordHistogram.recordEnumeratedHistogram(
-                "Android.ShowSelectionMenuSourceType", sourceType, MenuSourceType.MAX_VALUE);
-
         int offsetBottom = bottom;
         offsetBottom += handleHeight;
         mXDip = xDip;
@@ -815,9 +822,7 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
 
         MVCListAdapter.ModelList items = getDropdownItems();
         if (mMenuModelBridge != null) {
-            for (ListItem listItem : mMenuModelBridge.getListItems()) {
-                items.add(listItem);
-            }
+            intersperseMenuItems(items, mMenuModelBridge.getListItems());
         }
 
         assumeNonNull(mContext);
@@ -826,6 +831,68 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
                 getDropdownItemClickListener(mDropdownMenuDelegate);
         mDropdownMenuDelegate.show(
                 mContext, mView, items, itemClickListener, this::dismissMenu, x, y);
+    }
+
+    @VisibleForTesting
+    static void intersperseMenuItems(MVCListAdapter.ModelList items, List<ListItem> extraItems) {
+        for (ListItem extraItem : extraItems) {
+            int order = getOrder(extraItem);
+            int insertIndex = items.size();
+            // Negative order means "no ordering"; such items are simply appended.
+            if (order >= 0) {
+                // Dividers carry no ORDER and head the group that follows them,
+                // so they inherit the next ordered item's order instead of
+                // acting as an insertion barrier.
+                int dividerRunStart = -1;
+                for (int i = 0; i < items.size(); i++) {
+                    ListItem existingItem = items.get(i);
+                    if (!hasOrder(existingItem)) {
+                        if (dividerRunStart == -1) dividerRunStart = i;
+                        continue;
+                    }
+                    int existingOrder = getOrder(existingItem);
+                    if (existingOrder > order) {
+                        insertIndex = dividerRunStart != -1 ? dividerRunStart : i;
+                        break;
+                    }
+                    dividerRunStart = -1;
+                }
+            }
+            items.add(insertIndex, extraItem);
+        }
+        sanitizeDividers(items);
+    }
+
+    private static void sanitizeDividers(MVCListAdapter.ModelList items) {
+        // Remove any leading divider or consecutive duplicate dividers.
+        boolean previousWasDivider = true;
+        for (int i = 0; i < items.size(); ) {
+            if (items.get(i).type == ListItemType.DIVIDER) {
+                if (previousWasDivider) {
+                    items.removeAt(i);
+                    continue;
+                }
+                previousWasDivider = true;
+            } else {
+                previousWasDivider = false;
+            }
+            i++;
+        }
+        // Remove any trailing divider.
+        if (!items.isEmpty() && items.get(items.size() - 1).type == ListItemType.DIVIDER) {
+            items.removeAt(items.size() - 1);
+        }
+    }
+
+    private static boolean hasOrder(ListItem item) {
+        return item.model.getAllSetProperties().contains(ListMenuItemProperties.ORDER);
+    }
+
+    private static int getOrder(ListItem item) {
+        if (hasOrder(item)) {
+            return item.model.get(ListMenuItemProperties.ORDER);
+        }
+        return ItemGroupOffset.ALTERNATIVE_ITEMS;
     }
 
     // HideablePopup implementation
@@ -908,6 +975,7 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
 
     @Override
     public void onWindowAndroidChanged(@Nullable WindowAndroid newWindowAndroid) {
+        mSelectionMenuCachedResult = null;
         if (newWindowAndroid == null) {
             reset();
             return;
@@ -1071,17 +1139,17 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
 
     /** Checks if share action is available. */
     @Override
-    public boolean canShare() {
+    public boolean canShare(@MenuType int menuType) {
         return hasSelection()
-                && !isFocusedNodeEditable()
+                && (menuType == MenuType.DROPDOWN || !isFocusedNodeEditable())
                 && isSelectActionModeAllowed(MENU_ITEM_SHARE);
     }
 
     /** Checks if web search action is available. */
     @Override
-    public boolean canWebSearch() {
+    public boolean canWebSearch(@MenuType int menuType) {
         return hasSelection()
-                && !isFocusedNodeEditable()
+                && (menuType == MenuType.DROPDOWN || !isFocusedNodeEditable())
                 && !isIncognito()
                 && isSelectActionModeAllowed(MENU_ITEM_WEB_SEARCH);
     }
@@ -1112,20 +1180,17 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
         }
         assert mContext != null;
 
-        List<SelectionMenuItem> textProcessingItems =
-                SelectActionMenuHelper.getTextProcessingItems(
-                        mContext,
-                        MenuType.FLOATING,
-                        false,
-                        false,
-                        "test",
-                        true,
-                        mSelectionActionMenuDelegate);
-        if (textProcessingItems != null && !textProcessingItems.isEmpty()) {
-            PendingSelectionMenu pendingMenu = new PendingSelectionMenu(mContext);
-            pendingMenu.addAll(textProcessingItems);
-            pendingMenu.getMenuAsActionMode(menu);
-        }
+        PendingSelectionMenu pendingMenu = new PendingSelectionMenu(mContext);
+        SelectActionMenuHelper.addTextProcessingItems(
+                pendingMenu,
+                mContext,
+                MenuType.FLOATING,
+                false,
+                false,
+                "test",
+                true,
+                mSelectionActionMenuDelegate);
+        pendingMenu.getMenuAsActionMode(menu);
     }
 
     @Override
@@ -1443,8 +1508,8 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
      * @return true if the current selection can select all.
      */
     @Override
-    public boolean canSelectAll() {
-        return mCanSelectAll;
+    public boolean canSelectAll(@MenuType int menuType) {
+        return mCanSelectAll && (menuType == MenuType.FLOATING || isFocusedNodeEditable());
     }
 
     /**
@@ -1962,8 +2027,9 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
     private class SmartSelectionCallback implements SelectionClient.ResultCallback {
         @Override
         public void onClassified(SelectionClient.Result result) {
-            // If the selection does not exist any more, discard |result|.
-            if (!hasSelection()) {
+            // If the selection does not exist any more or the WebContents has been destroyed,
+            // discard |result|.
+            if (!hasSelection() || mWebContents.isDestroyed() || mContext == null) {
                 mClassificationResult = null;
                 return;
             }
@@ -2005,8 +2071,9 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
 
         @Override
         public void onClassifiedLate(SelectionClient.Result result) {
-            // If the selection does not exist any more, discard |result|.
-            if (!hasSelection()) {
+            // If the selection does not exist any more or the WebContents has been destroyed,
+            // discard |result|.
+            if (!hasSelection() || mWebContents.isDestroyed() || mContext == null) {
                 mClassificationResult = null;
                 return;
             }
@@ -2044,7 +2111,6 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
             }
         }
     }
-    ;
 
     @Override
     public void destroySelectActionMode() {
@@ -2093,6 +2159,8 @@ public class SelectionPopupControllerImpl extends ActionModeCallbackHelper
         assert oldValue != null;
         assert oldValue.get() == this;
         mNativeSelectionPopupController = 0;
+        mHasSelection = false;
+        mClassificationResult = null;
     }
 
     @CalledByNative

@@ -7,8 +7,10 @@
 
 #import <UIKit/UIKit.h>
 
+@class ActuationWorklogChip;
 @class ActuationWorklogCompactView;
 @class ActuationWorklogItem;
+@protocol ActuationWorklogItemViewDelegate;
 
 // Delegate for handling height change updates during transitions.
 @protocol ActuationWorklogCompactViewDelegate <NSObject>
@@ -25,14 +27,22 @@
 // The delegate for height update notifications.
 @property(nonatomic, weak) id<ActuationWorklogCompactViewDelegate> delegate;
 
+// Delegate for receiving interaction events from item views.
+@property(nonatomic, weak) id<ActuationWorklogItemViewDelegate> itemDelegate;
+
 // Designated initializer.
 - (instancetype)init NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)initWithFrame:(CGRect)frame NS_UNAVAILABLE;
 - (instancetype)initWithCoder:(NSCoder*)coder NS_UNAVAILABLE;
 
-// Transition to display a new item.
-- (void)transitionToItem:(ActuationWorklogItem*)item animated:(BOOL)animated;
+// Transition to display a new item and its associated tool chip.
+- (void)transitionToItem:(ActuationWorklogItem*)item
+                    chip:(ActuationWorklogChip*)chip
+                animated:(BOOL)animated;
+
+// Resets and purges all current step views and queued transitions.
+- (void)reset;
 
 @end
 

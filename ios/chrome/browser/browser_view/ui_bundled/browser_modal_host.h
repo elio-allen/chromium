@@ -7,6 +7,8 @@
 
 #import <UIKit/UIKit.h>
 
+#import "components/autofill/ios/form_util/form_activity_params.h"
+
 class Browser;
 
 // Host for all the modal features at the Browser level. This is a class that is

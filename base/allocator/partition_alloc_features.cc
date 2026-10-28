@@ -23,6 +23,10 @@ static constexpr char kPAFeatureEnabledProcessesStr[] = "enabled-processes";
 static constexpr char kBrowserOnlyStr[] = "browser-only";
 static constexpr char kBrowserAndRendererStr[] = "browser-and-renderer";
 static constexpr char kNonRendererStr[] = "non-renderer";
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+static constexpr char kGPUOnlyStr[] = "gpu-only";
+static constexpr char kBrowserAndGPUStr[] = "browser-and-gpu";
+#endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
 static constexpr char kAllProcessesStr[] = "all-processes";
 
 }  // namespace
@@ -95,6 +99,27 @@ BASE_FEATURE_PARAM(int,
                    "ring-size",
                    partition_alloc::internal::SlotSpanRingMaxSize::kMedium);
 
+BASE_FEATURE(kPartitionAllocWithAdvancedChecks, FEATURE_ENABLED_BY_DEFAULT);
+constexpr FeatureParam<PartitionAllocWithAdvancedChecksEnabledProcesses>::Option
+    kPartitionAllocWithAdvancedChecksEnabledProcessesOptions[] = {
+        {PartitionAllocWithAdvancedChecksEnabledProcesses::kBrowserOnly,
+         kBrowserOnlyStr},
+        {PartitionAllocWithAdvancedChecksEnabledProcesses::kBrowserAndRenderer,
+         kBrowserAndRendererStr},
+        {PartitionAllocWithAdvancedChecksEnabledProcesses::kNonRenderer,
+         kNonRendererStr},
+        {PartitionAllocWithAdvancedChecksEnabledProcesses::kGPUOnly,
+         kGPUOnlyStr},
+        {PartitionAllocWithAdvancedChecksEnabledProcesses::kBrowserAndGPU,
+         kBrowserAndGPUStr},
+        {PartitionAllocWithAdvancedChecksEnabledProcesses::kAllProcesses,
+         kAllProcessesStr}};
+// Note: Do not use the prepared macro as of no need for a local cache.
+constinit const FeatureParam<PartitionAllocWithAdvancedChecksEnabledProcesses>
+    kPartitionAllocWithAdvancedChecksEnabledProcessesParam{
+        &kPartitionAllocWithAdvancedChecks, kPAFeatureEnabledProcessesStr,
+        PartitionAllocWithAdvancedChecksEnabledProcesses::kBrowserOnly,
+        &kPartitionAllocWithAdvancedChecksEnabledProcessesOptions};
 
 // Enabled-by-default. Without proper
 // `PartitionAllocSchedulerLoopQuarantineConfig` configuration, the feature
@@ -107,6 +132,7 @@ constinit const FeatureParam<std::string>
     kPartitionAllocSchedulerLoopQuarantineConfig{
         &kPartitionAllocSchedulerLoopQuarantine,
         "PartitionAllocSchedulerLoopQuarantineConfig",
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
         R"({
           "browser":{
             "main":{
@@ -121,11 +147,23 @@ constinit const FeatureParam<std::string>
               "branch-capacity-in-bytes":524288,
               "enable-quarantine":true,
               "enable-zapping":true,
-              "leak-on-destruction":false,
-              "max-quarantine-size":null
+              "leak-on-destruction":false
             }
           }
-        })"};
+        })"
+#else
+        R"({
+          "*":{
+            "amsc":{
+              "branch-capacity-in-bytes":524288,
+              "enable-quarantine":true,
+              "enable-zapping":true,
+              "leak-on-destruction":false
+            }
+          }
+        })"
+#endif
+};
 
 BASE_FEATURE(kPartitionAllocEventuallyZeroFreedMemory,
              FEATURE_DISABLED_BY_DEFAULT);
@@ -152,12 +190,7 @@ BASE_FEATURE_ENUM_PARAM(BackupRefPtrEnabledProcesses,
                         kBackupRefPtrEnabledProcessesParam,
                         &kPartitionAllocBackupRefPtr,
                         kPAFeatureEnabledProcessesStr,
-// Exception for IS_DESKTOP_ANDROID approved in crbug.com/482155132.
-#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)
-                        BackupRefPtrEnabledProcesses::kNonRenderer,
-#else
                         BackupRefPtrEnabledProcesses::kAllProcesses,
-#endif
                         &kBackupRefPtrEnabledProcessesOptions);
 
 constexpr FeatureParam<BackupRefPtrMode>::Option kBackupRefPtrModeOptions[] = {
@@ -179,13 +212,7 @@ constinit const FeatureParam<bool> kBackupRefPtrSuppressDoubleFreeDetectedCrash{
     false};
 constinit const FeatureParam<bool> kBackupRefPtrSuppressCorruptionDetectedCrash{
     &kPartitionAllocBackupRefPtr, "brp-suppress-corruption-detected-crash",
-#if PA_BUILDFLAG(IS_IOS)
-    // TODO(crbug.com/41497028): Continue investigation and remove once
-    // addressed.
-    true};
-#else
     false};
-#endif
 
 BASE_FEATURE(kPartitionAllocMemoryTagging,
 #if PA_BUILDFLAG(USE_FULL_MTE) || BUILDFLAG(IS_ANDROID)
@@ -209,15 +236,6 @@ constinit const FeatureParam<MemtagMode> kMemtagModeParam{
 #endif
     &kMemtagModeOptions};
 
-constexpr FeatureParam<RetagMode>::Option kRetagModeOptions[] = {
-    {RetagMode::kIncrement, "increment"},
-    {RetagMode::kRandom, "random"},
-};
-
-// Note: Do not use the prepared macro as of no need for a local cache.
-constinit const FeatureParam<RetagMode> kRetagModeParam{
-    &kPartitionAllocMemoryTagging, "retag-mode", RetagMode::kIncrement,
-    &kRetagModeOptions};
 
 constexpr FeatureParam<MemoryTaggingEnabledProcesses>::Option
     kMemoryTaggingEnabledProcessesOptions[] = {
@@ -355,11 +373,6 @@ BASE_FEATURE(kPartitionAllocSortSmallerSlotSpanFreeLists,
 // Whether to sort the active slot spans in PurgeMemory().
 BASE_FEATURE(kPartitionAllocSortActiveSlotSpans, FEATURE_DISABLED_BY_DEFAULT);
 
-#if BUILDFLAG(IS_WIN)
-// Whether to retry allocations when commit fails.
-BASE_FEATURE(kPageAllocatorRetryOnCommitFailure, FEATURE_ENABLED_BY_DEFAULT);
-#endif
-
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS)
 // A parameter to exclude or not exclude PartitionAllocSupport from
 // PartialLowModeOnMidRangeDevices. This is used to see how it affects
@@ -408,13 +421,9 @@ BASE_FEATURE(kPartitionAllocUsePriorityInheritanceLocks,
              FEATURE_DISABLED_BY_DEFAULT);
 #endif  // PA_BUILDFLAG(ENABLE_PARTITION_LOCK_PRIORITY_INHERITANCE)
 
-// Note: There are two ChromeOS platforms (OVIS & REX) that are disabled for
-// this feature because of https://crbug.com/495493036.
-BASE_FEATURE(kPartitionAllocFreeWithSize, FEATURE_ENABLED_BY_DEFAULT);
-BASE_FEATURE_PARAM(bool,
-                   kPartitionAllocStrictFreeSizeCheck,
-                   &kPartitionAllocFreeWithSize,
-                   "strict-free-size-check",
-                   true);
+BASE_FEATURE(kPartitionAllocTighterAlignedAllocBound,
+             FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPartitionAllocMemoryPressureMonitor, FEATURE_ENABLED_BY_DEFAULT);
 
 }  // namespace base::features

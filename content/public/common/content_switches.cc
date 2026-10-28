@@ -99,6 +99,9 @@ const char kDisableBackgroundTimerThrottling[] =
 // Disables the BackForwardCache feature.
 const char kDisableBackForwardCache[] = "disable-back-forward-cache";
 
+// Delays execution of TaskPriority::BEST_EFFORT tasks until shutdown.
+const char kDisableBestEffortTasks[] = "disable-best-effort-tasks";
+
 // Disable one or more Blink runtime-enabled features.
 // Use names from runtime_enabled_features.json5, separated by commas.
 // Applied after kEnableBlinkFeatures, and after other flags that change these
@@ -230,7 +233,13 @@ const char kDisableRemoteFonts[]            = "disable-remote-fonts";
 // Disables the RemotePlayback API.
 const char kDisableRemotePlaybackAPI[]      = "disable-remote-playback-api";
 
-// Prevent renderer process backgrounding when set.
+// Prevent renderer process backgrounding when set. Renderer processes keep a
+// foreground priority at the OS level, and renderers are never told that they
+// are backgrounded or hidden.
+//
+// The browser still computes each renderer process's priority as usual (e.g.
+// RenderProcessHost::GetPriority()), so that tests can verify the priority
+// policy without being slowed down by actual backgrounding.
 const char kDisableRendererBackgrounding[]  = "disable-renderer-backgrounding";
 
 // Whether the ResourceScheduler is disabled.  Note this is only useful for C++
@@ -266,9 +275,6 @@ const char kDisableV8IdleTasks[]            = "disable-v8-idle-tasks";
 // This switch has no effect unless --user-data-dir (as defined by the content
 // embedder) is also present.
 const char kDisableWebSecurity[]            = "disable-web-security";
-
-// Disable the video decoder from drawing directly to a texture.
-const char kDisableZeroCopyDxgiVideo[]      = "disable-zero-copy-dxgi-video";
 
 // Specifies if the |DOMAutomationController| needs to be bound in the
 // renderer. This binding happens on per-frame basis and hence can potentially
@@ -323,6 +329,9 @@ const char kEnableExperimentalWebPlatformFeatures[] =
 // Enables blink runtime enabled features with status:"test" or
 // status:"experimental", which are enabled when running web tests.
 const char kEnableBlinkTestFeatures[] = "enable-blink-test-features";
+
+// Exposes the window.internals object in JavaScript for testing.
+const char kExposeInternalsForTesting[] = "expose-internals-for-testing";
 
 // Disables all RuntimeEnabledFeatures that can be enabled via OriginTrials.
 const char kDisableOriginTrialControlledBlinkFeatures[] =
@@ -539,10 +548,6 @@ const char kOverrideLanguageDetection[] = "override-language-detection";
 // Renderer process that runs the non-PPAPI PDF plugin.
 const char kPdfRenderer[] = "pdf-renderer";
 
-// Causes the Private Aggregation API to run without reporting delays.
-const char kPrivateAggregationDeveloperMode[] =
-    "private-aggregation-developer-mode";
-
 // Enable the "Process Per Site" process model for all domains. This mode
 // consolidates same-site pages so that they share a single process.
 //
@@ -567,22 +572,9 @@ const char kProcessPerTab[]                 = "process-per-tab";
 // renderer or plugin host.  If it's empty, it's the browser.
 const char kProcessType[]                   = "type";
 
-// Causes Protected Audiences Bidding and Auction API to supply the provided
-// debugging key to the trusted auction server. This tells the server that it
-// okay to log information about this user's auction to help with debugging.
-const char kProtectedAudiencesConsentedDebugToken[] =
-    "protected-audiences-consented-debug-token";
-
 // Handle to shared memory containing the pseudonymization salt, passed to
 // child processes at launch. See https://crbug.com/40850085.
 const char kPseudonymizationSaltHandle[] = "pseudonymization-salt-handle";
-
-// Enables or disables pull-to-refresh gesture in response to vertical
-// overscroll.
-// Set the value to '0' to disable the feature, set to '1' to enable it for both
-// touchpad and touchscreen, and set to '2' to enable it only for touchscreen.
-// Defaults to disabled.
-const char kPullToRefresh[] = "pull-to-refresh";
 
 // Reduce the accept-language for HTTP header and JS navigator.languages, and
 // only most preferred language: https://github.com/Tanych/accept-language.

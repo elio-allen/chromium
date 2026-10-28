@@ -45,7 +45,7 @@ static wtf_size_t CollapsedSpaceLength(LayoutText* layout_text,
   const String& text = layout_text->TransformedText();
   wtf_size_t length = text.length();
   for (wtf_size_t i = text_end; i < length; ++i) {
-    if (!layout_text->StyleRef().IsCollapsibleWhiteSpace(text[i])) {
+    if (!layout_text->Style().IsCollapsibleWhiteSpace(text[i])) {
       return i - text_end;
     }
   }
@@ -103,16 +103,7 @@ SimplifiedBackwardsTextIteratorAlgorithm<Strategy>::
     SimplifiedBackwardsTextIteratorAlgorithm(
         const EphemeralRangeTemplate<Strategy>& range,
         const TextIteratorBehavior& behavior)
-    : behavior_(behavior),
-      text_state_(behavior),
-      node_(nullptr),
-      handled_node_(false),
-      handled_children_(false),
-      start_node_(nullptr),
-      end_node_(nullptr),
-      have_passed_start_node_(false),
-      should_handle_first_letter_(false),
-      should_stop_(false) {
+    : behavior_(behavior), text_state_(behavior) {
   const Node* start_node = range.StartPosition().AnchorNode();
   if (!start_node)
     return;
@@ -187,13 +178,13 @@ void SimplifiedBackwardsTextIteratorAlgorithm<Strategy>::Advance() {
       if (layout_object && layout_object->IsText() &&
           node_->getNodeType() == Node::kTextNode) {
         // FIXME: What about kCdataSectionNode?
-        if (layout_object->StyleRef().Visibility() == EVisibility::kVisible &&
+        if (layout_object->Style().Visibility() == EVisibility::kVisible &&
             offset_ > 0) {
           handled_node_ = HandleTextNode();
         }
       } else if (layout_object && (layout_object->IsLayoutEmbeddedContent() ||
                                    TextIterator::SupportsAltText(*node_))) {
-        if (layout_object->StyleRef().Visibility() == EVisibility::kVisible &&
+        if (layout_object->Style().Visibility() == EVisibility::kVisible &&
             offset_ > 0) {
           handled_node_ = HandleReplacedElement();
         }

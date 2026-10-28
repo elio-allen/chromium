@@ -9,7 +9,6 @@
 
 #include "base/time/time.h"
 #include "chrome/browser/ui/views/toolbar/reload_control.h"
-#include "content/public/browser/context_menu_params.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/metrics.h"
@@ -43,9 +42,6 @@ class WebUIReloadControl : public ReloadControl {
                          ui::mojom::MenuSourceType source);
 
   // ui::SimpleMenuModel::Delegate:
-  bool IsCommandIdChecked(int command_id) const override;
-  bool IsCommandIdEnabled(int command_id) const override;
-  bool IsCommandIdVisible(int command_id) const override;
   bool GetAcceleratorForCommandId(int command_id,
                                   ui::Accelerator* accelerator) const override;
   void ExecuteCommand(int command_id, int event_flags) override;

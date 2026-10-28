@@ -4,8 +4,6 @@
 
 package org.chromium.components.page_info;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
-
 import android.text.Spannable;
 import android.text.SpannableString;
 import android.text.SpannableStringBuilder;
@@ -82,8 +80,10 @@ public class PageInfoConnectionController
     @Override
     public void onSubpageRemoved() {
         mContainer = null;
-        assumeNonNull(mInfoView);
-        mInfoView.onDismiss();
+        if (mInfoView != null) {
+            mInfoView.onDismiss();
+            mInfoView = null;
+        }
     }
 
     private static @ColorRes int getSecurityIconColor(@ConnectionSecurityLevel int securityLevel) {
@@ -208,19 +208,21 @@ public class PageInfoConnectionController
 
         int maliciousContentStatus =
                 SecurityStateModel.getMaliciousContentStatusForWebContents(mWebContents);
-        rowParams.iconResId =
-                SecurityStatusIcon.getSecurityIconResource(
-                        securityLevel,
-                        () -> maliciousContentStatus,
-                        /* isSmallDevice= */ false,
-                        /* skipIconForNeutralState= */ false,
-                        /* useLockIconForSecureState= */ true,
-                        isShowingHttpsFirstWarning);
         if (maliciousContentStatus == ConnectionMaliciousContentStatus.WARNABLE_SUSPICIOUS_SITE) {
-            rowParams.tintIcon = false;
+            rowParams.iconResId = R.drawable.page_info_shield_question;
+            rowParams.iconTint = R.color.default_text_color_error;
             rowParams.titleTint = R.color.default_text_color_error;
         } else {
+            rowParams.iconResId =
+                    SecurityStatusIcon.getSecurityIconResource(
+                            securityLevel,
+                            () -> maliciousContentStatus,
+                            /* isSmallDevice= */ false,
+                            /* skipIconForNeutralState= */ false,
+                            /* useLockIconForSecureState= */ true,
+                            isShowingHttpsFirstWarning);
             rowParams.iconTint = getSecurityIconColor(securityLevel);
+            rowParams.titleTint = 0;
         }
         if (hasClickCallback) rowParams.clickCallback = this::launchSubpage;
         mRowView.setParams(rowParams);

@@ -36,6 +36,7 @@
 #include "components/contextual_tasks/public/mock_contextual_tasks_service.h"
 #include "components/omnibox/common/composebox_features.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
 #include "components/tabs/public/mock_tab_interface.h"
 #include "content/public/test/browser_task_environment.h"
@@ -211,6 +212,144 @@ TEST_F(ActiveTaskContextProviderImplTest, RefreshContextWithTabs) {
   std::set<tabs::TabHandle> expected_tabs = {tab1->GetHandle()};
   base::RunLoop run_loop;
   EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
+
+  provider_->RefreshContext();
+  run_loop.Run();
+}
+
+// Regression test: the underline must survive even when the task context
+// (populated from server-echoed URL resources) has no attachment carrying a
+// tab id, as long as the session still holds the tab as submitted/persisted
+// context.
+TEST_F(ActiveTaskContextProviderImplTest,
+       RefreshContextUsesSessionSubmittedTabsWhenContextLacksTabId) {
+  tabs::TabInterface* tab1 = CreateMockTab();
+  SessionID id1 = sessions::SessionTabHelper::IdForTab(tab1->GetContents());
+  const GURL url("https://example.com");
+
+  base::Uuid task_id = base::Uuid::GenerateRandomV4();
+  ContextualTask task(task_id);
+  // Server-style resource: same URL, but no tab id.
+  task.AddUrlResource(UrlResource(url, ResourceType::kWebpage));
+
+  contextual_search::FileInfo file_info;
+  file_info.tab_session_id = id1;
+  file_info.tab_url = url;
+  file_info.tab_title = "Example";
+  EXPECT_CALL(dummy_handle_, GetSubmittedContextFileInfos())
+      .WillRepeatedly(
+          Return(std::vector<contextual_search::FileInfo>{file_info}));
+
+  EXPECT_CALL(*contextual_tasks_panel_controller_,
+              GetSessionHandleForActiveTabOrPanel())
+      .WillOnce(Return(std::make_pair(task_id, &dummy_handle_)));
+
+  EXPECT_CALL(*contextual_tasks_service_, GetContextForTask(task_id, _, _, _))
+      .WillOnce([&task](const base::Uuid&,
+                        const std::set<ContextualTaskContextSource>&,
+                        std::unique_ptr<ContextDecorationParams>,
+                        base::OnceCallback<void(
+                            std::unique_ptr<ContextualTaskContext>)> callback) {
+        std::move(callback).Run(std::make_unique<ContextualTaskContext>(task));
+      });
+
+  EXPECT_CALL(*tab_list_, GetTabCount()).WillRepeatedly(Return(1));
+  EXPECT_CALL(*tab_list_, GetTab(0)).WillRepeatedly(Return(tab1));
+
+  std::set<tabs::TabHandle> expected_tabs = {tab1->GetHandle()};
+  base::RunLoop run_loop;
+  EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
+
+  provider_->RefreshContext();
+  run_loop.Run();
+}
+
+// Session-sourced tabs are subject to the same token gate as context
+// attachments: if the session no longer has a token for the tab, it is not
+// underlined.
+TEST_F(ActiveTaskContextProviderImplTest,
+       RefreshContextIgnoresSessionSubmittedTabWithoutToken) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      omnibox::kContextManagementInComposebox);
+
+  tabs::TabInterface* tab1 = CreateMockTab();
+  SessionID id1 = sessions::SessionTabHelper::IdForTab(tab1->GetContents());
+  const GURL url("https://example.com");
+
+  base::Uuid task_id = base::Uuid::GenerateRandomV4();
+  ContextualTask task(task_id);
+
+  contextual_search::FileInfo file_info;
+  file_info.tab_session_id = id1;
+  file_info.tab_url = url;
+  EXPECT_CALL(dummy_handle_, GetSubmittedContextFileInfos())
+      .WillRepeatedly(
+          Return(std::vector<contextual_search::FileInfo>{file_info}));
+  // `dummy_handle_` holds no uploaded/submitted/persisted tokens, so
+  // GetTokenForTab(id1) is empty.
+
+  EXPECT_CALL(*contextual_tasks_panel_controller_,
+              GetSessionHandleForActiveTabOrPanel())
+      .WillOnce(Return(std::make_pair(task_id, &dummy_handle_)));
+
+  EXPECT_CALL(*contextual_tasks_service_, GetContextForTask(task_id, _, _, _))
+      .WillOnce([&task](const base::Uuid&,
+                        const std::set<ContextualTaskContextSource>&,
+                        std::unique_ptr<ContextDecorationParams>,
+                        base::OnceCallback<void(
+                            std::unique_ptr<ContextualTaskContext>)> callback) {
+        std::move(callback).Run(std::make_unique<ContextualTaskContext>(task));
+      });
+
+  EXPECT_CALL(*tab_list_, GetTabCount()).WillRepeatedly(Return(1));
+  EXPECT_CALL(*tab_list_, GetTab(0)).WillRepeatedly(Return(tab1));
+
+  base::RunLoop run_loop;
+  EXPECT_CALL(observer_, OnContextTabsChanged(std::set<tabs::TabHandle>()))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
+
+  provider_->RefreshContext();
+  run_loop.Run();
+}
+
+TEST_F(ActiveTaskContextProviderImplTest,
+       RefreshContextClearsUnderlinesWhenSmartTabSharingToggled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      omnibox::kContextManagementInComposebox);
+
+  tabs::TabInterface* tab1 = CreateMockTab();
+  SessionID id1 = sessions::SessionTabHelper::IdForTab(tab1->GetContents());
+
+  base::Uuid task_id = base::Uuid::GenerateRandomV4();
+  ContextualTask task(task_id);
+  UrlResource resource(GURL("https://example.com"), ResourceType::kWebpage);
+  resource.tab_id = id1;
+  task.AddUrlResource(resource);
+
+  dummy_handle_.set_smart_tab_sharing_toggled_since_last_turn(true);
+
+  EXPECT_CALL(*contextual_tasks_panel_controller_,
+              GetSessionHandleForActiveTabOrPanel())
+      .WillOnce(Return(std::make_pair(task_id, &dummy_handle_)));
+
+  EXPECT_CALL(*contextual_tasks_service_, GetContextForTask(task_id, _, _, _))
+      .WillOnce([&task](const base::Uuid&,
+                        const std::set<ContextualTaskContextSource>&,
+                        std::unique_ptr<ContextDecorationParams>,
+                        base::OnceCallback<void(
+                            std::unique_ptr<ContextualTaskContext>)> callback) {
+        std::move(callback).Run(std::make_unique<ContextualTaskContext>(task));
+      });
+
+  EXPECT_CALL(*tab_list_, GetTabCount()).WillRepeatedly(Return(1));
+  EXPECT_CALL(*tab_list_, GetTab(0)).WillRepeatedly(Return(tab1));
+
+  base::RunLoop run_loop;
+  EXPECT_CALL(observer_, OnContextTabsChanged(std::set<tabs::TabHandle>()))
       .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
 
   provider_->RefreshContext();
@@ -544,6 +683,126 @@ TEST_F(ActiveTaskContextProviderImplSidePanelOnlyTest,
       .WillOnce(testing::Return(std::make_pair(std::nullopt, nullptr)));
 
   provider_->RefreshContext();
+}
+
+TEST_F(ActiveTaskContextProviderImplTest,
+       Rearchitecture_TabNavigationClearsUnderlineAndRemovesSessionTabContext) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kContextualTasks, kContextualTasksRearchitecture}, {});
+
+  tabs::TabInterface* tab1 = CreateMockTab();
+  SessionID id1 = sessions::SessionTabHelper::IdForTab(tab1->GetContents());
+  const GURL url1("https://example.com/1");
+  const GURL url2("https://other.com/2");
+  content::WebContentsTester::For(tab1->GetContents())->NavigateAndCommit(url1);
+
+  base::Uuid task_id = base::Uuid::GenerateRandomV4();
+  ContextualTask task(task_id);
+  UrlResource resource(url1, ResourceType::kWebpage);
+  resource.tab_id = id1;
+  task.AddUrlResource(resource);
+
+  base::UnguessableToken token = base::UnguessableToken::Create();
+  dummy_handle_.GetUploadedContextTokensForTesting().push_back(token);
+  dummy_handle_.AttachTabPendingUpload(token, id1.id(), url1, "Example 1");
+
+  EXPECT_CALL(*contextual_tasks_panel_controller_,
+              GetSessionHandleForActiveTabOrPanel())
+      .WillRepeatedly(Return(std::make_pair(task_id, &dummy_handle_)));
+  EXPECT_CALL(*contextual_tasks_service_, GetContextForTask(task_id, _, _, _))
+      .WillRepeatedly(
+          [&task](
+              const base::Uuid&, const std::set<ContextualTaskContextSource>&,
+              std::unique_ptr<ContextDecorationParams>,
+              base::OnceCallback<void(std::unique_ptr<ContextualTaskContext>)>
+                  callback) {
+            std::move(callback).Run(
+                std::make_unique<ContextualTaskContext>(task));
+          });
+
+  EXPECT_CALL(*tab_list_, GetTabCount()).WillRepeatedly(Return(1));
+  EXPECT_CALL(*tab_list_, GetTab(0)).WillRepeatedly(Return(tab1));
+  EXPECT_CALL(*tab_list_, GetActiveTab()).WillRepeatedly(Return(tab1));
+
+  // Add a local tab underline (as `CaptureAndUploadTabContext` does) and
+  // refresh backend context.
+  provider_->AddLocalTabUnderline(tab1->GetHandle());
+  std::set<tabs::TabHandle> expected_tabs = {tab1->GetHandle()};
+  EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs))
+      .Times(testing::AtLeast(1));
+  provider_->RefreshContext();
+  ASSERT_EQ(1u, dummy_handle_.GetTabContextState().attached.size());
+
+  // Navigating `tab1` to `url2` must clear both its local and backend
+  // underlines and remove `tab1` from the session handle's attached tabs.
+  EXPECT_CALL(observer_, OnContextTabsChanged(std::set<tabs::TabHandle>()))
+      .Times(testing::AtLeast(1));
+  content::WebContentsTester::For(tab1->GetContents())->NavigateAndCommit(url2);
+  EXPECT_TRUE(dummy_handle_.GetTabContextState().attached.empty());
+
+  // Even after `TakeRemovedContexts()` drains `displaced_submitted_tabs_`,
+  // navigating `tab1` back to `url1` must not restore the backend underline.
+  dummy_handle_.TakeRemovedContexts();
+  EXPECT_CALL(observer_, OnContextTabsChanged(std::set<tabs::TabHandle>()))
+      .Times(testing::AtLeast(1));
+  content::WebContentsTester::For(tab1->GetContents())->NavigateAndCommit(url1);
+}
+
+TEST_F(ActiveTaskContextProviderImplTest,
+       Rearchitecture_TabCloseClearsUnderlineAndRemovesSessionTabContext) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kContextualTasks, kContextualTasksRearchitecture}, {});
+
+  tabs::TabInterface* tab1 = CreateMockTab();
+  SessionID id1 = sessions::SessionTabHelper::IdForTab(tab1->GetContents());
+  const GURL url1("https://example.com/1");
+  content::WebContentsTester::For(tab1->GetContents())->NavigateAndCommit(url1);
+
+  base::Uuid task_id = base::Uuid::GenerateRandomV4();
+  ContextualTask task(task_id);
+
+  contextual_search::TabInfo restored_tab;
+  restored_tab.tab_id = id1.id();
+  restored_tab.url = url1;
+  restored_tab.title = "Example 1";
+  restored_tab.submitted = true;
+  dummy_handle_.SetRestoredTabs({restored_tab});
+
+  EXPECT_CALL(*contextual_tasks_panel_controller_,
+              GetSessionHandleForActiveTabOrPanel())
+      .WillRepeatedly(Return(std::make_pair(task_id, &dummy_handle_)));
+  EXPECT_CALL(*contextual_tasks_service_, GetContextForTask(task_id, _, _, _))
+      .WillRepeatedly(
+          [&task](
+              const base::Uuid&, const std::set<ContextualTaskContextSource>&,
+              std::unique_ptr<ContextDecorationParams>,
+              base::OnceCallback<void(std::unique_ptr<ContextualTaskContext>)>
+                  callback) {
+            std::move(callback).Run(
+                std::make_unique<ContextualTaskContext>(task));
+          });
+
+  EXPECT_CALL(*tab_list_, GetTabCount()).WillRepeatedly(Return(1));
+  EXPECT_CALL(*tab_list_, GetTab(0)).WillRepeatedly(Return(tab1));
+  EXPECT_CALL(*tab_list_, GetActiveTab()).WillRepeatedly(Return(tab1));
+
+  provider_->AddLocalTabUnderline(tab1->GetHandle());
+  std::set<tabs::TabHandle> expected_tabs = {tab1->GetHandle()};
+  EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs))
+      .Times(testing::AtLeast(1));
+  provider_->RefreshContext();
+  ASSERT_EQ(1u, dummy_handle_.GetTabContextState().restored.size());
+
+  // Simulate closing `tab1`.
+  EXPECT_CALL(*tab_list_, GetTabCount()).WillRepeatedly(Return(0));
+  EXPECT_CALL(observer_, OnContextTabsChanged(std::set<tabs::TabHandle>()))
+      .Times(testing::AtLeast(1));
+  for (auto& observer : tab_list_observers_) {
+    observer.OnTabRemoved(*tab_list_, tab1, TabRemovedReason::kDeleted);
+  }
+  EXPECT_TRUE(dummy_handle_.GetTabContextState().restored.empty());
 }
 
 }  // namespace contextual_tasks

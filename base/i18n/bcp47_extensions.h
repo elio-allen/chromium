@@ -12,28 +12,33 @@
 #include <type_traits>
 #include <vector>
 
+#include "base/component_export.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
-#include "base/i18n/base_i18n_export.h"
 #include "base/strings/string_util.h"
 #include "base/types/pass_key.h"
 
 namespace base::i18n {
 
-class BASE_I18N_EXPORT LanguageTag;
+class LanguageTag;
 
 // Represents a BCP47 extension subtag.
 // BCP47 extensions consist of a single-character singleton followed by one or
 // more subtags. For example, in "en-US-a-myext", "a-myext" is an extension
 // where 'a' is the singleton and "myext" is the subtag string.
 // https://www.rfc-editor.org/info/rfc5646/#section-2.2.6
-class BASE_I18N_EXPORT Extension {
+class COMPONENT_EXPORT(LANGUAGE_TAG) Extension {
  public:
   ~Extension();
 
   // Parses an input string into an extension.
   static std::optional<Extension> FromString(std::string_view extension);
+
+  // Parses a singleton and subtags into an extension.
+  static std::optional<Extension> FromSubtags(
+      char singleton,
+      base::span<const std::string_view> subtags);
 
   Extension(const Extension&);
   Extension& operator=(const Extension&);
@@ -50,8 +55,8 @@ class BASE_I18N_EXPORT Extension {
   std::string SubtagsString() const;
 
   // Adds a subtag to the extension.
-  // Subtags must be lower case ASCII alphanumeric and have length between 3
-  // and 8.
+  // Subtags must be ASCII alphanumeric and have length between 2 and 8. They
+  // are stored lower case.
   bool AddSubtag(std::string_view subtag);
 
  private:
@@ -65,7 +70,7 @@ class BASE_I18N_EXPORT Extension {
 
 // Represents the 'x-' as-in BCP47 "private use subtags"
 // (https://www.rfc-editor.org/info/rfc5646/#section-2.2.7).
-class BASE_I18N_EXPORT PrivateUseSubtags {
+class COMPONENT_EXPORT(LANGUAGE_TAG) PrivateUseSubtags {
  public:
   ~PrivateUseSubtags();
   // Parses a string into `PrivateUseSubtags`, the input may or not contain the
@@ -75,6 +80,10 @@ class BASE_I18N_EXPORT PrivateUseSubtags {
   // input, otherwise it will get removed.
   static std::optional<PrivateUseSubtags> FromString(
       std::string_view private_use);
+
+  // Parses subtags into `PrivateUseSubtags`.
+  static std::optional<PrivateUseSubtags> FromSubtags(
+      base::span<const std::string_view> subtags);
 
   PrivateUseSubtags(const PrivateUseSubtags&);
   PrivateUseSubtags& operator=(const PrivateUseSubtags&);
@@ -89,8 +98,6 @@ class BASE_I18N_EXPORT PrivateUseSubtags {
   bool AddSubtag(std::string_view subtag);
   // Returns just the private use subtags, i.e. skips the 'x-' prefix.
   std::string SubtagsString() const;
-  // Returns the subtags span.
-  base::span<const std::string> subtags() const { return base::span(subtags_); }
 
  private:
   // Use static factory function `FromString`.
@@ -102,7 +109,7 @@ class BASE_I18N_EXPORT PrivateUseSubtags {
 // Unicode extensions have a specific internal structure defined by UTS #35,
 // containing keywords/types and attributes. Please see the specification for
 // more details: https://www.rfc-editor.org/info/rfc6067
-class BASE_I18N_EXPORT UnicodeExtension {
+class COMPONENT_EXPORT(LANGUAGE_TAG) UnicodeExtension {
  public:
   UnicodeExtension(const UnicodeExtension&);
 
@@ -119,6 +126,10 @@ class BASE_I18N_EXPORT UnicodeExtension {
   // If a keyword appears more than once in the input, only its first definition
   // is considered; subsequent occurrences are ignored as per RFC 6067.
   static std::optional<UnicodeExtension> FromString(std::string_view extension);
+
+  // Method that parses subtags into `UnicodeExtension`.
+  static std::optional<UnicodeExtension> FromSubtags(
+      base::span<const std::string_view> subtags);
 
   // Returns the value (collection of zero or more types) for the given key, if
   // present. Keys are exactly 2 characters. Types are from 3-8 characters.
@@ -184,9 +195,10 @@ namespace bcp47_extensions {
 template <char extid>
 struct Traits {
   using type = Extension;
-  static std::optional<type> Factory(base::PassKey<LanguageTag> pass_key,
-                                     std::string_view private_use) {
-    return Extension::FromString(private_use);
+  static std::optional<type> Factory(
+      base::PassKey<LanguageTag> pass_key,
+      base::span<const std::string_view> subtags) {
+    return Extension::FromSubtags(extid, subtags);
   }
   static constexpr char key = extid;
 };
@@ -195,9 +207,10 @@ struct Traits {
 template <>
 struct Traits<'u'> {
   using type = UnicodeExtension;
-  static std::optional<type> Factory(base::PassKey<LanguageTag>,
-                                     std::string_view extension) {
-    return UnicodeExtension::FromString(extension);
+  static std::optional<type> Factory(
+      base::PassKey<LanguageTag>,
+      base::span<const std::string_view> extension) {
+    return UnicodeExtension::FromSubtags(extension);
   }
   static constexpr char key = 'u';
 };
@@ -206,9 +219,10 @@ struct Traits<'u'> {
 template <>
 struct Traits<'x'> {
   using type = PrivateUseSubtags;
-  static std::optional<type> Factory(base::PassKey<LanguageTag> pass_key,
-                                     std::string_view private_use) {
-    return PrivateUseSubtags::FromString(private_use);
+  static std::optional<type> Factory(
+      base::PassKey<LanguageTag> pass_key,
+      base::span<const std::string_view> private_use) {
+    return PrivateUseSubtags::FromSubtags(private_use);
   }
   static constexpr char key = 'x';
 };

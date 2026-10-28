@@ -94,26 +94,34 @@ bool ElementAnimations::HasCompositedPaintWorkletAnimation() {
 
 void ElementAnimations::RecalcCompositedStatusForKeyframeChange(
     Element& element,
-    Animation::NativePaintWorkletReasons properties) {
+    const ComputedStyle& new_style,
+    Animation::NativePaintWorkletReasons properties,
+    bool force_update) {
   // Usually kInStyleRecalc or kInLayout, but sometimes SMIL can cause updates
   // post-style/layout. See crbug.com/523313381.
   if ((element.GetDocument().Lifecycle().GetState() <
        DocumentLifecycle::kInStyleRecalc) ||
-      (element.GetDocument().Lifecycle().GetState() >
-       DocumentLifecycle::kLayoutClean)) {
+      (element.GetDocument().Lifecycle().GetState() >=
+       DocumentLifecycle::kInPrePaint)) {
+    LOG(ERROR) << "Lifecycle phase: "
+               << static_cast<int>(
+                      element.GetDocument().Lifecycle().GetState());
     DCHECK(false) << "RecalcCompositedStatusForKeyframeChange must not be "
                   << "called outside of style/layout.";
     base::debug::DumpWithoutCrashing();
   }
+
   if (!element.GetLayoutObject()) {
     return;
   }
 
   if (background_color_npw_data_) {
-    background_color_npw_data_->SetNeedsKeyframeSnapshot();
+    background_color_npw_data_->MaybeSetNeedsKeyframeSnapshot(
+        element, new_style, force_update);
   }
   if (clip_path_npw_data_) {
-    clip_path_npw_data_->SetNeedsKeyframeSnapshot();
+    clip_path_npw_data_->MaybeSetNeedsKeyframeSnapshot(element, new_style,
+                                                       force_update);
   }
 }
 
@@ -251,6 +259,31 @@ void ElementAnimations::CancelCompositedAnimationsAffectingProperties(
             Animation::CompositorPendingReason::kPendingCancel);
         // No need to check the remaining properties once we have forced the
         // fallback to a main-thread animation.
+        break;
+      }
+    }
+  }
+}
+
+void ElementAnimations::DowngradeCompositedAnimationsAffectingProperties(
+    const AnimatedSourceBitset& properties) {
+  for (auto& entry : animations_) {
+    if (!entry.key->HasActiveAnimationsOnCompositor()) {
+      continue;
+    }
+    KeyframeEffect* effect = DynamicTo<KeyframeEffect>(entry.key->effect());
+    if (!effect) {
+      continue;
+    }
+
+    for (const auto& property : effect->Model()->DynamicProperties()) {
+      const std::optional<AnimatedSourceProperty> tracked =
+          GetAnimatedSourceProperty(property.GetCSSProperty().PropertyID());
+      if (tracked && properties.Has(*tracked)) {
+        // `kPendingDowngrade` skips the composited paint status update, which
+        // must not run in pre-paint.
+        entry.key->SetCompositorPending(
+            Animation::CompositorPendingReason::kPendingDowngrade);
         break;
       }
     }

@@ -5,8 +5,8 @@
 #include "chrome/browser/ui/views/frame/find_bar_owner_views.h"
 
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/find_bar/find_bar_controller.h"
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -16,8 +16,9 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/views/widget/widget.h"
 
-FindBarOwnerViews::FindBarOwnerViews(BrowserView* browser_view)
-    : browser_view_(browser_view) {}
+FindBarOwnerViews::FindBarOwnerViews(BrowserView* browser_view,
+                                     ui::UnownedUserDataHost& host)
+    : FindBarOwner(host), browser_view_(browser_view) {}
 
 FindBarOwnerViews::~FindBarOwnerViews() = default;
 
@@ -54,15 +55,13 @@ void FindBarOwnerViews::OnFindBarVisibilityChanged(gfx::Rect visible_bounds) {
   // revealed when the mouse is hovered over the find bar.
   ImmersiveModeController::From(browser_view_->browser())
       ->OnFindBarVisibleBoundsChanged(visible_bounds);
-  browser_view_->browser()
-      ->GetFeatures()
-      .GetFindBarController()
+  FindBarController::From(browser_view_->browser())
       ->OnFindBarVisibilityChanged();
 }
 
 void FindBarOwnerViews::CloseOverlappingBubbles() {
-  if (TranslateBubbleController* controller =
-      TranslateBubbleController::From(browser_view_->browser())) {
+  if (TranslateController* controller =
+          TranslateController::From(browser_view_->browser())) {
     controller->CloseBubble();
   }
 }

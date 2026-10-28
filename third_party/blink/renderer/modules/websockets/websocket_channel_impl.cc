@@ -49,6 +49,7 @@
 #include "base/strings/string_view_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/types/strong_alias.h"
+#include "services/network/public/mojom/ip_address_space.mojom-blink.h"
 #include "third_party/blink/public/common/switches.h"
 #include "third_party/blink/public/mojom/websockets/websocket_connector.mojom-blink.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
@@ -84,6 +85,7 @@
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/ascii_ctype.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
@@ -283,10 +285,14 @@ WebSocketChannelImpl::WebSocketChannelImpl(ExecutionContext* execution_context,
 
 WebSocketChannelImpl::~WebSocketChannelImpl() = default;
 
-bool WebSocketChannelImpl::Connect(const KURL& url, const String& protocol) {
+bool WebSocketChannelImpl::Connect(
+    const KURL& url,
+    const String& protocol,
+    network::mojom::blink::IPAddressSpace target_address_space) {
   DVLOG(1) << this << " Connect()";
 
-  if (GetBaseFetchContext()->ShouldBlockWebSocketByMixedContentCheck(url)) {
+  if (GetBaseFetchContext()->ShouldBlockWebSocketByMixedContentCheck(
+          url, target_address_space)) {
     has_initiated_opening_handshake_ = false;
     return false;
   }
@@ -369,10 +375,10 @@ bool WebSocketChannelImpl::Connect(const KURL& url, const String& protocol) {
 
   connector->Connect(
       url, protocols, execution_context_->UserAgent(),
-      execution_context_->GetStorageAccessApiStatus(),
       handshake_client_receiver_.BindNewPipeAndPassRemote(
           execution_context_->GetTaskRunner(TaskType::kWebSocket)),
-      /*throttling_profile_id=*/devtools_throttling_token);
+      /*throttling_profile_id=*/devtools_throttling_token,
+      target_address_space);
   handshake_client_receiver_.set_disconnect_with_reason_handler(
       blink::BindOnce(&WebSocketChannelImpl::OnConnectionError,
                       WrapWeakPersistent(this), FROM_HERE));
@@ -424,7 +430,7 @@ void WebSocketChannelImpl::Send(
 
 void WebSocketChannelImpl::Send(
     scoped_refptr<BlobDataHandle> blob_data_handle) {
-  DVLOG(1) << this << " Send(" << blob_data_handle->Uuid() << ", "
+  DVLOG(1) << this << " Send(" << blob_data_handle->MaybeUuid() << ", "
            << blob_data_handle->GetType() << ", " << blob_data_handle->size()
            << ") "
            << "(BlobDataHandle argument)";
@@ -989,8 +995,8 @@ void WebSocketChannelImpl::DidFailLoadingBlob(FileErrorCode error_code) {
     return;
   }
   // FIXME: Generate human-friendly reason message.
-  FailAsError(StrCat({"Failed to load Blob: error code = ",
-                      String::Number(static_cast<int>(error_code))}));
+  FailAsError(Format("Failed to load Blob: error code = {}",
+                     static_cast<int>(error_code)));
 }
 
 void WebSocketChannelImpl::TearDownFailedConnection() {

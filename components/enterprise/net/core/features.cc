@@ -4,11 +4,27 @@
 
 #include "components/enterprise/net/core/features.h"
 
+#include "build/build_config.h"
+
 #if BUILDFLAG(ENTERPRISE_PROXY)
 
 namespace enterprise_net {
 
-BASE_FEATURE(kEnableDynamicRouteFetching, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kEnableDynamicRouteFetching,
+#if BUILDFLAG(IS_ANDROID)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
+
+BASE_FEATURE(kEnterpriseProxyErrorHandling,
+#if BUILDFLAG(IS_ANDROID)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
 
 constexpr size_t kDefaultPvdConfigMaxSizeBytes = 3 * 1024 * 1024;
 
@@ -16,8 +32,39 @@ const base::FeatureParam<int> kPvdConfigMaxSizeBytesParam{
     &kEnableDynamicRouteFetching, "pvd_config_max_size_bytes",
     static_cast<int>(kDefaultPvdConfigMaxSizeBytes)};
 
+const base::FeatureParam<std::string> kAllowedAuthDomainsParam{
+    &kEnableDynamicRouteFetching, kAllowedAuthDomainsParamName, ""};
+
+const base::FeatureParam<int> kForcedDisguisedErrorCodeParam{
+    &kEnterpriseProxyErrorHandling, kForcedDisguisedErrorCodeParamName, 0};
+
+const base::FeatureParam<bool> kForceSignInRequiredParam{
+    &kEnterpriseProxyErrorHandling, kForceSignInRequiredParamName, false};
+
 bool IsDynamicRouteFetchingEnabled() {
   return base::FeatureList::IsEnabled(kEnableDynamicRouteFetching);
+}
+
+bool IsEnterpriseProxyErrorHandlingEnabled() {
+  return base::FeatureList::IsEnabled(kEnterpriseProxyErrorHandling);
+}
+
+std::optional<int> GetForcedDisguisedErrorCode() {
+  if (!IsEnterpriseProxyErrorHandlingEnabled()) {
+    return std::nullopt;
+  }
+  int code = kForcedDisguisedErrorCodeParam.Get();
+  if (code > 0) {
+    return code;
+  }
+  return std::nullopt;
+}
+
+bool ShouldForceSignInRequired() {
+  if (!IsEnterpriseProxyErrorHandlingEnabled()) {
+    return false;
+  }
+  return kForceSignInRequiredParam.Get();
 }
 
 size_t GetPvdConfigMaxSizeBytes() {

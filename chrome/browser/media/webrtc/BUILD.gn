@@ -7,8 +7,19 @@ assert(is_win || is_mac || is_linux || is_chromeos || is_android)
 import("//build/config/ozone.gni")
 import("//build/config/ui.gni")
 import("//chrome/common/features.gni")
+import("//components/enterprise/buildflags/buildflags.gni")
 import("//content/public/common/features.gni")
 import("//third_party/webrtc/webrtc.gni")
+
+source_set("media_stream_ui") {
+  public = [ "media_stream_ui.h" ]
+  public_deps = [
+    "//base",
+    "//content/public/browser",
+    "//ui/gfx",
+    "//ui/gfx/geometry",
+  ]
+}
 
 source_set("webrtc") {
   sources = [
@@ -94,13 +105,15 @@ source_set("webrtc") {
   ]
 
   public_deps = [
+    ":media_stream_ui",
     "//base",
     "//build:android_buildflags",
     "//build:buildflag_header_h",
-    "//chrome/browser:browser_public_dependencies",
+    "//chrome/app:branded_strings",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/tab_contents",
     "//chrome/common:mojo_bindings",
+    "//chrome/common:non_code_constants",
     "//components/content_settings/core/common",
     "//components/keyed_service/core",
     "//components/permissions",
@@ -124,7 +137,6 @@ source_set("webrtc") {
 
   deps = [
     "//base:i18n",
-    "//chrome/app:branded_strings",
     "//chrome/app:branded_strings_grit",
     "//chrome/app:command_ids",
     "//chrome/app:generated_resources",
@@ -144,17 +156,19 @@ source_set("webrtc") {
     "//chrome/browser/profiles:profile_util",
     "//chrome/browser/safe_browsing",
     "//chrome/browser/status_icons",
+    "//chrome/browser/ui:screen_capture_notification_ui",
     "//chrome/browser/ui:simple_message_box_headers",
     "//chrome/browser/ui:tab_modal_confirm_dialog",
     "//chrome/browser/ui:tab_modal_confirm_dialog_delegate",
     "//chrome/browser/ui:ui_features",
+    "//chrome/browser/ui/browser_window",
     "//chrome/common",
     "//chrome/common:channel_info",
     "//chrome/common:chrome_features",
     "//chrome/common:constants",
-    "//chrome/common:non_code_constants",
     "//components/content_settings/browser",
     "//components/content_settings/core/browser",
+    "//components/enterprise/buildflags",
     "//components/favicon/content",
     "//components/media_device_salt",
     "//components/pref_registry",
@@ -184,6 +198,18 @@ source_set("webrtc") {
     "//ui/snapshot",
   ]
 
+  if (enterprise_screenshot_protection) {
+    sources += [
+      "data_protection_tab_capture_handler.cc",
+      "data_protection_tab_capture_handler.h",
+    ]
+    deps += [
+      "//chrome/browser/enterprise",
+      "//chrome/browser/ui/tabs:tabs_public",
+      "//components/tabs:public",
+    ]
+  }
+
   if (enable_extensions_core) {
     sources += [
       "desktop_capture_access_handler.cc",
@@ -191,6 +217,11 @@ source_set("webrtc") {
       "tab_capture_access_handler.cc",
       "tab_capture_access_handler.h",
     ]
+    public_deps += [ "//chrome/common/extensions/api" ]
+  }
+
+  if (is_android) {
+    public_deps += [ "//ui/android" ]
   }
 
   if (!is_android) {
@@ -210,7 +241,9 @@ source_set("webrtc") {
     ]
     deps += [
       "//chrome/browser/controlled_frame:media_access_handler",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui/tabs:tab_strip",
+      "//chrome/browser/ui/views/frame:browser_view_header",
       "//chrome/browser/ui/web_applications",
       "//extensions/browser",
       "//extensions/browser/kiosk",
@@ -305,6 +338,7 @@ source_set("webrtc") {
       "//chrome/browser/chromeos/policy/dlp",
       "//chrome/browser/ui/ash/keyboard",
       "//chrome/browser/ui/ash/media_client",
+      "//chrome/browser/ui/views/web_apps/isolated_web_apps:multi_capture_notification_details_view",
       "//chrome/browser/web_applications",
       "//chromeos/ash/components/browser_context_helper",
       "//chromeos/ash/components/system",
@@ -313,8 +347,6 @@ source_set("webrtc") {
     ]
     allow_circular_includes_from = [
       "//chrome/browser/ash/policy/handlers",
-      "//chrome/browser/ash/profiles",
-      "//chrome/browser/ash/notifications",
       "//chrome/browser/ash/arc/screen_capture",
       "//chrome/browser/ash/policy/uploading",
       "//chrome/browser/ui/ash/keyboard",
@@ -339,17 +371,34 @@ source_set("webrtc") {
   }
 
   defines = [ "ZLIB_CONST" ]
+
+  if (toolkit_views) {
+    deps += [ "//chrome/browser/ui/views/frame:browser_widget" ]
+  }
 }
 
 source_set("test_support") {
   testonly = true
   sources = [
+    "fake_desktop_media_list.cc",
+    "fake_desktop_media_list.h",
+    "fake_desktop_media_picker_factory.cc",
+    "fake_desktop_media_picker_factory.h",
     "tab_desktop_media_list_mock_observer.cc",
     "tab_desktop_media_list_mock_observer.h",
   ]
-  deps = [
+  public_deps = [
     ":webrtc",
+    "//base",
+    "//content/public/browser",
     "//testing/gmock",
+    "//third_party/blink/public/mojom:mojom_platform_headers",
+  ]
+  deps = [
+    "//skia",
+    "//testing/gtest",
+    "//ui/base/mojom:ui_base_types",
+    "//ui/gfx/geometry",
   ]
 }
 
@@ -371,6 +420,7 @@ if (!is_android) {
       "webrtc_browsertest_perf.h",
     ]
     deps = [
+      "//chrome/browser/ui:browser_tabstrip",
       "//chrome/browser/ui/tabs:tab_strip",
       "//chrome/test:test_support",
     ]
@@ -380,10 +430,6 @@ if (!is_android) {
     testonly = true
     defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
 
-    # Some of these tests declare file-scope objects with non-trivial
-    # destructors (e.g. webrtc_getdisplaymedia_browsertest.cc).
-    configs += [ "//build/config/compiler:no_exit_time_destructors" ]
-
     sources = [
       "capture_handle_browsertest.cc",
       "display_media_access_handler_browsertest.cc",
@@ -392,6 +438,7 @@ if (!is_android) {
       "same_origin_observer_browsertest.cc",
       "sub_capture_browsertest.cc",
       "tab_desktop_media_list_browsertest.cc",
+      "webrtc_apprtc_browsertest.cc",
       "webrtc_browsertest_perf_unittest.cc",
       "webrtc_desktop_capture_browsertest.cc",
       "webrtc_disable_encryption_flag_browsertest.cc",
@@ -413,16 +460,19 @@ if (!is_android) {
       "//chrome/browser/apps/platform_apps:browser_test_support",
       "//chrome/browser/extensions:test_support",
       "//chrome/browser/extensions/api/desktop_capture",
+      "//chrome/browser/infobars:test_support",
       "//chrome/browser/permissions",
       "//chrome/browser/sessions:test_support",
-      "//chrome/browser/ui",
+      "//chrome/browser/ui:browser_commands",
+      "//chrome/browser/ui:browser_tabstrip",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui/apps",
       "//chrome/browser/ui/tab_sharing",
       "//chrome/browser/ui/tabs:tab_strip",
       "//chrome/browser/web_applications:web_applications_test_support",
       "//chrome/browser/web_applications/isolated_web_apps/test:test_support",
-      "//chrome/test:test_support",
       "//chrome/test:test_support_ui",
+      "//chrome/test/base:tracing",
       "//components/infobars/content",
       "//components/permissions:test_support",
       "//content/test:test_support",
@@ -433,7 +483,7 @@ if (!is_android) {
     if (is_chromeos) {
       sources += [
         "capture_handle_app_window_browsertest.cc",
-        "get_all_screens_media_browsertest.cc",
+        "multi_capture/get_all_screens_media_browsertest.cc",
         "multi_capture/multi_capture_data_service_browsertest.cc",
         "multi_capture/multi_capture_iframe_browsertest.cc",
         "multi_capture/multi_capture_session_controller_browsertest.cc",
@@ -449,6 +499,18 @@ if (!is_android) {
         "//chrome/browser/policy:test_support",
         "//chrome/browser/ui/ash/system_web_apps",
         "//components/embedder_support",
+      ]
+    }
+
+    if (enterprise_screenshot_protection) {
+      sources += [ "data_protection_tab_capture_handler_browsertest.cc" ]
+      deps += [
+        "//chrome/browser/enterprise",
+        "//chrome/browser/ui/browser_window",
+        "//chrome/browser/ui/tabs:tabs_public",
+        "//components/enterprise/buildflags",
+        "//components/enterprise/data_controls/core/browser:test_support",
+        "//components/tabs:public",
       ]
     }
   }
@@ -477,6 +539,8 @@ source_set("unit_tests") {
     "//chrome/browser/prefs",
     "//chrome/common",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//chrome/test/base:testing_browser_process",
     "//components/infobars/content",
     "//components/media_device_salt",
     "//components/prefs:test_support",
@@ -514,6 +578,7 @@ source_set("unit_tests") {
     sources += [
       "current_tab_desktop_media_list_unittest.cc",
       "desktop_capture_access_handler_unittest.cc",
+      "desktop_media_list_base_unittest.cc",
       "desktop_media_picker_controller_unittest.cc",
       "display_media_access_handler_unittest.cc",
       "media_capture_devices_dispatcher_unittest.cc",
@@ -589,11 +654,14 @@ if (!is_android && !is_chromeos_device) {
       "//chrome/browser/picture_in_picture",
       "//chrome/browser/preloading:test_support",
       "//chrome/browser/profiles:profile",
-      "//chrome/browser/ui",
+      "//chrome/browser/ui:browser_tabstrip",
       "//chrome/browser/ui/tabs:tab_strip",
+      "//chrome/browser/ui/views/frame:browser_view_header",
+      "//chrome/browser/ui/views/frame:browser_widget",
       "//chrome/common",
       "//chrome/test:test_support",
       "//chrome/test:test_support_ui",
+      "//chrome/test/base:test_switches",
       "//components/content_settings/core/browser",
       "//components/content_settings/core/common",
       "//components/media_device_salt",

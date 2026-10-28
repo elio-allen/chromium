@@ -13,8 +13,10 @@
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_base.h"
 #include "base/path_service.h"
+#include "base/pickle.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/apps/app_service/chrome_app_deprecation/chrome_app_deprecation.h"
@@ -24,6 +26,7 @@
 #include "chrome/browser/ash/extensions/file_manager/event_router.h"
 #include "chrome/browser/ash/extensions/file_manager/event_router_factory.h"
 #include "chrome/browser/ash/file_manager/file_manager_test_util.h"
+#include "chrome/browser/ash/file_manager/fileapi_util.h"
 #include "chrome/browser/ash/file_manager/mount_test_util.h"
 #include "chrome/browser/ash/file_manager/volume_manager.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
@@ -31,8 +34,8 @@
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/ash/cast_config/cast_config_controller_media_router.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_paths.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
@@ -54,6 +57,11 @@
 #include "google_apis/common/test_util.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "storage/browser/file_system/external_mount_points.h"
+#include "ui/base/clipboard/clipboard_buffer.h"
+#include "ui/base/clipboard/clipboard_format_type.h"
+#include "ui/base/clipboard/custom_data_helper.h"
+#include "ui/base/clipboard/scoped_clipboard_writer.h"
+#include "ui/base/data_transfer_policy/data_transfer_endpoint.h"
 #include "ui/shell_dialogs/select_file_dialog_factory.h"
 #include "ui/shell_dialogs/select_file_policy.h"
 
@@ -117,7 +125,7 @@ class JSTestStarter : public content::TestNavigationObserver {
   }
 
   // TestNavigationObserver:
-  void OnDidFinishNavigation(
+  void NavigationOfInterestDidFinish(
       content::NavigationHandle* navigation_handle) override {
     // If the background page scripts have run, the test will exist, so just run
     // it. Otherwise, schedule the test to be run at the end of the background
@@ -132,8 +140,6 @@ class JSTestStarter : public content::TestNavigationObserver {
     ASSERT_TRUE(content::ExecJs(
         navigation_handle->GetRenderFrameHost(),
         base::ReplaceStringPlaceholders(kScript, {test_name_}, nullptr)));
-
-    TestNavigationObserver::OnDidFinishNavigation(navigation_handle);
   }
 
  private:
@@ -454,7 +460,8 @@ class DriveFileSystemExtensionApiTest : public FileSystemExtensionApiTestBase {
     fake_drivefs_helper_ = std::make_unique<drive::FakeDriveFsHelper>(
         profile, drivefs_mount_point.DirName());
     return new drive::DriveIntegrationService(
-        g_browser_process->local_state(), profile, "",
+        g_browser_process->local_state(), profile,
+        IdentityManagerFactory::GetForProfile(profile), "",
         test_cache_root_.GetPath(),
         fake_drivefs_helper_->CreateFakeDriveFsListenerFactory());
   }
@@ -563,8 +570,9 @@ class MultiProfileDriveFileSystemExtensionApiTest
     const auto& drivefs_helper = fake_drivefs_helpers_[profile] =
         std::make_unique<drive::FakeDriveFsHelper>(profile, drivefs_dir);
     return new drive::DriveIntegrationService(
-        g_browser_process->local_state(), profile, std::string(), cache_dir,
-        drivefs_helper->CreateFakeDriveFsListenerFactory());
+        g_browser_process->local_state(), profile,
+        IdentityManagerFactory::GetForProfile(profile), std::string(),
+        cache_dir, drivefs_helper->CreateFakeDriveFsListenerFactory());
   }
 
   base::ScopedTempDir tmp_dir_;
@@ -632,7 +640,8 @@ class LocalAndDriveFileSystemExtensionApiTest
     fake_drivefs_helper_ = std::make_unique<drive::FakeDriveFsHelper>(
         profile, drivefs_mount_point.DirName());
     return new drive::DriveIntegrationService(
-        g_browser_process->local_state(), profile, "",
+        g_browser_process->local_state(), profile,
+        IdentityManagerFactory::GetForProfile(profile), "",
         test_cache_root_.GetPath(),
         fake_drivefs_helper_->CreateFakeDriveFsListenerFactory());
   }
@@ -819,6 +828,26 @@ IN_PROC_BROWSER_TEST_F(DriveFileSystemExtensionApiTest, RetainEntry) {
 
 IN_PROC_BROWSER_TEST_F(MultiProfileDriveFileSystemExtensionApiTest,
                        CrossProfileCopy) {
+  // Simulate the secondary profile's Drive volume being placed on the system
+  // clipboard by the Files app so cross-profile grantAccess is permitted.
+  {
+    ui::ScopedClipboardWriter clipboard_writer(
+        ui::ClipboardBuffer::kCopyPaste,
+        std::make_unique<ui::DataTransferEndpoint>(
+            file_manager::util::GetFileManagerURL()));
+    base::Pickle pickle;
+    ui::WriteCustomDataToPickle(
+        std::unordered_map<std::u16string, std::u16string>{
+            {u"fs/sources",
+             base::UTF8ToUTF16(base::StrCat({"filesystem:chrome-extension://"
+                                             "pkplfbidichfdicaijlchgnapepdginl"
+                                             "/external/drive-",
+                                             kSecondProfileHash}))}},
+        &pickle);
+    clipboard_writer.WritePickledData(
+        pickle, ui::ClipboardFormatType::DataTransferCustomType());
+  }
+
   // IOTask only sends progress update to JS/renderer when there is a Files app
   // window open, so we need to force it to send progress in the test.
   auto* event_router =

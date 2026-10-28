@@ -16,11 +16,6 @@ namespace {
 
 class IOSWebViewOAuthConsumerRegistry : public signin::OAuthConsumerRegistry {
  protected:
-  signin::OAuthConsumer GetOAuthConsumerForEnterprisePlusAddress()
-      const override {
-    NOTREACHED();
-  }
-
   signin::OAuthConsumer GetOAuthConsumerForGlicUserStatus() const override {
     NOTREACHED();
   }
@@ -46,6 +41,10 @@ class IOSWebViewOAuthConsumerRegistry : public signin::OAuthConsumerRegistry {
   }
 
   signin::OAuthConsumer GetOAuthConsumerForBrowserActuator() const override {
+    NOTREACHED();
+  }
+
+  signin::OAuthConsumer GetOAuthConsumerForSiteTokenProvider() const override {
     NOTREACHED();
   }
 };

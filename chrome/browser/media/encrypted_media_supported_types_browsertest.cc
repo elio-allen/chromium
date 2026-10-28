@@ -19,7 +19,7 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/media/clear_key_cdm_test_helper.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
@@ -27,6 +27,7 @@
 #include "chrome/test/base/test_launcher_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/cdm/common/buildflags.h"
+#include "components/metrics/content/subprocess_metrics_provider.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -148,10 +149,10 @@ const char16_t kUnexpectedResult16[] = u"unexpected result";
 #endif  // BUILDFLAG(BUNDLE_WIDEVINE_CDM)
 
 // For Widevine key system with software secure robustness, persistent license
-// session is supported on Windows and Mac. On ChromeOS, it is supported when
-// the protected media identifier permission is allowed. See
-// kUnsafelyAllowProtectedMediaIdentifierForDomain used below.
-#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+// session is only supported on ChromeOS when the protected media identifier
+// permission is allowed. See kUnsafelyAllowProtectedMediaIdentifierForDomain
+// used below.
+#if BUILDFLAG(IS_CHROMEOS)
 #define EXPECT_WV_SW_SECURE_PERSISTENT_SESSION EXPECT_WV
 #else
 #define EXPECT_WV_SW_SECURE_PERSISTENT_SESSION EXPECT_UNSUPPORTED
@@ -427,8 +428,8 @@ class EncryptedMediaSupportedTypesTest : public InProcessBrowserTest {
       init_data_type = "webm";
     }
 
-    bool is_audio = mime_type.compare(0, 5, "audio") == 0;
-    DCHECK(is_audio || mime_type.compare(0, 5, "video") == 0);
+    bool is_audio = mime_type.starts_with("audio");
+    DCHECK(is_audio || mime_type.starts_with("video"));
     auto capabilities =
         MakeMediaCapabilities(mime_type, codecs, robustness, encryption_scheme);
     auto audio_capabilities = is_audio ? capabilities : "null";
@@ -442,7 +443,7 @@ class EncryptedMediaSupportedTypesTest : public InProcessBrowserTest {
     DVLOG(1) << "command: " << command;
 
     auto result = ExecuteCommand(
-        browser()->tab_strip_model()->GetActiveWebContents(), command);
+        browser()->GetTabStripModel()->GetActiveWebContents(), command);
     DVLOG(1) << "result: " << result;
 
     return result;
@@ -2057,7 +2058,7 @@ IN_PROC_BROWSER_TEST_F(EncryptedMediaSupportedTypesWidevineTest,
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(ENABLE_PLAYREADY)
-IN_PROC_BROWSER_TEST_F(EncryptedMediaSupportedTypesPlayReadyTest,
+IN_PROC_BROWSER_TEST_F(EncryptedMediaSupportedTypesPlayReadyHwSecureTest,
                        PlayReadyBlockedWhenPolicyBlocked) {
   SKIP_IF_WINDOWS_PLAYREADY_INCOMPATIBLE();
 
@@ -2072,7 +2073,7 @@ IN_PROC_BROWSER_TEST_F(EncryptedMediaSupportedTypesPlayReadyTest,
                                  kPlayReadyHardwareSecureRobustness));
 }
 
-IN_PROC_BROWSER_TEST_F(EncryptedMediaSupportedTypesPlayReadyTest,
+IN_PROC_BROWSER_TEST_F(EncryptedMediaSupportedTypesPlayReadyHwSecureTest,
                        PlayReadySuccessWhenPolicyAllowed) {
   SKIP_IF_WINDOWS_PLAYREADY_INCOMPATIBLE();
 
@@ -2087,7 +2088,7 @@ IN_PROC_BROWSER_TEST_F(EncryptedMediaSupportedTypesPlayReadyTest,
                                  kPlayReadyHardwareSecureRobustness));
 }
 
-IN_PROC_BROWSER_TEST_F(EncryptedMediaSupportedTypesPlayReadyTest,
+IN_PROC_BROWSER_TEST_F(EncryptedMediaSupportedTypesPlayReadyHwSecureTest,
                        PlayReadyUMA) {
   SKIP_IF_WINDOWS_PLAYREADY_INCOMPATIBLE();
 
@@ -2097,17 +2098,28 @@ IN_PROC_BROWSER_TEST_F(EncryptedMediaSupportedTypesPlayReadyTest,
   EXPECT_SUCCESS(IsVideoRobustnessSupported(
       kPlayReadyKeySystemRecommendationHWSecure, nullptr));
 
+  // WebEncryptedMediaClientImpl::Reporter reports at most once per frame per
+  // base key system name. Reload the test page so the second key system
+  // variant is reported in a fresh frame.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      embedded_test_server()->GetURL("/test_key_system_instantiation.html")));
+
   // PlayReady default key system with hardware secure robustness should also
   // log UMA correctly under the same base key system name.
   EXPECT_SUCCESS(
       IsVideoRobustnessSupported(kPlayReadyKeySystemRecommendationDefault,
                                  kPlayReadyHardwareSecureRobustness));
 
+  content::FetchHistogramsFromChildProcesses();
+  metrics::SubprocessMetricsProvider::MergeHistogramDeltasForTesting();
   histogram_tester.ExpectBucketCount(
       "Media.EME.RequestMediaKeySystemAccess.PlayReady",
       /*KEY_SYSTEM_REQUESTED*/ 0, 2);
   histogram_tester.ExpectBucketCount(
       "Media.EME.RequestMediaKeySystemAccess.PlayReady",
       /*KEY_SYSTEM_SUPPORTED*/ 1, 2);
+  histogram_tester.ExpectTotalCount(
+      "Media.EME.RequestMediaKeySystemAccess.PlayReady", 4);
 }
 #endif  // BUILDFLAG(ENABLE_PLAYREADY)

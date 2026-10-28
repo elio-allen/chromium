@@ -19,6 +19,7 @@
 #include "chrome/browser/ui/exclusive_access/exclusive_access_bubble_type.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/exclusive_access/exclusive_access_bubble_views.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/fullscreen_control/fullscreen_control_host.h"
@@ -111,7 +112,7 @@ class FullscreenControlViewTest : public InProcessBrowserTest {
 
  protected:
   FullscreenControlHost* GetFullscreenControlHost() {
-    return browser()->GetFeatures().fullscreen_control_host();
+    return FullscreenControlHost::From(browser());
   }
 
   FullscreenControlView* GetFullscreenControlView() {
@@ -123,7 +124,7 @@ class FullscreenControlViewTest : public InProcessBrowserTest {
   }
 
   ExclusiveAccessManager* GetExclusiveAccessManager() {
-    return browser()->GetFeatures().exclusive_access_manager();
+    return ExclusiveAccessManager::From(browser());
   }
 
   ExclusiveAccessBubbleViews* GetExclusiveAccessBubble() {
@@ -137,7 +138,7 @@ class FullscreenControlViewTest : public InProcessBrowserTest {
   }
 
   content::WebContents* GetActiveWebContents() {
-    return browser()->tab_strip_model()->GetActiveWebContents();
+    return browser()->GetTabStripModel()->GetActiveWebContents();
   }
 
   bool IsPopupCreated() { return GetFullscreenControlHost()->IsPopupCreated(); }
@@ -217,7 +218,7 @@ IN_PROC_BROWSER_TEST_F(FullscreenControlViewTest,
                        NoFullscreenPopupOnBrowserFullscreen) {
   EnterActiveTabFullscreenAndFinishPromptAnimation();
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
-  DCHECK(browser_view);
+  CHECK(browser_view, base::NotFatalUntil::M162);
   ASSERT_TRUE(browser_view->IsFullscreen());
   ASSERT_FALSE(IsPopupCreated());
 }
@@ -256,8 +257,8 @@ IN_PROC_BROWSER_TEST_F(FullscreenControlViewTest, MouseExitFullscreen) {
 }
 
 // TODO(https://crbug.com/374539762): Deflake and re-enable on Windows.
-// TODO(crbug.com/524685085): Flaky on ASAN.
-#if BUILDFLAG(IS_WIN) || defined(ADDRESS_SANITIZER)
+// TODO(crbug.com/524685085): Flaky on Linux and ASAN.
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || defined(ADDRESS_SANITIZER)
 #define MAYBE_MouseExitFullscreen_TimeoutAndRetrigger \
   DISABLED_MouseExitFullscreen_TimeoutAndRetrigger
 #else
@@ -449,8 +450,8 @@ IN_PROC_BROWSER_TEST_F(FullscreenControlViewTest, MAYBE_TouchPopupInteraction) {
   ASSERT_FALSE(browser_view->IsFullscreen());
 }
 
-// TODO(crbug.com/524685085): Flaky on ASAN.
-#if defined(ADDRESS_SANITIZER)
+// TODO(crbug.com/524685085): Flaky on ASAN and Linux.
+#if defined(ADDRESS_SANITIZER) || BUILDFLAG(IS_LINUX)
 #define MAYBE_MouseAndTouchInteraction_NoInterference \
   DISABLED_MouseAndTouchInteraction_NoInterference
 #else

@@ -116,6 +116,7 @@ public class AccessibilitySettingsTest {
                 .thenReturn(mBoolPrefMock);
         when(mDelegate.getTextSizeContrastAccessibilityDelegate()).thenReturn(mIntegerPrefMock);
         when(mDelegate.getSiteSettingsNavigation()).thenReturn(mSettingsNavigationMock);
+        when(mDelegate.getSiteSettingsNavigation(any())).thenReturn(mSettingsNavigationMock);
         when(mDelegate.getDistilledPagePrefs()).thenReturn(mDistilledPagePrefsMock);
 
         // Enable screen reader to display all settings options.
@@ -172,6 +173,7 @@ public class AccessibilitySettingsTest {
         Preference captionsPref =
                 mAccessibilitySettings.findPreference(AccessibilitySettings.PREF_CAPTIONS);
         Assert.assertNotNull(captionsPref);
+        Assert.assertFalse(captionsPref.isIconSpaceReserved());
         Assert.assertNotNull(captionsPref.getOnPreferenceClickListener());
 
         Instrumentation.ActivityMonitor monitor =
@@ -199,6 +201,7 @@ public class AccessibilitySettingsTest {
                 mAccessibilitySettings.findPreference(PREF_IMAGE_DESCRIPTIONS);
 
         Assert.assertNotNull(imageDescriptionsPref);
+        Assert.assertFalse(imageDescriptionsPref.isIconSpaceReserved());
         Assert.assertTrue(
                 "Image Descriptions option should be visible", imageDescriptionsPref.isVisible());
 
@@ -231,6 +234,7 @@ public class AccessibilitySettingsTest {
         Preference zoomInfoPref =
                 mAccessibilitySettings.findPreference(AccessibilitySettings.PREF_ZOOM_INFO);
         Assert.assertNotNull(zoomInfoPref);
+        Assert.assertFalse(zoomInfoPref.isIconSpaceReserved());
         Assert.assertNotNull(zoomInfoPref.getOnPreferenceClickListener());
 
         // First scroll to the "Saved zoom levels" preference, then click.

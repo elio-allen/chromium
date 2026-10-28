@@ -122,17 +122,12 @@ class CORE_EXPORT SVGImage final : public Image {
   void AdvanceAnimationForTesting() override;
   SVGImageChromeClient& ChromeClientForTesting();
 
-  static gfx::PointF OffsetForCurrentFrame(const gfx::RectF& dst_rect,
-                                           const gfx::RectF& src_rect);
-
   // Service CSS and SMIL animations.
   void ServiceAnimations(base::TimeTicks monotonic_animation_start_time);
 
   // Update use counters for the given document after an image finishes loading
   // in that document.
   void UpdateUseCountersAfterLoad(const Document&) const;
-
-  void MaybeRecordSvgImageProcessingTime(const Document&);
 
   PaintImage PaintImageForCurrentFrame() override;
 
@@ -284,9 +279,6 @@ class CORE_EXPORT SVGImage final : public Image {
   PhysicalSize intrinsic_size_;
   bool has_pending_timeline_rewind_;
   mutable AnimationState animation_state_ = AnimationState::kUnknown;
-
-  int data_change_count_ = 0;
-  base::TimeDelta data_change_elapsed_time_;
 
   bool did_encounter_xsl_ = false;
 

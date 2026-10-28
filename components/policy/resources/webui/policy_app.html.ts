@@ -25,7 +25,7 @@ export function getHtml(this: PolicyAppElement) {
       <div style="position: relative;">
         <cr-button id="more-actions-button" @click="${this.onMoreActionsClick_}">
           $i18n{moreActions}
-          <cr-icon icon="cr:expand-more" slot="suffix-icon"></cr-icon>
+          <cr-icon icon="cr:keyboard-arrow-down" slot="suffix-icon"></cr-icon>
         </cr-button>
         <cr-action-menu id="actionMenu" role-description="menu">
           ${!this.hideExportButton_ ? html`
@@ -61,13 +61,20 @@ export function getHtml(this: PolicyAppElement) {
   </div>
   <main id="policy-ui-container">
     <div id="policy-ui">
-<if expr="not is_ios and not is_android">
-      ${this.shouldShowCommandLineFlagsWarning_ ? html`
-        <div id="command-line-flags-warning" class="warning-banner" role="alert">
+<if expr="not is_ios and not is_android and not is_chromeos">
+      ${this.shouldShowCommandLineArgumentsWarning_ ? html`
+        <div id="command-line-arguments-warning" class="warning-banner" role="alert">
           <cr-icon icon="cr:warning" class="warning-icon"></cr-icon>
-          <div class="warning-text">$i18n{commandLineFlagsWarning}</div>
+          <div class="warning-text">
+            <div>$i18n{commandLineFlagsWarning}</div>
+            ${this.commandLineArguments_ ? html`
+              <div id="command-line-arguments">${this.commandLineArguments_}</div>
+            ` : ''}
+          </div>
         </div>
       ` : ''}
+</if>
+<if expr="not is_ios and not is_android">
       ${this.shouldShowPromo_ ? html`
         <promotion-banner-section-container
             @dismiss="${this.onPromoDismiss_}"
@@ -79,10 +86,11 @@ export function getHtml(this: PolicyAppElement) {
           ?hidden="${!this.hasStatus_()}">
         <h2>$i18n{status}</h2>
         <div id="status-box-container">
-          ${Object.entries(this.status_).map(([scope, boxStatus]) =>
-            boxStatus.policyDescriptionKey ? html`
+          ${Object.entries(this.status_).map(([scope, boxStatus]) => html`
+            ${boxStatus.policyDescriptionKey ? html`
               <status-box .scope="${scope}" .status="${boxStatus}"></status-box>
-            ` : '')}
+            ` : ''}
+          `)}
         </div>
       </section>
       <section id="main-section"

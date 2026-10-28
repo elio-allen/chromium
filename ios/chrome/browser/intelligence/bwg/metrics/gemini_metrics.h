@@ -14,6 +14,10 @@ class TimeDelta;
 class TimeTicks;
 }  // namespace base
 
+namespace contextual_cueing {
+enum class ContextualCueingDecision;
+}  // namespace contextual_cueing
+
 namespace optimization_guide {
 enum class OptimizationGuideDecision;
 }  // namespace optimization_guide
@@ -60,6 +64,9 @@ extern const char kSignInRequiredSnackbarShownHistogram[];
 
 // UMA histogram key for IOS.Gemini.EntryPoint.Available.
 extern const char kEntryPointAvailableHistogram[];
+
+// UMA histogram key for IOS.Gemini.EntryPoint.DisabledByQuota.
+extern const char kEntryPointDisabledByQuotaHistogram[];
 
 // UMA histogram key for IOS.Gemini.FRE.EntryPoint.
 extern const char kFirstRunEntryPointHistogram[];
@@ -121,12 +128,16 @@ enum class IOSGeminiLiveFREOutcome {
   kDismissedOnConsent = 1,
   kDeniedOSMicPermission = 2,
   kDeniedChromeMicPermission = 3,
-  kMaxValue = kDeniedChromeMicPermission,
+  kLinkClick = 4,
+  kMaxValue = kLinkClick,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml:IOSGeminiLiveFREOutcome)
 
 // Records the final outcome of the Gemini Live FRE flow.
 void RecordLiveFREOutcome(IOSGeminiLiveFREOutcome outcome);
+
+// Records that the user clicked a link on the Gemini Live FRE consent screen.
+void RecordLiveFREConsentLinkClick();
 
 // Records that the user tapped the Live button to switch to Live mode.
 void RecordLiveButtonTapped();
@@ -288,7 +299,8 @@ enum class IOSGeminiFirstPromptSubmissionMethod {
   kOnboardingNoIAmDone = 25,
   kOnboardingKeepLearning = 26,
   kAppSwitcherSummarize = 27,
-  kMaxValue = kAppSwitcherSummarize,
+  kLivePrompt = 28,
+  kMaxValue = kLivePrompt,
 };
 // LINT.ThenChange(
 //   /tools/metrics/histograms/metadata/ios/enums.xml:IOSGeminiFirstPromptSubmissionMethod,
@@ -313,11 +325,23 @@ extern const char kPromptLongPressImageIncludedHistogram[];
 // UMA histogram key for IOS.Gemini.Prompt.ContextAttachment.
 extern const char kPromptContextAttachmentHistogram[];
 
+// UMA histogram key for IOS.Gemini.Prompt.Chat.ContextAttachment.
+extern const char kPromptChatContextAttachmentHistogram[];
+
+// UMA histogram key for IOS.Gemini.Prompt.Live.ContextAttachment.
+extern const char kPromptLiveContextAttachmentHistogram[];
+
 // UMA histogram key for IOS.Gemini.Prompt.TabsAttachedCount.
 extern const char kPromptTabsAttachedCountHistogram[];
 
 // UMA histogram key for IOS.Gemini.Prompt.MultiTabUsed.
 extern const char kPromptMultiTabUsedHistogram[];
+
+// UMA histogram key for IOS.Gemini.BlockQuerySubmissionWhileLoading.
+extern const char kBlockQuerySubmissionWhileLoadingHistogram[];
+
+// UMA histogram key for IOS.Gemini.ShowPageLoadingSnackbarOnOpeningInvocation.
+extern const char kShowPageLoadingSnackbarOnOpeningInvocationHistogram[];
 
 // UMA histogram key for IOS.Gemini.Response.GeneratedImage.Included.
 extern const char kResponseGeneratedImageIncluded[];
@@ -348,6 +372,9 @@ extern const char kEditMenuSelectedTextLengthHistogram[];
 
 // UMA histogram key for IOS.Gemini.GlicContextualCue.Decision.
 extern const char kGlicContextualCueDecisionHistogram[];
+
+// UMA histogram key for IOS.ContextualCueing.Decision.
+extern const char kContextualCueingDecisionHistogram[];
 
 // Represents the completed Gemini session types.
 enum class IOSGeminiSessionType {
@@ -526,6 +553,12 @@ void RecordSignInRequiredSnackbarShown(gemini::EntryPoint entry_point);
 // selected some text, and is eligible to use the feature.
 void RecordGeminiEntryPointAvailable(gemini::EntryPoint entry_point);
 
+// Records when the Gemini entry point is disabled because quota was reached.
+void RecordGeminiEntryPointDisabledByQuota(gemini::EntryPoint entry_point);
+
+// Records when Gemini quota has been reached.
+void RecordGeminiQuotaReached();
+
 // Records that the Gemini FRE was shown.
 void RecordFirstRunShown();
 
@@ -564,6 +597,30 @@ void RecordGeminiTabPickerOpened();
 
 // Records that the Tab Picker was dismissed.
 void RecordGeminiTabPickerDismissed();
+
+// Records that the tab attachment limit error snackbar was shown in the Tab
+// Picker.
+void RecordGeminiTabPickerErrorAttachmentLimit();
+
+// Records that the cannot reload tab error snackbar was shown in the Tab
+// Picker.
+void RecordGeminiTabPickerErrorCannotReloadTab();
+
+// Records that the cannot attach tab error snackbar was shown in the Tab
+// Picker.
+void RecordGeminiTabPickerErrorCannotAttachTab();
+
+// Records that a shared (non-active) tab was detached from a Floaty chip in the
+// Gemini session.
+void RecordGeminiTabDetached();
+
+// Records that the active tab was attached from a Floaty chip in the Gemini
+// session.
+void RecordGeminiActiveTabAttached();
+
+// Records that the active tab was detached from a Floaty chip in the Gemini
+// session.
+void RecordGeminiActiveTabDetached();
 
 // Records the latency from prompt submission to response received, including
 // metadata about the prompt & response.
@@ -631,6 +688,12 @@ void RecordFloatyHiddenFromSource(gemini::FloatyUpdateSource source);
 // Records that the user clicked a URL in a Gemini session.
 void RecordURLOpened();
 
+// Records that the Gemini web modal was opened for an immersive learning card.
+void RecordGeminiImmersiveLearningCardWebModalOpened();
+
+// Records that a navigation closed the Gemini web modal and opened a new tab.
+void RecordGeminiWebModalNavigatedToNewTab();
+
 // Records entry point metrics with context about whether FRE is shown.
 void RecordGeminiEntryPointClick(gemini::EntryPoint entry_point,
                                  bool is_fre_flow);
@@ -689,6 +752,10 @@ void RecordGeminiEditMenuSelectedTextLength(int length);
 void RecordGeminiGlicContextualCueDecision(
     optimization_guide::OptimizationGuideDecision decision);
 
+// Records the contextual cueing decision.
+void RecordContextualCueingDecision(
+    contextual_cueing::ContextualCueingDecision decision);
+
 // Records the dormant reason when Gemini Live transitions to dormant mode.
 void RecordGeminiLiveDormantReason(ios::provider::GeminiDormantReason reason);
 
@@ -707,5 +774,33 @@ void RecordGeminiLiveTurnCount(int turn_count);
 // Records the accumulated duration of Gemini Live mode segments within
 // a single Gemini interaction.
 void RecordGeminiLiveAccumulatedDuration(base::TimeDelta duration);
+
+// Records that the user sent a prompt in a Gemini Live session.
+void RecordGeminiLivePromptSent(bool has_page_context);
+
+// Records whether query submission is blocked while page context is loading.
+void RecordBlockQuerySubmissionWhileLoading(bool block_submission);
+
+// Records whether to display the page loading snackbar on the opening
+// invocation while page context is loading.
+void RecordShowPageLoadingSnackbarOnOpeningInvocation(bool show_snackbar);
+
+// Enum representing the account alignment status when entering via the App
+// Switcher AI Summarization intent.
+// LINT.IfChange(GeminiAppSwitcherAccountStatus)
+enum class GeminiAppSwitcherAccountStatus {
+  kMatching = 0,
+  kMismatched = 1,
+  kExternalAppOnlySignedIn = 2,
+  kClientAppOnlySignedIn = 3,
+  kBothSignedOut = 4,
+  kMaxValue = kBothSignedOut,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/ios/enums.xml:GeminiAppSwitcherAccountStatus)
+
+// Records the account alignment status of a user entering via the App Switcher
+// AI Summarization intent.
+void RecordGeminiAppSwitcherAccountStatus(
+    GeminiAppSwitcherAccountStatus status);
 
 #endif  // IOS_CHROME_BROWSER_INTELLIGENCE_BWG_METRICS_GEMINI_METRICS_H_

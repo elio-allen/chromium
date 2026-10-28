@@ -10,6 +10,7 @@
 #include "content/public/common/content_features.h"
 #include "media/base/media_switches.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/features_generated.h"
 #include "ui/accessibility/accessibility_features.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -24,24 +25,24 @@ namespace {
 // in other locations in the code base (e.g. content_features.h).
 const base::Feature* const kFeaturesExposedToJava[] = {
     &blink::features::kAndroidDesktopWebPrefsLargeDisplays,
+    &blink::features::kAndroidKeyboardContextMenu,
     &blink::features::kAndroidSpellcheckFullApiBlink,
     &blink::features::kDevicePosture,
     &blink::features::kInputCursorAnchorInfoMigration,
     &blink::features::kViewportSegments,
+    &blink::features::kWebHID,
     &media::kAllowDelayedAudioFocusGainAndroid,
     &media::kAndroidEnableBackgroundMediaCapturing,
     &input::features::kInputOnViz,
     &features::kAndroidCaptureKeyEvents,
     &features::kAndroidDevToolsFrontend,
+    &features::kAccessibilityAndroidBackgroundThread,
     &features::kAccessibilityCheckJavaNodeCacheFreshness,
-    &features::kAccessibilityAtomicLiveRegions,
     &features::kAccessibilityDeprecateJavaNodeCache,
-    &features::kAccessibilityDeprecateTypeAnnounce,
     &features::kAccessibilityExposeNonAtomicTextFieldChildren,
     &features::kAccessibilityExpandEventMetadata,
-    &features::kAccessibilityExtendedSelection,
+    &features::kAccessibilitySyncFocusOnViewFocusGain,
     &features::kAccessibilityImeGetFormattedText,
-    &features::kAccessibilityImproveLiveRegionAnnounce,
     &features::kAccessibilityMagnificationFollowsFocusKeyboardAttached,
     &features::kAccessibilityMagnificationFollowsFocusNoKeyboard,
     &features::kAccessibilityRequestLayoutBasedActions,
@@ -49,8 +50,6 @@ const base::Feature* const kFeaturesExposedToJava[] = {
     &features::kAccessibilityPageZoomV2,
     &features::kAccessibilityPopulateSupplementalDescriptionApi,
     &features::kAccessibilitySequentialFocus,
-    &features::kAccessibilitySetSelectableOnAllNodesWithText,
-    &features::kAccessibilityUnifiedSnapshots,
     &features::kAccessibilityManageBroadcastReceiverOnBackground,
     &features::kAndroidDesktopZoomScaling,
     &features::kAndroidFallbackToNextSlot,
@@ -59,8 +58,7 @@ const base::Feature* const kFeaturesExposedToJava[] = {
     &features::kAndroidPkAutocorrectUnderline,
     &features::kAndroidPkAutocorrectUnderlineV2,
     &features::kAndroidRemoveSetLocalFocusWorkaroundOnBaklava,
-    &features::kAndroidBlockMisspellingSuggestionSpanInCompositionMode,
-    &features::kAndroidBlockGrammarSuggestionSpanInCompositionMode,
+    &features::kAndroidReplayDelKeyEvent,
     &features::kEarlyTopAppForSandboxedRenderer,
     &features::kStrictHighRankProcessLRU,
     &features::kFedCm,
@@ -70,9 +68,11 @@ const base::Feature* const kFeaturesExposedToJava[] = {
     &features::kPrefetchOffTheMainThread,
     &features::kPreviewHandwritingGesture,
     &features::kReduceGpuPriorityOnBackground,
+    &features::kRestrictInteractionsInSwipeRegionOnFullscreen,
     &features::kContinueGestureOnLosingFocus,
     &features::kSandboxedProcessServiceLimitOnAndroid,
     &features::kScrollAfterOSKViewportShrinkFix,
+    &features::kScrollFocusedNodeOnOSKViewportReshrink,
     &features::kSmartZoom,
     &features::kTouchDragAndContextMenu,
     &features::kWebBluetoothNewPermissionsBackend,

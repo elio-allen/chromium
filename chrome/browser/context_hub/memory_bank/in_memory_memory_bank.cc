@@ -4,12 +4,15 @@
 
 #include "chrome/browser/context_hub/memory_bank/in_memory_memory_bank.h"
 
+#include <cstdint>
 #include <limits>
-#include <string_view>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "base/rand_util.h"
 #include "base/time/time.h"
-#include "url/gurl.h"
 
 namespace context_hub {
 
@@ -20,39 +23,52 @@ constexpr size_t kMaxEntries = 50;
 InMemoryMemoryBank::InMemoryMemoryBank() : entries_(kMaxEntries) {}
 InMemoryMemoryBank::~InMemoryMemoryBank() = default;
 
-void InMemoryMemoryBank::SaveTab(const GURL& url,
-                                 std::string_view tab_title,
-                                 std::string_view page_text,
-                                 OperationCompleteCallback callback) {
-  MemoryBankEntry entry;
-  entry.id = static_cast<int64_t>(
-      base::RandGenerator(std::numeric_limits<int64_t>::max()));
-  entry.type = MemoryBankType::kTab;
-  entry.timestamp = base::Time::Now();
-  entry.url = url;
-  entry.tab_title = std::string(tab_title);
-  entry.selected_text = std::string(page_text);
-  entries_.Put(entry.id, std::move(entry));
+void InMemoryMemoryBank::AddObserver(Observer* observer) {
+  observers_.AddObserver(observer);
+}
+
+void InMemoryMemoryBank::RemoveObserver(Observer* observer) {
+  observers_.RemoveObserver(observer);
+}
+
+void InMemoryMemoryBank::SaveMemoryBankEntry(
+    MemoryBankEntry entry,
+    OperationCompleteCallback callback) {
+  if (entry.id == 0) {
+    entry.id = static_cast<int64_t>(
+        base::RandGenerator(std::numeric_limits<int64_t>::max()));
+  }
+  if (entry.timestamp.is_null()) {
+    entry.timestamp = base::Time::Now();
+  }
+  int64_t entry_id = entry.id;
+  auto it = entries_.Put(entry_id, std::move(entry));
+  observers_.Notify(&Observer::OnMemoryBankEntryAdded, it->second);
   if (callback) {
-    std::move(callback).Run();
+    std::move(callback).Run(/*success=*/true);
   }
 }
 
-void InMemoryMemoryBank::SaveTextSelection(const GURL& url,
-                                           std::string_view tab_title,
-                                           std::string_view selected_text,
-                                           OperationCompleteCallback callback) {
-  MemoryBankEntry entry;
-  entry.id = static_cast<int64_t>(
-      base::RandGenerator(std::numeric_limits<int64_t>::max()));
-  entry.type = MemoryBankType::kTextSelection;
-  entry.timestamp = base::Time::Now();
-  entry.url = url;
-  entry.tab_title = std::string(tab_title);
-  entry.selected_text = std::string(selected_text);
-  entries_.Put(entry.id, std::move(entry));
+void InMemoryMemoryBank::UpdateEntryAnnotations(
+    int64_t id,
+    std::vector<std::string> tags,
+    std::optional<std::string> note,
+    std::optional<std::string> collection,
+    OperationCompleteCallback callback) {
+  auto it = entries_.Peek(id);
+  if (it == entries_.end()) {
+    if (callback) {
+      std::move(callback).Run(/*success=*/false);
+    }
+    return;
+  }
+  it->second.tags = std::move(tags);
+  it->second.note = std::move(note);
+  it->second.collection = std::move(collection);
+  observers_.Notify(&Observer::OnMemoryBankEntryUpdated, id, it->second.tags,
+                    it->second.note, it->second.collection);
   if (callback) {
-    std::move(callback).Run();
+    std::move(callback).Run(/*success=*/true);
   }
 }
 
@@ -82,14 +98,45 @@ void InMemoryMemoryBank::GetEntriesByIds(base::span<const int64_t> ids,
 
 void InMemoryMemoryBank::DeleteEntries(base::span<const int64_t> ids,
                                        OperationCompleteCallback callback) {
+  std::vector<int64_t> deleted_ids;
   for (int64_t id : ids) {
     auto it = entries_.Peek(id);
     if (it != entries_.end()) {
       entries_.Erase(it);
+      deleted_ids.push_back(id);
+    }
+  }
+  if (!deleted_ids.empty()) {
+    observers_.Notify(&Observer::OnMemoryBankEntriesDeleted, deleted_ids);
+  }
+  if (callback) {
+    std::move(callback).Run(/*success=*/true);
+  }
+}
+
+void InMemoryMemoryBank::GetAllTags(GetStringsCallback callback) const {
+  std::set<std::string> unique_tags;
+  for (const auto& [_, entry] : entries_) {
+    for (const auto& tag : entry.tags) {
+      unique_tags.insert(tag);
     }
   }
   if (callback) {
-    std::move(callback).Run();
+    std::move(callback).Run(
+        std::vector<std::string>(unique_tags.begin(), unique_tags.end()));
+  }
+}
+
+void InMemoryMemoryBank::GetAllCollections(GetStringsCallback callback) const {
+  std::set<std::string> unique_collections;
+  for (const auto& [_, entry] : entries_) {
+    if (entry.collection.has_value() && !entry.collection->empty()) {
+      unique_collections.insert(*entry.collection);
+    }
+  }
+  if (callback) {
+    std::move(callback).Run(std::vector<std::string>(unique_collections.begin(),
+                                                     unique_collections.end()));
   }
 }
 

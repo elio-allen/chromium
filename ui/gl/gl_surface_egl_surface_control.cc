@@ -123,6 +123,9 @@ void GLSurfaceEGLSurfaceControl::Destroy() {
     for (auto& surface : surface_list_) {
       transaction.SetParent(*surface.surface, nullptr);
     }
+    if (root_surface_ && root_surface_->surface()) {
+      transaction.SetParent(*root_surface_, nullptr);
+    }
     transaction.Apply();
   }
 
@@ -328,7 +331,7 @@ gfx::Rect GLSurfaceEGLSurfaceControl::CalculateSourceCrop(
 
 bool GLSurfaceEGLSurfaceControl::ScheduleOverlayPlane(
     OverlayImage image,
-    std::unique_ptr<gfx::GpuFence> gpu_fence,
+    gfx::GpuFenceHandle gpu_fence,
     const gfx::OverlayPlaneData& overlay_plane_data) {
   if (surface_lost_) {
     LOG(ERROR) << "ScheduleOverlayPlane failed because surface is lost";
@@ -389,14 +392,12 @@ bool GLSurfaceEGLSurfaceControl::ScheduleOverlayPlane(
   }
 
   if (uninitialized || surface_state.hardware_buffer != hardware_buffer ||
-      gpu_fence) {
+      !gpu_fence.is_null()) {
     surface_state.hardware_buffer = hardware_buffer;
 
     base::ScopedFD fence_fd;
-    if (gpu_fence && surface_state.hardware_buffer) {
-      auto fence_handle = gpu_fence->GetGpuFenceHandle().Clone();
-      DCHECK(!fence_handle.is_null());
-      fence_fd = fence_handle.Release();
+    if (!gpu_fence.is_null() && surface_state.hardware_buffer) {
+      fence_fd = gpu_fence.Release();
     }
 
     if (is_primary_plane) {
@@ -446,11 +447,16 @@ bool GLSurfaceEGLSurfaceControl::ScheduleOverlayPlane(
   }
 
   if (uninitialized || surface_state.color_space != image_color_space ||
-      surface_state.hdr_metadata != overlay_plane_data.hdr_metadata) {
+      surface_state.hdr_metadata != overlay_plane_data.hdr_metadata ||
+      surface_state.desired_brightness_ratio !=
+          overlay_plane_data.desired_brightness_ratio) {
     surface_state.color_space = image_color_space;
     surface_state.hdr_metadata = overlay_plane_data.hdr_metadata;
+    surface_state.desired_brightness_ratio =
+        overlay_plane_data.desired_brightness_ratio;
     pending_transaction_->SetColorSpace(
-        *surface_state.surface, image_color_space, surface_state.hdr_metadata);
+        *surface_state.surface, image_color_space, surface_state.hdr_metadata,
+        surface_state.desired_brightness_ratio);
   }
 
   if (frame_rate_update_pending_)

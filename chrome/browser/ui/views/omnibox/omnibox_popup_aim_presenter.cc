@@ -7,6 +7,7 @@
 #include <optional>
 #include <string_view>
 
+#include "base/feature_list.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
@@ -24,8 +25,10 @@ OmniboxPopupAimPresenter::OmniboxPopupAimPresenter(
     OmniboxController* controller,
     OmniboxPopupPresenterDelegate& presenter_delegate)
     : OmniboxPopupPresenterBase(location_bar, presenter_delegate, controller) {
-  SetWebUIContent(std::make_unique<OmniboxAimPopupWebUIContent>(
-      this, location_bar, controller));
+  // If the content is not created here, it is created on demand by `Show()`
+  // or by the classic popup's context menu, which needs the AIM WebContents.
+  ApplyWebUIContentCreationStrategy(
+      GetWebUIContentCreationStrategy(omnibox::kOmniboxAimPopupDeferCreation));
 }
 
 OmniboxPopupAimPresenter::~OmniboxPopupAimPresenter() = default;
@@ -55,6 +58,12 @@ std::string_view OmniboxPopupAimPresenter::GetPopupMetricPrefix() const {
   return OmniboxPopupPresenterBase::kAimPopupMetricPrefix;
 }
 
+std::unique_ptr<OmniboxPopupWebUIBaseContent>
+OmniboxPopupAimPresenter::CreateWebUIContent() {
+  return std::make_unique<OmniboxAimPopupWebUIContent>(this, location_bar(),
+                                                       controller());
+}
+
 void OmniboxPopupAimPresenter::LogResultToContentReadyMetric(
     base::TimeTicks /*result_ready_time*/,
     bool /*is_first_show*/) {
@@ -66,17 +75,43 @@ void OmniboxPopupAimPresenter::LogResultToContentReadyMetric(
 
 std::optional<base::TimeDelta>
 OmniboxPopupAimPresenter::ShouldDeferUntilVisualStateReady() const {
-  if (!base::FeatureList::IsEnabled(
-          omnibox::kOmniboxAimDeferShowUntilVisualStateReady)) {
+  if (!omnibox::ShouldDeferAimShowUntilVisualStateReady()) {
     return std::nullopt;
   }
   return base::Milliseconds(
       omnibox::kOmniboxAimDeferShowUntilVisualStateReadyTimeoutMs.Get());
 }
 
+bool OmniboxPopupAimPresenter::ShouldDebounceResize() const {
+  return base::FeatureList::IsEnabled(omnibox::kOmniboxAimDebounceResize);
+}
+
+bool OmniboxPopupAimPresenter::ShouldApplyHeightWorkarounds() const {
+  return omnibox::ShouldApplyAimHeightWorkarounds();
+}
+
 bool OmniboxPopupAimPresenter::ShouldDetachWebContentsOnHide() const {
   return base::FeatureList::IsEnabled(
       omnibox::kOmniboxAimDetachWebContentsOnHide);
+}
+
+bool OmniboxPopupAimPresenter::ShouldEvictOnHide() const {
+  return omnibox::ShouldAimEvictOnHide();
+}
+
+bool OmniboxPopupAimPresenter::ShouldDestroyWidgetOnHide() const {
+  return base::FeatureList::IsEnabled(
+             omnibox::kOmniboxAimDestroyWidgetOnHide) ||
+         OmniboxPopupPresenterBase::ShouldDestroyWidgetOnHide();
+}
+
+bool OmniboxPopupAimPresenter::ShouldSizeWebViewToPreferredHeight() const {
+  return base::FeatureList::IsEnabled(
+      omnibox::kOmniboxAimSizeWebViewToPreferredHeight);
+}
+
+bool OmniboxPopupAimPresenter::ShouldDrawShadowInWebUI() const {
+  return omnibox::ShouldDrawAimShadowInWebUI();
 }
 
 void OmniboxPopupAimPresenter::OnWidgetActivationChanged(views::Widget* widget,
@@ -133,10 +168,16 @@ void OmniboxPopupAimPresenter::OnWidgetActivationChanged(views::Widget* widget,
 }
 
 void OmniboxPopupAimPresenter::WidgetDestroyed() {
+  // Drop the observation before the widget goes away; `Show()` re-establishes
+  // it against the new widget.
+  widget_observation_.Reset();
   // Update the popup state manager if widget was destroyed externally, e.g., by
-  // the OS. This ensures the popup state manager stays in sync.
-  if (controller()->popup_state_manager()->popup_state() ==
-      OmniboxPopupState::kAim) {
+  // the OS. This ensures the popup state manager stays in sync. Skip this when
+  // `Hide()` is discarding the widget on purpose, since clearing the state here
+  // would re-enter `Hide()`.
+  if (!is_destroying_widget() &&
+      controller()->popup_state_manager()->popup_state() ==
+          OmniboxPopupState::kAim) {
     controller()->popup_state_manager()->SetPopupState(
         OmniboxPopupState::kNone);
   }

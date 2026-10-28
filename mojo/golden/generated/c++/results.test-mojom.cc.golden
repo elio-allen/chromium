@@ -26,7 +26,6 @@
 #include "mojo/public/cpp/bindings/lib/proxy_to_responder.h"
 #include "mojo/public/cpp/bindings/lib/send_message_helper.h"
 #include "mojo/public/cpp/bindings/lib/serialization.h"
-#include "mojo/public/cpp/bindings/lib/unserialized_message_context.h"
 #include "mojo/public/cpp/bindings/lib/validate_params.h"
 #include "mojo/public/cpp/bindings/lib/validation_errors.h"
 #include "mojo/public/cpp/bindings/mojo_buildflags.h"
@@ -297,26 +296,18 @@ const char* ResultInterface::MessageToMethodName_(mojo::Message& message) {
 uint32_t ResultInterface::Method_Sym::IPCStableHash() {
   // This method's address is used for identifying the mojo method name after
   // symbolization. So each IPCStableHash should have a unique address.
-  // We cannot use NO_CODE_FOLDING() here - it relies on the uniqueness of
-  // __LINE__ value, which is not unique across different mojo modules.
-  // The code below is very similar to NO_CODE_FOLDING, but it uses a unique
-  // hash instead of __LINE__.
-  static constexpr uint32_t kHash = 0x826d7762;  // IPCStableHash for golden::ResultInterface::Method
-  const uint32_t hash = kHash;
-  base::debug::Alias(&hash);
-  return hash;
+  // Returning a unique hash ensures that the function body is unique, and thus
+  // prevents identical code folding (except for the variants of the same
+  // method, e.g. blink and non-blink, which is fine).
+  return 0x826d7762;  // IPCStableHash for golden::ResultInterface::Method
 }
 uint32_t ResultInterface::SyncMethod_Sym::IPCStableHash() {
   // This method's address is used for identifying the mojo method name after
   // symbolization. So each IPCStableHash should have a unique address.
-  // We cannot use NO_CODE_FOLDING() here - it relies on the uniqueness of
-  // __LINE__ value, which is not unique across different mojo modules.
-  // The code below is very similar to NO_CODE_FOLDING, but it uses a unique
-  // hash instead of __LINE__.
-  static constexpr uint32_t kHash = 0x42fd29bb;  // IPCStableHash for golden::ResultInterface::SyncMethod
-  const uint32_t hash = kHash;
-  base::debug::Alias(&hash);
-  return hash;
+  // Returning a unique hash ensures that the function body is unique, and thus
+  // prevents identical code folding (except for the variants of the same
+  // method, e.g. blink and non-blink, which is fine).
+  return 0x42fd29bb;  // IPCStableHash for golden::ResultInterface::SyncMethod
 }
 # endif // !BUILDFLAG(IS_FUCHSIA)
 bool ResultInterface::SyncMethod(bool a,
@@ -539,7 +530,7 @@ class ResultInterface_Method_ProxyToResponder : public ::mojo::internal::ProxyTo
  public:
   static ResultInterface::MethodCallback CreateCallback(
       ::mojo::Message& message,
-      std::unique_ptr<mojo::MessageReceiverWithStatus> responder) {
+      std::unique_ptr<mojo::internal::ResponderThunk>&& responder) {
     std::unique_ptr<ResultInterface_Method_ProxyToResponder> proxy(
         new ResultInterface_Method_ProxyToResponder(
             message, std::move(responder)));
@@ -576,7 +567,7 @@ class ResultInterface_Method_ProxyToResponder : public ::mojo::internal::ProxyTo
  private:
   ResultInterface_Method_ProxyToResponder(
       ::mojo::Message& message,
-      std::unique_ptr<mojo::MessageReceiverWithStatus> responder)
+      std::unique_ptr<mojo::internal::ResponderThunk>&& responder)
       : ::mojo::internal::ProxyToResponder(message, std::move(responder)) {
   }
 
@@ -689,7 +680,7 @@ class ResultInterface_SyncMethod_ProxyToResponder : public ::mojo::internal::Pro
  public:
   static ResultInterface::SyncMethodCallback CreateCallback(
       ::mojo::Message& message,
-      std::unique_ptr<mojo::MessageReceiverWithStatus> responder) {
+      std::unique_ptr<mojo::internal::ResponderThunk>&& responder) {
     std::unique_ptr<ResultInterface_SyncMethod_ProxyToResponder> proxy(
         new ResultInterface_SyncMethod_ProxyToResponder(
             message, std::move(responder)));
@@ -726,7 +717,7 @@ class ResultInterface_SyncMethod_ProxyToResponder : public ::mojo::internal::Pro
  private:
   ResultInterface_SyncMethod_ProxyToResponder(
       ::mojo::Message& message,
-      std::unique_ptr<mojo::MessageReceiverWithStatus> responder)
+      std::unique_ptr<mojo::internal::ResponderThunk>&& responder)
       : ::mojo::internal::ProxyToResponder(message, std::move(responder)) {
   }
 
@@ -884,7 +875,7 @@ bool ResultInterfaceStubDispatch::Accept(
 bool ResultInterfaceStubDispatch::AcceptWithResponder(
     ResultInterface* impl,
     mojo::Message* message,
-    std::unique_ptr<mojo::MessageReceiverWithStatus> responder) {
+    std::unique_ptr<mojo::internal::ResponderThunk> responder) {
   [[maybe_unused]] const bool message_is_sync =
       message->has_flag(mojo::Message::kFlagIsSync);
   [[maybe_unused]] const uint64_t request_id = message->request_id();

@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "base/check_deref.h"
+#include "base/containers/to_vector.h"
 #include "base/debug/alias.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -183,16 +184,38 @@ void PopulateStyleData(const content::BrowserAccessibilityAndroid& node,
     AXStyleData::AddRange(style_data->background_colors,
                           static_cast<int>(node.GetBackgroundColor()), start,
                           end);
-    if (const auto& family = node.GetInheritedFontFamilyName();
-        !family.empty()) {
+    if (auto family = node.GetInheritedFontFamilyName(); !family.empty()) {
       AXStyleData::AddRange(style_data->font_families, std::move(family), start,
                             end);
     }
     // GetLanguage() gets the inherited language locale.
-    if (const auto& lang = node.GetLanguage(); !lang.empty()) {
+    if (auto lang = node.GetLanguage(); !lang.empty()) {
       AXStyleData::AddRange(style_data->locales, std::move(lang), start, end);
     }
   }
+}
+
+// Returns whether supplemental descriptions should be populated via the
+// Android supplemental description API. Disabled when Samsung TalkBack is
+// running because older versions of Samsung TalkBack do not consume this API.
+bool ShouldPopulateSupplementalDescriptionApi() {
+  return base::FeatureList::IsEnabled(
+             features::kAccessibilityPopulateSupplementalDescriptionApi) &&
+         !ui::AccessibilityState::IsSamsungTalkBackEnabled();
+}
+
+bool IsOptionOrMenuItem(ax::mojom::Role role) {
+  return role == ax::mojom::Role::kListBoxOption ||
+         role == ax::mojom::Role::kMenuListOption || ui::IsMenuItem(role);
+}
+
+// Returns whether `node` can drop its descendant children when its accessible
+// name comes from contents, in order to avoid duplicate speech announcements.
+bool CanDropChildrenWithNameFromContents(
+    const content::BrowserAccessibilityAndroid& node) {
+  return node.HasState(ax::mojom::State::kFocusable) ||
+         node.GetRole() == ax::mojom::Role::kHeading ||
+         IsOptionOrMenuItem(node.GetRole());
 }
 
 }  // namespace
@@ -237,6 +260,7 @@ BrowserAccessibilityAndroid::~BrowserAccessibilityAndroid() {
   if (auto id = GetUniqueId()) {
     GetUniqueIdMap().erase(id);
   }
+  GetLeafMap().erase(this);
 }
 
 std::u16string BrowserAccessibilityAndroid::GetLocalizedString(
@@ -510,67 +534,8 @@ bool BrowserAccessibilityAndroid::IsTableHeader() const {
   return ui::IsTableHeader(GetRole());
 }
 
-// Returns true if this node acts as a selection boundary that blocks selections
-// from crossing into or out of its sub-hierarchy.
-//
-// RATIONALE:
-// In standard Chromium editing and DOM selection adjustments (implemented by
-// Blink's `SelectionAdjuster` and range checks):
-// 1. Text Fields (Editable Regions / Root Editables): A selection is allowed to
-//    start and end inside the same editable text field, but cannot span from
-//    one editable field to another, or cross the boundaries of an editable
-//    field.
-// 2. Collapsed or Media Widgets: DOM selections (SelectionInDomTree) cannot
-//    cross user-agent shadow root boundaries (e.g. from outside into a
-//    collapsed dropdown option element or a video/audio player). These
-//    collapsed controls and media widgets act as selection boundaries. Thus, we
-//    identify them as boundaries to block selection requests crossing their
-//    edges, while layouted non-collapsed controls (like visible listboxes)
-//    remain valid.
-//
-// TODO(crbug.com/443078007): Consider generalizing this function by exposing a
-// User-Agent shadow root indicator (e.g.
-// ax::mojom::BoolAttribute::kInUserAgentShadowDom) during tree serialization
-// from Blink (blink_ax_tree_source.cc). It will allow the selection validation
-// logic to fully match the Blink implementation without having to enumerate
-// component roles (like kVideo, kAudio, etc.) or states here.
-bool BrowserAccessibilityAndroid::IsSelectionContextBoundary() const {
-  ax::mojom::Role role = GetRole();
-  // Text field containers.
-  if (IsTextField()) {
-    return true;
-  }
-  // Collapsed input/selection controls (e.g. collapsed comboboxes).
-  if (ui::IsControl(role) && HasState(ax::mojom::State::kCollapsed)) {
-    return true;
-  }
-  // Media control widgets (video/audio elements).
-  if (role == ax::mojom::Role::kVideo || role == ax::mojom::Role::kAudio) {
-    return true;
-  }
-  return false;
-}
-
 bool BrowserAccessibilityAndroid::IsTextSelectable() const {
-  // This property tells Android if the node has selectable text, see:
-  // https://developer.android.com/reference/android/view/accessibility/AccessibilityNodeInfo#isTextSelectable%28%29
-  if (IsText() || IsAndroidTextView() || IsTextField()) {
-    return true;
-  }
-  // Apart from text and editable nodes, if a node has text, but does not have
-  // any text selectable children, mark it as text selectable since otherwise
-  // its text cannot be selectable.
-  if (GetTextContentUTF16().empty()) {
-    return false;
-  }
-  for (const auto& child : PlatformChildren()) {
-    if (static_cast<const BrowserAccessibilityAndroid*>(&child)
-            ->IsTextSelectable()) {
-      return false;
-    }
-  }
-
-  return true;
+  return (IsText() || IsAndroidTextView() || IsTextField());
 }
 
 bool BrowserAccessibilityAndroid::IsVisibleToUser() const {
@@ -604,10 +569,10 @@ bool BrowserAccessibilityAndroid::IsInterestingOnAndroid() const {
   while (parent) {
     // Generally, if a parent is a control (like a combobox) and the child isn't
     // focusable, the child is hidden to reduce clutter.
-    // However, an exception is made for kListBoxOption so it remains exposed
-    // for touch interaction.
+    // However, an exception is made for options and menu items so they remain
+    // exposed for touch interaction.
     if (ui::IsControl(parent->GetRole()) && !IsFocusable() &&
-        GetRole() != ax::mojom::Role::kListBoxOption) {
+        !IsOptionOrMenuItem(GetRole())) {
       return false;
     }
 
@@ -642,6 +607,14 @@ bool BrowserAccessibilityAndroid::IsInterestingOnAndroid() const {
   // already skips over things like iframes and child frames that are
   // technically focusable but shouldn't be exposed as focusable on Android.
   if (IsFocusable()) {
+    // Focusable generic containers with `NameFrom::kNone` and no text of their
+    // own are not interesting when they are not leaves, as their descendants
+    // will be navigated directly.
+    if (GetRole() == ax::mojom::Role::kGenericContainer &&
+        GetNameFrom() == ax::mojom::NameFrom::kNone && !HasTextContent() &&
+        !IsLeaf()) {
+      return false;
+    }
     return true;
   }
 
@@ -689,10 +662,14 @@ bool BrowserAccessibilityAndroid::IsInterestingOnAndroid() const {
   // Otherwise, the interesting nodes are leaf nodes with non-whitespace
   // accessible name or text content.
 
-  // First, we determine whether we have a nonempty, nonwhitespace name.
-  bool has_nonwhitespace_name = !base::ContainsOnlyChars(
-      GetString16Attribute(ax::mojom::StringAttribute::kName),
-      base::kWhitespaceUTF16);
+  // First, we determine whether we have a nonempty, nonwhitespace name from
+  // attribute or computed contentDescription (such as image annotations).
+  bool has_nonwhitespace_name =
+      !base::ContainsOnlyChars(
+          GetString16Attribute(ax::mojom::StringAttribute::kName),
+          base::kWhitespaceUTF16) ||
+      !base::ContainsOnlyChars(GetAndroidContentDescription(),
+                               base::kWhitespaceUTF16);
 
   // And, whether we have nonempty, nonwhitespace text.
   bool has_nonwhitespace_text =
@@ -898,13 +875,14 @@ bool BrowserAccessibilityAndroid::ComputeIsLeaf() const {
     return false;
   }
 
-  // Button, date and time controls should not expose their children to Android
-  // accessibility APIs.
+  // Button, date, time, and slider controls should not expose their children
+  // to Android accessibility APIs.
   switch (GetRole()) {
     case ax::mojom::Role::kButton:
     case ax::mojom::Role::kDate:
     case ax::mojom::Role::kDateTime:
     case ax::mojom::Role::kInputTime:
+    case ax::mojom::Role::kSlider:
       return true;
     default:
       break;
@@ -928,11 +906,17 @@ bool BrowserAccessibilityAndroid::ComputeIsLeaf() const {
     return false;
   }
 
-  // Focusable nodes with name from attribute should never drop children.
+  // Focusable nodes with name from attribute should never drop children, unless
+  // they only have static text children or generic containers with text.
   if (HasState(ax::mojom::State::kFocusable) &&
       GetNameFrom() == ax::mojom::NameFrom::kAttribute) {
-    // We exclude menuItems and comboBoxMenuButtons to prevent double utterance.
-    if (GetRole() != ax::mojom::Role::kMenuItem &&
+    if ((HasOnlyTextChildren() || HasOnlyTextAndGenericDescendants()) &&
+        !HasListMarkerChild()) {
+      return true;
+    }
+    // We exclude options, menu items, and comboboxes to prevent double
+    // utterance.
+    if (!IsOptionOrMenuItem(GetRole()) &&
         GetRole() != ax::mojom::Role::kComboBoxMenuButton &&
         GetRole() != ax::mojom::Role::kComboBoxSelect) {
       return false;
@@ -953,14 +937,20 @@ bool BrowserAccessibilityAndroid::ComputeIsLeaf() const {
     return true;
   }
 
-  // Headings and focusable nodes can drop their children if the name comes from
-  // the node's contents in order to avoid announcing the contents twice. There
-  // are some exceptions where we want nodes to be navigatable despite the
-  // screen reader reading the contents twice such as a heading which contains a
-  // grid.
+  // Headings can drop their children if the name comes from an attribute (e.g.
+  // aria-label) in order to avoid announcing the contents twice.
+  if (GetRole() == ax::mojom::Role::kHeading &&
+      GetNameFrom() == ax::mojom::NameFrom::kAttribute) {
+    return IsLeafConsideringChildren();
+  }
+
+  // Headings, focusable nodes, and options/menu-items can drop their children
+  // if the name comes from the node's contents in order to avoid announcing
+  // the contents twice. There are some exceptions where we want nodes to be
+  // navigatable despite the screen reader reading the contents twice such as a
+  // heading which contains a grid.
   if (HasTextContent() && GetNameFrom() == ax::mojom::NameFrom::kContents &&
-      (HasState(ax::mojom::State::kFocusable) ||
-       GetRole() == ax::mojom::Role::kHeading)) {
+      CanDropChildrenWithNameFromContents(*this)) {
     return IsLeafConsideringChildren();
   }
   return false;
@@ -1212,8 +1202,7 @@ std::u16string BrowserAccessibilityAndroid::GetAndroidHint() const {
 
   // TODO(accessibility): Remove this path once we roll out supplemental
   // descriptions.
-  if (!base::FeatureList::IsEnabled(
-          features::kAccessibilityPopulateSupplementalDescriptionApi)) {
+  if (!ShouldPopulateSupplementalDescriptionApi()) {
     // If we're returning the value as the main text, the name needs to be
     // part of the hint.
     if (ShouldPromoteValueToTextProperty(GetValueForControl()) &&
@@ -1265,6 +1254,14 @@ std::u16string BrowserAccessibilityAndroid::GetAndroidStateDescription() const {
   if (IsMultiselectable() && GetRole() != ax::mojom::Role::kPopUpButton &&
       GetRole() != ax::mojom::Role::kComboBoxSelect) {
     state_descs.push_back(GetMultiselectableStateDescription());
+  }
+
+  // For switches, determine the current switch state and append the
+  // corresponding "On" or "Off" to the state description.
+  // TODO(crbug.com/536089300): Consider removing this state description once
+  // all web-based switch controls have equal announcement on Android.
+  if (GetRole() == ax::mojom::Role::kSwitch) {
+    state_descs.push_back(GetSwitchStateDescription());
   }
 
   // For radio buttons, we will communicate how many radio buttons are in the
@@ -1324,6 +1321,7 @@ std::u16string BrowserAccessibilityAndroid::GetAndroidContentDescription()
   if (GetRole() == ax::mojom::Role::kCanvas) {
     return GetCanvasAnnotationText();
   }
+
   if (ui::IsImage(GetRole())) {
     return GetImageAnnotationText();
   }
@@ -1340,8 +1338,7 @@ std::u16string BrowserAccessibilityAndroid::GetAndroidSupplementalDescription()
   // The control's value has been promoted to the primary `text` field.
   // In this situation, the accessible name (which was originally destined
   // for `text`) should be demoted to `supplementalDescription`.
-  if (base::FeatureList::IsEnabled(
-          features::kAccessibilityPopulateSupplementalDescriptionApi) &&
+  if (ShouldPopulateSupplementalDescriptionApi() &&
       ShouldPromoteValueToTextProperty(GetValueForControl()) &&
       ComputeAndroidNameTo() == AndroidNameTo::kText) {
     return GetNameAsString16();
@@ -1367,16 +1364,25 @@ std::u16string BrowserAccessibilityAndroid::GetAndroidSupplementalDescription()
 
 std::u16string BrowserAccessibilityAndroid::GetMultiselectableStateDescription()
     const {
-  // Count the number of children and selected children.
+  // Count the number of selectable children and selected children.
   int child_count = 0;
   int selected_count = 0;
   for (const auto& child : PlatformChildren()) {
-    child_count++;
     const BrowserAccessibilityAndroid& android_child =
         static_cast<const BrowserAccessibilityAndroid&>(child);
+    if (ui::IsSelectSupported(android_child.GetRole())) {
+      child_count++;
+    }
     if (android_child.IsSelected()) {
       selected_count++;
     }
+  }
+
+  // Prefer the set size when available, since it properly accounts for
+  // ordered sets and aria-setsize. Roles that do not compute a set size
+  // (e.g. role="grid") fall back to the count computed above.
+  if (std::optional<int> set_size = GetSetSize()) {
+    child_count = *set_size;
   }
 
   // If none are selected, return special case.
@@ -1394,13 +1400,13 @@ std::u16string BrowserAccessibilityAndroid::GetMultiselectableStateDescription()
       nullptr);
 }
 
-std::u16string BrowserAccessibilityAndroid::GetToggleStateDescription() const {
-  // For checked Toggle buttons and switches, we will return "on", otherwise
-  // "off".
+std::u16string BrowserAccessibilityAndroid::GetSwitchStateDescription() const {
+  // Due to API limitations, switches currently use the checked property to
+  // signal their state. If a switch is marked as "checked", we return "On",
+  // otherwise we return "Off".
   if (IsChecked()) {
     return GetLocalizedString(IDS_AX_TOGGLE_BUTTON_ON);
   }
-
   return GetLocalizedString(IDS_AX_TOGGLE_BUTTON_OFF);
 }
 
@@ -1440,7 +1446,7 @@ std::u16string BrowserAccessibilityAndroid::GetRadioButtonStateDescription()
   // these attributes for all nodes automatically, including for nodes of
   // <input type="radio"> which share a common name. If the list is empty,
   // escape with empty string.
-  std::vector<ui::AXNodeID> group_ids =
+  base::span<const ui::AXNodeID> group_ids =
       GetIntListAttribute(ax::mojom::IntListAttribute::kRadioGroupIds);
 
   if (group_ids.empty() || group_ids.size() == 1) {
@@ -1462,48 +1468,55 @@ std::u16string BrowserAccessibilityAndroid::GetRadioButtonStateDescription()
 }
 
 std::u16string BrowserAccessibilityAndroid::GetComboboxExpandedText() const {
-  // We consider comboboxes of the form:
+  // We consider three common ARIA combobox patterns (see [1]):
   //
-  // <div role="combobox">
-  //   <input type="text" aria-controls="options">
-  //   <ul role="listbox" id="options">...</ul> (Can be outside <div>)
-  // </div>
+  // 1. ARIA 1.1 wrapper pattern:
+  //    <div role="combobox">
+  //      <input type="text" aria-controls="options">
+  //      <ul role="listbox" id="options">...</ul>
+  //    </div>
   //
-  // Find child input node:
-  const BrowserAccessibilityAndroid* input_node = nullptr;
+  // 2. ARIA 1.0 input combobox pattern:
+  //    <input type="text" role="combobox" aria-owns="options">
+  //    <ul role="listbox" id="options">...</ul>
+  //
+  // 3. ARIA 1.2+ select-only / button combobox pattern:
+  //    <div role="combobox" aria-expanded="true"
+  //         aria-controls="options">...</div>
+  //    <ul role="listbox" id="options">...</ul> (Can be in a detached portal)
+  //
+  // [1] https://www.w3.org/WAI/ARIA/apg/patterns/combobox/
+
+  // First, look for a child input element holding aria-controls (ARIA 1.1):
+  const BrowserAccessibilityAndroid* controlling_node = nullptr;
   for (const auto& child : PlatformChildren()) {
     const BrowserAccessibilityAndroid& android_child =
         static_cast<const BrowserAccessibilityAndroid&>(child);
     if (android_child.IsTextField()) {
-      input_node = &android_child;
+      controlling_node = &android_child;
       break;
     }
   }
 
-  // If we have not found a child input element, consider aria 1.0 spec:
-  //
-  // <input type="text" role="combobox" aria-owns="options">
-  // <ul role="listbox" id="options">...</ul>
-  //
-  // Check if |this| is the input, otherwise try our fallbacks.
-  if (!input_node) {
-    if (IsTextField()) {
-      input_node = this;
-    } else {
-      return GetComboboxExpandedTextFallback();
-    }
+  // If there is no child text field, check if `this` is the input (ARIA 1.0)
+  // or a select-only combobox directly controlling options (ARIA 1.2+).
+  if (!controlling_node) {
+    controlling_node = this;
   }
 
-  // Get the aria-controls nodes of |input_node|.
+  // Get the aria-controls nodes of `controlling_node`.
   std::vector<BrowserAccessibility*> controls =
-      manager()->GetAriaControls(input_node);
+      manager()->GetAriaControls(controlling_node);
 
-  // |input_node| should control only one element, if it doesn't, try fallbacks.
+  // We look for a single container element which holds the combobox options. If
+  // the combobox uses `aria-owns` instead (such as ARIA 1.0), or does not have
+  // a single `aria-controls` target, try fallbacks to inspect owned/child
+  // collections.
   if (controls.size() != 1) {
     return GetComboboxExpandedTextFallback();
   }
 
-  // |controlled_node| needs to be a combobox container, if not, try fallbacks.
+  // `controlled_node` needs to be a combobox container, if not, try fallbacks.
   BrowserAccessibilityAndroid* controlled_node =
       static_cast<BrowserAccessibilityAndroid*>(controls[0]);
   if (!ui::IsComboBoxContainer(controlled_node->GetRole())) {
@@ -1515,7 +1528,7 @@ std::u16string BrowserAccessibilityAndroid::GetComboboxExpandedText() const {
     return GetLocalizedString(IDS_AX_COMBOBOX_EXPANDED_DIALOG);
   }
 
-  // Find |controlled_node| set size, or return default string.
+  // Find `controlled_node` set size, or return default string.
   if (!controlled_node->GetSetSize()) {
     return GetLocalizedString(IDS_AX_COMBOBOX_EXPANDED_AUTOCOMPLETE_DEFAULT);
   }
@@ -2018,16 +2031,16 @@ bool BrowserAccessibilityAndroid::Scroll(int direction,
 // * addedCount = len(X)
 // * removedCount = len(X') = len(A|'X'B) - (len(AX|B) - len(X))
 int BrowserAccessibilityAndroid::GetTextChangeFromIndex() const {
-  if (::features::IsAccessibilityTextChangeTypesEnabled()) {
-    int committed_text_length =
-        node()->GetIntAttribute(ax::mojom::IntAttribute::kCommittedTextLength);
-    // If the text change is due to a IME text commit.
-    if (committed_text_length > 0) {
-      // Cursor should move to the end of committed text.
-      DCHECK_GE(GetSelectionStart() - committed_text_length, 0);
-      // This is current_cursor_location - len(X).
-      return GetSelectionStart() - committed_text_length;
-    }
+  int committed_text_length =
+      node()->GetIntAttribute(ax::mojom::IntAttribute::kCommittedTextLength);
+  // If the text change is due to a IME text commit.
+  if (committed_text_length > 0) {
+    // Cursor should move to the end of committed text.
+    // TODO(crbug.com/557456841): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
+    DCHECK_GE(GetSelectionStart() - committed_text_length, 0);
+    // This is current_cursor_location - len(X).
+    return GetSelectionStart() - committed_text_length;
   }
 
   // This is len(A)
@@ -2035,14 +2048,12 @@ int BrowserAccessibilityAndroid::GetTextChangeFromIndex() const {
 }
 
 int BrowserAccessibilityAndroid::GetTextChangeAddedCount() const {
-  if (::features::IsAccessibilityTextChangeTypesEnabled()) {
-    int committed_text_length =
-        node()->GetIntAttribute(ax::mojom::IntAttribute::kCommittedTextLength);
-    // If the text change is due to a IME text commit.
-    if (committed_text_length > 0) {
-      // This is len(X).
-      return committed_text_length;
-    }
+  int committed_text_length =
+      node()->GetIntAttribute(ax::mojom::IntAttribute::kCommittedTextLength);
+  // If the text change is due to a IME text commit.
+  if (committed_text_length > 0) {
+    // This is len(X).
+    return committed_text_length;
   }
 
   // This is len(AYB) - (len(A) + len(B)), or len(Y), the added characters.
@@ -2050,15 +2061,12 @@ int BrowserAccessibilityAndroid::GetTextChangeAddedCount() const {
 }
 
 int BrowserAccessibilityAndroid::GetTextChangeRemovedCount() const {
-  if (::features::IsAccessibilityTextChangeTypesEnabled()) {
-    int committed_text_length =
-        node()->GetIntAttribute(ax::mojom::IntAttribute::kCommittedTextLength);
-    // If the text change is due to a IME text commit.
-    if (committed_text_length > 0) {
-      // This is len(A|X'B)-(len(AX|B) - len(X))
-      return old_value_.length() -
-             (new_value_.length() - committed_text_length);
-    }
+  int committed_text_length =
+      node()->GetIntAttribute(ax::mojom::IntAttribute::kCommittedTextLength);
+  // If the text change is due to a IME text commit.
+  if (committed_text_length > 0) {
+    // This is len(A|X'B)-(len(AX|B) - len(X))
+    return old_value_.length() - (new_value_.length() - committed_text_length);
   }
 
   // This is len(AXB) - (len(A) + len(B)), or len(X), the removed characters.
@@ -2125,8 +2133,11 @@ int BrowserAccessibilityAndroid::GetSelectionStart() const {
     return ui::kAXAndroidUndefinedSelectionIndex;
   }
 
-  AXPosition position = anchor_object->CreateTextPositionAt(
+  AXPosition position = anchor_object->CreatePositionAt(
       unignored_selection.anchor_offset, unignored_selection.anchor_affinity);
+  if (position->IsTreePosition()) {
+    position = position->AsTextPosition();
+  }
   while (position->GetAnchor() && position->GetAnchor() != node()) {
     position = position->CreateParentPosition();
   }
@@ -2149,8 +2160,11 @@ int BrowserAccessibilityAndroid::GetSelectionEnd() const {
     return ui::kAXAndroidUndefinedSelectionIndex;
   }
 
-  AXPosition position = focus_object->CreateTextPositionAt(
+  AXPosition position = focus_object->CreatePositionAt(
       unignored_selection.focus_offset, unignored_selection.focus_affinity);
+  if (position->IsTreePosition()) {
+    position = position->AsTextPosition();
+  }
   while (position->GetAnchor() && position->GetAnchor() != node()) {
     position = position->CreateParentPosition();
   }
@@ -2226,14 +2240,14 @@ std::optional<int> BrowserAccessibilityAndroid::RowCount() const {
     return *GetSetSize();
   }
 
-  return node()->GetTableRowCount();
+  return node()->GetTableDomRowCount();
 }
 
 std::optional<int> BrowserAccessibilityAndroid::ColumnCount() const {
   if (!IsCollection()) {
     return std::nullopt;
   }
-  std::optional<int> ax_cols = node()->GetTableColCount();
+  std::optional<int> ax_cols = node()->GetTableDomColCount();
   if (GetRole() == ax::mojom::Role::kList ||
       GetRole() == ax::mojom::Role::kListBox ||
       GetRole() == ax::mojom::Role::kMenu ||
@@ -2254,32 +2268,32 @@ std::optional<int> BrowserAccessibilityAndroid::RowIndex() const {
   if (pos_in_set && pos_in_set > 0) {
     return *pos_in_set - 1;
   }
-  return node()->GetTableCellRowIndex();
+  return node()->GetTableCellDomRowIndex();
 }
 
 std::optional<int> BrowserAccessibilityAndroid::RowSpan() const {
-  std::optional<int> ax_row_span = node()->GetTableCellRowSpan();
+  std::optional<int> ax_row_span = node()->GetTableCellDomRowSpan();
   if (GetRole() == ax::mojom::Role::kListItem ||
       GetRole() == ax::mojom::Role::kListBoxOption) {
     // For <ol> and <ul> elements on Android (e.g. role kListItem), the AX
     // code will consider these 0 span, but on Android they are 1.
-    DCHECK(!ax_row_span.has_value());
+    CHECK(!ax_row_span.has_value(), base::NotFatalUntil::M159);
     ax_row_span = 1;
   }
   return ax_row_span;
 }
 
 std::optional<int> BrowserAccessibilityAndroid::ColumnIndex() const {
-  return node()->GetTableCellColIndex();
+  return node()->GetTableCellDomColIndex();
 }
 
 std::optional<int> BrowserAccessibilityAndroid::ColumnSpan() const {
-  std::optional<int> ax_col_span = node()->GetTableCellColSpan();
+  std::optional<int> ax_col_span = node()->GetTableCellDomColSpan();
   if (GetRole() == ax::mojom::Role::kListItem ||
       GetRole() == ax::mojom::Role::kListBoxOption) {
     // For <ol> and <ul> elements on Android (e.g. role kListItem), the AX
     // code will consider these 0 span, but on Android they are 1.
-    DCHECK(!ax_col_span.has_value());
+    CHECK(!ax_col_span.has_value(), base::NotFatalUntil::M159);
     ax_col_span = 1;
   }
 
@@ -2303,8 +2317,9 @@ BrowserAccessibilityAndroid::GetSortDirection() const {
       return ANDROID_SORT_DIRECTION_DESCENDING;
     case ax::mojom::SortDirection::kOther:
       return ANDROID_SORT_DIRECTION_OTHER;
-    case ax::mojom::SortDirection::kNone:
     case ax::mojom::SortDirection::kUnsorted:
+      return ANDROID_SORT_DIRECTION_NONE;
+    case ax::mojom::SortDirection::kNone:
       NOTREACHED();
   }
   return ANDROID_SORT_DIRECTION_NONE;
@@ -2390,9 +2405,9 @@ void BrowserAccessibilityAndroid::GetWordBoundaries(
     std::vector<int32_t>* word_ends,
     int offset) {
   if (GetRole() == ax::mojom::Role::kInlineTextBox) {
-    const std::vector<int32_t>& starts =
+    base::span<const int32_t> starts =
         GetIntListAttribute(ax::mojom::IntListAttribute::kWordStarts);
-    const std::vector<int32_t>& ends =
+    base::span<const int32_t> ends =
         GetIntListAttribute(ax::mojom::IntListAttribute::kWordEnds);
     for (size_t i = 0; i < starts.size(); ++i) {
       word_starts->push_back(offset + starts[i]);
@@ -2446,8 +2461,8 @@ std::u16string BrowserAccessibilityAndroid::GetTargetUrl() const {
 void BrowserAccessibilityAndroid::GetSuggestions(
     std::vector<int>* suggestion_starts,
     std::vector<int>* suggestion_ends) const {
-  DCHECK(suggestion_starts);
-  DCHECK(suggestion_ends);
+  CHECK(suggestion_starts, base::NotFatalUntil::M159);
+  CHECK(suggestion_ends, base::NotFatalUntil::M159);
 
   if (!IsTextField()) {
     return;
@@ -2462,12 +2477,12 @@ void BrowserAccessibilityAndroid::GetSuggestions(
   int start_offset = 0;
   while (node && node != this) {
     if (node->IsText()) {
-      const std::vector<int32_t>& marker_types =
+      base::span<const int32_t> marker_types =
           node->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerTypes);
       if (!marker_types.empty()) {
-        const std::vector<int>& marker_starts = node->GetIntListAttribute(
+        base::span<const int32_t> marker_starts = node->GetIntListAttribute(
             ax::mojom::IntListAttribute::kMarkerStarts);
-        const std::vector<int>& marker_ends =
+        base::span<const int32_t> marker_ends =
             node->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerEnds);
 
         for (size_t i = 0; i < marker_types.size(); ++i) {
@@ -2617,6 +2632,34 @@ bool BrowserAccessibilityAndroid::HasListMarkerChild() const {
   return false;
 }
 
+bool BrowserAccessibilityAndroid::HasOnlyTextAndGenericDescendants() const {
+  // This is called from `IsLeaf`, so don't call `PlatformChildCount` from
+  // within this!
+  for (auto it = InternalChildrenBegin(); it != InternalChildrenEnd(); ++it) {
+    BrowserAccessibility* child = it.get();
+    if (child->IsFocusable() || child->HasState(ax::mojom::State::kFocusable)) {
+      return false;
+    }
+
+    const ax::mojom::Role role = child->GetRole();
+    if (ui::IsControl(role) || ui::IsLink(role) ||
+        role == ax::mojom::Role::kHeading || role == ax::mojom::Role::kTable ||
+        ui::IsTableLike(role)) {
+      return false;
+    }
+
+    if (role == ax::mojom::Role::kGenericContainer) {
+      if (!static_cast<const BrowserAccessibilityAndroid*>(child)
+               ->HasOnlyTextAndGenericDescendants()) {
+        return false;
+      }
+    } else if (!child->IsText()) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool BrowserAccessibilityAndroid::ShouldPromoteValueToTextProperty(
     const std::u16string& value) const {
   switch (GetRole()) {
@@ -2715,7 +2758,7 @@ BrowserAccessibilityAndroid::GetAndroidContentInvalidErrorMessage() const {
         BrowserAccessibilityAndroid* child =
             static_cast<BrowserAccessibilityAndroid*>(it.get());
         if (child->IsText()) {
-          const std::vector<int32_t>& marker_types = child->GetIntListAttribute(
+          base::span<const int32_t> marker_types = child->GetIntListAttribute(
               ax::mojom::IntListAttribute::kMarkerTypes);
 
           for (int marker_type : marker_types) {
@@ -2780,9 +2823,7 @@ BrowserAccessibilityAndroid::ComputeAndroidNameTo() const {
         // TODO(crbug.com/438478760): Revisit kNameFromAttribute mapping to
         // contentDescription logic.
         name_to_cache_ = AndroidNameTo::kContentDescription;
-      } else if (base::FeatureList::IsEnabled(
-                     features::
-                         kAccessibilityPopulateSupplementalDescriptionApi)) {
+      } else if (ShouldPopulateSupplementalDescriptionApi()) {
         name_to_cache_ = AndroidNameTo::kSupplementalDescription;
       } else {
         // TODO(accessibility): remove this path once we roll out supplemental
@@ -2798,9 +2839,7 @@ BrowserAccessibilityAndroid::ComputeAndroidNameTo() const {
                  GetData().HasIntListAttribute(
                      ax::mojom::IntListAttribute::kLabelledbyIds)) {
         name_to_cache_ = AndroidNameTo::kLabeledBy;
-      } else if (base::FeatureList::IsEnabled(
-                     features::
-                         kAccessibilityPopulateSupplementalDescriptionApi)) {
+      } else if (ShouldPopulateSupplementalDescriptionApi()) {
         // Fallback to supplemental description when labeledBy cannot be used.
         name_to_cache_ = AndroidNameTo::kSupplementalDescription;
       } else {
@@ -2948,8 +2987,8 @@ const std::vector<int> BrowserAccessibilityAndroid::GetLabelledByAndroidIds()
   if (!::features::IsAccessibilityLabeledByEnabled()) {
     return std::vector<int>();
   }
-  std::vector<int32_t> ids = GetData().GetIntListAttribute(
-      ax::mojom::IntListAttribute::kLabelledbyIds);
+  std::vector<int32_t> ids = base::ToVector(GetData().GetIntListAttribute(
+      ax::mojom::IntListAttribute::kLabelledbyIds));
 
   // If this is a table, check for a caption child that labels this table.
   if (GetRole() == ax::mojom::Role::kTable ||

@@ -31,6 +31,7 @@
 #include "ash/accessibility/magnifier/fullscreen_magnifier_controller.h"
 #include "ash/accessibility/magnifier/partial_magnifier_controller.h"
 #include "ash/accessibility/mouse_keys/mouse_keys_controller.h"
+#include "ash/accessibility/mouse_locator/mouse_shake_to_locate_controller.h"
 #include "ash/accessibility/sticky_keys/sticky_keys_controller.h"
 #include "ash/accessibility/ui/accessibility_focus_ring_controller_impl.h"
 #include "ash/ambient/ambient_controller.h"
@@ -60,7 +61,6 @@
 #include "ash/detachable_base/detachable_base_notification_controller.h"
 #include "ash/display/cros_display_config.h"
 #include "ash/display/cursor_window_controller.h"
-#include "ash/display/display_alignment_controller.h"
 #include "ash/display/display_color_manager.h"
 #include "ash/display/display_configuration_controller.h"
 #include "ash/display/display_configuration_observer.h"
@@ -92,7 +92,6 @@
 #include "ash/frame_throttler/frame_throttling_controller.h"
 #include "ash/game_dashboard/game_dashboard_controller.h"
 #include "ash/glanceables/glanceables_controller.h"
-#include "ash/glanceables/post_login_glanceables_metrics_recorder.h"
 #include "ash/host/ash_window_tree_host_init_params.h"
 #include "ash/hud_display/hud_display.h"
 #include "ash/ime/ime_controller_impl.h"
@@ -141,7 +140,6 @@
 #include "ash/shell_tab_handler.h"
 #include "ash/shutdown_controller_impl.h"
 #include "ash/style/ash_color_mixer.h"
-#include "ash/style/ash_color_provider.h"
 #include "ash/style/color_palette_controller.h"
 #include "ash/style/dark_light_mode_controller_impl.h"
 #include "ash/style/style_util.h"
@@ -829,7 +827,6 @@ Shell::~Shell() {
   cros_display_config_.reset();
   display_configuration_observer_.reset();
   display_prefs_.reset();
-  display_alignment_controller_.reset();
 
   // Remove the focus from any window and set ShutdowFocusRules. This will
   // prevent overhead and side effects (e.g. crashes) from changing focus
@@ -863,13 +860,9 @@ Shell::~Shell() {
   }
   RemovePreTargetHandler(system_gesture_filter_.get());
   RemoveAccessibilityEventHandler(mouse_cursor_filter_.get());
-  if (features::IsPeripheralCustomizationEnabled()) {
-    RemovePreTargetHandler(shortcut_input_handler_.get());
-  }
+  RemovePreTargetHandler(shortcut_input_handler_.get());
   RemovePreTargetHandler(modality_filter_.get());
-  if (::features::IsAccessibilityMouseKeysEnabled()) {
-    RemovePreTargetHandler(mouse_keys_controller_.get());
-  }
+  RemovePreTargetHandler(mouse_keys_controller_.get());
   RemovePreTargetHandler(tooltip_controller_.get());
 
   // Resets the implementation of clipboard history utility functions.
@@ -881,6 +874,11 @@ Shell::~Shell() {
   // Resets the text context menu implementation factory.
   views::ViewsTextServicesContextMenuChromeos::SetImplFactory(
       base::NullCallback());
+
+  // Cancel any active or pending Alt+Tab window cycling before closing app
+  // windows and resetting `event_rewriter_controller_`, which
+  // `WindowCycleList::~WindowCycleList()` depends on.
+  window_cycle_controller_->CancelCycling();
 
   // Close and destroy all application windows here, so that the window manager
   // related objects, which app windows relies on, can be sefely deleted.
@@ -938,6 +936,8 @@ Shell::~Shell() {
   AccelerometerReader::GetInstance()->StopListenToTabletModeController();
 
   ambient_controller_.reset();
+
+  mouse_shake_to_locate_controller_.reset();
 
   // Because this function will call |TabletModeController::RemoveObserver|, do
   // it before destroying |tablet_mode_controller_|.
@@ -1018,9 +1018,6 @@ Shell::~Shell() {
   // need to access those windows and it will be a UAF.
   // https://crbug.com/1350711.
   capture_mode_controller_.reset();
-
-  // Relies on `overview_controller`.
-  post_login_glanceables_metrics_reporter_.reset();
 
   // Has to happen before `~OverviewController` since it's an observer.
   informed_restore_controller_.reset();
@@ -1116,8 +1113,6 @@ Shell::~Shell() {
   keyboard_backlight_color_controller_.reset();
   rgb_keyboard_manager_.reset();
 
-  ash_color_provider_.reset();
-
   // Depends on `dark_light_mode_controller_` and `wallpaper_controller_` so it
   // should be destroyed first.
   color_palette_controller_.reset();
@@ -1181,6 +1176,8 @@ Shell::~Shell() {
   // `autozoom_controller_` since they will destruct `SystemNudgeController`.
   system_nudge_pause_manager_.reset();
 
+  partial_magnifier_controller_.reset();
+
   // This also deletes all RootWindows. Note that we invoke Shutdown() on
   // WindowTreeHostManager before resetting |window_tree_host_manager_|, since
   // destruction of its owned RootWindowControllers relies on the value.
@@ -1202,8 +1199,6 @@ Shell::~Shell() {
 
   display_color_manager_.reset();
   projecting_observer_.reset();
-
-  partial_magnifier_controller_.reset();
 
   laser_pointer_controller_.reset();
 
@@ -1436,7 +1431,6 @@ void Shell::Init(
     env->set_context_factory(context_factory);
   }
 
-  ash_color_provider_ = std::make_unique<AshColorProvider>();
   ui::ColorProviderManager::Get().AppendColorProviderInitializer(
       base::BindRepeating(AddCrosStylesColorMixer));
   ui::ColorProviderManager::Get().AppendColorProviderInitializer(
@@ -1695,9 +1689,12 @@ void Shell::Init(
 
   autoclick_controller_ = std::make_unique<AutoclickController>();
 
-  if (::features::IsAccessibilityMouseKeysEnabled()) {
-    mouse_keys_controller_ = std::make_unique<MouseKeysController>();
-    AddPreTargetHandler(mouse_keys_controller_.get());
+  mouse_keys_controller_ = std::make_unique<MouseKeysController>();
+  AddPreTargetHandler(mouse_keys_controller_.get());
+
+  if (::features::IsAccessibilityShakeToLocateEnabled()) {
+    mouse_shake_to_locate_controller_ =
+        std::make_unique<MouseShakeToLocateController>();
   }
 
   color_enhancement_controller_ =
@@ -1720,10 +1717,8 @@ void Shell::Init(
   modality_filter_ = std::make_unique<SystemModalContainerEventFilter>(this);
   AddPreTargetHandler(modality_filter_.get());
 
-  if (features::IsPeripheralCustomizationEnabled()) {
-    shortcut_input_handler_ = std::make_unique<ShortcutInputHandler>();
-    AddPreTargetHandler(shortcut_input_handler_.get());
-  }
+  shortcut_input_handler_ = std::make_unique<ShortcutInputHandler>();
+  AddPreTargetHandler(shortcut_input_handler_.get());
 
   event_client_ = std::make_unique<EventClientImpl>();
 
@@ -1841,21 +1836,12 @@ void Shell::Init(
   // is started.
   display_manager_->CreateMirrorWindowAsyncIfAny();
 
-  // TODO(1091497): Consider combining DisplayHighlightController and
-  // DisplayAlignmentController.
   display_highlight_controller_ =
       std::make_unique<DisplayHighlightController>();
-
-  if (features::IsDisplayAlignmentAssistanceEnabled()) {
-    display_alignment_controller_ =
-        std::make_unique<DisplayAlignmentController>();
-  }
 
   if (features::AreAnyGlanceablesTimeManagementViewsEnabled()) {
     glanceables_controller_ = std::make_unique<GlanceablesController>();
   }
-  post_login_glanceables_metrics_reporter_ =
-      std::make_unique<PostLoginGlanceablesMetricsRecorder>();
 
   projector_controller_ = std::make_unique<ProjectorControllerImpl>();
   annotator_controller_ = std::make_unique<AnnotatorController>();
@@ -1867,10 +1853,8 @@ void Shell::Init(
   multitask_menu_nudge_delegate_ =
       std::make_unique<MultitaskMenuNudgeDelegateAsh>();
 
-  if (features::IsUserEducationEnabled()) {
-    user_education_controller_ = std::make_unique<UserEducationController>(
-        shell_delegate_->CreateUserEducationDelegate());
-  }
+  user_education_controller_ = std::make_unique<UserEducationController>(
+      shell_delegate_->CreateUserEducationDelegate());
 
   quick_insert_controller_ = std::make_unique<QuickInsertController>();
 

@@ -5,6 +5,7 @@
 #include "components/autofill/core/browser/filling/filling_product.h"
 
 #include <string>
+#include <utility>
 
 #include "base/notreached.h"
 #include "build/buildflag.h"
@@ -76,6 +77,7 @@ FillingProduct GetFillingProductFromSuggestionType(SuggestionType type) {
     case SuggestionType::kVirtualCreditCardEntry:
       return FillingProduct::kCreditCard;
     case SuggestionType::kMerchantPromoCodeEntry:
+    case SuggestionType::kManageOffers:
       return FillingProduct::kMerchantPromoCode;
     case SuggestionType::kIbanEntry:
     case SuggestionType::kManageIban:
@@ -107,28 +109,29 @@ FillingProduct GetFillingProductFromSuggestionType(SuggestionType type) {
     case SuggestionType::kAtMemoryGenericError:
     case SuggestionType::kAtMemoryInactivityNudge:
     case SuggestionType::kAtMemoryNoConnection:
+    case SuggestionType::kAtMemoryOpenGemini:
     case SuggestionType::kAtMemorySearchAffordance:
+    case SuggestionType::kAtMemoryShortcutSettingsPromo:
     case SuggestionType::kAutocompleteAtMemoryButton:
     case SuggestionType::kBnplFootnote:
     case SuggestionType::kInsecureContextPaymentDisabledMessage:
     case SuggestionType::kLoadingThrobber:
-    case SuggestionType::kMixedFormMessage:
-    case SuggestionType::kOpenGemini:
     case SuggestionType::kPersonalContextNotice:
-    case SuggestionType::kSeePromoCodeDetails:
     case SuggestionType::kSeparator:
     case SuggestionType::kTitle:
-    case SuggestionType::kUndoOrClear:
+    case SuggestionType::kUndo:
       return FillingProduct::kNone;
     case SuggestionType::kAutofillAiOtherOrders:
     case SuggestionType::kAutofillAiOtherShipments:
     case SuggestionType::kAutofillAiPrivateInferenceNotice:
+    case SuggestionType::kAutofillAiSourceAttribution:
     case SuggestionType::kFetchingAmbientData:
     case SuggestionType::kFillAutofillAi:
     case SuggestionType::kManageAutofillAi:
     case SuggestionType::kManageAutofillAiIdentityDocs:
     case SuggestionType::kManageAutofillAiShopping:
     case SuggestionType::kManageAutofillAiTravel:
+    case SuggestionType::kRemoveAutofillAi:
       return FillingProduct::kAutofillAi;
     case SuggestionType::kAllLoyaltyCardsEntry:
     case SuggestionType::kLoyaltyCardEntry:
@@ -136,7 +139,9 @@ FillingProduct GetFillingProductFromSuggestionType(SuggestionType type) {
       return FillingProduct::kLoyaltyCard;
     case SuggestionType::kIdentityCredential:
       return FillingProduct::kIdentityCredential;
+    case SuggestionType::kGmailOneTimePasswordEntry:
     case SuggestionType::kOneTimePasswordEntry:
+    case SuggestionType::kOpenGmailForOtps:
       return FillingProduct::kOneTimePassword;
     case SuggestionType::kAtMemoryFetching:
     case SuggestionType::kAtMemorySearchResult:
@@ -190,7 +195,7 @@ static int32_t JNI_FillingProductBridge_GetFillingProductFromSuggestionType(
     JNIEnv* env,
     int32_t type) {
   SuggestionType suggestion_type = static_cast<SuggestionType>(type);
-  return static_cast<int32_t>(
+  return std::to_underlying(
       GetFillingProductFromSuggestionType(suggestion_type));
 }
 #endif  // BUILDFLAG(IS_ANDROID)

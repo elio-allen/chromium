@@ -4,13 +4,12 @@
 
 #import "ios/chrome/browser/authentication/ui_bundled/signin/consistency_promo_signin/consistency_default_account/consistency_default_account_coordinator.h"
 
-#import "ios/chrome/browser/authentication/ui_bundled/enterprise/enterprise_utils.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/consistency_promo_signin/consistency_default_account/consistency_default_account_mediator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/consistency_promo_signin/consistency_default_account/consistency_default_account_view_controller.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_context_style.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
+#import "ios/chrome/browser/signin/model/account_preview_data_service_factory.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
@@ -57,12 +56,14 @@
   [super start];
   ProfileIOS* profile = self.profile;
   self.mediator = [[ConsistencyDefaultAccountMediator alloc]
-      initWithIdentityManager:IdentityManagerFactory::GetForProfile(profile)
-        accountManagerService:ChromeAccountManagerServiceFactory::GetForProfile(
-                                  profile)
-                  syncService:SyncServiceFactory::GetForProfile(profile)
-                 contextStyle:_contextStyle
-                  accessPoint:self.accessPoint];
+        initWithIdentityManager:IdentityManagerFactory::GetForProfile(profile)
+          accountManagerService:ChromeAccountManagerServiceFactory::
+                                    GetForProfile(profile)
+      accountPreviewDataService:AccountPreviewDataServiceFactory::GetForProfile(
+                                    profile)
+                    syncService:SyncServiceFactory::GetForProfile(profile)
+                   contextStyle:_contextStyle
+                    accessPoint:self.accessPoint];
   self.defaultAccountViewController =
       [[ConsistencyDefaultAccountViewController alloc] init];
   self.mediator.consumer = self.defaultAccountViewController;

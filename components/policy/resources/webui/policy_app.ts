@@ -21,39 +21,17 @@ import 'chrome://resources/cr_elements/icons.html.js';
 import 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
 
 import type {CrActionMenuElement} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
-import {addWebUiListener, sendWithPromise} from 'chrome://resources/js/cr.js';
+import {sendWithPromise} from 'chrome://resources/js/cr.js';
 import {FocusOutlineManager} from 'chrome://resources/js/focus_outline_manager.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import {BrowserProxy} from './browser_proxy.js';
 import {GetPoliciesReason} from './policy.mojom-webui.js';
-import type {Status} from './policy.mojom-webui.js';
+import type {PolicyGroupNames, PolicyGroupsResponse, Status} from './policy.mojom-webui.js';
 import {getCss} from './policy_app.css.js';
 import {getHtml} from './policy_app.html.js';
-import type {Policy} from './policy_row.js';
 import type {PolicyTableModel} from './policy_table.js';
-
-
-
-export interface PolicyNamesResponse {
-  [id: string]: {name: string, policyNames: NonNullable<string[]>};
-}
-
-export interface PolicyValues {
-  [id: string]: {
-    name: string,
-    policies: {[name: string]: Policy},
-    precedenceOrder?: string[],
-    isExtension?: boolean,
-    forSigninScreen?: boolean,
-  };
-}
-
-export interface PolicyValuesResponse {
-  policyIds: string[];
-  policyValues: PolicyValues;
-}
 
 export class PolicyAppElement extends CrLitElement {
   static get is() {
@@ -75,7 +53,8 @@ export class PolicyAppElement extends CrLitElement {
       status_: {type: Object},
       policyGroups_: {type: Array},
       shouldShowPromo_: {type: Boolean},
-      shouldShowCommandLineFlagsWarning_: {type: Boolean},
+      shouldShowCommandLineArgumentsWarning_: {type: Boolean},
+      commandLineArguments_: {type: String},
       toastText_: {type: String},
       reloadButtonDisabled_: {type: Boolean},
       uploadReportButtonDisabled_: {type: Boolean},
@@ -90,7 +69,8 @@ export class PolicyAppElement extends CrLitElement {
   protected accessor status_: Record<string, Status> = {};
   protected accessor policyGroups_: PolicyTableModel[] = [];
   protected accessor shouldShowPromo_: boolean = false;
-  protected accessor shouldShowCommandLineFlagsWarning_: boolean = false;
+  protected accessor shouldShowCommandLineArgumentsWarning_: boolean = false;
+  protected accessor commandLineArguments_: string = '';
   protected accessor toastText_: string = '';
   protected accessor reloadButtonDisabled_: boolean = false;
   protected accessor uploadReportButtonDisabled_: boolean = false;
@@ -107,6 +87,15 @@ export class PolicyAppElement extends CrLitElement {
   override async connectedCallback() {
     super.connectedCallback();
 
+    // Listeners must be setup before any `await` calls. Otherwise, the initial
+    // data will be dropped.
+    BrowserProxy.listenForStatusUpdated(
+        (status: Record<string, Status>) => this.status_ = status);
+    BrowserProxy.listenForPoliciesUpdated(
+        (names: Record<string, PolicyGroupNames>,
+         groups: PolicyGroupsResponse) =>
+            this.onPoliciesReceived_(names, groups));
+
     if (this.policyPageMojoMigrationEnabled_) {
       const message = await BrowserProxy.getDebugString();
       console.info(message);
@@ -122,10 +111,13 @@ export class PolicyAppElement extends CrLitElement {
 
     // <if expr="not is_ios and not is_android">
     this.shouldShowPromo_ = await BrowserProxy.checkPromotionEligibility();
-    this.shouldShowCommandLineFlagsWarning_ =
-        loadTimeData.valueExists('hasCustomCommandLineFlags') ?
-        loadTimeData.getBoolean('hasCustomCommandLineFlags') :
-        await BrowserProxy.checkCommandLineSwitches();
+    // </if>
+
+    // <if expr="not is_ios and not is_android and not is_chromeos">
+    this.shouldShowCommandLineArgumentsWarning_ =
+        loadTimeData.getBoolean('hasCustomCommandLineArguments');
+    this.commandLineArguments_ =
+        loadTimeData.getString('customCommandLineArguments');
     // </if>
 
     this.hideExportButton_ = loadTimeData.valueExists('hideExportButton') &&
@@ -134,14 +126,9 @@ export class PolicyAppElement extends CrLitElement {
         loadTimeData.valueExists('hideUploadReportButton') &&
         loadTimeData.getBoolean('hideUploadReportButton');
 
-    sendWithPromise<void>('listenPoliciesUpdates');
-    addWebUiListener(
-        'status-updated',
-        (status: Record<string, Status>) => this.status_ = status);
-    addWebUiListener(
-        'policies-updated',
-        (names: PolicyNamesResponse, values: PolicyValuesResponse) =>
-            this.onPoliciesReceived_(names, values));
+    if (!this.policyPageMojoMigrationEnabled_) {
+      sendWithPromise<void>('listenPoliciesUpdates');
+    }
   }
 
   override disconnectedCallback() {
@@ -165,18 +152,18 @@ export class PolicyAppElement extends CrLitElement {
   // </if>
 
   private onPoliciesReceived_(
-      policyNames: PolicyNamesResponse,
-      policyValuesResponse: PolicyValuesResponse) {
-    const policyValues: PolicyValues = policyValuesResponse.policyValues;
-    const policyIds: string[] = policyValuesResponse.policyIds;
+      policyNames: Record<string, PolicyGroupNames>,
+      policyGroupsResponse: PolicyGroupsResponse) {
+    const policyGroups = policyGroupsResponse.policyGroups;
+    const policyIds: string[] = policyGroupsResponse.policyIdsPresentationOrder;
 
     this.policyGroups_ = policyIds.map((id: string) => {
       const knownPolicyNames =
           policyNames[id] ? policyNames[id].policyNames : [];
-      const value = policyValues[id]!;
+      const group = policyGroups[id]!;
       const knownPolicyNamesSet = new Set(knownPolicyNames);
       const receivedPolicyNames =
-          value.policies ? Object.keys(value.policies) : [];
+          group.policies ? Object.keys(group.policies) : [];
       const allPolicyNames =
           Array.from(new Set([...knownPolicyNames, ...receivedPolicyNames]));
       const policies = allPolicyNames.map(
@@ -190,28 +177,35 @@ export class PolicyAppElement extends CrLitElement {
                         knownPolicyNamesSet.has(name) ?
                     `https://chromeenterprise.google/policies/?policy=${name}` :
                     undefined,
-                isExtension: value.isExtension || false,
+                isExtension: group.isExtension || false,
               },
-              value?.policies[name]));
+              group?.policies[name]));
 
       return {
-        name: value.forSigninScreen ?
-            `${value.name} [${loadTimeData.getString('signinProfile')}]` :
-            value.name,
-        id: id,
+        name: group.forSigninScreen ?
+            `${group.name} [${loadTimeData.getString('signinProfile')}]` :
+            group.name,
+        // For Web Apps (PWAs), multiple subpath PWAs sharing the same origin
+        // are keyed by scope URL in `policyGroups` so their map keys (`id`)
+        // don't collide, while `group.id` holds the display origin.
+        id: (group.isWebApp && group.id) ? group.id : id,
+        isExtension: group.isExtension,
+        isWebApp: group.isWebApp,
         policies,
-        ...(value.precedenceOrder && {precedenceOrder: value.precedenceOrder}),
+        ...(group.precedenceOrder && {precedenceOrder: group.precedenceOrder}),
       };
     });
 
     // <if expr="not is_chromeos">
-    this.enableReportButton_ =
-        [
-          'CloudReportingEnabled',
-          'CloudProfileReportingEnabled',
-          'UserSecuritySignalsReporting',
-        ].map(p => !!policyValues['chrome']?.policies[p]?.value)
-            .reduce((accumulator, current) => accumulator ||= current, false);
+    const isNonEmpty = (value: unknown) =>
+        Array.isArray(value) ? value.length > 0 : !!value;
+    this.enableReportButton_ = [
+      'CloudReportingEnabled',
+      'CloudProfileReportingEnabled',
+      'UserSecuritySignalsReporting',
+      'SaasUsageReportingDomainUrlsForBrowsers',
+      'SaasUsageReportingDomainUrlsForProfiles',
+    ].some(p => isNonEmpty(policyGroups['chrome']?.policies[p]?.value));
     // </if>
     this.reloadPoliciesDone_();
   }
@@ -225,7 +219,7 @@ export class PolicyAppElement extends CrLitElement {
   protected onReloadPoliciesClick_() {
     this.reloadButtonDisabled_ = true;
     this.showToast_(loadTimeData.getString('reloadingPolicies'));
-    sendWithPromise<void>('reloadPolicies');
+    BrowserProxy.reloadPolicies();
   }
 
   protected onMoreActionsClick_(e: Event) {
@@ -246,15 +240,17 @@ export class PolicyAppElement extends CrLitElement {
     this.showToast_(loadTimeData.getString('copyPoliciesDone'));
   }
 
+  // <if expr="not is_chromeos">
   protected onUploadReportClick_() {
     this.closeActionMenu_();
     this.uploadReportButtonDisabled_ = true;
     this.showToast_(loadTimeData.getString('reportUploading'));
-    sendWithPromise<void>('uploadReport').then(() => {
+    BrowserProxy.uploadReport().then(() => {
       this.uploadReportButtonDisabled_ = false;
       this.showToast_(loadTimeData.getString('reportUploaded'));
     });
   }
+  // </if>
 
   protected onViewLogsClick_() {
     this.closeActionMenu_();

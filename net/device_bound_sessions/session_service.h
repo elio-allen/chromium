@@ -22,13 +22,14 @@
 #include "net/device_bound_sessions/session_access.h"
 #include "net/device_bound_sessions/session_challenge_param.h"
 #include "net/device_bound_sessions/session_display.h"
+#include "net/device_bound_sessions/session_error.h"
 #include "net/device_bound_sessions/session_event.h"
 #include "net/device_bound_sessions/session_key.h"
 #include "net/log/net_log_with_source.h"
 
 namespace net {
-class FirstPartySetMetadata;
 class IsolationInfo;
+class SiteForCookies;
 class URLRequestContext;
 class HttpRequestHeaders;
 class SSLCertRequestInfo;
@@ -76,6 +77,14 @@ class NET_EXPORT SessionService {
   using CookieAccessCallback =
       base::RepeatingCallback<bool(const CookieAccessCheckParams&)>;
   using PrewarmCallback = base::OnceCallback<void(SessionPrewarmResult)>;
+  // Selects data by origin and site, e.g. in `DeleteAllSessions()`.
+  using OriginAndSiteMatcher =
+      base::RepeatingCallback<bool(const url::Origin&, const SchemefulSite&)>;
+
+  // Receives the value of the Secure-Session-KeyBinding request header (the
+  // Base64URL-encoded JSON binding statement) or an error.
+  using KeyBindingCallback =
+      base::OnceCallback<void(SessionErrorOr<std::string>)>;
 
   // Indicates the reason for deferring. Exactly one of
   // `is_pending_initialization` or `session_id` will be truthy.
@@ -128,17 +137,25 @@ class NET_EXPORT SessionService {
   virtual ~SessionService() = default;
 
   // Called to register a new session after getting a
-  // Secure-Session-Registration header. Registration parameters to be used for
-  // creating the registration request. Isolation info to be used for
-  // registration request, this should be the same as was used for the response
-  // with the Secure-Session-Registration header. `net_log` is the log
-  // corresponding to the request receiving the Secure-Session-Registration
-  // header. 'original_request_initiator` was the initiator for the request that
-  // received the Secure-Session-Registration header.
+  // Sec-Session-Registration header.
+  // - `on_access_callback`: Callback invoked when a session is successfully
+  //   created. Not invoked if registration fails.
+  // - `registration_params`: Parameters parsed from the
+  //   Sec-Session-Registration header used for creating the registration
+  //   request.
+  //
+  // The following parameters configure the registration request and they should
+  // correspond to the request that received the Sec-Session-Registration
+  // header:
+  // - `isolation_info`
+  // - `site_for_cookies`
+  // - `net_log`
+  // - `original_request_initiator`
   virtual void RegisterBoundSession(
       OnAccessCallback on_access_callback,
       RegistrationFetcherParam registration_params,
       const IsolationInfo& isolation_info,
+      const net::SiteForCookies& site_for_cookies,
       const NetLogWithSource& net_log,
       const std::optional<url::Origin>& original_request_initiator) = 0;
 
@@ -156,8 +173,7 @@ class NET_EXPORT SessionService {
   // the Secure-Session-Skipped header in `extra_headers`.
   virtual std::optional<DeferralParams> ShouldDefer(
       DbscRequest& request,
-      HttpRequestHeaders* extra_headers,
-      const FirstPartySetMetadata& first_party_set_metadata) = 0;
+      HttpRequestHeaders* extra_headers) = 0;
 
   // Defer a request and maybe refresh the corresponding session.
   // `deferral` is either the identifier of the session that is required to be
@@ -175,7 +191,6 @@ class NET_EXPORT SessionService {
   virtual void SetChallengeForBoundSession(
       OnAccessCallback on_access_callback,
       DbscRequest& request,
-      const FirstPartySetMetadata& first_party_set_metadata,
       const SessionChallengeParam& param) = 0;
 
   // Get all sessions. If sessions have not yet been loaded from disk,
@@ -198,14 +213,11 @@ class NET_EXPORT SessionService {
 
   // Delete all sessions that match the filtering arguments. See
   // `device_bound_sessions.mojom` for details on the filtering logic.
-  virtual void DeleteAllSessions(
-      DeletionReason reason,
-      std::optional<base::Time> created_after_time,
-      std::optional<base::Time> created_before_time,
-      base::RepeatingCallback<bool(const url::Origin&,
-                                   const net::SchemefulSite&)>
-          origin_and_site_matcher,
-      base::OnceClosure completion_callback) = 0;
+  virtual void DeleteAllSessions(DeletionReason reason,
+                                 std::optional<base::Time> created_after_time,
+                                 std::optional<base::Time> created_before_time,
+                                 OriginAndSiteMatcher origin_and_site_matcher,
+                                 base::OnceClosure completion_callback) = 0;
 
   // Add an observer for session changes that include `url`. `callback`
   // will only be notified until the destruction of the returned
@@ -214,7 +226,11 @@ class NET_EXPORT SessionService {
       const GURL& url,
       base::RepeatingCallback<void(const SessionAccess&)> callback) = 0;
 
-  // Add an observer for DBSC events. This is used for DevTools.
+  // Adds an observer for DBSC events. Used by DevTools and by the
+  // renderer-facing RestrictedDeviceBoundSessionManager. `callback` will only
+  // be notified until the destruction of the returned
+  // `CallbackListSubscription`. Creation events are dispatched after the new
+  // session is visible through GetSession().
   virtual base::CallbackListSubscription AddEventObserver(
       OnEventCallback callback) = 0;
 
@@ -248,10 +264,8 @@ class NET_EXPORT SessionService {
 
   // Helper function to handle the registration and challenge headers provided
   // in `headers` on the response to `request`.
-  virtual void HandleResponseHeaders(
-      DbscRequest& request,
-      HttpResponseHeaders* headers,
-      const FirstPartySetMetadata& first_party_set_metadata) = 0;
+  virtual void HandleResponseHeaders(DbscRequest& request,
+                                     HttpResponseHeaders* headers) = 0;
 
   virtual void SelectClientCertificate(
       const GURL& url,

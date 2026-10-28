@@ -85,9 +85,12 @@ class BnplStrategy;
 class BnplUiDelegate;
 class MandatoryReauthManager;
 class MultipleRequestPaymentsNetworkInterface;
+class PaymentsChurnedUsersUiDelegate;
 class PaymentsNetworkInterface;
 class PaymentsWindowManager;
 class SaveAndFillManager;
+class WalletReminderNoticeManager;
+class WalletReminderNoticeUiDelegate;
 
 // A payments-specific client interface that handles dependency injection, and
 // its implementations serve as the integration for platform-specific code. One
@@ -171,6 +174,8 @@ class PaymentsAutofillClient : public RiskDataLoader {
     kCardSaveWithCvc = 1,
     // Only CVC is saved.
     kCvcSaveOnly = 2,
+    // Only cardholder name is updated for an existing server card.
+    kCardholderNameUpdateOnly = 3,
   };
 
   enum class SourceFeature {
@@ -235,6 +240,9 @@ class PaymentsAutofillClient : public RiskDataLoader {
       return *this;
     }
 
+    // Only used for the cardholder name fix flow during account creation, not
+    // for the separate cardholder name update flow
+    // (`kCardholderNameUpdateOnly`).
     bool should_request_name_from_user = false;
     bool should_request_expiration_date_from_user = false;
     bool show_prompt = false;
@@ -635,11 +643,6 @@ class PaymentsAutofillClient : public RiskDataLoader {
   // client (can be null for unsupported platforms).
   virtual MerchantPromoCodeManager* GetMerchantPromoCodeManager() = 0;
 
-  // Navigates to `url` in a new tab. `url` links to the promo code offer
-  // details page for the offers in a promo code suggestions popup. Every offer
-  // in a promo code suggestions popup links to the same offer details page.
-  virtual void OpenPromoCodeOfferDetailsURL(const GURL& url) = 0;
-
   // Gets an AutofillOfferManager instance (can be null for unsupported
   // platforms).
   virtual AutofillOfferManager* GetAutofillOfferManager() = 0;
@@ -659,6 +662,10 @@ class PaymentsAutofillClient : public RiskDataLoader {
 
   // Dismiss any visible offer notification on the current tab.
   virtual void DismissOfferNotification() = 0;
+
+  // Returns whether the tab this client belongs to is currently visible to the
+  // user, for deciding whether to set up an offer notification on it.
+  virtual bool IsTabVisibleForOfferNotification() const = 0;
 
   // Shows the Touch To Fill surface for filling credit card information, if
   // possible, and returns `true` on success. `delegate` will be notified of
@@ -819,6 +826,18 @@ class PaymentsAutofillClient : public RiskDataLoader {
   // UI in the BNPL flow depending on the platform.
   virtual BnplUiDelegate* GetBnplUiDelegate() = 0;
 
+  // Gets the `WalletReminderNoticeUiDelegate` instance associated with the
+  // client. Handles the UI for the Wallet Reminder Notice.
+  virtual WalletReminderNoticeUiDelegate* GetWalletReminderNoticeUiDelegate();
+
+  // Gets the `WalletReminderNoticeManager` instance associated with the
+  // client.
+  virtual WalletReminderNoticeManager* GetWalletReminderNoticeManager();
+
+  // Gets the `PaymentsChurnedUsersUiDelegate` instance associated with the
+  // client. Handles the resurrection UI for the Payments Churned Users flow.
+  virtual PaymentsChurnedUsersUiDelegate* GetPaymentsChurnedUsersUiDelegate();
+
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   // Gets the `OmniboxAutofillDelegate` instance associated with the client, or
   // nullptr on unsupported platforms. Handles the Autofill flow where the
@@ -844,14 +863,6 @@ class PaymentsAutofillClient : public RiskDataLoader {
   // Hides the entire omnibox chip.
   virtual void HideOmniboxAutofillChip() = 0;
 #endif
-
-  // Shows the Payments Churned Users UI. This UI is responsible for providing
-  // users that have turned off autofill with a value prop to turn autofill back
-  // on.
-  // TODO(crbug.com/524740910): Rename to MaybeShowPaymentsChurnedUsersUi().
-  virtual void ShowPaymentsChurnedUsersUI(base::OnceClosure accept_callback,
-                                          base::OnceClosure cancel_callback,
-                                          base::OnceClosure closed_callback) {}
 };
 
 }  // namespace payments

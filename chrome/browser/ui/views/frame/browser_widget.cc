@@ -16,9 +16,10 @@
 #include "chrome/browser/themes/custom_theme_supplier.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_init_state.h"
+#include "chrome/browser/ui/browser_manager_service.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window_state.h"
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/sessions/session_service_browser_helper.h"
@@ -28,16 +29,18 @@
 #include "chrome/browser/ui/views/frame/browser_native_widget_factory.h"
 #include "chrome/browser/ui/views/frame/browser_root_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/glass_frame_service.h"
 #include "chrome/browser/ui/views/frame/system_menu_model_builder.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/common/chrome_switches.h"
 #include "ui/base/hit_test.h"
-#include "ui/base/mojom/menu_source_type.mojom-forward.h"
+#include "ui/base/mojom/menu_source_type.mojom-shared.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/color/color_provider_key.h"
 #include "ui/views/controls/menu/menu_runner.h"
+#include "ui/views/input_protection/widget_stationarity_monitor.h"
 #include "ui/views/widget/native_widget.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -54,13 +57,11 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "base/feature_list.h"
-#include "chrome/browser/win/mica_titlebar.h"
 #include "content/public/browser/desktop_capture_pip_utils.h"
 #include "media/base/media_switches.h"
 #include "media/capture/capture_switches.h"
 #include "ui/wm/core/window_properties.h"
 #endif
-
 namespace {
 
 // Helper to track whether a ThemeChange event has been received by the widget.
@@ -106,6 +107,7 @@ BrowserWidget::BrowserWidget(BrowserView* browser_view)
       browser_view_(browser_view) {
   // Don't focus anything on creation, selecting a tab will set the focus.
   set_focus_on_creation(false);
+  views::WidgetStationarityMonitor::GetInstance().TrackWidget(*this);
 }
 
 BrowserWidget::~BrowserWidget() {
@@ -138,9 +140,8 @@ void BrowserWidget::InitBrowserWidget() {
   params.name = "BrowserWidget";
   params.delegate = browser_view_;
 
-  Browser* browser = browser_view_->browser();
-  if (browser->GetType() ==
-      BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE) {
+  BrowserWindowInterface* browser = browser_view_->browser();
+  if (browser->GetType() == BrowserWindowInterface::Type::TYPE_FLOATING) {
     params.z_order = ui::ZOrderLevel::kFloatingWindow;
     params.visible_on_all_workspaces = true;
 #if !BUILDFLAG(IS_WIN)
@@ -175,9 +176,8 @@ void BrowserWidget::InitBrowserWidget() {
       browser->GetType() == BrowserWindowInterface::Type::TYPE_APP ||
       browser->GetType() == BrowserWindowInterface::Type::TYPE_APP_POPUP;
 
-  params.session_data = browser->GetFeatures()
-                            .session_service_browser_helper()
-                            ->platform_session_data();
+  params.session_data =
+      SessionServiceBrowserHelper::From(browser)->platform_session_data();
 #endif
 
   if (browser_native_widget_->ShouldRestorePreviousBrowserWidgetState()) {
@@ -209,8 +209,11 @@ void BrowserWidget::InitBrowserWidget() {
     }
   }
 
-  if (features::IsGlassFrameEnabled()) {
-    params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
+  if (auto* const glass_frame_service = GlassFrameService::GetInstance()) {
+    if (glass_frame_service->IsBrowserWindowEligible(
+            browser_view_->browser())) {
+      params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
+    }
   }
 
   Init(std::move(params));
@@ -222,7 +225,7 @@ void BrowserWidget::InitBrowserWidget() {
 #endif
 
   if (!browser_native_widget_->UsesNativeSystemMenu()) {
-    DCHECK(non_client_view());
+    CHECK(non_client_view(), base::NotFatalUntil::M162);
     non_client_view()->set_context_menu_controller(this);
   }
 }
@@ -258,6 +261,10 @@ bool BrowserWidget::HandleKeyboardEvent(
 }
 
 void BrowserWidget::UserChangedTheme(BrowserThemeChangeType theme_change_type) {
+  if (base::FeatureList::IsEnabled(features::kThemeChangeOptimization)) {
+    ResetLastColorProviderKey();
+  }
+
   // kWebAppTheme is triggered by web apps and will only change colors, not the
   // frame type; just refresh the theme on all views in the browser window.
   if (theme_change_type == BrowserThemeChangeType::kWebAppTheme) {
@@ -280,13 +287,15 @@ void BrowserWidget::UserChangedTheme(BrowserThemeChangeType theme_change_type) {
     // When the browser theme changes, the NativeTheme may also change.
     SelectNativeTheme();
 
-    // Browser theme changes are directly observed by the BrowserWidget. However
-    // the other Widgets in the frame's hierarchy may inherit this new theme
-    // information in their ColorProviderKeys and thus should also be forwarded
-    // theme change notifications.
-    Widget::Widgets widgets = GetAllOwnedWidgets(GetNativeView());
-    for (Widget* widget : widgets) {
-      widget->ThemeChanged();
+    if (!base::FeatureList::IsEnabled(features::kThemeChangeOptimization)) {
+      // Browser theme changes are directly observed by the BrowserWidget.
+      // However the other Widgets in the frame's hierarchy may inherit this new
+      // theme information in their ColorProviderKeys and thus should also be
+      // forwarded theme change notifications.
+      Widget::Widgets widgets = GetAllOwnedWidgets(GetNativeView());
+      for (Widget* widget : widgets) {
+        widget->ThemeChanged();
+      }
     }
   }
 
@@ -327,7 +336,7 @@ const ui::ThemeProvider* BrowserWidget::GetThemeProvider() const {
 }
 
 const ui::ThemeProvider* BrowserWidget::GetBaseThemeProvider() const {
-  Browser* browser = browser_view_->browser();
+  BrowserWindowInterface* browser = browser_view_->browser();
   auto* app_controller = web_app::AppBrowserController::From(browser);
   // Ignore the system theme for web apps with window-controls-overlay as the
   // display_override so the web contents can blend with the overlay by using
@@ -342,13 +351,15 @@ const ui::ThemeProvider* BrowserWidget::GetBaseThemeProvider() const {
 
 ui::ColorProviderKey::ThemeInitializerSupplier* BrowserWidget::GetCustomTheme()
     const {
-  // Do not return any custom theme if this is an incognito browser or if there
-  // is a user color override (e.g. Focus Mode).
-  if (IsIncognitoBrowser() || user_color_override().has_value()) {
+  // Do not return any custom theme if this is an incognito browser, an
+  // enterprise isolated mode browser, or if there is a user color override
+  // (e.g. Focus Mode).
+  if (IsIncognitoBrowser() || IsEnterpriseIsolatedModeBrowser() ||
+      user_color_override().has_value()) {
     return nullptr;
   }
 
-  Browser* browser = browser_view_->browser();
+  BrowserWindowInterface* browser = browser_view_->browser();
   auto* app_controller = web_app::AppBrowserController::From(browser);
   // Ignore the system theme for web apps with window-controls-overlay as the
   // display_override so the web contents can blend with the overlay by using
@@ -373,7 +384,7 @@ void BrowserWidget::OnNativeWidgetWorkspaceChanged() {
 
 void BrowserWidget::OnNativeWidgetDestroyed() {
   browser_native_widget_ = nullptr;
-  Browser* const browser = browser_view_->browser();
+  BrowserWindowInterface* const browser = browser_view_->browser();
 
   // Current expectations are that the Browser is destroyed synchronously when
   // its NativeWidget is destroyed. Prepare Browser and request synchronous
@@ -383,7 +394,7 @@ void BrowserWidget::OnNativeWidgetDestroyed() {
   UnloadController::From(browser)->set_force_skip_warning_user_on_close(true);
   UnloadController::From(browser)->OnWindowClosing();
   Widget::OnNativeWidgetDestroyed();
-  browser->SynchronouslyDestroyBrowser();
+  BrowserManagerService::SynchronouslyDestroyBrowser(browser);
 }
 
 void BrowserWidget::ShowContextMenuForViewImpl(
@@ -397,7 +408,7 @@ void BrowserWidget::ShowContextMenuForViewImpl(
   // Do not show context menu for Document picture-in-picture browser. Context:
   // http://b/274862709.
   if (browser_view_->browser()->GetType() ==
-      BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE) {
+      BrowserWindowInterface::Type::TYPE_FLOATING) {
     return;
   }
 
@@ -485,8 +496,11 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
   }
 
   // Apply BrowserWidget overrides:
-  key.app_controller =
-      web_app::AppBrowserController::From(browser_view_->browser());
+  if (auto* app_controller =
+          web_app::AppBrowserController::From(browser_view_->browser())) {
+    key.app_controller = app_controller;
+    key.app_background_color = app_controller->GetBackgroundColor();
+  }
 
 #if BUILDFLAG(IS_CHROMEOS)
   // ChromeOS SystemWebApps use the OS theme all the time.
@@ -515,10 +529,10 @@ void BrowserWidget::OnMenuClosed() {
 
 void BrowserWidget::SelectNativeTheme() {
 #if BUILDFLAG(IS_LINUX)
-  // Use the regular NativeTheme instance if running incognito mode, regardless
-  // of system theme (gtk, qt etc).
+  // Use the regular NativeTheme instance if running incognito mode or
+  // enterprise isolated mode, regardless of system theme (gtk, qt etc).
   ui::NativeTheme* native_theme = ui::NativeTheme::GetInstanceForNativeUi();
-  if (IsIncognitoBrowser()) {
+  if (IsIncognitoBrowser() || IsEnterpriseIsolatedModeBrowser()) {
     SetNativeTheme(native_theme);
     return;
   }
@@ -559,17 +573,9 @@ bool BrowserWidget::RegenerateFrameOnThemeChange(
   // System and user theme changes can both change frame buttons, so the frame
   // always needs to be regenerated on Linux.
   need_regenerate = true;
-#endif
-
-#if BUILDFLAG(IS_WIN)
-  // On Windows, DWM transition does not performed for a frame regeneration in
-  // fullscreen mode, so do a lighweight theme change to refresh a bookmark bar
-  // on new tab. (see crbug.com/40646694)
-  // With Mica, toggling titlebar accent colors in the native theme needs a
-  // frame regen to switch between the system-drawn and custom-drawn titlebars.
+#elif BUILDFLAG(IS_WIN)
   need_regenerate |=
-      (theme_change_type == BrowserThemeChangeType::kBrowserTheme ||
-       SystemTitlebarCanUseMicaMaterial()) &&
+      (theme_change_type == BrowserThemeChangeType::kBrowserTheme) &&
       !IsFullscreen();
 #else
   need_regenerate |= theme_change_type == BrowserThemeChangeType::kBrowserTheme;
@@ -589,4 +595,10 @@ bool BrowserWidget::RegenerateFrameOnThemeChange(
 
 bool BrowserWidget::IsIncognitoBrowser() const {
   return browser_view_->browser()->GetProfile()->IsIncognitoProfile();
+}
+
+bool BrowserWidget::IsEnterpriseIsolatedModeBrowser() const {
+  return browser_view_->browser()
+      ->GetProfile()
+      ->IsEnterpriseIsolatedModeProfile();
 }

@@ -6,12 +6,12 @@
 #define CHROME_BROWSER_CONTEXTUAL_TASKS_CONTEXTUAL_TASKS_EXTENSION_BINDER_PROVIDER_H_
 
 #include "extensions/browser/extension_mojo_binder_registry.h"
-#include "extensions/common/extension_id.h"
 #include "mojo/public/cpp/bindings/binder_map.h"
 
 namespace content {
 class BrowserContext;
 class RenderFrameHost;
+struct ServiceWorkerVersionBaseInfo;
 }  // namespace content
 
 namespace extensions {
@@ -35,11 +35,17 @@ class ContextualTasksExtensionBinderProvider
   ~ContextualTasksExtensionBinderProvider() override;
 
   // extensions::ExtensionMojoBinderProvider:
-  extensions::ExtensionId GetExtensionId() const override;
+  bool IsMojoJsEnabledForFrame() const override;
+  bool IsMojoJsEnabledForServiceWorker() const override;
   void PopulateFrameBinders(
       mojo::BinderMapWithContext<content::RenderFrameHost*>& binder_map,
       content::RenderFrameHost* render_frame_host,
-      const extensions::Extension* extension) override;
+      const extensions::Extension& extension) override;
+  void PopulateServiceWorkerBinders(
+      mojo::BinderMapWithContext<const content::ServiceWorkerVersionBaseInfo&>&
+          binder_map,
+      content::BrowserContext* browser_context,
+      const extensions::Extension& extension) override;
 };
 
 }  // namespace contextual_tasks

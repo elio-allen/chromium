@@ -12,12 +12,15 @@
 #include "base/strings/string_util.h"
 #include "base/strings/string_view_util.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/values_test_util.h"
 #include "crypto/sha2.h"
 #include "net/base/features.h"
 #include "net/cert/root_store_proto_lite/root_store.pb.h"
 #include "net/cert/root_store_proto_lite/signer_set.pb.h"
 #include "net/cert/x509_certificate.h"
 #include "net/cert/x509_util.h"
+#include "net/log/net_log_with_source.h"
+#include "net/log/test_net_log.h"
 #include "net/test/cert_builder.h"
 #include "net/test/cert_test_util.h"
 #include "net/test/chrome_root_store_test_util.h"
@@ -39,9 +42,7 @@ std::shared_ptr<const bssl::ParsedCertificate> ToParsedCertificate(
     bssl::UniquePtr<CRYPTO_BUFFER> cert_buffer) {
   bssl::CertErrors errors;
   std::shared_ptr<const bssl::ParsedCertificate> parsed =
-      bssl::ParsedCertificate::Create(
-          std::move(cert_buffer), x509_util::DefaultParseCertificateOptions(),
-          &errors);
+      x509_util::CreateParsedCertificate(std::move(cert_buffer), &errors);
   EXPECT_TRUE(parsed) << errors.ToDebugString();
   return parsed;
 }
@@ -289,13 +290,13 @@ TEST(TrustStoreChromeTestNoFixture, MTCConstraints) {
     auto unconstrained_mtc_anchor = std::make_shared<const bssl::MTCAnchor>(
         kUnconstrainedAnchorCaId, bssl::SignatureAlgorithm::kMldsa44,
         x509_util::CreateCryptoBuffer(std::string_view("fake key")),
-        std::map<uint16_t, std::vector<bssl::TrustedSubtree>>());
+        std::vector<bssl::LogTrustedSubtrees>());
 
     constexpr uint8_t kConstrainedAnchorCaId[] = {0x08, 0x04, 0x05, 0x06};
     auto constrained_mtc_anchor = std::make_shared<const bssl::MTCAnchor>(
         kConstrainedAnchorCaId, bssl::SignatureAlgorithm::kMldsa44,
         x509_util::CreateCryptoBuffer(std::string_view("fake key")),
-        std::map<uint16_t, std::vector<bssl::TrustedSubtree>>());
+        std::vector<bssl::LogTrustedSubtrees>());
 
     constexpr uint8_t kUntrustedConstrainedAnchorCaId[] = {0x06, 0x04, 0x05,
                                                            0x06};
@@ -303,13 +304,13 @@ TEST(TrustStoreChromeTestNoFixture, MTCConstraints) {
         std::make_shared<const bssl::MTCAnchor>(
             kUntrustedConstrainedAnchorCaId, bssl::SignatureAlgorithm::kMldsa44,
             x509_util::CreateCryptoBuffer(std::string_view("fake key")),
-            std::map<uint16_t, std::vector<bssl::TrustedSubtree>>());
+            std::vector<bssl::LogTrustedSubtrees>());
 
     constexpr uint8_t kUnknownAnchorCaId[] = {0x07, 0x07, 0x07, 0x07};
     auto unknown_mtc_anchor = std::make_shared<const bssl::MTCAnchor>(
         kUnknownAnchorCaId, bssl::SignatureAlgorithm::kMldsa44,
         x509_util::CreateCryptoBuffer(std::string_view("fake key")),
-        std::map<uint16_t, std::vector<bssl::TrustedSubtree>>());
+        std::vector<bssl::LogTrustedSubtrees>());
 
     chrome_root_store::SignerSet signer_set;
     signer_set.mutable_timestamp()->set_seconds(1);
@@ -326,8 +327,8 @@ TEST(TrustStoreChromeTestNoFixture, MTCConstraints) {
       proto_constraints->set_max_version_exclusive("125.0.6368.2");
       proto_constraints->add_permitted_dns_names("foo.example.com");
       proto_constraints->add_permitted_dns_names("bar.example.com");
-      proto_constraints->set_index_not_after(1234);
-      proto_constraints->set_index_after(987);
+      proto_constraints->set_serial_not_after(1234);
+      proto_constraints->set_serial_after(987);
       proto_constraints->set_validity_starts_not_after_sec(56781);
       proto_constraints->set_validity_starts_after_sec(1236890);
 
@@ -381,8 +382,8 @@ TEST(TrustStoreChromeTestNoFixture, MTCConstraints) {
                 std::vector<uint32_t>({125, 0, 6368, 2}));
       EXPECT_THAT(constraints[0].permitted_dns_names,
                   testing::ElementsAre("foo.example.com", "bar.example.com"));
-      EXPECT_EQ(constraints[0].index_not_after, 1234U);
-      EXPECT_EQ(constraints[0].index_after, 987U);
+      EXPECT_EQ(constraints[0].serial_not_after, 1234U);
+      EXPECT_EQ(constraints[0].serial_after, 987U);
 
       ASSERT_TRUE(constraints[0].validity_starts_not_after.has_value());
       EXPECT_EQ(constraints[0]
@@ -702,7 +703,7 @@ TEST(TrustStoreChromeTestNoFixture, CrsRootIdsFromProto) {
       mtc_anchor_with_id_11 = std::make_shared<const bssl::MTCAnchor>(
           kCaId, bssl::SignatureAlgorithm::kMldsa44,
           x509_util::CreateCryptoBuffer(std::string_view("fake key")),
-          std::map<uint16_t, std::vector<bssl::TrustedSubtree>>());
+          std::vector<bssl::LogTrustedSubtrees>());
     }
 
     std::shared_ptr<const bssl::MTCAnchor> mtc_anchor_with_no_id;
@@ -713,7 +714,7 @@ TEST(TrustStoreChromeTestNoFixture, CrsRootIdsFromProto) {
       mtc_anchor_with_no_id = std::make_shared<const bssl::MTCAnchor>(
           kCaId, bssl::SignatureAlgorithm::kMldsa44,
           x509_util::CreateCryptoBuffer(std::string_view("fake key")),
-          std::map<uint16_t, std::vector<bssl::TrustedSubtree>>());
+          std::vector<bssl::LogTrustedSubtrees>());
     }
 
     std::shared_ptr<const bssl::MTCAnchor> untrusted_mtc_anchor_with_id;
@@ -725,7 +726,7 @@ TEST(TrustStoreChromeTestNoFixture, CrsRootIdsFromProto) {
       untrusted_mtc_anchor_with_id = std::make_shared<const bssl::MTCAnchor>(
           kCaId, bssl::SignatureAlgorithm::kMldsa44,
           x509_util::CreateCryptoBuffer(std::string_view("fake key")),
-          std::map<uint16_t, std::vector<bssl::TrustedSubtree>>());
+          std::vector<bssl::LogTrustedSubtrees>());
     }
 
     std::shared_ptr<const bssl::MTCAnchor> unknown_mtc_anchor;
@@ -734,7 +735,7 @@ TEST(TrustStoreChromeTestNoFixture, CrsRootIdsFromProto) {
       unknown_mtc_anchor = std::make_shared<const bssl::MTCAnchor>(
           kCaId, bssl::SignatureAlgorithm::kMldsa44,
           x509_util::CreateCryptoBuffer(std::string_view("fake key")),
-          std::map<uint16_t, std::vector<bssl::TrustedSubtree>>());
+          std::vector<bssl::LogTrustedSubtrees>());
     }
 
     std::optional<ChromeRootStoreData> root_store_data =
@@ -969,156 +970,236 @@ TEST(TrustStoreChromeTestNoFixture, LoadCompiledInMtcTrustAnchorCaIds) {
   }
 }
 
-std::tuple<std::shared_ptr<const bssl::MTCAnchor>,
-           std::shared_ptr<const bssl::ParsedCertificate>>
-MakeTestMtcAnchorAndLeaf(MtcLogBuilder& mtc_log_builder) {
-  std::unique_ptr<net::CertBuilder> mtc_leaf_builder =
-      std::move(net::CertBuilder::CreateSimpleChain(1u)[0]);
+class TrustStoreChromeMtcTest
+    : public testing::TestWithParam<
+          std::tuple<bool, chrome_root_store::SpecVersion>> {
+ public:
+  bool use_test_roots() const { return std::get<0>(GetParam()); }
 
-  uint64_t leaf_index = mtc_log_builder.AddEntry(*mtc_leaf_builder);
-  mtc_log_builder.AdvanceLandmark();
+  chrome_root_store::SpecVersion signer_set_spec() const {
+    return std::get<1>(GetParam());
+  }
 
-  auto leaf_buffer =
-      mtc_log_builder.CreateSignaturelessCertificateBuffer(leaf_index);
-  CHECK(leaf_buffer);
-  std::shared_ptr<const bssl::ParsedCertificate> mtc_leaf =
-      ToParsedCertificate(std::move(leaf_buffer));
+  net::MtcLogBuilder::SpecVersion log_builder_spec() const {
+    switch (signer_set_spec()) {
+      case chrome_root_store::SPEC_VERSION_DRAFT05:
+        return net::MtcLogBuilder::kPlants05;
+      case chrome_root_store::SPEC_VERSION_DRAFT07:
+        return net::MtcLogBuilder::kPlants07;
+      default:
+        NOTREACHED();
+    }
+  }
 
-  return {std::make_shared<bssl::MTCAnchor>(
-              mtc_log_builder.ca_id(), bssl::SignatureAlgorithm::kMldsa44,
-              x509_util::CreateCryptoBuffer(std::string_view("fake key")),
-              mtc_log_builder.GetPerLogLandmarkSubtreeHashes()),
-          std::move(mtc_leaf)};
-}
+  net::MtcLogBuilder CreateLogBuilder(
+      base::span<const uint8_t> ca_id,
+      net::MtcLogBuilder::LogNumber log_number) const {
+    return net::MtcLogBuilder(ca_id, log_number, log_builder_spec());
+  }
 
-TEST(TrustStoreChromeTestNoFixture, LoadMtcTrustAnchors) {
-  for (bool use_test_roots : {false, true}) {
-    SCOPED_TRACE(use_test_roots);
-    constexpr uint8_t kTestMtcCaId_1[] = {0x09u, 0x01u, 0x03u, 0x04u};
-    constexpr uint8_t kUntrustedMtcCaId[] = {0x09u, 0x02u, 0x03u, 0x04u};
-    constexpr uint8_t kTestMtcCaId_3[] = {0x08u, 0x03u, 0x02u, 0x01u};
-    constexpr uint8_t kTestMtcCaId_4[] = {0x08u, 0x04u, 0x05u, 0x06u};
+  std::shared_ptr<const bssl::MTCAnchor> CreateMTCAnchor(
+      base::span<const uint8_t> ca_id,
+      bssl::SignatureAlgorithm ca_signature_algorithm,
+      bssl::UniquePtr<CRYPTO_BUFFER> ca_key,
+      std::vector<bssl::LogTrustedSubtrees> log_trusted_subtrees) const {
+    switch (signer_set_spec()) {
+      case chrome_root_store::SPEC_VERSION_DRAFT05:
+        return std::make_shared<bssl::MTCAnchor>(
+            ca_id, ca_signature_algorithm, std::move(ca_key),
+            std::move(log_trusted_subtrees));
+      case chrome_root_store::SPEC_VERSION_DRAFT07:
+        return bssl::MTCAnchor::CreatePlants07(ca_id, ca_signature_algorithm,
+                                               std::move(ca_key),
+                                               std::move(log_trusted_subtrees));
+      default:
+        NOTREACHED();
+    }
+  }
 
-    MtcLogBuilder mtc_log_builder(kTestMtcCaId_1, /*log_number=*/1);
-    auto [mtc_anchor, mtc_leaf] = MakeTestMtcAnchorAndLeaf(mtc_log_builder);
+  std::tuple<std::shared_ptr<const bssl::MTCAnchor>,
+             std::shared_ptr<const bssl::ParsedCertificate>>
+  MakeTestMtcAnchorAndLeaf(MtcLogBuilder& mtc_log_builder) {
+    std::unique_ptr<net::CertBuilder> mtc_leaf_builder =
+        std::move(net::CertBuilder::CreateSimpleChain(1u)[0]);
 
-    MtcLogBuilder untrusted_mtc_log_builder(kUntrustedMtcCaId,
-                                            /*log_number=*/1);
-    auto [untrusted_mtc_anchor, untrusted_mtc_leaf] =
-        MakeTestMtcAnchorAndLeaf(untrusted_mtc_log_builder);
+    uint64_t leaf_index = mtc_log_builder.AddEntry(*mtc_leaf_builder);
+    mtc_log_builder.AdvanceLandmark();
 
-    MtcLogBuilder mtc_log_builder_3(kTestMtcCaId_3, /*log_number=*/1);
-    auto [mtc_anchor_3, mtc_leaf_3] =
-        MakeTestMtcAnchorAndLeaf(mtc_log_builder_3);
+    auto leaf_buffer =
+        mtc_log_builder.CreateSignaturelessCertificateBuffer(leaf_index);
+    CHECK(leaf_buffer);
+    std::shared_ptr<const bssl::ParsedCertificate> mtc_leaf =
+        ToParsedCertificate(std::move(leaf_buffer));
 
-    MtcLogBuilder mtc_log_builder_4(kTestMtcCaId_4, /*log_number=*/1);
-    auto [mtc_anchor_4, mtc_leaf_4] =
-        MakeTestMtcAnchorAndLeaf(mtc_log_builder_4);
+    return {CreateMTCAnchor(
+                mtc_log_builder.ca_id(), bssl::SignatureAlgorithm::kMldsa44,
+                x509_util::CreateCryptoBuffer(std::string_view("fake key")),
+                mtc_log_builder.GetPerLogLandmarkSubtreeHashes()),
+            std::move(mtc_leaf)};
+  }
 
-    constexpr uint8_t kUnknownMtcCaId[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
-    MtcLogBuilder mtc_log_builder_unknown(kUnknownMtcCaId, /*log_number=*/1);
-    auto [mtc_anchor_unknown, mtc_leaf_unknown] =
-        MakeTestMtcAnchorAndLeaf(mtc_log_builder_unknown);
+  chrome_root_store::Signer* AddSignerSetIssuerWithSpecVersion(
+      chrome_root_store::SignerSet& signer_set,
+      base::span<const uint8_t> log_id,
+      std::string_view operator_name,
+      std::optional<int32_t> crs_root_id) {
+    chrome_root_store::Signer* issuer =
+        net::AddSignerSetIssuer(signer_set, log_id, operator_name, crs_root_id);
+    issuer->set_spec_version(signer_set_spec());
+    return issuer;
+  }
+};
 
-    base::test::ScopedFeatureList feature_list;
-    feature_list.InitWithFeatureStates(
-        {{net::features::kTLSTrustAnchorIDs, true},
-         {net::features::kVerifyMTCs, true},
-         {net::features::kTestRootStore, use_test_roots}});
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    TrustStoreChromeMtcTest,
+    testing::Combine(testing::Bool(),
+                     testing::Values(chrome_root_store::SPEC_VERSION_DRAFT05,
+                                     chrome_root_store::SPEC_VERSION_DRAFT07)),
+    [](const testing::TestParamInfo<TrustStoreChromeMtcTest::ParamType>& info) {
+      std::string_view spec_string;
+      switch (std::get<1>(info.param)) {
+        case chrome_root_store::SPEC_VERSION_DRAFT05:
+          spec_string = "Plants05";
+          break;
+        case chrome_root_store::SPEC_VERSION_DRAFT07:
+          spec_string = "Plants07";
+          break;
+        default:
+          NOTREACHED();
+      }
+      return base::StrCat({
+          std::get<0>(info.param) ? "TestRootsOn" : "TestRootsOff",
+          spec_string,
+      });
+    });
 
-    chrome_root_store::SignerSet signer_set;
-    signer_set.mutable_timestamp()->set_seconds(1);
-    AddSignerSetIssuer(signer_set, kTestMtcCaId_1, "operator", 11);
-    AddSignerSetIssuer(signer_set, kUntrustedMtcCaId, "operator", 12)
-        ->set_realm(chrome_root_store::REALM_UNTRUSTED_VALIDATION_ONLY);
-    AddSignerSetIssuer(signer_set, kTestMtcCaId_3, "operator", 13);
-    AddSignerSetIssuer(signer_set, kTestMtcCaId_4, "operator", 14);
+TEST_P(TrustStoreChromeMtcTest, LoadMtcTrustAnchors) {
+  constexpr uint8_t kTestMtcCaId_1[] = {0x09u, 0x01u, 0x03u, 0x04u};
+  constexpr uint8_t kUntrustedMtcCaId[] = {0x09u, 0x02u, 0x03u, 0x04u};
+  constexpr uint8_t kTestMtcCaId_3[] = {0x08u, 0x03u, 0x02u, 0x01u};
+  constexpr uint8_t kTestMtcCaId_4[] = {0x08u, 0x04u, 0x05u, 0x06u};
 
-    {
-      ChromeRootStoreData root_store_data =
-          ChromeRootStoreData::CreateForTesting(
-              kChromeRootCertList, kEutlRootCertList, /*version=*/1);
-      std::optional<ChromeRootStoreSignerSet> parsed_set =
-          ChromeRootStoreSignerSet::CreateFromProto(signer_set);
-      ASSERT_TRUE(parsed_set);
-      root_store_data.SetSignerSet(*parsed_set);
+  MtcLogBuilder mtc_log_builder(
+      CreateLogBuilder(kTestMtcCaId_1, /*log_number=*/1));
+  auto [mtc_anchor, mtc_leaf] = MakeTestMtcAnchorAndLeaf(mtc_log_builder);
 
-      TrustStoreChrome trust_store_chrome(&root_store_data, nullptr);
+  MtcLogBuilder untrusted_mtc_log_builder(CreateLogBuilder(kUntrustedMtcCaId,
+                                                           /*log_number=*/1));
+  auto [untrusted_mtc_anchor, untrusted_mtc_leaf] =
+      MakeTestMtcAnchorAndLeaf(untrusted_mtc_log_builder);
 
-      EXPECT_TRUE(trust_store_chrome.ContainsMTCAnchor(mtc_anchor.get()));
-      EXPECT_TRUE(trust_store_chrome.GetTrustedMTCIssuerOf(mtc_leaf.get()));
+  MtcLogBuilder mtc_log_builder_3(
+      CreateLogBuilder(kTestMtcCaId_3, /*log_number=*/1));
+  auto [mtc_anchor_3, mtc_leaf_3] = MakeTestMtcAnchorAndLeaf(mtc_log_builder_3);
 
-      EXPECT_EQ(use_test_roots, trust_store_chrome.ContainsMTCAnchor(
-                                    untrusted_mtc_anchor.get()));
-      EXPECT_EQ(use_test_roots, !!trust_store_chrome.GetTrustedMTCIssuerOf(
+  MtcLogBuilder mtc_log_builder_4(
+      CreateLogBuilder(kTestMtcCaId_4, /*log_number=*/1));
+  auto [mtc_anchor_4, mtc_leaf_4] = MakeTestMtcAnchorAndLeaf(mtc_log_builder_4);
+
+  constexpr uint8_t kUnknownMtcCaId[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
+  MtcLogBuilder mtc_log_builder_unknown(
+      CreateLogBuilder(kUnknownMtcCaId, /*log_number=*/1));
+  auto [mtc_anchor_unknown, mtc_leaf_unknown] =
+      MakeTestMtcAnchorAndLeaf(mtc_log_builder_unknown);
+
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatureStates(
+      {{net::features::kTLSTrustAnchorIDs, true},
+       {net::features::kVerifyMTCs, true},
+       {net::features::kTestRootStore, use_test_roots()}});
+
+  chrome_root_store::SignerSet signer_set;
+  signer_set.mutable_timestamp()->set_seconds(1);
+  AddSignerSetIssuerWithSpecVersion(signer_set, kTestMtcCaId_1, "operator", 11);
+  AddSignerSetIssuerWithSpecVersion(signer_set, kUntrustedMtcCaId, "operator",
+                                    12)
+      ->set_realm(chrome_root_store::REALM_UNTRUSTED_VALIDATION_ONLY);
+  AddSignerSetIssuerWithSpecVersion(signer_set, kTestMtcCaId_3, "operator", 13);
+  AddSignerSetIssuerWithSpecVersion(signer_set, kTestMtcCaId_4, "operator", 14);
+
+  {
+    ChromeRootStoreData root_store_data = ChromeRootStoreData::CreateForTesting(
+        kChromeRootCertList, kEutlRootCertList, /*version=*/1);
+    std::optional<ChromeRootStoreSignerSet> parsed_set =
+        ChromeRootStoreSignerSet::CreateFromProto(signer_set);
+    ASSERT_TRUE(parsed_set);
+    root_store_data.SetSignerSet(*parsed_set);
+
+    TrustStoreChrome trust_store_chrome(&root_store_data, nullptr);
+
+    EXPECT_TRUE(trust_store_chrome.ContainsMTCAnchor(mtc_anchor.get()));
+    EXPECT_TRUE(trust_store_chrome.GetTrustedMTCIssuerOf(mtc_leaf.get()));
+
+    EXPECT_EQ(use_test_roots(),
+              trust_store_chrome.ContainsMTCAnchor(untrusted_mtc_anchor.get()));
+    EXPECT_EQ(use_test_roots(), !!trust_store_chrome.GetTrustedMTCIssuerOf(
                                     untrusted_mtc_leaf.get()));
 
-      EXPECT_TRUE(trust_store_chrome.ContainsMTCAnchor(mtc_anchor_3.get()));
-      EXPECT_TRUE(trust_store_chrome.GetTrustedMTCIssuerOf(mtc_leaf_3.get()));
+    EXPECT_TRUE(trust_store_chrome.ContainsMTCAnchor(mtc_anchor_3.get()));
+    EXPECT_TRUE(trust_store_chrome.GetTrustedMTCIssuerOf(mtc_leaf_3.get()));
 
-      EXPECT_TRUE(trust_store_chrome.ContainsMTCAnchor(mtc_anchor_4.get()));
-      EXPECT_TRUE(trust_store_chrome.GetTrustedMTCIssuerOf(mtc_leaf_4.get()));
+    EXPECT_TRUE(trust_store_chrome.ContainsMTCAnchor(mtc_anchor_4.get()));
+    EXPECT_TRUE(trust_store_chrome.GetTrustedMTCIssuerOf(mtc_leaf_4.get()));
 
-      EXPECT_FALSE(
-          trust_store_chrome.ContainsMTCAnchor(mtc_anchor_unknown.get()));
-      EXPECT_FALSE(
-          trust_store_chrome.GetTrustedMTCIssuerOf(mtc_leaf_unknown.get()));
-    }
+    EXPECT_FALSE(
+        trust_store_chrome.ContainsMTCAnchor(mtc_anchor_unknown.get()));
+    EXPECT_FALSE(
+        trust_store_chrome.GetTrustedMTCIssuerOf(mtc_leaf_unknown.get()));
+  }
 
-    chrome_root_store::MtcMetadata mtc_metadata_proto;
-    mtc_metadata_proto.set_update_time_seconds(
-        base::Time::Now().InMillisecondsSinceUnixEpoch() / 1000);
+  chrome_root_store::MtcMetadata mtc_metadata_proto;
+  mtc_metadata_proto.set_update_time_seconds(
+      base::Time::Now().InMillisecondsSinceUnixEpoch() / 1000);
 
-    // Only the first and fourth log are added to the MtcMetadata proto.
-    mtc_log_builder.FillMtcMetadataAnchorProto(
-        mtc_metadata_proto.add_mtc_anchor_data());
-    mtc_log_builder_4.FillMtcMetadataAnchorProto(
-        mtc_metadata_proto.add_mtc_anchor_data());
-    // Also add metadata for the MTC anchor that is not present in the
-    // SignerSet. It should be ignored and this anchor should still be
-    // considered untrusted.
-    mtc_log_builder_unknown.FillMtcMetadataAnchorProto(
-        mtc_metadata_proto.add_mtc_anchor_data());
+  // Only the first and fourth log are added to the MtcMetadata proto.
+  mtc_log_builder.FillMtcMetadataAnchorProto(
+      mtc_metadata_proto.add_mtc_anchor_data());
+  mtc_log_builder_4.FillMtcMetadataAnchorProto(
+      mtc_metadata_proto.add_mtc_anchor_data());
+  // Also add metadata for the MTC anchor that is not present in the
+  // SignerSet. It should be ignored and this anchor should still be
+  // considered untrusted.
+  mtc_log_builder_unknown.FillMtcMetadataAnchorProto(
+      mtc_metadata_proto.add_mtc_anchor_data());
 
-    auto mtc_metadata = ChromeRootStoreMtcMetadata::CreateFromMtcMetadataProto(
-        mtc_metadata_proto);
-    ASSERT_TRUE(mtc_metadata);
+  auto mtc_metadata = ChromeRootStoreMtcMetadata::CreateFromMtcMetadataProto(
+      mtc_metadata_proto);
+  ASSERT_TRUE(mtc_metadata);
 
-    // The presence of MtcMetadata is not required for a MTC CA to be considered
-    // trusted (since it still can be used with standalone MTCs even if the
-    // trusted landmark data isn't available.) This just confirms that if a
-    // MtcMetadata is supplied, with data for only some of the MTC CAs, it has
-    // no effect on which MTC CAs are considered trusted.
-    {
-      ChromeRootStoreData root_store_data =
-          ChromeRootStoreData::CreateForTesting(
-              kChromeRootCertList, kEutlRootCertList, /*version=*/1);
-      std::optional<ChromeRootStoreSignerSet> parsed_set =
-          ChromeRootStoreSignerSet::CreateFromProto(signer_set);
-      ASSERT_TRUE(parsed_set);
-      root_store_data.SetSignerSet(*parsed_set);
+  // The presence of MtcMetadata is not required for a MTC CA to be considered
+  // trusted (since it still can be used with standalone MTCs even if the
+  // trusted landmark data isn't available.) This just confirms that if a
+  // MtcMetadata is supplied, with data for only some of the MTC CAs, it has
+  // no effect on which MTC CAs are considered trusted.
+  {
+    ChromeRootStoreData root_store_data = ChromeRootStoreData::CreateForTesting(
+        kChromeRootCertList, kEutlRootCertList, /*version=*/1);
+    std::optional<ChromeRootStoreSignerSet> parsed_set =
+        ChromeRootStoreSignerSet::CreateFromProto(signer_set);
+    ASSERT_TRUE(parsed_set);
+    root_store_data.SetSignerSet(*parsed_set);
 
-      TrustStoreChrome trust_store_chrome(&root_store_data, &*mtc_metadata);
+    TrustStoreChrome trust_store_chrome(&root_store_data, &*mtc_metadata);
 
-      EXPECT_TRUE(trust_store_chrome.ContainsMTCAnchor(mtc_anchor.get()));
-      EXPECT_TRUE(trust_store_chrome.GetTrustedMTCIssuerOf(mtc_leaf.get()));
+    EXPECT_TRUE(trust_store_chrome.ContainsMTCAnchor(mtc_anchor.get()));
+    EXPECT_TRUE(trust_store_chrome.GetTrustedMTCIssuerOf(mtc_leaf.get()));
 
-      EXPECT_EQ(use_test_roots, trust_store_chrome.ContainsMTCAnchor(
-                                    untrusted_mtc_anchor.get()));
-      EXPECT_EQ(use_test_roots, !!trust_store_chrome.GetTrustedMTCIssuerOf(
+    EXPECT_EQ(use_test_roots(),
+              trust_store_chrome.ContainsMTCAnchor(untrusted_mtc_anchor.get()));
+    EXPECT_EQ(use_test_roots(), !!trust_store_chrome.GetTrustedMTCIssuerOf(
                                     untrusted_mtc_leaf.get()));
 
-      EXPECT_TRUE(trust_store_chrome.ContainsMTCAnchor(mtc_anchor_3.get()));
-      EXPECT_TRUE(trust_store_chrome.GetTrustedMTCIssuerOf(mtc_leaf_3.get()));
+    EXPECT_TRUE(trust_store_chrome.ContainsMTCAnchor(mtc_anchor_3.get()));
+    EXPECT_TRUE(trust_store_chrome.GetTrustedMTCIssuerOf(mtc_leaf_3.get()));
 
-      EXPECT_TRUE(trust_store_chrome.ContainsMTCAnchor(mtc_anchor_4.get()));
-      EXPECT_TRUE(trust_store_chrome.GetTrustedMTCIssuerOf(mtc_leaf_4.get()));
+    EXPECT_TRUE(trust_store_chrome.ContainsMTCAnchor(mtc_anchor_4.get()));
+    EXPECT_TRUE(trust_store_chrome.GetTrustedMTCIssuerOf(mtc_leaf_4.get()));
 
-      EXPECT_FALSE(
-          trust_store_chrome.ContainsMTCAnchor(mtc_anchor_unknown.get()));
-      EXPECT_FALSE(
-          trust_store_chrome.GetTrustedMTCIssuerOf(mtc_leaf_unknown.get()));
-    }
+    EXPECT_FALSE(
+        trust_store_chrome.ContainsMTCAnchor(mtc_anchor_unknown.get()));
+    EXPECT_FALSE(
+        trust_store_chrome.GetTrustedMTCIssuerOf(mtc_leaf_unknown.get()));
   }
 }
 
@@ -1579,6 +1660,14 @@ TEST(TrustStoreChromeTestNoFixture, SignerSetCreationIssuerFiltering) {
       ->set_signature_algorithm(
           static_cast<chrome_root_store::SignatureAlgorithm>(999999));
 
+  const std::vector<uint8_t> kIssuerNoSpecVersion = {0x0b};
+  AddSignerSetIssuer(proto, kIssuerNoSpecVersion, "op", std::nullopt)
+      ->clear_spec_version();
+
+  const std::vector<uint8_t> kIssuerUnknownSpecVersion = {0x0c};
+  AddSignerSetIssuer(proto, kIssuerUnknownSpecVersion, "op", std::nullopt)
+      ->set_spec_version(static_cast<chrome_root_store::SpecVersion>(999999));
+
   {
     base::test::ScopedFeatureList feature_list;
     feature_list.InitWithFeatures({features::kVerifyMTCs},
@@ -1589,10 +1678,18 @@ TEST(TrustStoreChromeTestNoFixture, SignerSetCreationIssuerFiltering) {
     std::vector<std::vector<uint8_t>> usable_issuer_ids;
     for (const auto& issuer : parsed_set->trusted_issuers()) {
       usable_issuer_ids.push_back(issuer.base_id);
+      if (issuer.base_id == kIssuerNoSpecVersion) {
+        // TODO(crbug.com/452986180): Remove this once issuers with missing
+        // spec_version get filtered out.
+        EXPECT_EQ(issuer.spec_version, chrome_root_store::SPEC_VERSION_DRAFT05);
+      }
     }
+    // TODO(crbug.com/452986180): Remove kIssuerNoSpecVersion here and below
+    // once issuers with missing spec_version get filtered out.
     EXPECT_THAT(usable_issuer_ids,
                 testing::UnorderedElementsAre(
-                    kIssuerUsable, kIssuerStateQualified, kIssuerStateFrozen));
+                    kIssuerUsable, kIssuerStateQualified, kIssuerStateFrozen,
+                    kIssuerNoSpecVersion));
   }
 
   {
@@ -1612,7 +1709,7 @@ TEST(TrustStoreChromeTestNoFixture, SignerSetCreationIssuerFiltering) {
     EXPECT_THAT(usable_issuer_ids,
                 testing::UnorderedElementsAre(
                     kIssuerUsable, kIssuerStateQualified, kIssuerStateFrozen,
-                    kIssuerUntrustedRealm));
+                    kIssuerNoSpecVersion, kIssuerUntrustedRealm));
   }
 }
 
@@ -1703,23 +1800,23 @@ TEST(TrustStoreChromeTestNoFixture, SignerSetCreationMirrorFiltering) {
   }
 }
 
-TEST(TrustStoreChromeTestNoFixture, ParseMtcMetadataProtoBothFormats) {
+TEST(TrustStoreChromeTestNoFixture, ParseMtcMetadataProto) {
   chrome_root_store::MtcMetadata proto;
   proto.set_update_time_seconds(987654321);
 
   // 1. Add experiment format MtcAnchorData.
   {
-    auto* anchor = proto.add_mtc_anchor_data();
-    anchor->set_log_id("\x01\x03\x06\x01\x04\x01");
-    auto* range = anchor->mutable_trusted_landmark_ids_range();
-    range->set_base_id(std::string("\x01\x03\x06\x01\x04\x01\x00\x02", 8));
-    range->set_min_active_landmark_inclusive(10);
-    range->set_last_landmark_inclusive(20);
-
-    auto* subtree = anchor->add_trusted_subtrees();
-    subtree->set_start_inclusive(100);
-    subtree->set_end_exclusive(200);
-    subtree->set_hash(std::string(32, '\xaa'));
+    // The MtcAnchorData proto message previously could contain either
+    // davidben-08 or plants-05 style data. The presence of the `ca_id` field
+    // indicates this message contains plants-05 data.  Since the davidben-08
+    // fields were removed from the proto definition the test can't easily
+    // populate a davidben-08 style message. (Perhaps it could with the
+    // "UnknownFieldSet" API, but not really worth the trouble.) All we really
+    // care about is testing that the parser ignores a message that doesn't
+    // have `ca_id` set.
+    // TODO(crbug.com/520071497): Remove this if we remove the has_ca_id
+    // conditional in ChromeRootStoreMtcMetadata::CreateFromMtcMetadataProto.
+    proto.add_mtc_anchor_data();
   }
 
   // 2. Add plants format MtcAnchorData.
@@ -1727,8 +1824,8 @@ TEST(TrustStoreChromeTestNoFixture, ParseMtcMetadataProtoBothFormats) {
     auto* anchor = proto.add_mtc_anchor_data();
     anchor->set_ca_id("\x01\x03\x06\x01\x04\x02");
 
-    // Add revoked indices
-    auto* revoked = anchor->add_revoked_indices();
+    // Add revoked serials
+    auto* revoked = anchor->add_revoked_serials();
     revoked->set_start_inclusive(500);
     revoked->set_end_exclusive(600);
 
@@ -1737,7 +1834,6 @@ TEST(TrustStoreChromeTestNoFixture, ParseMtcMetadataProtoBothFormats) {
       auto* log = anchor->add_mtc_log_data();
       log->set_log_number(5);
       auto* range = log->mutable_trusted_landmark_ids_range();
-      range->set_base_id(std::string("\x01\x03\x06\x01\x04\x02\x00\x05", 8));
       range->set_min_active_landmark_inclusive(30);
       range->set_last_landmark_inclusive(40);
 
@@ -1752,7 +1848,6 @@ TEST(TrustStoreChromeTestNoFixture, ParseMtcMetadataProtoBothFormats) {
       auto* log = anchor->add_mtc_log_data();
       log->set_log_number(8);
       auto* range = log->mutable_trusted_landmark_ids_range();
-      range->set_base_id(std::string("\x01\x03\x06\x01\x04\x02\x00\x08", 8));
       range->set_min_active_landmark_inclusive(50);
       range->set_last_landmark_inclusive(60);
 
@@ -1762,13 +1857,13 @@ TEST(TrustStoreChromeTestNoFixture, ParseMtcMetadataProtoBothFormats) {
       subtree->set_hash(std::string(32, '\xcc'));
     }
   }
-  // Add plants format MtcAnchorData that has revoked_indices but no log_data.
+  // Add plants format MtcAnchorData that has revoked_serials but no log_data.
   {
     auto* anchor = proto.add_mtc_anchor_data();
     anchor->set_ca_id("\x01\x03\x06\x01\x04\x03");
 
-    // Add revoked indices
-    auto* revoked = anchor->add_revoked_indices();
+    // Add revoked serials
+    auto* revoked = anchor->add_revoked_serials();
     revoked->set_start_inclusive(700);
     revoked->set_end_exclusive(800);
   }
@@ -1779,30 +1874,8 @@ TEST(TrustStoreChromeTestNoFixture, ParseMtcMetadataProtoBothFormats) {
   EXPECT_EQ(mtc_metadata->update_time(),
             base::Time::UnixEpoch() + base::Seconds(987654321));
 
-  const auto& anchor_map = mtc_metadata->mtc_anchor_data();
-  ASSERT_EQ(anchor_map.size(), 1U);
-
-  {
-    // Check experiment format anchor.
-    std::vector<uint8_t> old_log_id = {0x01, 0x03, 0x06, 0x01, 0x04, 0x01};
-    auto old_it = anchor_map.find(old_log_id);
-    ASSERT_NE(old_it, anchor_map.end());
-    EXPECT_EQ(old_it->second.log_id, old_log_id);
-    EXPECT_EQ(
-        old_it->second.landmark_base_id,
-        std::vector<uint8_t>({0x01, 0x03, 0x06, 0x01, 0x04, 0x01, 0x00, 0x02}));
-    EXPECT_EQ(old_it->second.landmark_min_inclusive, 10U);
-    EXPECT_EQ(old_it->second.landmark_max_inclusive, 20U);
-    ASSERT_EQ(old_it->second.trusted_subtrees.size(), 1U);
-    EXPECT_EQ(old_it->second.trusted_subtrees[0].range.start, 100U);
-    EXPECT_EQ(old_it->second.trusted_subtrees[0].range.end, 200U);
-    EXPECT_EQ(base::ToVector(old_it->second.trusted_subtrees[0].hash),
-              std::vector<uint8_t>(32, 0xaa));
-    EXPECT_TRUE(old_it->second.revoked_indices.empty());
-  }
-
   // Check newer format logs.
-  const auto& plants05_map = mtc_metadata->plants05_anchor_data();
+  const auto& plants05_map = mtc_metadata->mtc_anchor_data();
   ASSERT_EQ(plants05_map.size(), 2U);
 
   {
@@ -1830,18 +1903,26 @@ TEST(TrustStoreChromeTestNoFixture, ParseMtcMetadataProtoBothFormats) {
               60U);
 
     ASSERT_EQ(new_it->second.trusted_subtrees.size(), 2U);
-    ASSERT_TRUE(new_it->second.trusted_subtrees.contains(5));
-    ASSERT_EQ(new_it->second.trusted_subtrees.at(5).size(), 1U);
-    EXPECT_EQ(new_it->second.trusted_subtrees.at(5)[0].range.start, 300U);
-    EXPECT_EQ(new_it->second.trusted_subtrees.at(5)[0].range.end, 400U);
-    EXPECT_EQ(base::ToVector(new_it->second.trusted_subtrees.at(5)[0].hash),
+    EXPECT_EQ(new_it->second.trusted_subtrees[0].log_number, 5U);
+    ASSERT_EQ(new_it->second.trusted_subtrees[0].trusted_subtrees.size(), 1U);
+    EXPECT_EQ(
+        new_it->second.trusted_subtrees[0].trusted_subtrees[0].range.start,
+        300U);
+    EXPECT_EQ(new_it->second.trusted_subtrees[0].trusted_subtrees[0].range.end,
+              400U);
+    EXPECT_EQ(base::ToVector(
+                  new_it->second.trusted_subtrees[0].trusted_subtrees[0].hash),
               std::vector<uint8_t>(32, 0xbb));
 
-    ASSERT_TRUE(new_it->second.trusted_subtrees.contains(8));
-    ASSERT_EQ(new_it->second.trusted_subtrees.at(8).size(), 1U);
-    EXPECT_EQ(new_it->second.trusted_subtrees.at(8)[0].range.start, 700U);
-    EXPECT_EQ(new_it->second.trusted_subtrees.at(8)[0].range.end, 800U);
-    EXPECT_EQ(base::ToVector(new_it->second.trusted_subtrees.at(8)[0].hash),
+    EXPECT_EQ(new_it->second.trusted_subtrees[1].log_number, 8U);
+    ASSERT_EQ(new_it->second.trusted_subtrees[1].trusted_subtrees.size(), 1U);
+    EXPECT_EQ(
+        new_it->second.trusted_subtrees[1].trusted_subtrees[0].range.start,
+        700U);
+    EXPECT_EQ(new_it->second.trusted_subtrees[1].trusted_subtrees[0].range.end,
+              800U);
+    EXPECT_EQ(base::ToVector(
+                  new_it->second.trusted_subtrees[1].trusted_subtrees[0].hash),
               std::vector<uint8_t>(32, 0xcc));
   }
 
@@ -1987,25 +2068,92 @@ TEST_F(TrustStoreChromeMtcCosignerPolicyTest, SimpleTests) {
       trust_store_chrome->GetTrustedMTCIssuerOf(leaf_1.get());
   ASSERT_TRUE(mtc_anchor_1);
 
-  // Policy is satisfied at current time, as long as one usable, independent
-  // mirror is valid.
-  EXPECT_TRUE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-      *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
-  // Unknown or unusable mirrors being present in the valid cosigners list are
-  // ignored, so the result is still valid.
-  EXPECT_TRUE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-      *leaf_1, now_, mtc_anchor_1.get(),
-      {base::ToVector(kUnknownId), base::ToVector(kMirrorId1),
-       base::ToVector(kMirrorId2)}));
+  {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
 
-  // Mirror 1 has same operator as CA 1, so this is not valid.
-  EXPECT_FALSE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-      *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId1)}));
-  // ... but if the signer_set is older than the timebomb, then policy checks
-  // are skipped and it should be allowed.
-  EXPECT_TRUE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-      *leaf_1, now_ + base::Days(71), mtc_anchor_1.get(),
-      {base::ToVector(kMirrorId1)}));
+    // Policy is satisfied at current time, as long as one usable, independent
+    // mirror is valid.
+    EXPECT_TRUE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": true,
+      "reason": "mirror policy satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "satisfies policy"}
+      ]
+    })"));
+  }
+
+  {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
+    // Unknown or unusable mirrors being present in the valid cosigners list are
+    // ignored, so the result is still valid.
+    EXPECT_TRUE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
+        *leaf_1, now_, mtc_anchor_1.get(),
+        {base::ToVector(kUnknownId), base::ToVector(kMirrorId1),
+         base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": true,
+      "reason": "mirror policy satisfied",
+      "verified_cosigners": [
+        {"id": "3208.4.16", "status": "mirror data missing"},
+        {"id": "3.8.4.9.2", "status": "same operator as CA"},
+        {"id": "4.8.4.16", "status": "satisfies policy"}
+      ]
+    })"));
+  }
+
+  {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
+    // Mirror 1 has same operator as CA 1, so this is not valid.
+    EXPECT_FALSE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId1)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": false,
+      "reason": "policy not satisfied",
+      "verified_cosigners": [
+        {"id": "3.8.4.9.2", "status": "same operator as CA"}
+      ]
+    })"));
+  }
+
+  {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
+    // ... but if the signer_set is older than the timebomb, then policy checks
+    // are skipped and it should be allowed.
+    EXPECT_TRUE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
+        *leaf_1, now_ + base::Days(71), mtc_anchor_1.get(),
+        {base::ToVector(kMirrorId1)}, net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": true,
+      "reason": "old SignerSet",
+      "verified_cosigners": [
+        {"id": "3.8.4.9.2"}
+      ]
+    })"));
+  }
 }
 
 TEST_F(TrustStoreChromeMtcCosignerPolicyTest,
@@ -2023,17 +2171,56 @@ TEST_F(TrustStoreChromeMtcCosignerPolicyTest,
         trust_store_chrome->GetTrustedMTCIssuerOf(leaf_1.get());
     ASSERT_TRUE(mtc_anchor_1);
 
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // With an independent mirror cosigner, verification should succeed in both
     // cases.
     EXPECT_TRUE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
 
     // Mirror 1 has same operator as CA 1, so this is not valid, but will
     // succeed if the mirroring requirements are disabled.
-    EXPECT_EQ(
-        disable_mtc_mirroring_requirements,
-        trust_store_chrome->IsMtcCosignerPolicySatisfied(
-            *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId1)}));
+    EXPECT_EQ(disable_mtc_mirroring_requirements,
+              trust_store_chrome->IsMtcCosignerPolicySatisfied(
+                  *leaf_1, now_, mtc_anchor_1.get(),
+                  {base::ToVector(kMirrorId1)}, net_log));
+
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(2u, events.size());
+    if (disable_mtc_mirroring_requirements) {
+      EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+        "is_valid": true,
+        "reason": "kill switch",
+        "verified_cosigners": [
+          {"id": "4.8.4.16"}
+        ]
+      })"));
+      EXPECT_THAT(events[1].params, base::test::IsJson(R"({
+        "is_valid": true,
+        "reason": "kill switch",
+        "verified_cosigners": [
+          {"id": "3.8.4.9.2"}
+        ]
+      })"));
+    } else {
+      EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+        "is_valid": true,
+        "reason": "mirror policy satisfied",
+        "verified_cosigners": [
+          {"id": "4.8.4.16", "status": "satisfies policy"}
+        ]
+      })"));
+      EXPECT_THAT(events[1].params, base::test::IsJson(R"({
+        "is_valid": false,
+        "reason": "policy not satisfied",
+        "verified_cosigners": [
+          {"id": "3.8.4.9.2", "status": "same operator as CA"}
+        ]
+      })"));
+    }
   }
 }
 
@@ -2069,51 +2256,135 @@ TEST_F(TrustStoreChromeMtcCosignerPolicyTest, IssuerStateChange) {
   ASSERT_TRUE(mtc_anchor_1);
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy fails for a cert issued before the state history starts.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(candidate_start_time - base::Seconds(1));
     EXPECT_FALSE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": false,
+      "reason": "CA not usable at cert time",
+      "verified_cosigners": [
+        {"id": "4.8.4.16"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy fails for a cert issued during the candidate state.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(candidate_start_time);
     EXPECT_FALSE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": false,
+      "reason": "CA not usable at cert time",
+      "verified_cosigners": [
+        {"id": "4.8.4.16"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy fails for a cert issued at the end of the candidate state.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(usable_start_time - base::Seconds(1));
     EXPECT_FALSE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": false,
+      "reason": "CA not usable at cert time",
+      "verified_cosigners": [
+        {"id": "4.8.4.16"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy succeeds for a cert issued at the start of the usable state.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(usable_start_time);
     EXPECT_TRUE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": true,
+      "reason": "mirror policy satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "satisfies policy"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy succeeds for a cert issued at the end of the usable state.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(frozen_start_time - base::Seconds(1));
     EXPECT_TRUE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": true,
+      "reason": "mirror policy satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "satisfies policy"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy fails for a cert issued during the frozen state.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(frozen_start_time);
     EXPECT_FALSE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": false,
+      "reason": "CA not usable at cert time",
+      "verified_cosigners": [
+        {"id": "4.8.4.16"}
+      ]
+    })"));
   }
 }
 
@@ -2150,51 +2421,135 @@ TEST_F(TrustStoreChromeMtcCosignerPolicyTest, MirrorStateChange) {
   ASSERT_TRUE(mtc_anchor_1);
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy fails for a cert issued before the state history starts.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(candidate_start_time - base::Seconds(1));
     EXPECT_FALSE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": false,
+      "reason": "policy not satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "mirror not usable at cert time"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy fails for a cert issued during the candidate state.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(candidate_start_time);
     EXPECT_FALSE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": false,
+      "reason": "policy not satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "mirror not usable at cert time"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy fails for a cert issued at the end of the candidate state.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(usable_start_time - base::Seconds(1));
     EXPECT_FALSE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": false,
+      "reason": "policy not satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "mirror not usable at cert time"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy succeeds for a cert issued at the start of the usable state.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(usable_start_time);
     EXPECT_TRUE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": true,
+      "reason": "mirror policy satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "satisfies policy"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy succeeds for a cert issued at the end of the usable state.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(frozen_start_time - base::Seconds(1));
     EXPECT_TRUE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": true,
+      "reason": "mirror policy satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "satisfies policy"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy fails for a cert issued during the frozen state.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(frozen_start_time);
     EXPECT_FALSE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": false,
+      "reason": "policy not satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "mirror not usable at cert time"}
+      ]
+    })"));
   }
 }
 
@@ -2232,53 +2587,137 @@ TEST_F(TrustStoreChromeMtcCosignerPolicyTest, IssuerOperatorChange) {
   ASSERT_TRUE(mtc_anchor_1);
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy fails for a cert issued before the operator history starts.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(op2_1st_start_time - base::Seconds(1));
     EXPECT_FALSE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": false,
+      "reason": "CA not usable at cert time",
+      "verified_cosigners": [
+        {"id": "4.8.4.16"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy fails for a cert issued during the 1st period where the CA has
     // operator 2, which is the same as the operator of mirror 2.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(op2_1st_start_time);
     EXPECT_FALSE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": false,
+      "reason": "policy not satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "same operator as CA"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy fails for a cert issued at the end of that period.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(op1_start_time - base::Seconds(1));
     EXPECT_FALSE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": false,
+      "reason": "policy not satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "same operator as CA"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy succeeds for a cert issued at the start of period where it has
     // operator 1.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(op1_start_time);
     EXPECT_TRUE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": true,
+      "reason": "mirror policy satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "satisfies policy"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy succeeds for a cert issued at the end of the operator 1 period.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(op2_2nd_start_time - base::Seconds(1));
     EXPECT_TRUE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": true,
+      "reason": "mirror policy satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "satisfies policy"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy fails for a cert issued during the 2nd period with operator 2.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(op2_2nd_start_time);
     EXPECT_FALSE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": false,
+      "reason": "policy not satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "same operator as CA"}
+      ]
+    })"));
   }
 }
 
@@ -2317,53 +2756,137 @@ TEST_F(TrustStoreChromeMtcCosignerPolicyTest, MirrorOperatorChange) {
   ASSERT_TRUE(mtc_anchor_1);
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy fails for a cert issued before the operator history starts.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(op1_1st_start_time - base::Seconds(1));
     EXPECT_FALSE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": false,
+      "reason": "policy not satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "mirror not usable at cert time"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy fails for a cert issued during the 1st period where the mirror has
     // operator 1, which is the same as the operator of CA 1.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(op1_1st_start_time);
     EXPECT_FALSE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": false,
+      "reason": "policy not satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "same operator as CA"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy fails for a cert issued at the end of that period.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(op2_start_time - base::Seconds(1));
     EXPECT_FALSE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": false,
+      "reason": "policy not satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "same operator as CA"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy succeeds for a cert issued at the start of period where the
     // mirror has operator 2.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(op2_start_time);
     EXPECT_TRUE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": true,
+      "reason": "mirror policy satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "satisfies policy"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy succeeds for a cert issued at the end of the operator 2 period.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(op1_2nd_start_time - base::Seconds(1));
     EXPECT_TRUE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": true,
+      "reason": "mirror policy satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "satisfies policy"}
+      ]
+    })"));
   }
 
   {
+    RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kDefault);
+    NetLogWithSource net_log = NetLogWithSource::Make(NetLogSourceType::NONE);
+
     // Policy fails for a cert issued during the 2nd period with operator 1.
     std::shared_ptr<const bssl::ParsedCertificate> leaf_1 =
         CreateCa1LeafCert(op1_2nd_start_time);
     EXPECT_FALSE(trust_store_chrome->IsMtcCosignerPolicySatisfied(
-        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)}));
+        *leaf_1, now_, mtc_anchor_1.get(), {base::ToVector(kMirrorId2)},
+        net_log));
+    auto events = net_log_observer.GetEntriesWithType(
+        NetLogEventType::CERT_MTC_COSIGNER_POLICY_CHECKED);
+    ASSERT_EQ(1u, events.size());
+    EXPECT_THAT(events[0].params, base::test::IsJson(R"({
+      "is_valid": false,
+      "reason": "policy not satisfied",
+      "verified_cosigners": [
+        {"id": "4.8.4.16", "status": "same operator as CA"}
+      ]
+    })"));
   }
 }
 

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <string_view>
 #include <utility>
@@ -14,7 +15,6 @@
 #include <vector>
 
 #include "base/check_op.h"
-#include "base/containers/adapters.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/containers/to_vector.h"
@@ -67,14 +67,7 @@ bool IsDualRaceOptimisticDnsEnabled() {
 }
 
 bool IsEchEnabled(SSLClientContext* ssl_client_context, std::string_view host) {
-  if (!ssl_client_context || !ssl_client_context->config().ech_enabled) {
-    return false;
-  }
-  if (!ssl_client_context->ssl_config_service()) {
-    return true;
-  }
-  return ssl_client_context->ssl_config_service()->GetEchMode(host) !=
-         EchMode::kDisabled;
+  return ssl_client_context && ssl_client_context->IsEchEnabled(host);
 }
 
 // Returns true if the given `endpoint` is present in the provided `results`
@@ -771,7 +764,7 @@ TcpConnectJob::IPEndPointInfo TcpConnectJob::GetNextIPEndPoint(
           // hasn't been tried yet, which should tend to find any untried
           // addresses sooner.
           for (const auto& disallowed_endpoint :
-               base::Reversed(*disallowed_endpoints)) {
+               std::views::reverse(*disallowed_endpoints)) {
             if (!attempted_addresses_.contains(disallowed_endpoint)) {
               return base::unexpected(ERR_IO_PENDING);
             }

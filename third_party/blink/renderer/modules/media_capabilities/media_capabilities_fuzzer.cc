@@ -22,7 +22,6 @@
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/testing/blink_fuzzer_test_support.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -128,9 +127,7 @@ void AddDecodingSpecificConfiguration(const mc_fuzzer::MediaConfigProto& proto,
           KeySystemTrackConfiguration::Create());
       config->keySystemConfiguration()->audio()->setRobustness(String::FromUtf8(
           proto.key_system_config().key_system_audio_config().robustness()));
-      if (RuntimeEnabledFeatures::
-              KeySystemTrackConfigurationEncryptionSchemeEnabled() &&
-          proto.key_system_config()
+      if (proto.key_system_config()
               .key_system_audio_config()
               .has_encryption_scheme()) {
         config->keySystemConfiguration()->audio()->setEncryptionScheme(
@@ -144,9 +141,7 @@ void AddDecodingSpecificConfiguration(const mc_fuzzer::MediaConfigProto& proto,
           KeySystemTrackConfiguration::Create());
       config->keySystemConfiguration()->video()->setRobustness(String::FromUtf8(
           proto.key_system_config().key_system_video_config().robustness()));
-      if (RuntimeEnabledFeatures::
-              KeySystemTrackConfigurationEncryptionSchemeEnabled() &&
-          proto.key_system_config()
+      if (proto.key_system_config()
               .key_system_video_config()
               .has_encryption_scheme()) {
         config->keySystemConfiguration()->video()->setEncryptionScheme(
@@ -176,7 +171,10 @@ DEFINE_TEXT_PROTO_FUZZER(
   std::string serialized;
   CHECK(fuzzable_proto.SerializeToString(&serialized));
   mc_fuzzer::MediaConfigProto proto;
-  CHECK(proto.ParseFromString(serialized));
+  // Recursion limits can cause parsing to fail.
+  if (!proto.ParseFromString(serialized)) {
+    return;
+  }
 
   static BlinkFuzzerTestSupport test_support = BlinkFuzzerTestSupport();
   test::TaskEnvironment task_environment;

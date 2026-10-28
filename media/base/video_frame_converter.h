@@ -30,10 +30,14 @@ class MEDIA_EXPORT VideoFrameConverter {
   //   * PIXEL_FORMAT_ARGB
   //   * PIXEL_FORMAT_I420
   //   * PIXEL_FORMAT_I420A
+  //   * PIXEL_FORMAT_I422
+  //   * PIXEL_FORMAT_I422A
   //   * PIXEL_FORMAT_I444
   //   * PIXEL_FORMAT_I444A
   //   * PIXEL_FORMAT_NV12
   //   * PIXEL_FORMAT_NV12A
+  //   * PIXEL_FORMAT_NV16
+  //   * PIXEL_FORMAT_NV24
   //   * PIXEL_FORMAT_YUV420P10
   //   * PIXEL_FORMAT_YUV422P10
   //   * PIXEL_FORMAT_YUV444P10
@@ -43,15 +47,24 @@ class MEDIA_EXPORT VideoFrameConverter {
   //   * PIXEL_FORMAT_YUV420AP10
   //   * PIXEL_FORMAT_YUV422AP10
   //   * PIXEL_FORMAT_YUV444AP10
+  //   * PIXEL_FORMAT_P010LE
+  //   * PIXEL_FORMAT_P210LE
+  //   * PIXEL_FORMAT_P410LE
   //
   // Output formats:
   //   * PIXEL_FORMAT_I420
   //   * PIXEL_FORMAT_I420A
+  //   * PIXEL_FORMAT_I422
+  //   * PIXEL_FORMAT_I422A
   //   * PIXEL_FORMAT_I444
   //   * PIXEL_FORMAT_I444A
   //   * PIXEL_FORMAT_NV12
   //   * PIXEL_FORMAT_NV12A
+  //   * PIXEL_FORMAT_NV16
+  //   * PIXEL_FORMAT_NV24
   //   * PIXEL_FORMAT_P010LE
+  //   * PIXEL_FORMAT_P210LE
+  //   * PIXEL_FORMAT_P410LE
   EncoderStatus ConvertAndScale(const VideoFrame& src_frame,
                                 VideoFrame& dest_frame);
 
@@ -62,16 +75,10 @@ class MEDIA_EXPORT VideoFrameConverter {
     return frame_pool_->get_pool_size_for_testing();
   }
 
- private:
-  // Creates a temporary frame backed by `frame_pool_`.
-  scoped_refptr<VideoFrame> CreateTempFrame(VideoPixelFormat format,
-                                            const gfx::Size& coded_size,
-                                            const gfx::Rect& visible_rect,
-                                            const gfx::Size& natural_size);
-
-  // Wraps a biplanar frame (NV12x, P010LE, etc.) within a triplanar frame
-  // (I420x, YUV420P10, etc.) with the Y (and A if applicable) plane of the
-  // wrapper pointing directly into the Y (and A) plane of the source frame.
+  // Wraps a biplanar frame (NV12x, NV16, NV24, P010LE, P210LE, P410LE) within a
+  // triplanar frame with matching chroma sampling. The Y (and A if applicable)
+  // plane of the wrapper points directly into the corresponding plane of the
+  // source frame.
   // The U and V planes of the wrapper point into scratch space allocated from
   // `frame_pool_`.
   //
@@ -84,12 +91,21 @@ class MEDIA_EXPORT VideoFrameConverter {
   scoped_refptr<VideoFrame> WrapBiplanarFrameInTriplanarFrame(
       const VideoFrame& frame);
 
+ private:
+  // Creates a temporary frame backed by `frame_pool_`.
+  scoped_refptr<VideoFrame> CreateTempFrame(VideoPixelFormat format,
+                                            const gfx::Size& coded_size,
+                                            const gfx::Rect& visible_rect,
+                                            const gfx::Size& natural_size);
+
   EncoderStatus ConvertAndScaleRGB(const VideoFrame* src_frame,
                                    VideoFrame& dest_frame);
   EncoderStatus ConvertAndScaleI4xxx(const VideoFrame* src_frame,
                                      VideoFrame& dest_frame);
-  EncoderStatus ConvertAndScaleNV12x(const VideoFrame* src_frame,
-                                     VideoFrame& dest_frame);
+  EncoderStatus ConvertAndScaleNVxx(const VideoFrame* src_frame,
+                                    VideoFrame& dest_frame);
+  EncoderStatus ConvertAndScalePx10(const VideoFrame* src_frame,
+                                    VideoFrame& dest_frame);
   EncoderStatus ConvertAndScaleHBD(const VideoFrame* src_frame,
                                    VideoFrame& dest_frame);
 

@@ -46,9 +46,9 @@ bool NeedSwapChainPresenter(const DCLayerOverlayParams& overlay) {
 //
 // See: https://crbug.com/1455666
 Microsoft::WRL::ComPtr<IDCompositionVisual3> CheckedCastToVisual3(
-    const Microsoft::WRL::ComPtr<IDCompositionVisual2>& visual2) {
+    IDCompositionVisual2* visual2) {
   Microsoft::WRL::ComPtr<IDCompositionVisual3> visual3;
-  HRESULT hr = visual2.As(&visual3);
+  HRESULT hr = visual2->QueryInterface(IID_PPV_ARGS(&visual3));
   CHECK_EQ(hr, S_OK);
   CHECK(visual3);
   return visual3;
@@ -217,21 +217,24 @@ void DCLayerTree::Initialize(
   }
 }
 
-VideoProcessorWrapper* DCLayerTree::InitializeVideoProcessor(
-    const gfx::Size& input_size,
-    const gfx::Size& output_size,
-    bool is_hdr_output,
-    bool& video_processor_recreated) {
+base::expected<VideoProcessorWrapper*, CommitError>
+DCLayerTree::InitializeVideoProcessor(const gfx::Size& input_size,
+                                      const gfx::Size& output_size,
+                                      bool is_hdr_output,
+                                      bool& video_processor_recreated) {
   video_processor_recreated = false;
   auto& video_processor_wrapper = is_hdr_output ? video_processor_wrapper_hdr_
                                                 : video_processor_wrapper_sdr_;
   if (!video_processor_wrapper.video_device) {
     // This can fail for software devices such as WARP or Microsoft Basic
     // Display Adapter.
-    if (FAILED(d3d11_device_.As(&video_processor_wrapper.video_device))) {
-      LOG(ERROR) << "Failed to retrieve video device from D3D11 device";
+    HRESULT hr = d3d11_device_.As(&video_processor_wrapper.video_device);
+    if (FAILED(hr)) {
       DisableDirectCompositionOverlays();
-      return nullptr;
+      return base::unexpected(
+          CommitError{CommitError::Reason::
+                          kInitializeVideoProcessorD3D11DeviceAsVideoDevice,
+                      hr});
     }
     DCHECK(video_processor_wrapper.video_device);
 
@@ -283,23 +286,24 @@ VideoProcessorWrapper* DCLayerTree::InitializeVideoProcessor(
       video_processor_wrapper.video_device->CreateVideoProcessorEnumerator(
           &desc, &video_processor_wrapper.video_processor_enumerator);
   if (FAILED(hr)) {
-    LOG(ERROR) << "CreateVideoProcessorEnumerator failed:"
-               << logging::SystemErrorCodeToString(hr);
     // It might fail again next time. Disable overlay support so
     // overlay processor will stop sending down overlay frames.
     DisableDirectCompositionOverlays();
-    return nullptr;
+    return base::unexpected(
+        CommitError{CommitError::Reason::
+                        kInitializeVideoProcessorCreateVideoProcessorEnumerator,
+                    hr});
   }
   hr = video_processor_wrapper.video_device->CreateVideoProcessor(
       video_processor_wrapper.video_processor_enumerator.Get(), 0,
       &video_processor_wrapper.video_processor);
   if (FAILED(hr)) {
-    LOG(ERROR) << "CreateVideoProcessor failed:"
-               << logging::SystemErrorCodeToString(hr);
     // It might fail again next time. Disable overlay support so
     // overlay processor will stop sending down overlay frames.
     DisableDirectCompositionOverlays();
-    return nullptr;
+    return base::unexpected(CommitError{
+        CommitError::Reason::kInitializeVideoProcessorCreateVideoProcessor,
+        hr});
   }
   // Auto stream processing (the default) can hurt power consumption.
   video_processor_wrapper.video_context
@@ -473,7 +477,7 @@ bool DCLayerTree::VisualTree::VisualSubtree::Update(
 
   if (opacity_changed) {
     if (opacity_ != 1) {
-      hr = CheckedCastToVisual3(clip_visual_)->SetOpacity(opacity_);
+      hr = CheckedCastToVisual3(clip_visual_.Get())->SetOpacity(opacity_);
       CHECK_EQ(hr, S_OK);
 
       // Let all of this subtree's visuals blend as one, instead of
@@ -481,7 +485,7 @@ bool DCLayerTree::VisualTree::VisualSubtree::Update(
       hr = clip_visual_->SetOpacityMode(DCOMPOSITION_OPACITY_MODE_LAYER);
       CHECK_EQ(hr, S_OK);
     } else {
-      hr = CheckedCastToVisual3(clip_visual_)->SetOpacity(1.0);
+      hr = CheckedCastToVisual3(clip_visual_.Get())->SetOpacity(1.0);
       CHECK_EQ(hr, S_OK);
       hr = clip_visual_->SetOpacityMode(DCOMPOSITION_OPACITY_MODE_MULTIPLY);
       CHECK_EQ(hr, S_OK);
@@ -559,7 +563,7 @@ bool DCLayerTree::VisualTree::VisualSubtree::Update(
     } else {
       const D2D_MATRIX_4X4_F matrix =
           TransformToD2D_MATRIX_4X4_F(quad_to_root_transform_);
-      hr = CheckedCastToVisual3(transform_visual_)->SetTransform(matrix);
+      hr = CheckedCastToVisual3(transform_visual_.Get())->SetTransform(matrix);
       CHECK_EQ(hr, S_OK);
     }
   }
@@ -640,18 +644,39 @@ bool DCLayerTree::VisualTree::VisualSubtree::Update(
       hr = background_color_visual_->SetContent(nullptr);
       CHECK_EQ(hr, S_OK);
     } else {
-      const D2D_MATRIX_3X2_F matrix =
-          TransformToD2D_MATRIX_3X2_F(gfx::TransformBetweenRects(
-              gfx::RectF(kSolidColorSurfaceSize), gfx::RectF(quad_rect_)));
-      hr = Microsoft::WRL::ComPtr<IDCompositionVisual>(background_color_visual_)
-               ->SetTransform(matrix);
-      CHECK_EQ(hr, S_OK);
+      if (quad_rect_changed) {
+        const bool needs_scale =
+            quad_rect_.width() != kSolidColorSurfaceSize.width() ||
+            quad_rect_.height() != kSolidColorSurfaceSize.height();
+        if (needs_scale) {
+          const float scale_x =
+              static_cast<float>(quad_rect_.width()) /
+              static_cast<float>(kSolidColorSurfaceSize.width());
+          const float scale_y =
+              static_cast<float>(quad_rect_.height()) /
+              static_cast<float>(kSolidColorSurfaceSize.height());
+          const D2D_MATRIX_3X2_F matrix =
+              D2D1::Matrix3x2F::Scale(scale_x, scale_y);
+          hr = Microsoft::WRL::ComPtr<IDCompositionVisual>(
+                   background_color_visual_)
+                   ->SetTransform(matrix);
+          CHECK_EQ(hr, S_OK);
+        } else {
+          hr = background_color_visual_->SetTransform(nullptr);
+          CHECK_EQ(hr, S_OK);
+        }
+
+        hr = background_color_visual_->SetOffsetX(quad_rect_.x());
+        CHECK_EQ(hr, S_OK);
+        hr = background_color_visual_->SetOffsetY(quad_rect_.y());
+        CHECK_EQ(hr, S_OK);
+      }
 
       hr =
           background_color_visual_->SetContent(background_color_content_.Get());
       CHECK_EQ(hr, S_OK);
 
-      hr = CheckedCastToVisual3(background_color_visual_)
+      hr = CheckedCastToVisual3(background_color_visual_.Get())
                ->SetOpacity(background_color.fA);
       CHECK_EQ(hr, S_OK);
     }
@@ -871,8 +896,6 @@ base::expected<void, CommitError> DCLayerTree::VisualTree::BuildTree(
       HRESULT hr = dc_layer_tree_->dcomp_device_6_->PresentCompositionTextures(
           &command_queue_unk, 1);
       if (FAILED(hr)) {
-        LOG(ERROR) << "PresentCompositionTextures failed with error: "
-                   << logging::SystemErrorCodeToString(hr);
         return base::unexpected(
             CommitError{CommitError::Reason::
                             kIDCompositionDevice6PresentCompositionTextures,
@@ -888,7 +911,6 @@ base::expected<void, CommitError> DCLayerTree::VisualTree::BuildTree(
             kMicrosecondTimes);
     HRESULT hr = dc_layer_tree_->dcomp_device_->Commit();
     if (FAILED(hr)) {
-      DLOG(ERROR) << "Commit failed with error 0x" << std::hex << hr;
       return base::unexpected(
           CommitError{CommitError::Reason::kIDCompositionDeviceCommit, hr});
     }
@@ -1209,32 +1231,27 @@ base::expected<void, CommitError> DCLayerTree::CommitAndClearPendingOverlays(
 
       std::optional<SwapChainPresenter::OverlayPositionAdjustment>
           overlay_position_adjustment;
-      if (std::optional<DCLayerOverlayImage> video_image =
-              video_swap_chain->PresentToSwapChain(
-                  overlay, overlay_position_adjustment)) {
-        overlay.overlay_image = std::move(video_image);
-        overlay.content_rect = gfx::RectF(overlay.overlay_image->size());
+      ASSIGN_OR_RETURN(DCLayerOverlayImage video_image,
+                       video_swap_chain->PresentToSwapChain(
+                           overlay, overlay_position_adjustment));
+      overlay.overlay_image = std::move(video_image);
+      overlay.content_rect = gfx::RectF(overlay.overlay_image->size());
 
-        if (overlay_position_adjustment) {
-          overlay.transform.MakeIdentity();
-          overlay.quad_rect =
+      if (overlay_position_adjustment) {
+        overlay.transform.MakeIdentity();
+        overlay.quad_rect =
+            gfx::Rect(overlay_position_adjustment->monitor_size);
+        if (overlay.clip_rect) {
+          overlay.clip_rect =
               gfx::Rect(overlay_position_adjustment->monitor_size);
-          if (overlay.clip_rect) {
-            overlay.clip_rect =
-                gfx::Rect(overlay_position_adjustment->monitor_size);
-          }
         }
+      }
 
-        if (overlay.video_params.is_full_screen_video &&
-            !overlay_position_adjustment) {
-          // If we failed to disable the desktop plane, we need to manually add
-          // a solid color layer to act as the video background mat.
-          need_background_layer = true;
-        }
-      } else {
-        DLOG(ERROR) << "PresentToSwapChain failed";
-        return base::unexpected(
-            CommitError{CommitError::Reason::kPresentToSwapChain});
+      if (overlay.video_params.is_full_screen_video &&
+          !overlay_position_adjustment) {
+        // If we failed to disable the desktop plane, we need to manually add
+        // a solid color layer to act as the video background mat.
+        need_background_layer = true;
       }
 
       if (tint_video_layer_) {

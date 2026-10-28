@@ -5,10 +5,8 @@
 #include "chrome/browser/ui/autofill/autofill_popup_hide_helper.h"
 
 #include "base/check_deref.h"
-#include "base/feature_list.h"
 #include "base/memory/ptr_util.h"
 #include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
-#include "components/autofill/core/common/autofill_features.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host.h"
@@ -28,7 +26,9 @@ AutofillPopupHideHelper::AutofillPopupHideHelper(
       hiding_params_(std::move(hiding_params)),
       hiding_callback_(std::move(hiding_callback)),
       pip_detection_callback_(std::move(pip_detection_callback)),
-      rfh_id_(rfh_id) {
+      rfh_id_(rfh_id),
+      last_web_contents_size_(web_contents ? web_contents->GetSize()
+                                           : gfx::Size()) {
 #if !BUILDFLAG(IS_ANDROID)
   // There may not always be a ZoomController, e.g., in tests.
   if (auto* zoom_controller =
@@ -59,6 +59,16 @@ void AutofillPopupHideHelper::PrimaryMainFrameWasResized(bool width_changed) {
     // Ignore virtual keyboard showing and hiding a strip of suggestions.
     return;
   }
+
+  // To prevent closing the popup when the content hasn't actually moved, ignore
+  // events where the WebContents size is unchanged.
+  const gfx::Size current_size =
+      web_contents() ? web_contents()->GetSize() : gfx::Size();
+  if (current_size == last_web_contents_size_) {
+    return;
+  }
+  last_web_contents_size_ = current_size;
+
   hiding_callback_.Run(SuggestionHidingReason::kWidgetChanged);
 }
 

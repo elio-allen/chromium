@@ -10,9 +10,11 @@
 #include <string_view>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation_traits.h"
 #include "base/time/time.h"
+#include "ui/base/interaction/element_identifier.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/rect.h"
@@ -25,6 +27,7 @@ class CommandUpdater;
 class LocationBarModel;
 class LocationBarTesting;
 class OmniboxController;
+class PermissionDashboardController;
 class OmniboxView;
 class OmniboxPopupPresenterDelegate;
 class OmniboxPopupView;
@@ -43,6 +46,10 @@ class MouseEvent;
 class TrackedElement;
 }
 
+namespace views {
+class Widget;
+}
+
 // The LocationBar class is a virtual interface, defining access to the
 // window's location bar component.  This class exists so that cross-platform
 // components like the browser command system can talk to the platform
@@ -53,7 +60,7 @@ class LocationBar {
   // Holds the details necessary to open the omnibox match via browser commands.
   struct NavigationParams {
     GURL destination_url;
-    WindowOpenDisposition disposition{WindowOpenDisposition::CURRENT_TAB};
+    WindowOpenDisposition disposition{WindowOpenDisposition::kCurrentTab};
     ui::PageTransition transition{ui::PAGE_TRANSITION_TYPED |
                                   ui::PAGE_TRANSITION_FROM_ADDRESS_BAR};
     base::TimeTicks match_selection_timestamp;
@@ -133,6 +140,9 @@ class LocationBar {
   // Controls the chip in the LocationBar.
   virtual ChipController* GetChipController() = 0;
 
+  // Controls the permission dashboard in the LocationBar.
+  virtual PermissionDashboardController* GetPermissionDashboardController();
+
   // Announces an alert for accessibility screen readers.
   virtual void AnnounceAlert(const std::u16string& announcement) = 0;
 
@@ -154,6 +164,10 @@ class LocationBar {
   // Warning: this may be null if the location bar is not visible.
   // Gets an anchor for the entire location bar.
   virtual ui::TrackedElement* GetAnchorOrNull() = 0;
+
+  // Returns the ElementContext used to look up tracked elements in this
+  // location bar.
+  virtual ui::ElementContext GetElementContext() const;
 
   // Returns true if the location bar is currently in the middle of a popup
   // state transition.
@@ -223,6 +237,13 @@ class LocationBar {
   void AddLocationBarObserver(Observer* observer);
   void RemoveLocationBarObserver(Observer* observer);
 
+  base::WeakPtr<LocationBar> GetWeakPtr() {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
+  base::WeakPtr<const LocationBar> GetWeakPtr() const {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
+
  protected:
   virtual ~LocationBar();
 
@@ -233,6 +254,7 @@ class LocationBar {
   NavigationParams navigation_params_;
   const raw_ptr<CommandUpdater, DanglingUntriaged> command_updater_;
   base::ObserverList<Observer> observers_;
+  base::WeakPtrFactory<LocationBar> weak_ptr_factory_{this};
 };
 
 class LocationBarTesting {
@@ -243,6 +265,13 @@ class LocationBarTesting {
 
   // Returns if the content setting image at |index| is displaying a bubble.
   virtual bool IsContentSettingBubbleShowing(size_t index) = 0;
+
+  // Returns the bubble widget for the content setting image at |index|, if
+  // showing.
+  virtual views::Widget* GetContentSettingBubbleWidget(size_t index) = 0;
+
+  // Returns if the content setting image at |index| is currently visible.
+  virtual bool IsContentSettingImageVisible(size_t index) = 0;
 
  protected:
   virtual ~LocationBarTesting() = default;

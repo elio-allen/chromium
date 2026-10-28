@@ -18,7 +18,6 @@ import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationView
 import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationViewProperties.VIEW_FLIPPER_KEYS;
 
 import android.content.Context;
-import android.graphics.Bitmap;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.ViewFlipper;
@@ -41,6 +40,7 @@ import org.chromium.chrome.browser.ntp_customization.theme_sync.NtpThemeSyncHist
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.ui.base.ViewUtils;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -92,7 +92,8 @@ public class NtpCustomizationCoordinator {
         BottomSheetType.SINGLE_THEME_COLLECTION,
         BottomSheetType.UPLOAD_IMAGE,
         BottomSheetType.CHROME_DEFAULT,
-        BottomSheetType.THEME_TIP
+        BottomSheetType.THEME_TIP,
+        BottomSheetType.THEME_HISTORY_SCROLLABLE_LIST
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface BottomSheetType {
@@ -107,7 +108,8 @@ public class NtpCustomizationCoordinator {
         int UPLOAD_IMAGE = 8; // No dedicated bottom sheet for upload image.
         int CHROME_DEFAULT = 9; // No bottom sheet is shown.
         int THEME_TIP = 10;
-        int NUM_ENTRIES = 11;
+        int THEME_HISTORY_SCROLLABLE_LIST = 11; // Shown within the main bottom sheet.
+        int NUM_ENTRIES = 12;
     }
 
     /**
@@ -158,7 +160,7 @@ public class NtpCustomizationCoordinator {
 
         // This empty OnClickListener is added to the ViewFlipper to prevent TalkBack from
         // unexpectedly triggering the click listeners of its child list items.
-        mViewFlipperView.setOnClickListener(v -> {});
+        mViewFlipperView.setOnClickListener(ViewUtils.emptyClickListener());
         mIsNtpCustomizationSyncEnabled = NtpCustomizationUtils.isNTPCustomizationSyncEnabled();
 
         NtpCustomizationBottomSheetContent bottomSheetContent = initBottomSheetContent(contentView);
@@ -218,8 +220,7 @@ public class NtpCustomizationCoordinator {
     NtpCustomizationBottomSheetContent initBottomSheetContent(View contentView) {
         return new NtpCustomizationBottomSheetContent(
                 contentView,
-                () -> mBottomSheetController.getContainerHeight(),
-                () -> mBottomSheetController.getMaxSheetWidth(),
+                mBottomSheetController,
                 mBottomSheetType == MAIN || mBottomSheetType == THEME_TIP
                         ? () -> mMediator.backPressOnCurrentBottomSheet()
                         : () -> mMediator.dismissBottomSheet(/* animate= */ true),
@@ -380,11 +381,6 @@ public class NtpCustomizationCoordinator {
             @Override
             public void onNewColorSelected(boolean isDifferentColor) {
                 mMediator.onNewColorSelected(isDifferentColor);
-            }
-
-            @Override
-            public void onNewThemeCollectionImageSelected(@Nullable Bitmap bitmap) {
-                mMediator.onNewThemeCollectionImageSelected(bitmap);
             }
         };
     }

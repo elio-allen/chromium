@@ -5,18 +5,20 @@
 #ifndef BASE_SYNCHRONIZATION_LOCK_METRICS_RECORDER_H_
 #define BASE_SYNCHRONIZATION_LOCK_METRICS_RECORDER_H_
 
-#include <atomic>
 #include <cstddef>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 #include "base/base_export.h"
 #include "base/compiler_specific.h"
+#include "base/containers/flat_map.h"
 #include "base/containers/ring_buffer.h"
 #include "base/functional/function_ref.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/stack_allocated.h"
 #include "base/rand_util.h"
+#include "base/synchronization/lock_metrics_recorder_tags.h"
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "base/time/time_override.h"
@@ -39,30 +41,34 @@ class BASE_EXPORT LockMetricsRecorder {
   using PassKey =
       base::PassKey<LockMetricsRecorder, class LockMetricsRecorderTest>;
 
-  // The type of lock the sample is associated with.
-  enum class LockType : size_t {
-    // For samples associated with base::Lock
-    kBaseLock = 0,
-    // For samples associated with partition_alloc::internal::Lock
-    kPartitionAllocLock = 1,
-  };
-
   // Samples of lock acquisition times and types stored in a ring buffer.
   struct LockMetricSample {
     base::TimeDelta wait_time;
-    LockType type;
+    LockMetricTagList tags;
   };
 
   // The internal buffer size is a trade-off between memory usage and the number
   // of samples that can be stored. With sampling, this buffer size should be
-  // sufficient for most cases. If the buffer overflows, the `RingBuffer` will
+  // sufficient for most cases.
+  //
+  // Samples are only recorded in the ring buffer for contended lock
+  // acquisitions (subsampled at 0.1%), and flushed whenever the thread goes
+  // idle. Assuming samples follow a Poisson distribution with mean `lambda =
+  // 0.001 * N` (where `N` is the number of contended lock acquisitions on a
+  // single thread between two idle periods), even if a thread experienced
+  // 10,000 contended lock acquisitions before going idle, the probability of
+  // recording more than 32 samples is on the order of 1e-9. Based on field
+  // data, the P99 of ThreadController active duration before going idle is less
+  // than 20ms across all platforms. Over 20ms, 10,000 contended lock
+  // acquisitions corresponds to 1 contended lock acquisition every 2us, which
+  // is extremely unlikely. If the buffer does overflow, the `RingBuffer` will
   // overwrite the oldest samples.
-  constexpr static size_t kMaxSamples = 512;
+  constexpr static size_t kMaxSamples = 32;
 
   explicit LockMetricsRecorder(PassKey, std::string_view histogram_suffix);
   LockMetricsRecorder(const LockMetricsRecorder&) = delete;
   LockMetricsRecorder& operator=(const LockMetricsRecorder&) = delete;
-  ~LockMetricsRecorder() = default;
+  ~LockMetricsRecorder();
 
   // Get the thread-local instance of the lock metrics recorder.
   // Returns nullptr if `EnableRecordingOnCurrentThread()` was not called for this
@@ -97,9 +103,10 @@ class BASE_EXPORT LockMetricsRecorder {
     STACK_ALLOCATED();
 
    public:
-    ScopedLockAcquisitionTimer()
-        : ScopedLockAcquisitionTimer(
-              LockMetricsRecorder::GetForCurrentThread()) {}
+    // Constructs a timer to measure lock acquisition duration.
+    explicit ScopedLockAcquisitionTimer(const LockMetricTagList& tags)
+        : ScopedLockAcquisitionTimer(LockMetricsRecorder::GetForCurrentThread(),
+                                     tags) {}
 
     ScopedLockAcquisitionTimer(const ScopedLockAcquisitionTimer&) = delete;
     ScopedLockAcquisitionTimer& operator=(const ScopedLockAcquisitionTimer&) =
@@ -111,16 +118,17 @@ class BASE_EXPORT LockMetricsRecorder {
       }
 
       lock_metrics_->RecordLockAcquisitionTime(LockMetricSample{
-          subtle::TimeTicksNowIgnoringOverride() - *start_time_,
-          LockType::kBaseLock});
+          subtle::TimeTicksNowIgnoringOverride() - *start_time_, tags_});
     }
 
     static ScopedLockAcquisitionTimer CreateForTest(
-        LockMetricsRecorder* lock_metrics);
+        LockMetricsRecorder* lock_metrics,
+        const LockMetricTagList& tags);
 
    private:
-    explicit ScopedLockAcquisitionTimer(LockMetricsRecorder* lock_metrics)
-        : lock_metrics_(lock_metrics) {
+    ScopedLockAcquisitionTimer(LockMetricsRecorder* lock_metrics,
+                               const LockMetricTagList& tags)
+        : lock_metrics_(lock_metrics), tags_(tags) {
       if (!lock_metrics_ || !lock_metrics_->ShouldRecordLockAcquisitionTime())
           [[likely]] {
         return;
@@ -136,6 +144,8 @@ class BASE_EXPORT LockMetricsRecorder {
     // It is safe to hold onto the pointer to the lock metrics recorder since
     // it points to a thread-local variable.
     const raw_ptr<LockMetricsRecorder> lock_metrics_;
+
+    LockMetricTagList tags_;
   };
 
  private:
@@ -145,19 +155,22 @@ class BASE_EXPORT LockMetricsRecorder {
 
   constexpr static double kSamplingRatio = 0.001;
 
-  static void ReportLockHistogram(TimeDelta sample,
-                                  base::HistogramBase* histogram_pointer);
+  const std::string histogram_suffix_;
+
+  base::HistogramBase* GetOrCreateHistogram(const LockMetricTag& lock_tag);
+
+  void ReportLockHistogram(const LockMetricSample& sample);
 
   bool iterating_in_progress_ = false;
-
-  raw_ptr<base::HistogramBase> base_lock_histogram_ = nullptr;
-  raw_ptr<base::HistogramBase> partition_alloc_lock_histogram_ = nullptr;
 
   RingBuffer<LockMetricSample, kMaxSamples> unified_sample_buffer_;
 
   // Include the subsampler in the thread-local data to avoid reallocations
   // when the subsampler is created and destroyed.
   MetricsSubSampler subsampler_;
+
+  // Maps `LockMetricTag` hashes to UMA histogram pointers for this thread.
+  base::flat_map<uint64_t, base::HistogramBase*> tagged_lock_histograms_;
 
   // The thread ref of the thread that created this object.
   //

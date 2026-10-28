@@ -31,6 +31,7 @@ namespace {
 BASE_FEATURE(kTestJourney, base::FEATURE_ENABLED_BY_DEFAULT);
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTestElementId1);
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTestElementId2);
+DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTestElementId3);
 constexpr ui::ElementContext kTestContext =
     ui::ElementContext::CreateFakeContextForTesting(1);
 }  // namespace
@@ -48,8 +49,13 @@ class TestCriticalUserJourneyService : public CriticalUserJourneyService {
         CriticalUserJourney::Builder(&kTestJourney)
             .AddStep(kTestElementId1, ui::InteractionSequence::StepType::kShown,
                      1)
-            .AddStep(kTestElementId2, ui::InteractionSequence::StepType::kShown,
-                     2)
+            .AddAnyOf({
+                Branch(kTestElementId2,
+                       ui::InteractionSequence::StepType::kShown, 2),
+                Branch(kTestElementId3,
+                       ui::InteractionSequence::StepType::kHidden, 3)
+                    .SetExitBranch(),
+            })
             .LaunchHatsSurveyOnCompletion(params)
             .Build());
   }
@@ -85,32 +91,36 @@ TEST_F(CriticalUserJourneyServiceTest, HaTSSurveyLogging) {
       HatsServiceFactory::GetForProfile(&profile_, true));
 
   base::RunLoop run_loop;
+  SurveyStringData captured_psd;
   EXPECT_CALL(*mock_hats_service,
               LaunchSurvey("TestHatsTrigger", testing::_, testing::_,
                            testing::_, testing::_, testing::_, testing::_))
-      .WillOnce(
-          [&run_loop](const std::string& trigger,
-                      base::OnceClosure success_callback,
-                      base::OnceClosure failure_callback,
-                      const SurveyBitsData& product_specific_bits_data,
-                      const SurveyStringData& product_specific_string_data,
-                      const std::optional<std::string>& supplied_trigger_id,
-                      const HatsService::SurveyOptions& survey_options) {
-            std::move(success_callback).Run();
-            run_loop.Quit();
-            return HatsService::LaunchError::kNone;
-          });
+      .WillOnce([&run_loop, &captured_psd](
+                    const std::string& trigger,
+                    base::OnceClosure success_callback,
+                    base::OnceClosure failure_callback,
+                    const SurveyBitsData& product_specific_bits_data,
+                    const SurveyStringData& product_specific_string_data,
+                    const std::optional<std::string>& supplied_trigger_id,
+                    const HatsService::SurveyOptions& survey_options) {
+        captured_psd = product_specific_string_data;
+        std::move(success_callback).Run();
+        run_loop.Quit();
+        return HatsService::LaunchError::kNone;
+      });
 
   // Trigger the journey steps.
   // Show element 1
   ui::test::TestElement el1(kTestElementId1, kTestContext);
   el1.Show();
 
-  // Show element 2 (triggers completion)
+  // Show element 2 (triggers completion via primary branch)
   ui::test::TestElement el2(kTestElementId2, kTestContext);
   el2.Show();
 
   run_loop.Run();
+
+  EXPECT_EQ(captured_psd[kCujTerminalStateKey], kCujTerminalStateCompleted);
 
   // Verify histograms.
   const std::string hats_event_histogram =
@@ -131,6 +141,129 @@ TEST_F(CriticalUserJourneyServiceTest, HaTSSurveyLogging) {
       static_cast<int>(
           CriticalUserJourneyService::CriticalUserJourneyHaTSEvent::kFailed),
       0);
+}
+
+TEST_F(CriticalUserJourneyServiceTest, HaTSSurveyAbandonedExitBranchPSD) {
+  base::HistogramTester histograms;
+  auto* mock_hats_service = static_cast<MockHatsService*>(
+      HatsServiceFactory::GetForProfile(&profile_, true));
+
+  base::RunLoop run_loop;
+  SurveyStringData captured_psd;
+  EXPECT_CALL(*mock_hats_service,
+              LaunchSurvey("TestHatsTrigger", testing::_, testing::_,
+                           testing::_, testing::_, testing::_, testing::_))
+      .WillOnce([&run_loop, &captured_psd](
+                    const std::string& trigger,
+                    base::OnceClosure success_callback,
+                    base::OnceClosure failure_callback,
+                    const SurveyBitsData& product_specific_bits_data,
+                    const SurveyStringData& product_specific_string_data,
+                    const std::optional<std::string>& supplied_trigger_id,
+                    const HatsService::SurveyOptions& survey_options) {
+        captured_psd = product_specific_string_data;
+        std::move(success_callback).Run();
+        run_loop.Quit();
+        return HatsService::LaunchError::kNone;
+      });
+
+  ui::test::TestElement el1(kTestElementId1, kTestContext);
+  el1.Show();
+  // Let the final step's branches start before driving the exit branch.
+  base::RunLoop().RunUntilIdle();
+
+  // Show and hide element 3 (ends the journey via the exit branch). The
+  // trigger element stays visible.
+  ui::test::TestElement el3(kTestElementId3, kTestContext);
+  el3.Show();
+  el3.Hide();
+
+  run_loop.Run();
+
+  EXPECT_EQ(captured_psd[kCujTerminalStateKey], kCujTerminalStateAbandoned);
+  histograms.ExpectUniqueSample(
+      "CriticalUserJourney.TestJourney.Result",
+      CriticalUserJourneySession::JourneyResult::kAbandoned, 1);
+}
+
+TEST_F(CriticalUserJourneyServiceTest,
+       ActivatedTriggerHidingBeforeNextStepCompletesJourney) {
+  class ActivatedTriggerService : public CriticalUserJourneyService {
+   public:
+    explicit ActivatedTriggerService(Profile* profile)
+        : CriticalUserJourneyService(profile) {}
+
+   protected:
+    void RegisterJourneys(CriticalUserJourneyRegistry* registry) override {
+      registry->AddJourney(
+          CriticalUserJourney::Builder(&kTestJourney)
+              .AddAnyOf({Branch(kTestElementId1,
+                                ui::InteractionSequence::StepType::kActivated,
+                                1)})
+              .AddStep(kTestElementId2,
+                       ui::InteractionSequence::StepType::kShown, 2)
+              .Build());
+    }
+  };
+
+  // Tear down the default service so only `ActivatedTriggerService` listens for
+  // `kTestElementId1`.
+  service_.reset();
+  ActivatedTriggerService activated_service(&profile_);
+  activated_service.Initialize();
+
+  base::HistogramTester histograms;
+
+  // Showing `el1` (and even showing and hiding `el2`) without activating `el1`
+  // must not start or complete the journey.
+  ui::test::TestElement el1(kTestElementId1, kTestContext);
+  el1.Show();
+  ui::test::TestElement el2(kTestElementId2, kTestContext);
+  el2.Show();
+  el2.Hide();
+  base::RunLoop().RunUntilIdle();
+  histograms.ExpectTotalCount("CriticalUserJourney.TestJourney.Result", 0);
+
+  // Activating `el1` starts the session. Hiding `el1` before `el2` is shown
+  // (e.g. a page action chip disappearing as the side panel opens) must not
+  // abort the journey.
+  el1.Activate();
+  el1.Hide();
+  el2.Show();
+  base::RunLoop().RunUntilIdle();
+
+  histograms.ExpectUniqueSample(
+      "CriticalUserJourney.TestJourney.Result",
+      CriticalUserJourneySession::JourneyResult::kCompleted, 1);
+  histograms.ExpectBucketCount("CriticalUserJourney.TestJourney.StepReached", 2,
+                               1);
+}
+
+TEST_F(CriticalUserJourneyServiceTest,
+       SettingsGlowupJourneysHaveDistinctNamesAndOneBasedSteps) {
+  CriticalUserJourneyRegistry registry;
+  registry.AddJourneys();
+
+  std::vector<std::string> settings_journey_names;
+  for (const auto& journey : registry.journeys()) {
+    const std::string name(journey->name());
+    if (name.starts_with("Settings")) {
+      settings_journey_names.push_back(name);
+      ASSERT_FALSE(journey->steps().empty());
+      for (size_t i = 0; i < journey->steps().size(); ++i) {
+        EXPECT_EQ(journey->steps()[i]->metric_id, static_cast<int>(i + 1))
+            << "Journey " << name << " step " << i << " must be 1-based";
+      }
+    }
+  }
+
+  EXPECT_THAT(settings_journey_names,
+              testing::UnorderedElementsAre("SettingsNavIAJourney",
+                                            "SettingsSuperchargedSearchJourney",
+                                            "SettingsSearchEngineJourney",
+                                            "SettingsSitesDashboardJourney",
+                                            "SettingsClearBrowsingDataJourney",
+                                            "SettingsAppearanceThemesJourney"));
 }
 
 }  // namespace metrics

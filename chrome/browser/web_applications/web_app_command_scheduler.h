@@ -136,9 +136,6 @@ class WebAppCommandScheduler {
                      CleanupOrphanedIsolatedWebAppsCommandError>)>;
   using WebAppIconDiagnosticResultCallback =
       base::OnceCallback<void(std::optional<WebAppIconDiagnosticResult>)>;
-  using WebInstallFromUrlCommandCallback =
-      base::OnceCallback<void(const webapps::AppId& app_id,
-                              webapps::InstallResultCode code)>;
   using WebInstallFromManifestCommandCallback =
       base::OnceCallback<void(const webapps::AppId& app_id,
                               webapps::InstallResultCode code)>;
@@ -367,7 +364,6 @@ class WebAppCommandScheduler {
                               RemoveObsoleteBundleVersionsError>)> callback,
       const base::Location& call_location = FROM_HERE);
 #endif  // BUILDFLAG(IS_CHROMEOS)
-
 
   // Gets the StoragePartitionConfig for a <controlledframe> within the given
   // Isolated Web App. If the partition is persistent (not `in_memory`), it is
@@ -645,18 +641,6 @@ class WebAppCommandScheduler {
       WebAppIconDiagnosticResultCallback result_callback,
       const base::Location& location = FROM_HERE);
 
-  // TODO(crbug.com/520025525): Remove install_url code.
-  // Implements the Web Install API (`navigator.install()`).
-  // Calls `installed_callback` with the `InstallResultCode` and the computed
-  // manifest id if successful. Used by Web Install API.
-  void InstallAppFromUrl(const GURL& install_url,
-                         const std::optional<GURL>& manifest_id,
-                         base::WeakPtr<content::WebContents> web_contents,
-                         const GURL& last_committed_url,
-                         WebAppInstallDialogCallback dialog_callback,
-                         WebInstallFromUrlCommandCallback installed_callback,
-                         const base::Location& location = FROM_HERE);
-
   // Implements the Web Install API manifest_url flow
   // (`navigator.install({manifest_url})`). Installs a web app from a
   // pre-parsed manifest, downloading icons via the shared web contents.
@@ -742,10 +726,17 @@ class WebAppCommandScheduler {
       base::OnceClosure callback,
       const base::Location& location = FROM_HERE);
 
+  // Schedules revalidation for `app_id`.
+  //
+  // If `revalidate_migration_destination` is true, also schedules a separate
+  // check of the app's immediate pending migration destination. That request
+  // passes false to check only the destination app, preventing migration cycles
+  // such as A -> B -> A from continually scheduling checks for each other.
   void UpdateValidatedOriginAssociations(
       const webapps::AppId& app_id,
       base::OnceCallback<void(UpdateValidatedOriginAssociationsResult)>
           callback,
+      bool revalidate_migration_destination = true,
       const base::Location& location = FROM_HERE);
 
   // Schedules a command to install a web app from a "migrate_from" field in

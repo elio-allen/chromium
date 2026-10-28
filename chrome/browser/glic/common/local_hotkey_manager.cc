@@ -26,7 +26,7 @@ constexpr int kFocusToggleAcceleratorModifiers =
 #if BUILDFLAG(IS_MAC)
     ui::EF_CONTROL_DOWN | ui::EF_COMMAND_DOWN;
 #elif BUILDFLAG(IS_CHROMEOS)
-// ui::EF_COMMAND_DOWN is the search key for ChromeOS.
+    // ui::EF_COMMAND_DOWN is the search key for ChromeOS.
     ui::EF_COMMAND_DOWN | ui::EF_ALT_DOWN;
 #else
     ui::EF_ALT_DOWN | ui::EF_SHIFT_DOWN;
@@ -205,9 +205,11 @@ ui::Accelerator LocalHotkeyManager::GetConfigurableAccelerator(
   return accelerator;
 }
 
-LocalHotkeyManager::Command LocalHotkeyManager::GetCommand(
-    ui::Accelerator accelerator) {
-  CHECK(event_handler_);
+std::optional<LocalHotkeyManager::Command> LocalHotkeyManager::GetCommand(
+    const ui::Accelerator& accelerator) const {
+  if (!event_handler_ || accelerator.IsEmpty()) {
+    return std::nullopt;
+  }
 
   for (Command command : supported_commands_) {
     if (auto iter = kCommandToStaticAcceleratorsMap.find(command);
@@ -222,7 +224,7 @@ LocalHotkeyManager::Command LocalHotkeyManager::GetCommand(
     }
   }
 
-  NOTREACHED() << accelerator.GetShortcutText() << " isn't a supported command";
+  return std::nullopt;
 }
 
 void LocalHotkeyManager::InitializeAccelerators() {
@@ -237,8 +239,17 @@ bool LocalHotkeyManager::AcceleratorPressed(
   if (!event_handler_) {
     return false;
   }
-  auto command = GetCommand(accelerator);
-  return event_handler_->AcceleratorPressed(command);
+  std::optional<Command> command = GetCommand(accelerator);
+  if (!command.has_value()) {
+    return false;
+  }
+  return event_handler_->AcceleratorPressed(*command, accelerator);
+}
+
+bool LocalHotkeyManager::EventHandler::AcceleratorPressed(
+    Command command,
+    const ui::Accelerator& accelerator) {
+  return AcceleratorPressed(command);
 }
 
 bool LocalHotkeyManager::CanHandleAccelerators() const {
@@ -250,14 +261,7 @@ bool LocalHotkeyManager::CanHandleAccelerators() const {
 
 bool LocalHotkeyManager::IsRegisteredAccelerator(
     const ui::Accelerator& accelerator) const {
-  for (Command command : supported_commands_) {
-    for (const ui::Accelerator& registered_accel : GetAccelerators(command)) {
-      if (registered_accel == accelerator) {
-        return true;
-      }
-    }
-  }
-  return false;
+  return GetCommand(accelerator).has_value();
 }
 
 std::vector<ui::Accelerator> LocalHotkeyManager::GetAccelerators(

@@ -14,6 +14,7 @@
 #include "base/base64.h"
 #include "base/files/file_util.h"
 #include "base/json/json_reader.h"
+#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/strings/string_number_conversions.h"
@@ -22,6 +23,7 @@
 #include "components/private_verification_tokens/common/private_verification_tokens_issuer_config_internal.h"
 #include "components/private_verification_tokens/common/private_verification_tokens_parameters.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
+#include "net/base/url_util.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 #include "url/url_constants.h"
@@ -82,6 +84,9 @@ std::optional<int64_t> GetValidExpiration(const base::DictValue& dict) {
   if (!base::StringToInt64(*expiration_str, &expiration) || expiration < 0) {
     return std::nullopt;
   }
+  if (base::Time::FromSecondsSinceUnixEpoch(expiration) <= base::Time::Now()) {
+    return std::nullopt;
+  }
   return expiration;
 }
 
@@ -105,14 +110,24 @@ std::optional<std::vector<url::Origin>> GetValidRedeemers(
     if (!item.is_string()) {
       return std::nullopt;
     }
-    url::Origin redeemer_origin = url::Origin::Create(GURL(item.GetString()));
-    if (redeemer_origin.scheme() != url::kHttpsScheme) {
+    GURL redeemer_url(item.GetString());
+    url::Origin redeemer_origin = url::Origin::Create(redeemer_url);
+    const bool is_redeemer_localhost = net::IsLocalhost(redeemer_url);
+    if (redeemer_origin.scheme() != url::kHttpsScheme &&
+        !is_redeemer_localhost) {
       return std::nullopt;
     }
-    const std::string redeemer_etld_plus_one =
-        net::registry_controlled_domains::GetDomainAndRegistry(
-            redeemer_origin,
-            net::registry_controlled_domains::EXCLUDE_PRIVATE_REGISTRIES);
+
+    std::string redeemer_etld_plus_one;
+    if (is_redeemer_localhost) {
+      redeemer_etld_plus_one = "localhost";
+    } else {
+      redeemer_etld_plus_one =
+          net::registry_controlled_domains::GetDomainAndRegistry(
+              redeemer_origin,
+              net::registry_controlled_domains::EXCLUDE_PRIVATE_REGISTRIES);
+    }
+
     if (redeemer_etld_plus_one.empty() ||
         redeemer_etld_plus_one != issuer_etld_plus_one) {
       return std::nullopt;
@@ -139,8 +154,12 @@ std::optional<IssuerConfig> ParseEntry(const base::DictValue& dict) {
   }
 
   GURL issuer_request_url(*issuer_request_url_str);
-  if (!issuer_request_url.is_valid() ||
-      issuer_request_url.scheme() != url::kHttpsScheme) {
+  if (!issuer_request_url.is_valid()) {
+    return std::nullopt;
+  }
+
+  const bool is_localhost = net::IsLocalhost(issuer_request_url);
+  if (issuer_request_url.scheme() != url::kHttpsScheme && !is_localhost) {
     return std::nullopt;
   }
 
@@ -149,11 +168,17 @@ std::optional<IssuerConfig> ParseEntry(const base::DictValue& dict) {
     return std::nullopt;
   }
 
-  const std::string issuer_etld_plus_one =
-      net::registry_controlled_domains::GetDomainAndRegistry(
-          origin, net::registry_controlled_domains::EXCLUDE_PRIVATE_REGISTRIES);
-  if (issuer_etld_plus_one.empty()) {
-    return std::nullopt;
+  std::string issuer_etld_plus_one;
+  if (is_localhost) {
+    issuer_etld_plus_one = "localhost";
+  } else {
+    issuer_etld_plus_one =
+        net::registry_controlled_domains::GetDomainAndRegistry(
+            origin,
+            net::registry_controlled_domains::EXCLUDE_PRIVATE_REGISTRIES);
+    if (issuer_etld_plus_one.empty()) {
+      return std::nullopt;
+    }
   }
 
   std::optional<int> version = internal::GetValidVersion(dict);
@@ -283,6 +308,36 @@ PrivateVerificationTokensIssuerConfig::LoadFromFile(
 const std::map<url::Origin, IssuerConfig>&
 PrivateVerificationTokensIssuerConfig::config() const {
   return config_;
+}
+
+// static
+scoped_refptr<const PrivateVerificationTokensIssuerConfig>
+PrivateVerificationTokensIssuerConfig::CreateWithCustomIssuer(
+    scoped_refptr<const PrivateVerificationTokensIssuerConfig> base_config,
+    base::DictValue custom_issuer_dict) {
+  std::optional<IssuerConfig> custom_issuer =
+      internal::ParseEntry(custom_issuer_dict);
+  if (!custom_issuer.has_value()) {
+    LOG(WARNING)
+        << "Failed to parse custom PVT issuer from command line dictionary.";
+    return base_config;
+  }
+
+  url::Origin issuer_origin = custom_issuer->public_key.issuer();
+  VLOG(1) << "Custom PVT issuer configured via command line: origin="
+          << issuer_origin.Serialize()
+          << ", batch_size=" << custom_issuer->batch_size
+          << ", version=" << custom_issuer->public_key.version()
+          << ", expiration=" << custom_issuer->public_key.expiration();
+
+  std::map<url::Origin, IssuerConfig> merged_config;
+  if (base_config) {
+    merged_config = base_config->config();
+  }
+  merged_config.insert_or_assign(issuer_origin, std::move(*custom_issuer));
+
+  return base::WrapRefCounted(
+      new PrivateVerificationTokensIssuerConfig(std::move(merged_config)));
 }
 
 }  // namespace private_verification_tokens

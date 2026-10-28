@@ -4,9 +4,12 @@
 
 #include "chrome/browser/component_updater/soda_language_pack_component_installer.h"
 
-#include <iterator>
+#include <stdint.h>
+
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/containers/flat_set.h"
@@ -84,7 +87,7 @@ void SodaLanguagePackComponentInstallerPolicy::
           LOG(ERROR)
               << "On demand update of the SODA language component failed "
                  "with error: "
-              << static_cast<int>(error);
+              << std::to_underlying(error);
         }
       }));
 }
@@ -146,8 +149,7 @@ base::FilePath SodaLanguagePackComponentInstallerPolicy::GetRelativeInstallDir()
 
 void SodaLanguagePackComponentInstallerPolicy::GetHash(
     std::vector<uint8_t>* hash) const {
-  hash->assign(std::begin(language_config_.public_key_sha),
-               std::end(language_config_.public_key_sha));
+  hash->assign_range(language_config_.public_key_sha);
 }
 
 std::string SodaLanguagePackComponentInstallerPolicy::GetName() const {
@@ -164,7 +166,7 @@ void RegisterSodaLanguagePackComponent(
     speech::SodaLanguagePackComponentConfig language_config,
     ComponentUpdateService* cus,
     OnSodaLanguagePackComponentReadyCallback on_ready_callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   auto installer = base::MakeRefCounted<ComponentInstaller>(
       std::make_unique<SodaLanguagePackComponentInstallerPolicy>(

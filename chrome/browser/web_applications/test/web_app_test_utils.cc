@@ -47,8 +47,8 @@
 #include "base/values.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/web_applications/web_app_dialogs.h"
 #include "chrome/browser/web_applications/model/app_installed_by.h"
 #include "chrome/browser/web_applications/model/display_override.h"
@@ -116,9 +116,6 @@
 #include "url/origin.h"
 
 namespace {
-
-std::vector<std::string> test_features = {
-    "default_on_feature", "default_self_feature", "default_disabled_feature"};
 
 constexpr std::string_view kEd25519PublicKeyBase64 =
     "3QrKLntnXWmBkrbLLoobC0uh7u0ahMcKQSqsbX4q7MM=";
@@ -1384,7 +1381,7 @@ void TestDeclineDialogCallback(
 
 // TODO(b/329703817): Make this smarter by waiting for a specific dialog, and
 // then triggering accept on the dialog.
-webapps::AppId InstallPwaForCurrentUrl(Browser* browser) {
+webapps::AppId InstallPwaForCurrentUrl(BrowserWindowInterface* browser) {
   // Depending on the installability criteria, different dialogs can be used.
   base::AutoReset<web_app::InstallDialogTestResponse> auto_accept =
       web_app::SetPwaInstallationAutoRespondForTesting(

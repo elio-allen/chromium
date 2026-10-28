@@ -75,6 +75,7 @@
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_select_element.h"
+#include "third_party/blink/renderer/core/html/forms/text_control_element.h"
 #include "third_party/blink/renderer/core/html/html_body_element.h"
 #include "third_party/blink/renderer/core/html/html_frame_element_base.h"
 #include "third_party/blink/renderer/core/html_names.h"
@@ -103,6 +104,7 @@
 #include "third_party/blink/renderer/platform/text/text_direction.h"
 #include "third_party/blink/renderer/platform/text/unicode_utilities.h"
 #include "third_party/blink/renderer/platform/widget/frame_widget.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "ui/gfx/geometry/quad_f.h"
 
 #define EDIT_DEBUG 0
@@ -112,6 +114,8 @@ namespace blink {
 namespace {
 
 class ScopedHandlingInputEvent {
+  STACK_ALLOCATED();
+
  public:
   explicit ScopedHandlingInputEvent(FrameWidget* widget) : widget_(widget) {
     if (widget_) {
@@ -140,7 +144,6 @@ FrameSelection::FrameSelection(LocalFrame& frame)
     : frame_(frame),
       layout_selection_(MakeGarbageCollected<LayoutSelection>(*this)),
       selection_editor_(MakeGarbageCollected<SelectionEditor>(frame)),
-      granularity_(TextGranularity::kCharacter),
       x_pos_for_vertical_arrow_navigation_(NoXPosForVerticalArrowNavigation()),
       focused_(frame.GetPage() &&
                frame.GetPage()->GetFocusController().FocusedFrame() == frame),
@@ -752,6 +755,18 @@ bool FrameSelection::SelectionHasFocus() const {
     return true;
   }
 
+  // A selection inside a text control belongs to that control and loses
+  // focus with it. Disabled controls are excluded: they can never hold
+  // focus, so their selection is an ordinary document selection.
+  if (RuntimeEnabledFeatures::
+          HideUnfocusedReadonlyTextControlSelectionEnabled() &&
+      !IsEditable(*current)) {
+    const TextControlElement* text_control = EnclosingTextControl(current);
+    if (text_control && !text_control->IsDisabledFormControl()) {
+      return false;
+    }
+  }
+
   // Selection has focus if it contains the focused element.
   const PositionInFlatTree& focused_position =
       PositionInFlatTree::FirstPositionInNode(*focused_element);
@@ -878,6 +893,8 @@ bool FrameSelection::ShouldPaintCaret(const LayoutBlock& block) const {
   DCHECK(!result ||
          (ComputeVisibleSelectionInDomTree().IsCaret() &&
           (IsEditablePosition(ComputeVisibleSelectionInDomTree().Start()) ||
+           (RuntimeEnabledFeatures::ReadOnlyTextControlSelectionEnabled() &&
+            EnclosingTextControl(ComputeVisibleSelectionInDomTree().Start())) ||
            frame_->IsCaretBrowsingEnabled())));
   return result;
 }
@@ -890,6 +907,8 @@ bool FrameSelection::ShouldPaintCaret(
   DCHECK(!result ||
          (ComputeVisibleSelectionInDomTree().IsCaret() &&
           (IsEditablePosition(ComputeVisibleSelectionInDomTree().Start()) ||
+           (RuntimeEnabledFeatures::ReadOnlyTextControlSelectionEnabled() &&
+            EnclosingTextControl(ComputeVisibleSelectionInDomTree().Start())) ||
            frame_->IsCaretBrowsingEnabled())));
   return result;
 }

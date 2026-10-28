@@ -43,8 +43,7 @@ KeepAliveDSEPolicy::KeepAliveDSEPolicy()
               base::MemoryConsumerTraits::EstimatedMemoryUsage::kMedium,
               // Releasing the keep-alive may terminate the renderer process,
               // freeing pages directly via the OS.
-              base::MemoryConsumerTraits::ReleaseMemoryCost::
-                  kFreesPagesWithoutTraversal,
+              base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kNone,
               // Releasing the keep-alive does not discard user state.
               base::MemoryConsumerTraits::InformationRetention::kLossless,
               // Releasing the keep-alive is performed synchronously.
@@ -57,7 +56,8 @@ KeepAliveDSEPolicy::KeepAliveDSEPolicy()
 
 KeepAliveDSEPolicy::~KeepAliveDSEPolicy() = default;
 
-void KeepAliveDSEPolicy::OnMainFrameUrlChanged(const PageNode* page_node) {
+void KeepAliveDSEPolicy::OnMainFrameUrlChanged(const PageNode* page_node,
+                                               const GURL& previous_url) {
   const FrameNode* main_frame_node = page_node->GetPrimaryMainFrameNode();
   // If there's no main frame (e.g., this can happen during session restore
   // before the main frame is fully initialized), there's nothing to do, as we
@@ -207,7 +207,7 @@ void KeepAliveDSEPolicy::SetDSEKeepAlive(
   CHECK(!dse_renderer_kept_alive_);
   CHECK(template_url_service);
 
-  if (memory_limit() <= base::kModerateMemoryPressureThreshold) {
+  if (memory_limit() <= base::MemoryLimit::ModeratePressureThreshold()) {
     return;
   }
 
@@ -269,7 +269,7 @@ bool KeepAliveDSEPolicy::IsSuitableDSEPage(const PageNode* page_node) const {
 }
 
 void KeepAliveDSEPolicy::OnUpdateMemoryLimit() {
-  if (memory_limit() > base::kModerateMemoryPressureThreshold) {
+  if (memory_limit() > base::MemoryLimit::ModeratePressureThreshold()) {
     if (!dse_renderer_kept_alive_) {
       FindAndKeepAliveDSERenderer();
     }
@@ -277,7 +277,7 @@ void KeepAliveDSEPolicy::OnUpdateMemoryLimit() {
 }
 
 void KeepAliveDSEPolicy::OnReleaseMemory() {
-  if (memory_limit() <= base::kModerateMemoryPressureThreshold) {
+  if (memory_limit() <= base::MemoryLimit::ModeratePressureThreshold()) {
     if (dse_renderer_kept_alive_) {
       ReleaseDSEKeepAlive();
     }

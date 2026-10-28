@@ -9,18 +9,16 @@ import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import '//resources/cr_elements/cr_lazy_render/cr_lazy_render_lit.js';
 import '//resources/cr_elements/icons.html.js';
 import './favicon_group.js';
-import './reopen_tabs.js';
 import './sources_menu.js';
 import './overflow_menu.js';
 // <if expr="not is_android">
 import '/shared/permission_dashboard.js';
 
-import type {PermissionDashboardState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
+import type {PermissionChipDelegate} from '/shared/permission_chip_delegate.js';
+import type {LhsChipIdentifier, PermissionDashboardState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 import {HelpBubbleMixinLit} from 'chrome://resources/cr_components/help_bubble/help_bubble_mixin_lit.js';
-// </if>
 
-// <if expr="is_android">
-type PermissionDashboardState = any;
+import type {InitialState} from './contextual_tasks_toolbar.mojom-webui.js';
 // </if>
 
 import type {CrLazyRenderLitElement} from 'chrome://resources/cr_elements/cr_lazy_render/cr_lazy_render_lit.js';
@@ -28,9 +26,8 @@ import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
-import type {ContextInfo} from './contextual_tasks.mojom-webui.js';
-import type {BrowserProxy} from './contextual_tasks_browser_proxy.js';
-import {BrowserProxyImpl} from './contextual_tasks_browser_proxy.js';
+import type {ContextInfo} from './contextual_tasks_toolbar.mojom-webui.js';
+import {ToolbarBrowserProxyImpl} from './contextual_tasks_toolbar_browser_proxy.js';
 import type {OverflowMenuElement} from './overflow_menu.js';
 import type {SourcesMenuElement} from './sources_menu.js';
 import {getCss} from './top_toolbar.css.js';
@@ -86,7 +83,6 @@ export class TopToolbarElement extends TopToolbarElementBase {
       },
       title: {type: String},
       hideOverflowMenuButton_: {type: Boolean},
-      showReopenTabs_: {type: Boolean},
       isExpandButtonEnabled: {type: Boolean},
       isPinButtonEnabled: {type: Boolean},
       isPinned: {type: Boolean},
@@ -95,16 +91,24 @@ export class TopToolbarElement extends TopToolbarElementBase {
         type: Boolean,
         reflect: true,
       },
+      isCobrowseEligible: {type: Boolean},
       isUserSignedIn: {type: Boolean},
       onboardingTooltipShowing: {type: Boolean},
-      lensSearchTooltipShowing: {type: Boolean},
       contextualTasksEnableSpatialModelToolbarLayout_: {type: Boolean},
       contextualTasksEnableSpatialModelToolbarLayoutNewThreadInOverflow_:
           {type: Boolean},
       overflowMenuOpen_: {type: Boolean},
-      isSidePanelRearchitectureEnabled_: {type: Boolean},
+      isSidePanelRearchitectureEnabled_: {
+        type: Boolean,
+        reflect: true,
+        attribute: 'is-side-panel-rearchitecture-enabled',
+      },
       webuiRoundedIconsEnabled_: {type: Boolean},
+      // <if expr="not is_android">
       permissionDashboardState: {type: Object},
+      permissionChipDelegate_: {type: Object},
+      // </if>
+      profileAvatarUrl: {type: String},
     };
   }
 
@@ -113,19 +117,31 @@ export class TopToolbarElement extends TopToolbarElementBase {
   accessor darkMode: boolean = false;
   accessor isAiPage: boolean = loadTimeData.getBoolean('isAiPage');
   accessor isAimEligible: boolean = loadTimeData.getBoolean('isAimEligible');
+  accessor isCobrowseEligible: boolean =
+      loadTimeData.getBoolean('isCobrowseEligible');
+  // <if expr="not is_android">
   accessor permissionDashboardState: PermissionDashboardState|null = null;
+  protected accessor permissionChipDelegate_: PermissionChipDelegate|null =
+      null;
+  // </if>
+  accessor profileAvatarUrl: string =
+      loadTimeData.valueExists('profileAvatarUrl') ?
+      loadTimeData.getString('profileAvatarUrl') :
+      '';
   protected accessor isSidePanelRearchitectureEnabled_: boolean =
       loadTimeData.getBoolean('contextualTasksSidePanelRearchitectureEnabled');
   accessor isUserSignedIn: boolean = true;
   accessor enableOpenInNewTabButton: boolean = false;
-  accessor showReopenTabs_: boolean = false;
   accessor onboardingTooltipShowing: boolean = false;
-  accessor lensSearchTooltipShowing: boolean = false;
-  private browserProxy_: BrowserProxy = BrowserProxyImpl.getInstance();
-  private listenerIds_: number[] = [];
+  private toolbarBrowserProxy_: ToolbarBrowserProxyImpl =
+      ToolbarBrowserProxyImpl.getInstance();
+  private toolbarListenerIds_: number[] = [];
+  // <if expr="not is_android">
+  private sidePanelToolbarListenerIds_: number[] = [];
+  // </if>
   protected accessor isExpandButtonEnabled: boolean =
       loadTimeData.getBoolean('expandButtonEnabled');
-  protected accessor isPinButtonEnabled: boolean =
+  accessor isPinButtonEnabled: boolean =
       loadTimeData.getBoolean('enablePinButton');
   private hideOverflowMenuOnAiPageEnabled_: boolean =
       loadTimeData.getBoolean('hideMenuOnAiPageEnabled');
@@ -143,32 +159,104 @@ export class TopToolbarElement extends TopToolbarElementBase {
   protected accessor overflowMenuOpen_: boolean = false;
   protected accessor webuiRoundedIconsEnabled_: boolean =
       loadTimeData.getBoolean('webuiRoundedIconsEnabled');
+  private boundOnWindowBlur_: () => void = this.onWindowBlur_.bind(this);
 
   override connectedCallback() {
     super.connectedCallback();
-    const callbackRouter = this.browserProxy_.callbackRouter;
-    this.listenerIds_ = [
-      callbackRouter.onContextUpdated.addListener(contextInfos => {
-        this.contextInfos = contextInfos;
-      }),
-      callbackRouter.setShowReopenTabs.addListener(show => {
-        this.showReopenTabs_ = show;
-      }),
-      callbackRouter.onSidePanelPinStateChanged.addListener(
-          (isPinned: boolean) => {
+    this.toolbarListenerIds_ = [
+      this.toolbarBrowserProxy_.callbackRouter.onSidePanelPinStateChanged
+          .addListener((isPinned: boolean) => {
             this.isPinned = isPinned;
           }),
-      callbackRouter.setExpandButtonEnabled.addListener((enabled: boolean) => {
-        this.isExpandButtonEnabled = enabled;
-      }),
+      this.toolbarBrowserProxy_.callbackRouter.onContextUpdated.addListener(
+          (contextInfos: ContextInfo[]) => {
+            this.contextInfos = contextInfos;
+          }),
+      this.toolbarBrowserProxy_.callbackRouter.setExpandButtonEnabled
+          .addListener((enabled: boolean) => {
+            this.isExpandButtonEnabled = enabled;
+          }),
+      this.toolbarBrowserProxy_.callbackRouter.setProfileAvatarUrl.addListener(
+          (avatarUrl: string) => {
+            this.profileAvatarUrl = avatarUrl;
+          }),
     ];
+    window.addEventListener('blur', this.boundOnWindowBlur_);
+
+    // <if expr="not is_android">
+    const toolbarUiService = this.toolbarBrowserProxy_.toolbarUiService;
+    const toolbarUiObserverCallbackRouter =
+        this.toolbarBrowserProxy_.toolbarUiObserverCallbackRouter;
+    this.sidePanelToolbarListenerIds_ = [
+      toolbarUiObserverCallbackRouter.onPermissionDashboardStateChanged
+          .addListener((state: PermissionDashboardState) => {
+            this.permissionDashboardState = state;
+          }),
+    ];
+
+    toolbarUiService.getInitialState().then((response: InitialState) => {
+      if (!this.isConnected) {
+        return;
+      }
+      if (response) {
+        if (response.updateStream) {
+          toolbarUiObserverCallbackRouter.$.bindHandle(
+              response.updateStream.handle);
+        }
+        if (response.state !== undefined) {
+          this.permissionDashboardState = response.state;
+        }
+      }
+    }, () => {});
+
+    this.permissionChipDelegate_ = {
+      onChipClicked:
+          (id: LhsChipIdentifier, isPointer: boolean, stateToken: number) => {
+            toolbarUiService.onChipClicked(id, isPointer, stateToken);
+          },
+      onChipPointerEntered: (id: LhsChipIdentifier) => {
+        toolbarUiService.onChipPointerEntered(id);
+      },
+      onChipPointerExited: (id: LhsChipIdentifier) => {
+        toolbarUiService.onChipPointerExited(id);
+      },
+      onChipMousePressed: (id: LhsChipIdentifier, _isMiddleClick?: boolean) => {
+        toolbarUiService.onChipMousePressed(id);
+      },
+      onChipExpandAnimationEnded: (id: LhsChipIdentifier) => {
+        toolbarUiService.onChipExpandAnimationEnded(id);
+      },
+      onChipCollapseAnimationEnded: (id: LhsChipIdentifier) => {
+        toolbarUiService.onChipCollapseAnimationEnded(id);
+      },
+    };
+    // </if>
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
-    this.listenerIds_.forEach(
-        id => this.browserProxy_.callbackRouter.removeListener(id));
-    this.listenerIds_ = [];
+    this.toolbarListenerIds_.forEach(
+        id => this.toolbarBrowserProxy_.callbackRouter.removeListener(id));
+    this.toolbarListenerIds_ = [];
+    window.removeEventListener('blur', this.boundOnWindowBlur_);
+
+    // <if expr="not is_android">
+    const toolbarUiObserverCallbackRouter =
+        this.toolbarBrowserProxy_.toolbarUiObserverCallbackRouter;
+    this.sidePanelToolbarListenerIds_.forEach(
+        id => toolbarUiObserverCallbackRouter.removeListener(id));
+    this.sidePanelToolbarListenerIds_ = [];
+    toolbarUiObserverCallbackRouter.$.close();
+    // </if>
+  }
+
+  // Dismisses any open menu when the side panel loses focus. Clicks outside of
+  // the side panel (e.g. on the page contents, the Lens crop frame, or a search
+  // result in the sandboxed results frame) never reach this document, so
+  // `cr-action-menu`'s own light dismiss does not run. See crbug.com/543760434.
+  private onWindowBlur_() {
+    this.$.overflowMenu.getIfExists()?.close();
+    this.$.sourcesMenu.getIfExists()?.close();
   }
 
   // <if expr="not is_android">
@@ -181,9 +269,9 @@ export class TopToolbarElement extends TopToolbarElementBase {
         '#overflowMenuButton');
     // Register help bubble only if 'G' logo is being shown.
     if ((this as unknown as HTMLElement)
-            .shadowRoot?.querySelector('.top-toolbar-logo')) {
+            .shadowRoot?.querySelector('.top-toolbar-logo-button')) {
       this.registerHelpBubble(
-          'kContextualTasksSuperGButtonElementId', '.top-toolbar-logo');
+          'kContextualTasksSuperGButtonElementId', '.top-toolbar-logo-button');
     }
   }
   // </if>
@@ -192,35 +280,29 @@ export class TopToolbarElement extends TopToolbarElementBase {
     super.updated(changedProperties);
 
     if (changedProperties.has('isAiPage') ||
-        changedProperties.has('onboardingTooltipShowing') ||
-        changedProperties.has('lensSearchTooltipShowing')) {
+        changedProperties.has('title') ||
+        changedProperties.has('onboardingTooltipShowing')) {
       this.hideOverflowMenuButton_ =
           this.isAiPage && this.hideOverflowMenuOnAiPageEnabled_;
       // <if expr="not is_android">
       if (this.isAiPage) {
-        if (!this.onboardingTooltipShowing && !this.lensSearchTooltipShowing) {
-          this.browserProxy_.handler.maybeTriggerPinningPromo();
+        if (!this.onboardingTooltipShowing) {
+          this.toolbarBrowserProxy_.handler.maybeTriggerPinningPromo();
         }
       }
       // </if>
     }
   }
 
-  // If permission dashboard is not imported due to being on android, the
-  // optional chaining (?) causes this to return false.
   protected isPermissionShowing_(): boolean {
+    // <if expr="is_android">
+    return false;
+    // </if>
+    // <if expr="not is_android">
     return this.isSidePanelRearchitectureEnabled_ &&
         (!!this.permissionDashboardState?.indicatorChip?.isVisible ||
          !!this.permissionDashboardState?.requestChip?.isVisible);
-  }
-
-  protected shouldShowPinButton_(): boolean {
-    return this.isPinButtonEnabled && this.isAiPage;
-  }
-
-  protected getPinButtonTooltip_(): string {
-    return this.isPinned ? loadTimeData.getString('unpinTooltip') :
-                           loadTimeData.getString('pinTooltip');
+    // </if>
   }
 
   protected shouldShowSourcesMenuButton_(): boolean {
@@ -233,7 +315,7 @@ export class TopToolbarElement extends TopToolbarElementBase {
 
   protected onCloseButtonClick_() {
     recordAction('ContextualTasks.WebUI.UserAction.CloseSidePanel');
-    this.browserProxy_.handler.closeSidePanel();
+    this.toolbarBrowserProxy_.handler.closeSidePanel();
   }
 
   protected onNewThreadClick_() {
@@ -242,7 +324,7 @@ export class TopToolbarElement extends TopToolbarElementBase {
 
   protected onThreadHistoryClick_() {
     recordAction('ContextualTasks.WebUI.UserAction.OpenThreadHistory');
-    this.browserProxy_.handler.showThreadHistory();
+    this.toolbarBrowserProxy_.handler.showThreadHistory();
   }
 
   protected onOverflowMenuButtonClick_(e: Event) {
@@ -261,22 +343,26 @@ export class TopToolbarElement extends TopToolbarElementBase {
 
   protected onOpenInNewTabClick_() {
     recordAction('ContextualTasks.WebUI.UserAction.OpenInNewTab');
-    this.browserProxy_.handler.moveTaskUiToNewTab();
+    this.toolbarBrowserProxy_.handler.moveTaskUiToNewTab();
   }
 
-  protected onReopenTabsReopenClick_() {
-    this.browserProxy_.handler.reopenTabs();
-  }
 
-  protected onReopenTabsDismissClick_() {
-    this.showReopenTabs_ = false;
-  }
-
-  protected onLogoClick_() {
+  protected onLogoPointerdown_() {
     if (!this.isSidePanelRearchitectureEnabled_) {
       return;
     }
-    this.browserProxy_.handler.showPageInfoBubble();
+    this.toolbarBrowserProxy_.handler.onLogoPointerDown();
+  }
+
+  protected onLogoClick_(e: Event) {
+    if (!this.isSidePanelRearchitectureEnabled_) {
+      return;
+    }
+    // Keyboard synthetic clicks generate PointerEvents with an empty
+    // pointerType in WebUI, whereas natural pointer clicks have a valid
+    // pointerType (e.g., 'mouse', 'touch', 'pen').
+    this.toolbarBrowserProxy_.handler.showPageInfoBubble(
+        e instanceof PointerEvent && e.pointerType !== '');
   }
 }
 

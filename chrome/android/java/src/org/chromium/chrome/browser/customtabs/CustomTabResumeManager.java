@@ -10,6 +10,7 @@ import android.view.View;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
@@ -18,7 +19,6 @@ import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntent
 import org.chromium.chrome.browser.crypto.CipherFactory;
 import org.chromium.chrome.browser.customtabs.content.TabCreationMode;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabAssociatedApp;
 import org.chromium.chrome.browser.tab.TabBuilder;
@@ -61,7 +61,7 @@ public class CustomTabResumeManager {
     private static final long DEFAULT_RESUMPTION_TAB_TTL_MS = TimeUnit.DAYS.toMillis(5);
 
     private static final Map<String, TabState> sInMemoryStateCache =
-            new LinkedHashMap<String, TabState>(IN_MEMORY_CACHE_MAX_SIZE + 1, 0.75f, true) {
+            new LinkedHashMap<>(IN_MEMORY_CACHE_MAX_SIZE + 1, 0.75f, true) {
                 @Override
                 protected boolean removeEldestEntry(Map.Entry<String, TabState> eldest) {
                     return size() > IN_MEMORY_CACHE_MAX_SIZE;
@@ -154,7 +154,7 @@ public class CustomTabResumeManager {
         mIntentDataProvider = intentDataProvider;
         mCipherFactory = cipherFactory;
         mTabObserver =
-                new EmptyTabObserver() {
+                new TabObserver() {
                     @Override
                     public void onHidden(Tab tab, int reason) {
                         Log.i(
@@ -284,7 +284,7 @@ public class CustomTabResumeManager {
                     "requestFocus: tabView is null (frozen tab), deferring requestFocus until"
                             + " content changes");
             tab.addObserver(
-                    new EmptyTabObserver() {
+                    new TabObserver() {
                         @Override
                         public void onContentChanged(Tab tab) {
                             View view = tab.getView();
@@ -581,5 +581,10 @@ public class CustomTabResumeManager {
                         public void onViewDetachedFromWindow(View v) {}
                     });
         }
+    }
+
+    static Map<String, TabState> getInMemoryStateCacheForTesting() {
+        ResettersForTesting.register(sInMemoryStateCache::clear);
+        return sInMemoryStateCache;
     }
 }

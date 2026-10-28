@@ -10,9 +10,10 @@
 #include "base/uuid.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/bookmarks/saved_tab_groups/saved_tab_group_bar.h"
 #include "chrome/browser/ui/views/bookmarks/saved_tab_groups/saved_tab_group_button.h"
@@ -48,7 +49,7 @@ using testing::ElementsAre;
 using testing::IsEmpty;
 using testing::SizeIs;
 
-const std::u16string kNewTitle(u"kNewTitle");
+constexpr char16_t kNewTitle[] = u"kNewTitle";
 
 const TabGroupColorId kNewColor = TabGroupColorId::kRed;
 }  // anonymous namespace
@@ -85,7 +86,6 @@ class SavedTabGroupBarComponentBrowserTest : public InProcessBrowserTest {
     Wait();
 
     saved_tab_group_bar_ = std::make_unique<SavedTabGroupBar>(browser(), false);
-    saved_tab_group_bar_->SetPageNavigator(nullptr);
   }
 
   void TearDownOnMainThread() override {
@@ -105,7 +105,7 @@ class SavedTabGroupBarComponentBrowserTest : public InProcessBrowserTest {
     run_loop.Run();
   }
 
-  void AddTabToBrowser(Browser* browser, int index) {
+  void AddTabToBrowser(BrowserWindowInterface* browser, int index) {
     chrome::AddTabAt(browser, GURL("about:blank"), index, true);
   }
 
@@ -115,7 +115,7 @@ class SavedTabGroupBarComponentBrowserTest : public InProcessBrowserTest {
 
   TabGroupId CreateNewGroupInBrowser() {
     AddTabToBrowser(browser(), 0);
-    TabGroupId local_id = browser()->tab_strip_model()->AddToNewGroup({0});
+    TabGroupId local_id = browser()->GetTabStripModel()->AddToNewGroup({0});
     Wait();
     return local_id;
   }

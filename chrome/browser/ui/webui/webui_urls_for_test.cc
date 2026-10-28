@@ -40,8 +40,8 @@ base::span<const std::string_view> GetChromeUrlsForTest() {
 
       "chrome://bookmarks",
       "chrome://bookmarks-side-panel.top-chrome",
+      "chrome://browser-actuator-internals",
       "chrome://certificate-manager",
-      "chrome://chrome-finds-internals",
       "chrome://chrome-urls",
       "chrome://color-pipeline-internals",
       "chrome://comments-side-panel.top-chrome",
@@ -50,8 +50,8 @@ base::span<const std::string_view> GetChromeUrlsForTest() {
       "chrome://connection-help",
       "chrome://connection-monitoring-detected",
       "chrome://connectors-internals",
+      "chrome://content-settings",
 #if !BUILDFLAG(IS_ANDROID)
-      "chrome://content-annotator-internals",
       "chrome://contextual-cueing-internals",
 #endif
       "chrome://context-hub",
@@ -59,6 +59,9 @@ base::span<const std::string_view> GetChromeUrlsForTest() {
 // TODO(crbug.com/40913109): Re-enable this test
 #if !BUILDFLAG(IS_LINUX) && !BUILDFLAG(IS_CHROMEOS)
       "chrome://credits",
+#endif
+#if !BUILDFLAG(IS_ANDROID)
+      "chrome://critical-actions-internals",
 #endif
       "chrome://customize-chrome-side-panel.top-chrome",
       "chrome://data-sharing-internals",
@@ -123,7 +126,7 @@ base::span<const std::string_view> GetChromeUrlsForTest() {
       "chrome://newtab",
       "chrome://notebooks-internals",
       "chrome://ntp-tiles-internals",
-      "chrome://omnibox",
+      "chrome://omnibox-internals",
       "chrome://on-device-internals",
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
@@ -133,6 +136,7 @@ base::span<const std::string_view> GetChromeUrlsForTest() {
       "chrome://optimization-guide-internals",
 #if !BUILDFLAG(IS_ANDROID)
       "chrome://organizer-panel.top-chrome",
+      "chrome://page-action-internals",
 #endif
       "chrome://password-manager",
       "chrome://password-manager-internals",
@@ -197,6 +201,7 @@ base::span<const std::string_view> GetChromeUrlsForTest() {
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
+      "chrome://chrome-finds-internals",
       "chrome://explore-sites-internals",
       "chrome://internals/notifications",
       "chrome://internals/query-tiles",
@@ -222,7 +227,6 @@ base::span<const std::string_view> GetChromeUrlsForTest() {
       "chrome://emoji-picker",
       "chrome://file-manager",
       "chrome://help-app",
-      "chrome://manage-mirrorsync",
       "chrome://multidevice-internals",
       "chrome://multidevice-setup",
       "chrome://nearby",
@@ -322,8 +326,6 @@ base::span<const std::string_view> GetUntestedChromeUrlsForTest() {
       "chrome://internals",
       // Note: Disabled because a DCHECK fires when directly visiting the URL.
       "chrome://managed-user-profile-notice",
-      // TODO(crbug.com/40185163): DCHECK failure
-      "chrome://memory-internals",
       "chrome://omnibox-everywhere.top-chrome",
       "chrome://omnibox-popup.top-chrome",
       "chrome://profile-customization",
@@ -420,7 +422,6 @@ base::span<const std::string_view> GetUntestedChromeUrlsForTest() {
       "chrome://notification-tester",
       "chrome://oobe",
       "chrome://os-credits",
-      "chrome://os-print",
       // Needs html path to be valid.
       "chrome://proximity-auth",
       "chrome://recorder-app",

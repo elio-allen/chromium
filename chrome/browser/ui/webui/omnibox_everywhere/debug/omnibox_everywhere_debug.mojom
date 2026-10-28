@@ -22,6 +22,14 @@ interface Page {
 
   // Called when the Omnibox Everywhere global hotkey preference state changes.
   OnHotkeyChanged(bool enabled);
+
+  // Called when the Omnibox Everywhere ephemeral model preference state
+  // changes.
+  OnEphemeralModelChanged(bool enabled);
+
+  // Called when the Omnibox Everywhere launch on startup preference state
+  // changes.
+  OnLaunchOnStartupChanged(bool enabled);
 };
 
 // Interface for controlling Omnibox Everywhere features and preferences from
@@ -33,15 +41,44 @@ interface PageHandler {
   // Retrieves the current state of the background mode preference.
   GetBackgroundModeEnabled() => (bool enabled);
 
+  // Enables or disables the Omnibox Everywhere launch on startup preference.
+  SetLaunchOnStartupEnabled(bool enabled);
+
+  // Retrieves the current state of the launch on startup preference.
+  GetLaunchOnStartupEnabled() => (bool enabled);
+
   // Enables or disables the global system hotkey preference.
   SetHotkeyEnabled(bool enabled);
 
   // Retrieves the current state of the global system hotkey preference.
   GetHotkeyEnabled() => (bool enabled);
 
+  // Enables or disables the Omnibox Everywhere ephemeral model preference.
+  SetEphemeralModelEnabled(bool enabled);
+
+  // Retrieves the current state of the ephemeral model preference.
+  GetEphemeralModelEnabled() => (bool enabled);
+
   // Directly invokes the Omnibox Everywhere widget with the specified
   // invocation source.
   InvokeOmniboxEverywhere(InvocationSource source);
+
+  // Triggers the Lens IPH promo via UserEducationInternals.
+  ShowLensIph();
+
+  // Creates the Start Menu shortcut and sets up AppUserModelId and icon.
+  CreateStartMenuShortcut() => (bool success);
+
+  // Requests pinning Omnibox Everywhere to the Windows taskbar.
+  PinToTaskbar() => (bool success);
+
+  // Resets all Omnibox Everywhere preferences and IPH promo data for the
+  // current profile.
+  ResetProfilePrefs() => (bool success);
+
+  // Resets all Omnibox Everywhere preferences across all loaded profiles and
+  // Local State.
+  ResetAllPrefs() => (bool success);
 };
 
 // Factory interface used to set up the connection between the WebUI

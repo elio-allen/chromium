@@ -16,6 +16,14 @@ OmniboxPopupPresenterDelegate* LocationBar::GetPresenterDelegate() {
   return nullptr;
 }
 
+PermissionDashboardController* LocationBar::GetPermissionDashboardController() {
+  return nullptr;
+}
+
+ui::ElementContext LocationBar::GetElementContext() const {
+  return ui::ElementContext();
+}
+
 void LocationBar::AddLocationBarObserver(Observer* observer) {
   observers_.AddObserver(observer);
 }

@@ -5,9 +5,16 @@
 #import "ios/chrome/app/startup/app_startup_utils.h"
 
 #import "base/apple/bundle_locations.h"
+#import "ios/chrome/browser/default_browser/model/features.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/chrome/browser/shared/public/features/system_flags.h"
+#import "ios/chrome/common/app_group/app_group_constants.h"
+#import "url/gurl.h"
 
 namespace {
+
+// Action path for the X-Callback open command.
+NSString* const kXCallbackOpenCommandPath = @"/open";
 
 enum CallerApp {
   kGoogleSearch = 0,
@@ -65,24 +72,96 @@ CallerApp CallerAppFromAppID(NSString* caller_app_id) {
 
 }  // namespace
 
-bool IsCallerAppFirstParty(NSString* caller_app_id) {
-  CallerApp caller_app = CallerAppFromAppID(caller_app_id);
+const char kXCallbackOpenCommandURLParameter[] = "url";
+const char kPostOpeningActionParameter[] = "poa";
+const char kPostOpeningActionDefaultBrowserSettings[] =
+    "default-browser-settings";
+
+MobileSessionCallerApp GetCallerApp(NSString* source_app_id,
+                                    NSString* secure_source_app_id,
+                                    const GURL& complete_url) {
+  if ([secure_source_app_id
+          isEqualToString:app_group::kOpenCommandSourceShareExtension]) {
+    return CALLER_APP_GOOGLE_CHROME_SHARE_EXTENSION;
+  }
+  if ([secure_source_app_id
+          isEqualToString:app_group::kOpenCommandSourceOpenExtension]) {
+    return CALLER_APP_GOOGLE_CHROME_OPEN_EXTENSION;
+  }
+
+  if (![source_app_id length]) {
+    if (complete_url.SchemeIsHTTPOrHTTPS()) {
+      // If Chrome is opened via the system default browser mechanism, the
+      // action should be differentiated from the case where the source is
+      // unknown.
+      return CALLER_APP_THIRD_PARTY;
+    }
+    return CALLER_APP_NOT_AVAILABLE;
+  }
+
+  if ([source_app_id
+          isEqualToString:[base::apple::FrameworkBundle() bundleIdentifier]]) {
+    return CALLER_APP_GOOGLE_CHROME;
+  }
+  if ([source_app_id isEqualToString:@"com.google.GoogleMobile"]) {
+    return CALLER_APP_GOOGLE_SEARCH;
+  }
+  if ([source_app_id isEqualToString:@"com.google.Gmail"]) {
+    return CALLER_APP_GOOGLE_GMAIL;
+  }
+  if ([source_app_id isEqualToString:@"com.google.GooglePlus"]) {
+    return CALLER_APP_GOOGLE_PLUS;
+  }
+  if ([source_app_id isEqualToString:@"com.google.Drive"]) {
+    return CALLER_APP_GOOGLE_DRIVE;
+  }
+  if ([source_app_id isEqualToString:@"com.google.b612"]) {
+    return CALLER_APP_GOOGLE_EARTH;
+  }
+  if ([source_app_id isEqualToString:@"com.google.ios.youtube"]) {
+    return CALLER_APP_GOOGLE_YOUTUBE;
+  }
+  if ([source_app_id isEqualToString:@"com.google.Maps"]) {
+    return CALLER_APP_GOOGLE_MAPS;
+  }
+  if ([source_app_id hasPrefix:@"com.google."]) {
+    return CALLER_APP_GOOGLE_OTHER;
+  }
+  if ([source_app_id isEqualToString:@"com.apple.mobilesafari"]) {
+    return CALLER_APP_APPLE_MOBILESAFARI;
+  }
+  if ([source_app_id hasPrefix:@"com.apple."]) {
+    return CALLER_APP_APPLE_OTHER;
+  }
+
+  return CALLER_APP_OTHER;
+}
+
+// LINT.IfChange(IsCallerAppFirstParty)
+bool IsCallerAppFirstParty(MobileSessionCallerApp caller_app) {
   switch (caller_app) {
-    case CallerApp::kGoogleSearch:
-    case CallerApp::kGmail:
-    case CallerApp::kGooglePlus:
-    case CallerApp::kGoogleDrive:
-    case CallerApp::kGoogleEarth:
-    case CallerApp::kGoogleOther:
-    case CallerApp::kYoutube:
-    case CallerApp::kGoogleMaps:
-    case CallerApp::kChrome:
-    case CallerApp::kExperienceKitCatalog:
+    case CALLER_APP_GOOGLE_SEARCH:
+    case CALLER_APP_GOOGLE_GMAIL:
+    case CALLER_APP_GOOGLE_PLUS:
+    case CALLER_APP_GOOGLE_DRIVE:
+    case CALLER_APP_GOOGLE_EARTH:
+    case CALLER_APP_GOOGLE_OTHER:
+    case CALLER_APP_GOOGLE_YOUTUBE:
+    case CALLER_APP_GOOGLE_MAPS:
+    case CALLER_APP_GOOGLE_CHROME_SHARE_EXTENSION:
+    case CALLER_APP_GOOGLE_CHROME_OPEN_EXTENSION:
+    case CALLER_APP_GOOGLE_CHROME:
       return true;
-    case CallerApp::kOtherApp:
+    case CALLER_APP_OTHER:
+    case CALLER_APP_APPLE_MOBILESAFARI:
+    case CALLER_APP_APPLE_OTHER:
+    case CALLER_APP_THIRD_PARTY:
+    case CALLER_APP_NOT_AVAILABLE:
+    case MOBILE_SESSION_CALLER_APP_COUNT:
       return false;
   }
 }
+// LINT.ThenChange(//ios/chrome/app/startup/app_launch_metrics.h:MobileSessionCallerApp)
 
 bool IsCallerAppAllowListedForAISummarization(NSString* caller_app_id) {
   if (!IsAppSwitcherAISummarizationEnabled()) {
@@ -103,4 +182,54 @@ bool IsCallerAppAllowListedForApplicationMode(NSString* caller_app_id) {
     return true;
   }
   return false;
+}
+
+bool IsAppSwitcherAISummarizationTestingExternalURLEnabled() {
+  if (!IsAppSwitcherAISummarizationEnabled()) {
+    return false;
+  }
+  return experimental_flags::
+      IsAppSwitcherAISummarizationTestingExternalURLEnabled();
+}
+
+void SaveFieldTrialValuesForGroupApp() {
+  NSUserDefaults* shared_defaults = app_group::GetCommonGroupUserDefaults();
+  NSNumber* supports_show_default_browser_promo = @YES;
+
+  NSMutableDictionary* capabilities = [[shared_defaults
+      dictionaryForKey:app_group::kChromeCapabilitiesPreference] mutableCopy];
+  if (!capabilities) {
+    capabilities = [[NSMutableDictionary alloc] init];
+  }
+
+  [capabilities setObject:supports_show_default_browser_promo
+                   forKey:app_group::kChromeShowDefaultBrowserPromoCapability];
+
+  [capabilities
+      setObject:@(IsShareDefaultBrowserStatusEnabled())
+         forKey:app_group::kChromeSupportShareDefaultBrowserStatusCapability];
+
+  [capabilities
+      setObject:@[ app_group::kYoutubeBundleID ]
+         forKey:app_group::kChromeSupportOpenLinksParametersFromCapability];
+
+  if (!IsAppSwitcherAISummarizationEnabled()) {
+    [capabilities
+        removeObjectForKey:app_group::kChromeSupportsAISummarizationCapability];
+    [capabilities
+        removeObjectForKey:app_group::kChromeUserIsEligibleForGeminiCapability];
+  }
+
+  [shared_defaults setObject:capabilities
+                      forKey:app_group::kChromeCapabilitiesPreference];
+}
+
+bool IsXCallbackAppGroupCommandPath(NSString* path) {
+  NSString* expected_path = [NSString
+      stringWithFormat:@"/%s", app_group::kChromeAppGroupXCallbackCommand];
+  return [path isEqualToString:expected_path];
+}
+
+bool IsXCallbackOpenCommandPath(NSString* path) {
+  return [path isEqualToString:kXCallbackOpenCommandPath];
 }

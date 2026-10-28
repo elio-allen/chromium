@@ -8,6 +8,7 @@
 #include <optional>
 
 #include "third_party/skia/include/core/SkRegion.h"
+#include "ui/base/models/image_model.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/views/widget/widget_delegate.h"
 
@@ -30,9 +31,9 @@ class OmniboxEverywhereWidgetDelegate : public views::WidgetDelegate {
   int NonClientHitTest(const gfx::Point& point) const;
 
   // views::WidgetDelegate:
-  bool ShouldDescendIntoChildForEventHandling(
-      gfx::NativeView child,
-      const gfx::Point& location) override;
+  ui::ImageModel GetWindowIcon() override;
+  ui::ImageModel GetWindowAppIcon() override;
+  std::u16string GetWindowTitle() const override;
 
  private:
   std::optional<SkRegion> draggable_region_;

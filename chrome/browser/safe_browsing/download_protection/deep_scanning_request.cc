@@ -23,6 +23,7 @@
 #include "chrome/browser/enterprise/connectors/common.h"
 #include "chrome/browser/enterprise/connectors/connectors_service.h"
 #include "chrome/browser/enterprise/connectors/reporting/reporting_event_router_factory.h"
+#include "chrome/browser/enterprise/data_protection/data_protection_features.h"
 #include "chrome/browser/policy/dm_token_utils.h"
 #include "chrome/browser/safe_browsing/cloud_content_scanning/deep_scanning_utils.h"
 #include "chrome/browser/safe_browsing/cloud_content_scanning/file_analysis_request.h"
@@ -57,11 +58,10 @@
 
 #if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
 #include "chrome/browser/enterprise/connectors/analysis/content_analysis_dialog_controller.h"
-#include "chrome/browser/enterprise/data_protection/data_protection_features.h"
 #endif  // BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
 
 #if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -87,16 +87,15 @@ GetHighestPrecedenceForceSaveToCloudDestination(
       (destination_1 == TriggeredRule::CORP_G_DRIVE ||
        destination_2 == TriggeredRule::CORP_G_DRIVE)) {
     return TriggeredRule::CORP_G_DRIVE;
-  } else if (base::FeatureList::IsEnabled(
-                 enterprise_data_protection::kEnableForceDownloadToOneDrive) &&
-             (destination_1 == TriggeredRule::CORP_ONEDRIVE ||
-              destination_2 == TriggeredRule::CORP_ONEDRIVE)) {
+  } else if (destination_1 == TriggeredRule::CORP_ONEDRIVE ||
+             destination_2 == TriggeredRule::CORP_ONEDRIVE) {
     return TriggeredRule::CORP_ONEDRIVE;
   }
 #endif  // BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
   return TriggeredRule::UNSPECIFIED;
 }
 
+#if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
 TriggeredRule::CustomRuleMessage GetForceSaveToCloudCustomRuleMessage(
     const enterprise_connectors::ContentAnalysisResponse& response) {
   for (const auto& result : response.results()) {
@@ -110,7 +109,6 @@ TriggeredRule::CustomRuleMessage GetForceSaveToCloudCustomRuleMessage(
   return TriggeredRule::CustomRuleMessage();
 }
 
-#if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
 bool CanBypassForceSaveDialogForAutomation() {
   return base::CommandLine::ForCurrentProcess()->HasSwitch(
       switches::kEnableAutomation);
@@ -344,7 +342,8 @@ DownloadCheckResult ResponseToDownloadCheckResult(
             dlp_action, rule.action());
 
         if (rule.has_force_save_to_cloud_destination()) {
-          DCHECK(rule.action() == TriggeredRule::FORCE_SAVE_TO_CLOUD);
+          CHECK(rule.action() == TriggeredRule::FORCE_SAVE_TO_CLOUD,
+                base::NotFatalUntil::M162);
           force_save_to_cloud_destination =
               GetHighestPrecedenceForceSaveToCloudDestination(
                   force_save_to_cloud_destination,
@@ -368,6 +367,7 @@ DownloadCheckResult ResponseToDownloadCheckResult(
       case enterprise_connectors::TriggeredRule::KEEP_IN_MANAGED_CHROME:
       case enterprise_connectors::TriggeredRule::ACTION_UNSPECIFIED:
         break;
+      case enterprise_connectors::TriggeredRule::JUSTIFICATION_REQUIRED:
       case enterprise_connectors::TriggeredRule::FORCE_SAVE_TO_CLOUD:
         NOTREACHED();
     }
@@ -388,6 +388,7 @@ DownloadCheckResult ResponseToDownloadCheckResult(
       case enterprise_connectors::TriggeredRule::BLOCK:
         return DownloadCheckResult::SENSITIVE_CONTENT_BLOCK;
       case enterprise_connectors::TriggeredRule::WARN:
+      case enterprise_connectors::TriggeredRule::JUSTIFICATION_REQUIRED:
         return DownloadCheckResult::SENSITIVE_CONTENT_WARNING;
       case enterprise_connectors::TriggeredRule::REPORT_ONLY:
       case enterprise_connectors::TriggeredRule::KEEP_IN_MANAGED_CHROME:
@@ -515,7 +516,7 @@ void DeepScanningRequest::Start() {
 }
 
 void DeepScanningRequest::StartSingleFileScan() {
-  DCHECK(!scanning_started_);
+  CHECK(!scanning_started_, base::NotFatalUntil::M162);
   scanning_started_ = true;
   enterprise_connectors::IncrementCrashKey(
       enterprise_connectors::ScanningCrashKey::PENDING_FILE_DOWNLOADS);
@@ -560,7 +561,7 @@ void DeepScanningRequest::StartSingleFileScan() {
 }
 
 void DeepScanningRequest::StartSavePackageScan() {
-  DCHECK(!scanning_started_);
+  CHECK(!scanning_started_, base::NotFatalUntil::M162);
   scanning_started_ = true;
   enterprise_connectors::IncrementCrashKey(
       enterprise_connectors::ScanningCrashKey::PENDING_FILE_DOWNLOADS,
@@ -591,10 +592,10 @@ void DeepScanningRequest::StartSavePackageScan() {
         &DeepScanningRequest::OnGetPackageFileRequestData,
         weak_ptr_factory_.GetWeakPtr(), tmp_path_and_final_path.second,
         file_location, std::move(request)));
-    DCHECK_LT(i, tasks.size());
+    CHECK_LT(i, tasks.size(), base::NotFatalUntil::M162);
     tasks[i++].request = request_raw;
   }
-  DCHECK_EQ(i, tasks.size());
+  CHECK_EQ(i, tasks.size(), base::NotFatalUntil::M162);
 
   // Keep a reference to `file_opening_job` in each task to ensure
   // its lifetime will be longer than the request.
@@ -763,7 +764,7 @@ void DeepScanningRequest::OnConsumerScanComplete(
   LogDeepScanResult(download_result, trigger_,
                     metadata_->IsTopLevelEncryptedArchive());
 
-  DCHECK(file_metadata_.count(current_path));
+  CHECK(file_metadata_.count(current_path), base::NotFatalUntil::M162);
   file_metadata_.at(current_path).scan_response = std::move(response);
   MaybeFinishRequest(download_result);
 }
@@ -775,10 +776,6 @@ void DeepScanningRequest::OnEnterpriseScanComplete(
   CHECK(IsEnterpriseTriggered());
 
   DownloadCheckResult download_result = DownloadCheckResult::UNKNOWN;
-
-  enterprise_connectors::ContentAnalysisResponse::Result::TriggeredRule::
-      CustomRuleMessage custom_message =
-          GetForceSaveToCloudCustomRuleMessage(response);
 
   if (result == enterprise_connectors::ScanRequestUploadResult::kFileTooLarge &&
       analysis_settings_.block_large_files) {
@@ -812,7 +809,7 @@ void DeepScanningRequest::OnEnterpriseScanComplete(
   // DownloadCheckResult. Can be kept here.
   Profile* profile =
       Profile::FromBrowserContext(metadata_->GetBrowserContext());
-  DCHECK(file_metadata_.count(current_path));
+  CHECK(file_metadata_.count(current_path), base::NotFatalUntil::M162);
   file_metadata_.at(current_path).scan_response = std::move(response);
   if (profile) {
     const auto& file_metadata = file_metadata_.at(current_path);
@@ -823,7 +820,7 @@ void DeepScanningRequest::OnEnterpriseScanComplete(
         reporting_event_router, this, /*source=*/"",
         /*destination=*/GetDestinationString(download_result),
         file_metadata.filename, file_metadata.sha256, file_metadata.mime_type,
-        enterprise_connectors::kFileDownloadDataTransferEventTrigger,
+        enterprise_connectors::DataTransferEventTrigger::FILE_DOWNLOAD,
         /*content_transfer_method=*/"", GetContentAreaAccountEmail(),
         file_metadata.size, result, file_metadata.scan_response));
 
@@ -847,6 +844,10 @@ void DeepScanningRequest::OnEnterpriseScanComplete(
                          weak_ptr_factory_.GetWeakPtr(),
                          DownloadCheckResult::SENSITIVE_CONTENT_BLOCK);
 
+      enterprise_connectors::ContentAnalysisResponse::Result::TriggeredRule::
+          CustomRuleMessage custom_message =
+              GetForceSaveToCloudCustomRuleMessage(
+                  file_metadata_.at(current_path).scan_response);
       ShowForceSaveToCloudDialog(
           std::move(keep_closure), std::move(discard_closure),
           force_save_web_contents, custom_message, /*file_count=*/1);
@@ -991,6 +992,11 @@ DeepScanningRequest::frame_url_chain() const {
   return metadata_->CollectFrameUrls();
 }
 
+std::optional<ExtensionTelemetryReportRequest::ExtensionInfo>
+DeepScanningRequest::extension_initiator() const {
+  return metadata_->extension_initiator();
+}
+
 content::WebContents* DeepScanningRequest::web_contents() const {
   return metadata_->web_contents();
 }
@@ -1051,7 +1057,7 @@ void DeepScanningRequest::FinishRequest(DownloadCheckResult result) {
       enterprise_connectors::EventResult::UNKNOWN;
 
   if (!report_callbacks_.empty()) {
-    DCHECK(IsEnterpriseTriggered());
+    CHECK(IsEnterpriseTriggered(), base::NotFatalUntil::M162);
 
     if (ReportOnlyScan()) {
       // The event result in report-only will always match whatever danger
@@ -1076,7 +1082,17 @@ void DeepScanningRequest::FinishRequest(DownloadCheckResult result) {
               : GetEventResult(result, profile);
     }
 
-    report_callbacks_.Notify(event_result);
+    if (!ReportOnlyScan() &&
+        base::FeatureList::IsEnabled(
+            enterprise_data_protection::
+                kEnableForceSaveToCloudDeferredReporting) &&
+        (result == DownloadCheckResult::FORCE_SAVE_TO_GDRIVE ||
+         result == DownloadCheckResult::FORCE_SAVE_TO_ONEDRIVE)) {
+      // Skip reporting entirely as the force save to cloud reporting is
+      // handled in a separate flow.
+    } else {
+      report_callbacks_.Notify(event_result);
+    }
   }
 
   // If the deep-scanning result is unknown for whatever reason, `callback_`
@@ -1104,6 +1120,11 @@ void DeepScanningRequest::FinishRequest(DownloadCheckResult result) {
        event_result == enterprise_connectors::EventResult::BYPASSED ||
        result == DownloadCheckResult::UNKNOWN) &&
       metadata_->IsObfuscated()) {
+    // Guard against the DOWNLOAD_DANGER_TYPE_USER_VALIDATED path, which a
+    // single user bypass also reaches, deobfuscating the file a second time.
+    // Must happen before `metadata_` is reset below.
+    metadata_->MarkDeobfuscated();
+
     base::ThreadPool::PostTaskAndReplyWithResult(
         FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
         base::BindOnce(&enterprise_obfuscation::DeobfuscateFileInPlace,
@@ -1152,13 +1173,14 @@ content::WebContents* DeepScanningRequest::MaybeGetWebContentsForForceSave(
     return nullptr;
   }
 
-  const auto& force_save_to_cloud_feature =
-      result == DownloadCheckResult::FORCE_SAVE_TO_GDRIVE
-          ? enterprise_data_protection::kEnableForceDownloadToCloud
-          : enterprise_data_protection::kEnableForceDownloadToOneDrive;
-
-  if (!base::FeatureList::IsEnabled(force_save_to_cloud_feature)) {
+  if (result == DownloadCheckResult::FORCE_SAVE_TO_GDRIVE &&
+      !base::FeatureList::IsEnabled(
+          enterprise_data_protection::kEnableForceDownloadToCloud)) {
     result = DownloadCheckResult::SENSITIVE_CONTENT_BLOCK;
+    return nullptr;
+  }
+
+  if (ReportOnlyScan()) {
     return nullptr;
   }
 

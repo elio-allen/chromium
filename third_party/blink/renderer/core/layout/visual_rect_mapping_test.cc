@@ -2141,4 +2141,205 @@ TEST_P(VisualRectMappingTest,
   EXPECT_LT(slow_path_enclosing.height(), slow_path_enclosing.width());
 }
 
+TEST_P(VisualRectMappingTest, ElementCanvasTransformVisualRectMapping) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  SetBodyInnerHTML(R"HTML(
+    <style>body { margin: 0; }</style>
+    <canvas content=drawable id="canvas" style="width: 200px; height: 200px">
+      <div id="target" drawable style="width: 100px; height: 100px"></div>
+    </canvas>
+  )HTML");
+
+  auto* target_element = GetDocument().getElementById(AtomicString("target"));
+  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* target = target_element->GetLayoutObject();
+  auto* canvas = canvas_element->GetLayoutObject();
+
+  target_element->SetCanvasTransform(gfx::Transform::MakeTranslation(50, 60));
+  UpdateAllLifecyclePhasesForTest();
+
+  PhysicalRect local_rect(0, 0, 100, 100);
+  PhysicalRect mapper_rect = local_rect;
+  ASSERT_TRUE(target->MapToVisualRectInAncestorSpace(
+      To<LayoutBoxModelObject>(canvas), mapper_rect,
+      {VisualRectFlag::kUseGeometryMapper}));
+  PhysicalRect slow_rect = local_rect;
+  ASSERT_TRUE(target->MapToVisualRectInAncestorSpace(
+      To<LayoutBoxModelObject>(canvas), slow_rect, {}));
+  EXPECT_EQ(mapper_rect, PhysicalRect(50, 60, 100, 100));
+  EXPECT_EQ(mapper_rect, slow_rect);
+}
+
+TEST_P(VisualRectMappingTest, NestedElementCanvasTransformVisualRectMapping) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  SetBodyInnerHTML(R"HTML(
+    <style>body { margin: 0; }</style>
+    <canvas content=drawable id="canvas" style="width: 400px; height: 200px">
+      <div id="a" drawable style="width: 100px; height: 100px; background: blue;">
+        <div id="b" drawable style="width: 50px; height: 50px; background: green;"></div>
+      </div>
+    </canvas>
+  )HTML");
+
+  auto* a_element = GetDocument().getElementById(AtomicString("a"));
+  auto* b_element = GetDocument().getElementById(AtomicString("b"));
+  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* b = b_element->GetLayoutObject();
+  auto* canvas = canvas_element->GetLayoutObject();
+
+  a_element->SetCanvasTransform(gfx::Transform::MakeTranslation(100, 0));
+  b_element->SetCanvasTransform(gfx::Transform::MakeTranslation(0, 100));
+  UpdateAllLifecyclePhasesForTest();
+
+  PhysicalRect local_rect(0, 0, 50, 50);
+  PhysicalRect mapper_rect = local_rect;
+  ASSERT_TRUE(b->MapToVisualRectInAncestorSpace(
+      To<LayoutBoxModelObject>(canvas), mapper_rect,
+      {VisualRectFlag::kUseGeometryMapper}));
+  PhysicalRect slow_rect = local_rect;
+  ASSERT_TRUE(b->MapToVisualRectInAncestorSpace(
+      To<LayoutBoxModelObject>(canvas), slow_rect, {}));
+  EXPECT_EQ(mapper_rect, PhysicalRect(0, 100, 50, 50));
+  EXPECT_EQ(mapper_rect, slow_rect);
+}
+
+TEST_P(VisualRectMappingTest,
+       NestedElementCanvasTransformWithOffsetVisualRectMapping) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  SetBodyInnerHTML(R"HTML(
+    <style>body { margin: 0; }</style>
+    <canvas content=drawable id="canvas" style="width: 400px; height: 200px">
+      <div id="a" drawable style="width: 100px; height: 100px; background: blue;">
+        <div id="b" drawable style="margin-top: 20px; width: 50px; height: 50px; background: green;"></div>
+      </div>
+    </canvas>
+  )HTML");
+
+  auto* a_element = GetDocument().getElementById(AtomicString("a"));
+  auto* b_element = GetDocument().getElementById(AtomicString("b"));
+  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* b = b_element->GetLayoutObject();
+  auto* canvas = canvas_element->GetLayoutObject();
+
+  a_element->SetCanvasTransform(gfx::Transform::MakeTranslation(100, 0));
+  b_element->SetCanvasTransform(gfx::Transform::MakeTranslation(0, 100));
+  UpdateAllLifecyclePhasesForTest();
+
+  PhysicalRect local_rect(0, 0, 50, 50);
+  PhysicalRect mapper_rect = local_rect;
+  ASSERT_TRUE(b->MapToVisualRectInAncestorSpace(
+      To<LayoutBoxModelObject>(canvas), mapper_rect,
+      {VisualRectFlag::kUseGeometryMapper}));
+  PhysicalRect slow_rect = local_rect;
+  ASSERT_TRUE(b->MapToVisualRectInAncestorSpace(
+      To<LayoutBoxModelObject>(canvas), slow_rect, {}));
+  EXPECT_EQ(mapper_rect, PhysicalRect(0, 100, 50, 50));
+  EXPECT_EQ(mapper_rect, slow_rect);
+}
+
+TEST_P(
+    VisualRectMappingTest,
+    NestedElementCanvasTransformChildWithoutCanvasTransformVisualRectMapping) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  SetBodyInnerHTML(R"HTML(
+    <style>body { margin: 0; }</style>
+    <canvas content=drawable id="canvas" style="width: 400px; height: 200px">
+      <div id="a" drawable style="width: 100px; height: 100px; background: blue;">
+        <div id="b" drawable style="width: 50px; height: 50px; background: green;"></div>
+      </div>
+    </canvas>
+  )HTML");
+
+  auto* a_element = GetDocument().getElementById(AtomicString("a"));
+  auto* b_element = GetDocument().getElementById(AtomicString("b"));
+  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* b = b_element->GetLayoutObject();
+  auto* canvas = canvas_element->GetLayoutObject();
+
+  a_element->SetCanvasTransform(gfx::Transform::MakeTranslation(100, 0));
+  UpdateAllLifecyclePhasesForTest();
+
+  PhysicalRect local_rect(0, 0, 50, 50);
+  PhysicalRect mapper_rect = local_rect;
+  ASSERT_TRUE(b->MapToVisualRectInAncestorSpace(
+      To<LayoutBoxModelObject>(canvas), mapper_rect,
+      {VisualRectFlag::kUseGeometryMapper}));
+  PhysicalRect slow_rect = local_rect;
+  ASSERT_TRUE(b->MapToVisualRectInAncestorSpace(
+      To<LayoutBoxModelObject>(canvas), slow_rect, {}));
+  EXPECT_EQ(mapper_rect, PhysicalRect(0, 0, 50, 50));
+  EXPECT_EQ(mapper_rect, slow_rect);
+}
+
+TEST_P(VisualRectMappingTest,
+       NestedElementCanvasTransformNonDrawableChildVisualRectMapping) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  SetBodyInnerHTML(R"HTML(
+    <style>body { margin: 0; }</style>
+    <canvas content=drawable id="canvas" style="width: 400px; height: 200px">
+      <div id="a" drawable style="width: 100px; height: 100px; background: blue;">
+        <div id="b" style="width: 50px; height: 50px; background: green;"></div>
+      </div>
+    </canvas>
+  )HTML");
+
+  auto* a_element = GetDocument().getElementById(AtomicString("a"));
+  auto* b_element = GetDocument().getElementById(AtomicString("b"));
+  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* b = b_element->GetLayoutObject();
+  auto* canvas = canvas_element->GetLayoutObject();
+
+  a_element->SetCanvasTransform(gfx::Transform::MakeTranslation(100, 0));
+  UpdateAllLifecyclePhasesForTest();
+
+  PhysicalRect local_rect(0, 0, 50, 50);
+  PhysicalRect mapper_rect = local_rect;
+  ASSERT_TRUE(b->MapToVisualRectInAncestorSpace(
+      To<LayoutBoxModelObject>(canvas), mapper_rect,
+      {VisualRectFlag::kUseGeometryMapper}));
+  PhysicalRect slow_rect = local_rect;
+  ASSERT_TRUE(b->MapToVisualRectInAncestorSpace(
+      To<LayoutBoxModelObject>(canvas), slow_rect, {}));
+  EXPECT_EQ(mapper_rect, PhysicalRect(100, 0, 50, 50));
+  EXPECT_EQ(mapper_rect, slow_rect);
+}
+
+TEST_P(VisualRectMappingTest,
+       NestedElementCanvasTransformInlineVisualRectMapping) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  LoadAhem();
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      body { margin: 0; }
+      span { font: 50px/1 Ahem; }
+    </style>
+    <canvas content=drawable id="canvas" style="width: 400px; height: 200px">
+      <div id="a" drawable style="width: 100px; height: 100px; background: blue;">
+        <span id="b" drawable style="color: green;">X</span>
+      </div>
+    </canvas>
+  )HTML");
+
+  auto* a_element = GetDocument().getElementById(AtomicString("a"));
+  auto* b_element = GetDocument().getElementById(AtomicString("b"));
+  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* b = b_element->GetLayoutObject();
+  auto* canvas = canvas_element->GetLayoutObject();
+
+  a_element->SetCanvasTransform(gfx::Transform::MakeTranslation(100, 0));
+  b_element->SetCanvasTransform(gfx::Transform::MakeTranslation(0, 100));
+  UpdateAllLifecyclePhasesForTest();
+
+  PhysicalRect local_rect(0, 0, 50, 50);
+  PhysicalRect mapper_rect = local_rect;
+  ASSERT_TRUE(b->MapToVisualRectInAncestorSpace(
+      To<LayoutBoxModelObject>(canvas), mapper_rect,
+      {VisualRectFlag::kUseGeometryMapper}));
+  PhysicalRect slow_rect = local_rect;
+  ASSERT_TRUE(b->MapToVisualRectInAncestorSpace(
+      To<LayoutBoxModelObject>(canvas), slow_rect, {}));
+  EXPECT_EQ(mapper_rect, PhysicalRect(0, 100, 50, 50));
+  EXPECT_EQ(mapper_rect, slow_rect);
+}
+
 }  // namespace blink

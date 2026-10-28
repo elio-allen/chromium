@@ -41,7 +41,6 @@
 #include "chrome/browser/ash/app_mode/kiosk_app_types.h"
 #include "chrome/browser/ash/base/locale_util.h"
 #include "chrome/browser/ash/boot_times_recorder/boot_times_recorder.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
 #include "chrome/browser/ash/first_run/first_run.h"
 #include "chrome/browser/ash/login/existing_user_controller.h"
 #include "chrome/browser/ash/login/helper.h"
@@ -76,9 +75,8 @@
 #include "chrome/browser/ui/webui/ash/login/oobe_ui.h"
 #include "chrome/browser/ui/webui/ash/login/os_install_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/welcome_screen_handler.h"
-#include "chrome/common/chrome_constants.h"
-#include "chrome/common/chrome_switches.h"
 #include "chromeos/ash/components/audio/sounds.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/components/language_preferences/language_preferences.h"
@@ -104,6 +102,7 @@
 #include "content/public/browser/web_ui.h"
 #include "services/audio/public/cpp/sounds/global_sounds_manager.h"
 #include "services/audio/public/cpp/sounds/sounds_manager.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
 #include "ui/aura/window.h"
 #include "ui/base/ime/ash/extension_ime_util.h"
@@ -198,7 +197,7 @@ bool ShouldShowSigninScreen(const PrefService& local_state,
 }
 
 void MaybeShowDeviceDisabledScreen() {
-  DCHECK(LoginDisplayHost::default_host());
+  CHECK(LoginDisplayHost::default_host(), base::NotFatalUntil::M162);
   if (!g_browser_process->platform_part()->device_disabling_manager()) {
     // Device disabled check will be done in the DeviceDisablingManager.
     return;
@@ -243,20 +242,6 @@ void MaybeShutdownLoginDisplayHostWebUI() {
   }
 }
 
-// Safely check if the UserContext is stored in the WizardContext;
-bool ShouldPreserveUserContext() {
-  if (!features::IsOobeAddUserDuringEnrollmentEnabled() ||
-      !LoginDisplayHost::default_host()) {
-    return false;
-  }
-  WizardContext* wizard_context =
-      LoginDisplayHost::default_host()->GetWizardContext();
-  if (!wizard_context || !wizard_context->timebound_user_context_holder) {
-    return false;
-  }
-  return true;
-}
-
 // ShowLoginWizard is split into two parts. This function is sometimes called
 // from TriggerShowLoginWizardFinish() directly, and sometimes from
 // OnLanguageSwitchedCallback() (if locale was updated).
@@ -267,6 +252,8 @@ void ShowLoginWizardFinish(
 
   // TODO(crbug.com/403154552): Avoid g_browser_process.
   PrefService* local_state = g_browser_process->local_state();
+  ::metrics::MetricsService* metrics_service =
+      g_browser_process->metrics_service();
   ApplicationLocaleStorage* application_locale_storage =
       g_browser_process->GetFeatures()->application_locale_storage();
   scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory =
@@ -282,15 +269,7 @@ void ShowLoginWizardFinish(
     return;
   }
 
-  std::unique_ptr<TimeboundUserContextHolder> user_context;
   if (ShouldShowSigninScreen(CHECK_DEREF(local_state), first_screen)) {
-    if (ShouldPreserveUserContext()) {
-      // Move the user context to the local variable before it's destroyed.
-      WizardContext* wizard_context =
-          LoginDisplayHost::default_host()->GetWizardContext();
-      CHECK(wizard_context);
-      user_context = std::move(wizard_context->timebound_user_context_holder);
-    }
     // Shutdown WebUI host to replace with the Mojo one.
     MaybeShutdownLoginDisplayHostWebUI();
   }
@@ -306,20 +285,14 @@ void ShowLoginWizardFinish(
     display_host = LoginDisplayHost::default_host();
   } else if (ShouldShowSigninScreen(CHECK_DEREF(local_state), first_screen)) {
     display_host = new LoginDisplayHostMojo(
-        local_state, application_locale_storage, shared_url_loader_factory,
-        browser_policy_connector_ash, DisplayedScreen::SIGN_IN_SCREEN,
+        local_state, metrics_service, application_locale_storage,
+        shared_url_loader_factory, browser_policy_connector_ash,
+        DisplayedScreen::SIGN_IN_SCREEN,
         /*update_geolocation_usage_allowed=*/true);
   } else {
     display_host = new LoginDisplayHostWebUI(
-        local_state, application_locale_storage, shared_url_loader_factory,
-        browser_policy_connector_ash);
-  }
-
-  if (features::IsOobeAddUserDuringEnrollmentEnabled() && user_context) {
-    // Restore the user context within the wizard context.
-    WizardContext* wizard_context = display_host->GetWizardContext();
-    CHECK(wizard_context);
-    wizard_context->timebound_user_context_holder = std::move(user_context);
+        local_state, metrics_service, application_locale_storage,
+        shared_url_loader_factory, browser_policy_connector_ash);
   }
 
   // Restore system timezone.
@@ -351,8 +324,8 @@ void ShowLoginWizardFinish(
 
   // This step requires the session manager to have been initialized and login
   // display host to be created.
-  DCHECK(session_manager::SessionManager::Get());
-  DCHECK(LoginDisplayHost::default_host());
+  CHECK(session_manager::SessionManager::Get(), base::NotFatalUntil::M162);
+  CHECK(LoginDisplayHost::default_host(), base::NotFatalUntil::M162);
   // Postpone loading wallpaper if the booting animation might be played.
   if (!features::IsBootAnimationEnabled() ||
       session_manager::SessionManager::Get()->session_state() !=
@@ -511,10 +484,12 @@ class LoginDisplayHostWebUI::KeyboardDrivenOobeKeyHandler
 
 LoginDisplayHostWebUI::LoginDisplayHostWebUI(
     PrefService* local_state,
+    ::metrics::MetricsService* metrics_service,
     ApplicationLocaleStorage* application_locale_storage,
     scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
     policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash)
     : LoginDisplayHostCommon(local_state,
+                             metrics_service,
                              application_locale_storage,
                              std::move(shared_url_loader_factory),
                              browser_policy_connector_ash,
@@ -650,10 +625,12 @@ void LoginDisplayHostWebUI::StartWizard(OobeScreenId first_screen) {
   } else {
     // TODO(crbug.com/404133029): Avoid using g_browser_process.
     wizard_controller_ = std::make_unique<WizardController>(
-        &local_state_.get(), g_browser_process->metrics_service(),
+        &local_state_.get(), &metrics_service_.get(),
         &application_locale_storage_.get(), shared_url_loader_factory_.get(),
         &browser_policy_connector_ash_.get(),
         g_browser_process->platform_part()->component_manager_ash(),
+        g_browser_process->platform_part()
+            ->device_restriction_schedule_controller(),
         GetWizardContext());
     NotifyWizardCreated();
     wizard_controller_->Init(first_screen);
@@ -723,10 +700,12 @@ void LoginDisplayHostWebUI::OnStartAppLaunch() {
   if (!wizard_controller_) {
     // TODO(crbug.com/404133029): Avoid using g_browser_process.
     wizard_controller_ = std::make_unique<WizardController>(
-        &local_state_.get(), g_browser_process->metrics_service(),
+        &local_state_.get(), &metrics_service_.get(),
         &application_locale_storage_.get(), shared_url_loader_factory_.get(),
         &browser_policy_connector_ash_.get(),
         g_browser_process->platform_part()->component_manager_ash(),
+        g_browser_process->platform_part()
+            ->device_restriction_schedule_controller(),
         GetWizardContext());
     NotifyWizardCreated();
   }
@@ -841,7 +820,9 @@ void LoginDisplayHostWebUI::OnViewsBootingAnimationPlayed() {
 void LoginDisplayHostWebUI::FinishBootingAnimation() {
   CHECK(features::IsBootAnimationEnabled());
   ash::Shell::Get()->booting_animation_controller()->Finish();
-  GetOobeUI()->GetCoreOobe()->TriggerDown();
+  if (GetOobeUI()) {
+    GetOobeUI()->GetCoreOobe()->TriggerDown();
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -868,7 +849,7 @@ void LoginDisplayHostWebUI::OnWillRemoveView(views::Widget* widget,
 ////////////////////////////////////////////////////////////////////////////////
 // LoginDisplayHostWebUI, views::WidgetObserver:
 void LoginDisplayHostWebUI::OnWidgetDestroying(views::Widget* widget) {
-  DCHECK_EQ(login_window_, widget);
+  CHECK_EQ(login_window_, widget, base::NotFatalUntil::M162);
   login_window_->RemoveRemovalsObserver(this);
   login_window_->RemoveObserver(this);
 
@@ -892,9 +873,11 @@ void LoginDisplayHostWebUI::OnCurrentScreenChanged(OobeScreenId current_screen,
     // Notify that the OOBE page is ready and the first screen is shown. It
     // might happen that front-end part isn't fully initialized yet, so wait for
     // it to happen before notifying.
-    GetOobeUI()->IsJSReady(base::BindOnce(
-        &session_manager::SessionManager::NotifyLoginOrLockScreenVisible,
-        base::Unretained(session_manager::SessionManager::Get())));
+    if (GetOobeUI()) {
+      GetOobeUI()->IsJSReady(base::BindOnce(
+          &session_manager::SessionManager::NotifyLoginOrLockScreenVisible,
+          base::Unretained(session_manager::SessionManager::Get())));
+    }
   }
 }
 
@@ -906,7 +889,9 @@ void LoginDisplayHostWebUI::OnBackdropLoaded() {
 }
 
 void LoginDisplayHostWebUI::OnDestroyingOobeUI() {
-  GetOobeUI()->RemoveObserver(this);
+  if (GetOobeUI()) {
+    GetOobeUI()->RemoveObserver(this);
+  }
 }
 
 bool LoginDisplayHostWebUI::IsOobeUIDialogVisible() const {
@@ -969,8 +954,8 @@ void LoginDisplayHostWebUI::ShowWebUI() {
   session_observation_.Reset();
   show_webui_guard_.Stop();
 
-  DCHECK(login_window_);
-  DCHECK(login_view_);
+  CHECK(login_window_, base::NotFatalUntil::M162);
+  CHECK(login_view_, base::NotFatalUntil::M162);
 
   VLOG(1) << "Login WebUI >> Show already initialized UI";
   login_window_->Show();
@@ -1126,7 +1111,9 @@ void LoginDisplayHostWebUI::UpdateOobeDialogState(OobeDialogState state) {
 }
 
 void LoginDisplayHostWebUI::HandleDisplayCaptivePortal() {
-  GetOobeUI()->GetErrorScreen()->FixCaptivePortal();
+  if (GetOobeUI()) {
+    GetOobeUI()->GetErrorScreen()->FixCaptivePortal();
+  }
 }
 
 void LoginDisplayHostWebUI::OnCancelPasswordChangedFlow() {}
@@ -1234,6 +1221,8 @@ void LoginDisplayHostWebUI::PlayStartupSoundIfPossible() {
 void ShowLoginWizard(OobeScreenId first_screen) {
   // TODO(crbug.com/403154552): Avoid using g_browser_process.
   PrefService& local_state = CHECK_DEREF(g_browser_process->local_state());
+  ::metrics::MetricsService* metrics_service =
+      g_browser_process->metrics_service();
   ApplicationLocaleStorage* application_locale_storage =
       g_browser_process->GetFeatures()->application_locale_storage();
   scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory =
@@ -1275,8 +1264,8 @@ void ShowLoginWizard(OobeScreenId first_screen) {
       first_screen == ash::OOBE_SCREEN_UNKNOWN) {
     // Manages its own lifetime. See ShutdownDisplayHost().
     auto* display_host = new LoginDisplayHostWebUI(
-        &local_state, application_locale_storage, shared_url_loader_factory,
-        browser_policy_connector_ash);
+        &local_state, metrics_service, application_locale_storage,
+        shared_url_loader_factory, browser_policy_connector_ash);
     // Shows networks screen instead of enrollment screen to resume the
     // interrupted auto start enrollment flow because enrollment screen does
     // not handle flaky network. See http://crbug.com/41082635
@@ -1291,7 +1280,7 @@ void ShowLoginWizard(OobeScreenId first_screen) {
 
   if (StartupUtils::IsEulaAccepted(local_state)) {
     DelayNetworkCall(ServicesCustomizationDocument::GetInstance()
-                         ->EnsureCustomizationAppliedClosure());
+                         .EnsureCustomizationAppliedClosure());
 
     g_browser_process->platform_part()
         ->GetTimezoneResolverManager()
@@ -1357,8 +1346,11 @@ void ShowLoginWizard(OobeScreenId first_screen) {
 }
 
 void SwitchWebUItoMojo() {
-  DCHECK_EQ(LoginDisplayHost::default_host()->GetOobeUI()->display_type(),
-            OobeUI::kOobeDisplay);
+  auto* oobe_ui = LoginDisplayHost::default_host()->GetOobeUI();
+  if (oobe_ui) {
+    CHECK_EQ(oobe_ui->display_type(), OobeUI::kOobeDisplay,
+             base::NotFatalUntil::M162);
+  }
 
   // This replaces WebUI host with the Mojo (views) host.
   ShowLoginWizard(ash::OOBE_SCREEN_UNKNOWN);

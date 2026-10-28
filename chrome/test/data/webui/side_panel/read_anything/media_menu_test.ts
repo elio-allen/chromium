@@ -6,27 +6,17 @@ import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js'
 
 import type {CrToggleElement} from '//resources/cr_elements/cr_toggle/cr_toggle.js';
 import type {MediaMenuElement} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import {DEFAULT_SETTINGS, ReadAnythingSettingsChange, ToolbarEvent} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {ToolbarEvent} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 import {microtasksFinished} from 'chrome-untrusted://webui-test/test_util.js';
 
-import {assertTestSettingsAreNotDefaultSettings, mockMetrics, stubAnimationFrame} from './common.js';
-import {FakeReadingMode} from './fake_reading_mode.js';
-import type {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
+import {setupTestEnvironment, stubAnimationFrame} from './common.js';
 
 suite('MediaMenuElement', () => {
   let mediaMenu: MediaMenuElement;
-  let metrics: TestMetricsBrowserProxy;
-
-  suiteSetup(() => {
-    assertTestSettingsAreNotDefaultSettings();
-  });
 
   setup(() => {
-    document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    const readingMode = new FakeReadingMode();
-    chrome.readingMode = readingMode as unknown as typeof chrome.readingMode;
-    metrics = mockMetrics();
+    setupTestEnvironment();
 
     mediaMenu = document.createElement('media-menu');
     document.body.appendChild(mediaMenu);
@@ -50,113 +40,59 @@ suite('MediaMenuElement', () => {
   });
 
   test('images prop update changes toggle checked state', async () => {
-    mediaMenu.settingsPrefs = {
-      ...mediaMenu.settingsPrefs,
-      imagesEnabled: true,
-    };
+    mediaMenu.imagesEnabled = true;
     await microtasksFinished();
 
     const imagesToggle =
         getImagesButton().querySelector<CrToggleElement>('cr-toggle')!;
     assertTrue(imagesToggle.checked);
 
-    mediaMenu.settingsPrefs = {
-      ...mediaMenu.settingsPrefs,
-      imagesEnabled: false,
-    };
+    mediaMenu.imagesEnabled = false;
     await microtasksFinished();
 
     assertFalse(imagesToggle.checked);
   });
 
   test('links prop update changes toggle checked state', async () => {
-    mediaMenu.settingsPrefs = {
-      ...mediaMenu.settingsPrefs,
-      linksEnabled: true,
-    };
+    mediaMenu.linksEnabled = true;
     await microtasksFinished();
 
     const linksToggle =
         getLinksButton().querySelector<CrToggleElement>('cr-toggle')!;
     assertTrue(linksToggle.checked);
 
-    mediaMenu.settingsPrefs = {
-      ...mediaMenu.settingsPrefs,
-      linksEnabled: false,
-    };
+    mediaMenu.linksEnabled = false;
     await microtasksFinished();
 
     assertFalse(linksToggle.checked);
   });
 
-  test('on images row click toggles images exactly once', async () => {
-    let imagesToggledCount = 0;
-    chrome.readingMode.onImagesEnabledToggled = () => {
-      imagesToggledCount++;
-      chrome.readingMode.imagesEnabled = !chrome.readingMode.imagesEnabled;
-    };
-    chrome.readingMode.imagesEnabled = false;
-    mediaMenu.settingsPrefs = {
-      ...DEFAULT_SETTINGS,
-      imagesEnabled: false,
-    };
-    await microtasksFinished();
+  test('on images row click fires images toggle exactly once', async () => {
+    let imagesEventCount = 0;
+    document.addEventListener(ToolbarEvent.IMAGES, () => imagesEventCount++);
 
     getImagesButton().click();
     await microtasksFinished();
-
-    assertEquals(1, imagesToggledCount);
-    assertTrue(chrome.readingMode.imagesEnabled);
-    assertTrue(
-        getImagesButton().querySelector<CrToggleElement>('cr-toggle')!.checked);
-    assertEquals(
-        ReadAnythingSettingsChange.IMAGES_ENABLED_CHANGE,
-        await metrics.whenCalled('recordTextSettingsChange'));
+    assertEquals(1, imagesEventCount);
 
     // Clicking directly on cr-toggle should also toggle once without double
     // click.
-    const imagesToggle =
-        getImagesButton().querySelector<CrToggleElement>('cr-toggle')!;
-    imagesToggle.click();
+    getImagesButton().querySelector<CrToggleElement>('cr-toggle')!.click();
     await microtasksFinished();
-
-    assertEquals(2, imagesToggledCount);
-    assertFalse(chrome.readingMode.imagesEnabled);
-    assertFalse(imagesToggle.checked);
+    assertEquals(2, imagesEventCount);
   });
 
-  test('on links row click toggles links exactly once', async () => {
-    let linksToggledCount = 0;
-    chrome.readingMode.onLinksEnabledToggled = () => {
-      linksToggledCount++;
-      chrome.readingMode.linksEnabled = !chrome.readingMode.linksEnabled;
-    };
-    chrome.readingMode.linksEnabled = false;
-    mediaMenu.settingsPrefs = {
-      ...DEFAULT_SETTINGS,
-      linksEnabled: false,
-    };
-    await microtasksFinished();
+  test('on links row click fires links toggle exactly once', async () => {
+    let linksEventCount = 0;
+    document.addEventListener(ToolbarEvent.LINKS, () => linksEventCount++);
 
     getLinksButton().click();
     await microtasksFinished();
+    assertEquals(1, linksEventCount);
 
-    assertEquals(1, linksToggledCount);
-    assertTrue(chrome.readingMode.linksEnabled);
-    assertTrue(
-        getLinksButton().querySelector<CrToggleElement>('cr-toggle')!.checked);
-    assertEquals(
-        ReadAnythingSettingsChange.LINKS_ENABLED_CHANGE,
-        await metrics.whenCalled('recordTextSettingsChange'));
-
-    const linksToggle =
-        getLinksButton().querySelector<CrToggleElement>('cr-toggle')!;
-    linksToggle.click();
+    getLinksButton().querySelector<CrToggleElement>('cr-toggle')!.click();
     await microtasksFinished();
-
-    assertEquals(2, linksToggledCount);
-    assertFalse(chrome.readingMode.linksEnabled);
-    assertFalse(linksToggle.checked);
+    assertEquals(2, linksEventCount);
   });
 
   test('toggles are disabled when speech is active', async () => {

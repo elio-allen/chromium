@@ -3,11 +3,15 @@
 // found in the LICENSE file.
 
 #include "components/skills/internal/enterprise_skills_provider.h"
+#include "components/skills/public/skills_constants.h"
 
+#include <algorithm>
+#include <iterator>
 #include <string_view>
 
 #include "base/barrier_closure.h"
 #include "base/check.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -20,6 +24,7 @@
 #include "components/skills/internal/skill_parser.rs.h"
 #include "components/skills/public/skills_prefs.h"
 #include "crypto/hash.h"
+#include "net/base/net_errors.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
@@ -35,12 +40,29 @@ constexpr base::TimeDelta kSkillFetchTimeout = base::Seconds(5);
 constexpr int kMaxNetworkRetries = 3;
 constexpr char kDefaultEnterpriseSkillIcon[] = "💼";
 
+// Static illustration URLs hosted on Google's static CDN (gstatic.com).
+// Assigned to enterprise skills in round-robin fashion (skill_index %
+// hosted_image_count).
+constexpr std::string_view kEnterpriseSkillImages[] = {
+    "https://www.gstatic.com/chrome/skills/images/enterprise_briefcase.png",
+    "https://www.gstatic.com/chrome/skills/images/enterprise_building_blue.png",
+    "https://www.gstatic.com/chrome/skills/images/"
+    "enterprise_building_yellow.png",
+    "https://www.gstatic.com/chrome/skills/images/enterprise_folder.png",
+    "https://www.gstatic.com/chrome/skills/images/enterprise_luggage.png",
+};
+void RecordValidationResult(EnterpriseSkillValidationResult result) {
+  base::UmaHistogramEnumeration("Enterprise.Skills.ValidationResult", result);
+}
+
 bool IsFieldValid(std::string_view field, size_t max_length) {
   return !field.empty() && field.length() <= max_length;
 }
 
+constexpr char kLogPrefix[] = "[EnterprisePublishedSkills] ";
 constexpr char kBaseValidationError[] =
-    "Validation failed for enterprise skill (Hash: ";
+    "Validation failed for skill with hash: ";
+constexpr char kDownloadFailedError[] = "Failed to download skill with hash: ";
 
 EnterpriseSkillValidationResult ValidateSkillMetadata(
     std::string_view expected_hash,
@@ -49,20 +71,20 @@ EnterpriseSkillValidationResult ValidateSkillMetadata(
     std::string_view prompt) {
   if (!IsFieldValid(name, Skill::kMaxNameLength)) {
     LOG_POLICY(ERROR, POLICY_PROCESSING)
-        << kBaseValidationError << expected_hash
-        << "). Reason: Invalid name length.";
+        << kLogPrefix << kBaseValidationError << expected_hash
+        << " (Reason: Invalid name length).";
     return EnterpriseSkillValidationResult::kInvalidName;
   }
   if (!IsFieldValid(description, Skill::kMaxDescriptionLength)) {
     LOG_POLICY(ERROR, POLICY_PROCESSING)
-        << kBaseValidationError << expected_hash
-        << "). Reason: Invalid description length.";
+        << kLogPrefix << kBaseValidationError << expected_hash
+        << " (Reason: Invalid description length).";
     return EnterpriseSkillValidationResult::kInvalidDescription;
   }
   if (!IsFieldValid(prompt, Skill::kMaxPromptLength)) {
     LOG_POLICY(ERROR, POLICY_PROCESSING)
-        << kBaseValidationError << expected_hash
-        << "). Reason: Invalid prompt length.";
+        << kLogPrefix << kBaseValidationError << expected_hash
+        << " (Reason: Invalid prompt length).";
     return EnterpriseSkillValidationResult::kInvalidPrompt;
   }
   return EnterpriseSkillValidationResult::kSuccess;
@@ -71,11 +93,9 @@ EnterpriseSkillValidationResult ValidateSkillMetadata(
 bool IsHashValid(std::string_view actual_hash_hex,
                  std::string_view expected_hash) {
   if (!base::EqualsCaseInsensitiveASCII(actual_hash_hex, expected_hash)) {
-    // TODO(b/533517209): Record Enterprise.Skills.ValidationResult
-    // (kHashMismatch).
     LOG_POLICY(ERROR, POLICY_PROCESSING)
-        << "Enterprise skill hash mismatch. "
-        << "Expected: " << expected_hash << ", Actual: " << actual_hash_hex;
+        << kLogPrefix << "Hash mismatch. Expected: " << expected_hash
+        << ", Actual: " << actual_hash_hex;
     return false;
   }
   return true;
@@ -96,10 +116,12 @@ EnterpriseSkillsProvider::EnterpriseSkillsProvider(
                             base::Unretained(this)));
 
     // Initial fetch if policy is already set.
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE,
-        base::BindOnce(&EnterpriseSkillsProvider::OnPolicyPrefChanged,
-                       weak_ptr_factory_.GetWeakPtr()));
+    if (!pref_service_->GetList(prefs::kEnterprisePublishedSkills).empty()) {
+      base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE,
+          base::BindOnce(&EnterpriseSkillsProvider::OnPolicyPrefChanged,
+                         weak_ptr_factory_.GetWeakPtr()));
+    }
   }
 }
 EnterpriseSkillsProvider::~EnterpriseSkillsProvider() = default;
@@ -124,6 +146,7 @@ void EnterpriseSkillsProvider::OnPolicyPrefChanged() {
 }
 
 void EnterpriseSkillsProvider::FetchSkillsFromUrls() {
+  weak_ptr_factory_.InvalidateWeakPtrs();
   barrier_closure_.Cancel();
   url_loaders_.clear();
   pending_skills_.clear();
@@ -197,6 +220,7 @@ void EnterpriseSkillsProvider::FetchSkillsFromUrls() {
     auto resource_request = std::make_unique<network::ResourceRequest>();
     resource_request->url = url;
     resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
+    resource_request->redirect_mode = network::mojom::RedirectMode::kError;
 
     auto url_loader = network::SimpleURLLoader::Create(
         std::move(resource_request), traffic_annotation);
@@ -212,7 +236,8 @@ void EnterpriseSkillsProvider::FetchSkillsFromUrls() {
         url_loader_factory_.get(),
         base::BindOnce(&EnterpriseSkillsProvider::OnURLLoadComplete,
                        weak_ptr_factory_.GetWeakPtr(), loader_ptr,
-                       expected_hash, barrier_closure_.callback()),
+                       expected_hash, base::TimeTicks::Now(),
+                       barrier_closure_.callback()),
         kMaxSkillDownloadSize);
 
     url_loaders_.emplace_back(std::move(url_loader));
@@ -227,16 +252,17 @@ std::unique_ptr<Skill> EnterpriseSkillsProvider::ParseAndValidateSkill(
       base::HexEncode(crypto::hash::Sha256(response_body));
 
   if (!IsHashValid(actual_hash_hex, expected_hash)) {
+    RecordValidationResult(EnterpriseSkillValidationResult::kHashMismatch);
     return nullptr;
   }
 
   ffi::SkillParseResult parsed =
       ffi::parse_skill_yaml_frontmatter(std::string(response_body));
   if (!parsed.success) {
-    // TODO(b/533517209): Record Enterprise.Skills.ValidationResult
-    // (kInvalidFormat).
+    RecordValidationResult(EnterpriseSkillValidationResult::kInvalidFormat);
     LOG_POLICY(ERROR, POLICY_PROCESSING)
-        << "Enterprise skill validation failed for hash: " << expected_hash;
+        << kLogPrefix << kBaseValidationError << expected_hash
+        << " (Reason: Invalid format).";
     return nullptr;
   }
 
@@ -246,10 +272,8 @@ std::unique_ptr<Skill> EnterpriseSkillsProvider::ParseAndValidateSkill(
 
   EnterpriseSkillValidationResult validation_status = ValidateSkillMetadata(
       expected_hash, parsed_name, parsed_desc, prompt_content);
-
+  RecordValidationResult(validation_status);
   if (validation_status != EnterpriseSkillValidationResult::kSuccess) {
-    // TODO(b/533517209): Record Enterprise.Skills.ValidationResult (using
-    // validation_status).
     return nullptr;
   }
 
@@ -257,21 +281,27 @@ std::unique_ptr<Skill> EnterpriseSkillsProvider::ParseAndValidateSkill(
   new_skill->id = base::Uuid::GenerateRandomV4().AsLowercaseString();
   new_skill->name = parsed_name;
   new_skill->description = parsed_desc;
+  new_skill->curated_by = "your organization";
   new_skill->icon = kDefaultEnterpriseSkillIcon;
   new_skill->prompt = prompt_content;
+  new_skill->category = kFromYourOrganizationCategory;
   new_skill->source = sync_pb::SkillSource::SKILL_SOURCE_ENTERPRISE;
-
-  // TODO(b/533517209): Record Enterprise.Skills.ValidationResult (kSuccess).
   return new_skill;
 }
 
 void EnterpriseSkillsProvider::OnURLLoadComplete(
     network::SimpleURLLoader* source,
     const std::string& expected_hash,
+    base::TimeTicks start_time,
     base::RepeatingClosure barrier_closure,
     std::optional<std::string> response_body) {
-  // TODO(b/533517209): Record Enterprise.Skills.FetchResult and
-  // Enterprise.Skills.FetchDelta.
+  base::UmaHistogramBoolean("Enterprise.Skills.FetchResult",
+                            response_body.has_value());
+  // Use UmaHistogramTimes which is tailored for requests bounded by
+  // kSkillFetchTimeout (5 seconds).
+  base::UmaHistogramTimes("Enterprise.Skills.FetchLatency",
+                          base::TimeTicks::Now() - start_time);
+
   if (response_body) {
     auto new_skill = ParseAndValidateSkill(expected_hash, *response_body);
     if (new_skill) {
@@ -281,7 +311,8 @@ void EnterpriseSkillsProvider::OnURLLoadComplete(
     // ParseAndValidateSkill.
   } else {
     LOG_POLICY(ERROR, POLICY_PROCESSING)
-        << "Failed to download enterprise skill for hash: " << expected_hash;
+        << kLogPrefix << kDownloadFailedError << expected_hash
+        << " (Error: " << net::ErrorToShortString(source->NetError()) << ").";
   }
 
   std::erase_if(url_loaders_, [source](const auto& loader) {
@@ -291,7 +322,19 @@ void EnterpriseSkillsProvider::OnURLLoadComplete(
 }
 
 void EnterpriseSkillsProvider::OnAllFetchesComplete() {
-  // TODO(b/533517209): Record Enterprise.Skills.Count.
+  std::sort(pending_skills_.begin(), pending_skills_.end(),
+            [](const std::unique_ptr<Skill>& a,
+               const std::unique_ptr<Skill>& b) { return a->name < b->name; });
+
+  const size_t hosted_image_count = std::size(kEnterpriseSkillImages);
+  for (size_t skill_index = 0; skill_index < pending_skills_.size();
+       ++skill_index) {
+    pending_skills_[skill_index]->image_url =
+        GURL(kEnterpriseSkillImages[skill_index % hosted_image_count]);
+  }
+
+  base::UmaHistogramCounts100("Enterprise.Skills.Count",
+                              pending_skills_.size());
   skills_ = std::move(pending_skills_);
   pending_skills_.clear();
   NotifyObservers();

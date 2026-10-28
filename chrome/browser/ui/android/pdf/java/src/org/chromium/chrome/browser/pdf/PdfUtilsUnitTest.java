@@ -4,19 +4,24 @@
 
 package org.chromium.chrome.browser.pdf;
 
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalHistoryUrl;
 
 import android.content.ContentResolver;
 import android.content.Context;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ProviderInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
+import android.os.Process;
 import android.os.ext.SdkExtensions;
 import android.text.TextUtils;
 
@@ -36,9 +41,11 @@ import org.robolectric.shadows.ShadowParcelFileDescriptor;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.base.test.util.UserActionTester;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.ui.native_page.NativePage;
 import org.chromium.chrome.browser.util.ChromeFileProvider;
@@ -49,9 +56,7 @@ import java.io.File;
 import java.io.IOException;
 
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {PdfUtilsUnitTest.CustomShadowParcelFileDescriptor.class})
+@Config(shadows = {PdfUtilsUnitTest.CustomShadowParcelFileDescriptor.class})
 public class PdfUtilsUnitTest {
     @Implements(ParcelFileDescriptor.class)
     public static class CustomShadowParcelFileDescriptor extends ShadowParcelFileDescriptor {
@@ -71,6 +76,7 @@ public class PdfUtilsUnitTest {
     @Mock private PackageManager mPackageManager;
     private String mPdfPageUrl;
     private String mPdfPageBlobUrl;
+    private UserActionTester mUserActionTester;
 
     private static final String DEFAULT_TAB_TITLE = "Loading PDF…";
     private static final String CONTENT_URL = "content://media/external/downloads/1000000022";
@@ -85,21 +91,25 @@ public class PdfUtilsUnitTest {
             "chrome-native://pdf/link?url=chrome%3A%2F%2Fversion";
     private static final String FILE_PATH = "/media/external/downloads/sample.pdf";
     private static final String FILE_NAME = "sample.pdf";
-    private static final String IMAGE_FILE_URL = "file:///media/external/downloads/sample.jpg";
 
     @Before
     public void setUp() {
+        ContextUtils.initApplicationContextForTests(mContext);
         PdfUtils.setShouldOpenPdfInlineForTesting(true);
         ChromeFileProvider.setGeneratedUriForTesting(Uri.parse(CONTENT_URL));
         mPdfPageUrl = PdfUtils.encodePdfPageUrl(PDF_LINK);
         mPdfPageBlobUrl = PdfUtils.encodePdfPageUrl(PDF_BLOB_URL);
         when(mContext.getContentResolver()).thenReturn(mContentResolver);
+        mUserActionTester = new UserActionTester();
     }
 
     @After
     public void tearDown() throws Exception {
         PdfUtils.setShouldOpenPdfInlineForTesting(false);
         ChromeFileProvider.setGeneratedUriForTesting(null);
+        if (mUserActionTester != null) {
+            mUserActionTester.tearDown();
+        }
     }
 
     @Test
@@ -198,52 +208,70 @@ public class PdfUtilsUnitTest {
     }
 
     @Test
-    public void testRecordIsPdfFrozen_NativePageNull() {
+    public void testRecordPdfFrozenStateWhenDisplayed_NativePageNull() {
         HistogramWatcher histogramExpectation =
                 HistogramWatcher.newBuilder()
-                        .expectNoRecords("Android.Pdf.IsFrozenWhenDisplayed")
+                        .expectNoRecords("Android.Pdf.FrozenStateWhenDisplayed")
                         .build();
-        PdfUtils.recordIsPdfFrozen(null);
+        PdfUtils.recordPdfFrozenStateWhenDisplayed(null);
         histogramExpectation.assertExpected(
                 "The histogram should not be recorded when the native page is null.");
     }
 
     @Test
-    public void testRecordIsPdfFrozen_NativePageIsNotPdf() {
+    public void testRecordPdfFrozenStateWhenDisplayed_NativePageIsNotPdf() {
         doReturn(false).when(mNativePage).isPdf();
         HistogramWatcher histogramExpectation =
                 HistogramWatcher.newBuilder()
-                        .expectNoRecords("Android.Pdf.IsFrozenWhenDisplayed")
+                        .expectNoRecords("Android.Pdf.FrozenStateWhenDisplayed")
                         .build();
-        PdfUtils.recordIsPdfFrozen(mNativePage);
+        PdfUtils.recordPdfFrozenStateWhenDisplayed(mNativePage);
         histogramExpectation.assertExpected(
                 "The histogram should not be recorded when the native page is not pdf page.");
     }
 
     @Test
-    public void testRecordIsPdfFrozen_PdfIsFrozen() {
-        doReturn(true).when(mNativePage).isPdf();
-        doReturn(true).when(mNativePage).isFrozen();
-        HistogramWatcher histogramExpectation =
-                HistogramWatcher.newBuilder()
-                        .expectBooleanRecord("Android.Pdf.IsFrozenWhenDisplayed", true)
-                        .build();
-        PdfUtils.recordIsPdfFrozen(mNativePage);
-        histogramExpectation.assertExpected(
-                "The recorded value should be true when the pdf page is frozen.");
-    }
-
-    @Test
-    public void testRecordIsPdfFrozen_PdfIsNotFrozen() {
+    public void testRecordPdfFrozenStateWhenDisplayed_NotFrozen() {
         doReturn(true).when(mNativePage).isPdf();
         doReturn(false).when(mNativePage).isFrozen();
         HistogramWatcher histogramExpectation =
-                HistogramWatcher.newBuilder()
-                        .expectBooleanRecord("Android.Pdf.IsFrozenWhenDisplayed", false)
-                        .build();
-        PdfUtils.recordIsPdfFrozen(mNativePage);
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.Pdf.FrozenStateWhenDisplayed",
+                        PdfUtils.AndroidPdfFrozenStateWhenDisplayed.NOT_FROZEN);
+        PdfUtils.recordPdfFrozenStateWhenDisplayed(mNativePage);
         histogramExpectation.assertExpected(
-                "The recorded value should be false when the pdf page is not frozen.");
+                "The recorded value should be NOT_FROZEN when the pdf page is not frozen.");
+        verify(mNativePage, never()).hasUnsavedChanges();
+    }
+
+    @Test
+    public void testRecordPdfFrozenStateWhenDisplayed_FrozenNoUnsavedChanges() {
+        doReturn(true).when(mNativePage).isPdf();
+        doReturn(true).when(mNativePage).isFrozen();
+        doReturn(false).when(mNativePage).hasUnsavedChanges();
+        HistogramWatcher histogramExpectation =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.Pdf.FrozenStateWhenDisplayed",
+                        PdfUtils.AndroidPdfFrozenStateWhenDisplayed.FROZEN_NO_UNSAVED_CHANGES);
+        PdfUtils.recordPdfFrozenStateWhenDisplayed(mNativePage);
+        histogramExpectation.assertExpected(
+                "The recorded value should be FROZEN_NO_UNSAVED_CHANGES when the frozen pdf has no"
+                        + " unsaved changes.");
+    }
+
+    @Test
+    public void testRecordPdfFrozenStateWhenDisplayed_FrozenWithUnsavedChanges() {
+        doReturn(true).when(mNativePage).isPdf();
+        doReturn(true).when(mNativePage).isFrozen();
+        doReturn(true).when(mNativePage).hasUnsavedChanges();
+        HistogramWatcher histogramExpectation =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.Pdf.FrozenStateWhenDisplayed",
+                        PdfUtils.AndroidPdfFrozenStateWhenDisplayed.FROZEN_WITH_UNSAVED_CHANGES);
+        PdfUtils.recordPdfFrozenStateWhenDisplayed(mNativePage);
+        histogramExpectation.assertExpected(
+                "The recorded value should be FROZEN_WITH_UNSAVED_CHANGES when the frozen pdf has"
+                        + " unsaved changes.");
     }
 
     @Test
@@ -272,6 +300,25 @@ public class PdfUtilsUnitTest {
     public void testGetPdfReDownloadUrl_Https() {
         String downloadUrl = PdfUtils.getPdfReDownloadUrl(PDF_LINK_ENCODED);
         Assert.assertEquals("The re-download url should match", PDF_LINK, downloadUrl);
+    }
+
+    @Test
+    public void testGetPdfReDownloadUrl_RawHttps() {
+        String downloadUrl = PdfUtils.getPdfReDownloadUrl(PDF_LINK);
+        Assert.assertEquals(
+                "The re-download url should match raw HTTP(S) url", PDF_LINK, downloadUrl);
+    }
+
+    @Test
+    public void testIsPdfUrlMatch() {
+        Assert.assertTrue(PdfUtils.isPdfUrlMatch(PDF_LINK, PDF_LINK_ENCODED));
+        Assert.assertTrue(PdfUtils.isPdfUrlMatch(PDF_LINK_ENCODED, PDF_LINK));
+        Assert.assertTrue(PdfUtils.isPdfUrlMatch(PDF_LINK, PDF_LINK));
+        Assert.assertTrue(PdfUtils.isPdfUrlMatch(CONTENT_URL, CONTENT_URL));
+        Assert.assertFalse(PdfUtils.isPdfUrlMatch(PDF_LINK, "https://www.example.com/other.pdf"));
+        Assert.assertFalse(PdfUtils.isPdfUrlMatch(PDF_LINK, null));
+        Assert.assertFalse(PdfUtils.isPdfUrlMatch(null, PDF_LINK));
+        Assert.assertFalse(PdfUtils.isPdfUrlMatch(null, null));
     }
 
     @Test
@@ -314,7 +361,7 @@ public class PdfUtilsUnitTest {
         Assert.assertNotNull("Uri should not be null", uri);
         // Should be a file URI or content URI from ChromeFileProvider (which is mocked to
         // CONTENT_URL)
-        Assert.assertEquals(CONTENT_URL, uri.toString());
+        Assert.assertTrue(uri.toString().startsWith(CONTENT_URL));
     }
 
     @Test
@@ -371,11 +418,9 @@ public class PdfUtilsUnitTest {
     @Test
     public void testIsUriSafeForSharing_ExternalProvider() {
         Uri contentUri = Uri.parse("content://com.external.provider/sample.pdf");
-        ProviderInfo providerInfo = new ProviderInfo();
-        providerInfo.packageName = "com.external.app";
+        ProviderInfo providerInfo = createProviderInfo("com.external.app", Process.myUid() + 1);
 
         when(mContext.getPackageManager()).thenReturn(mPackageManager);
-        when(mContext.getPackageName()).thenReturn("org.chromium.chrome");
         when(mPackageManager.resolveContentProvider("com.external.provider", 0))
                 .thenReturn(providerInfo);
 
@@ -385,11 +430,9 @@ public class PdfUtilsUnitTest {
     @Test
     public void testIsUriSafeForSharing_InternalFileProvider_PdfsAllowed() {
         Uri contentUri = Uri.parse("content://org.chromium.chrome.FileProvider/pdfs/sample.pdf");
-        ProviderInfo providerInfo = new ProviderInfo();
-        providerInfo.packageName = "org.chromium.chrome";
+        ProviderInfo providerInfo = createProviderInfo("org.chromium.chrome", Process.myUid());
 
         when(mContext.getPackageManager()).thenReturn(mPackageManager);
-        when(mContext.getPackageName()).thenReturn("org.chromium.chrome");
         when(mPackageManager.resolveContentProvider("org.chromium.chrome.FileProvider", 0))
                 .thenReturn(providerInfo);
 
@@ -400,11 +443,9 @@ public class PdfUtilsUnitTest {
     public void testIsUriSafeForSharing_InternalFileProvider_DownloadsAllowed() {
         Uri contentUri =
                 Uri.parse("content://org.chromium.chrome.FileProvider/downloads/sample.pdf");
-        ProviderInfo providerInfo = new ProviderInfo();
-        providerInfo.packageName = "org.chromium.chrome";
+        ProviderInfo providerInfo = createProviderInfo("org.chromium.chrome", Process.myUid());
 
         when(mContext.getPackageManager()).thenReturn(mPackageManager);
-        when(mContext.getPackageName()).thenReturn("org.chromium.chrome");
         when(mPackageManager.resolveContentProvider("org.chromium.chrome.FileProvider", 0))
                 .thenReturn(providerInfo);
 
@@ -415,11 +456,9 @@ public class PdfUtilsUnitTest {
     public void testIsUriSafeForSharing_InternalFileProvider_PasswordsBlocked() {
         Uri contentUri =
                 Uri.parse("content://org.chromium.chrome.FileProvider/passwords/ChromePass.csv");
-        ProviderInfo providerInfo = new ProviderInfo();
-        providerInfo.packageName = "org.chromium.chrome";
+        ProviderInfo providerInfo = createProviderInfo("org.chromium.chrome", Process.myUid());
 
         when(mContext.getPackageManager()).thenReturn(mPackageManager);
-        when(mContext.getPackageName()).thenReturn("org.chromium.chrome");
         when(mPackageManager.resolveContentProvider("org.chromium.chrome.FileProvider", 0))
                 .thenReturn(providerInfo);
 
@@ -429,11 +468,9 @@ public class PdfUtilsUnitTest {
     @Test
     public void testIsUriSafeForSharing_InternalPdfContentProvider_Allowed() {
         Uri contentUri = Uri.parse("content://org.chromium.chrome.PdfContentProvider/12345678");
-        ProviderInfo providerInfo = new ProviderInfo();
-        providerInfo.packageName = "org.chromium.chrome";
+        ProviderInfo providerInfo = createProviderInfo("org.chromium.chrome", Process.myUid());
 
         when(mContext.getPackageManager()).thenReturn(mPackageManager);
-        when(mContext.getPackageName()).thenReturn("org.chromium.chrome");
         when(mPackageManager.resolveContentProvider("org.chromium.chrome.PdfContentProvider", 0))
                 .thenReturn(providerInfo);
 
@@ -443,11 +480,9 @@ public class PdfUtilsUnitTest {
     @Test
     public void testIsUriSafeForSharing_OtherInternalProvider_Blocked() {
         Uri contentUri = Uri.parse("content://org.chromium.chrome.ChromeBrowserProvider/bookmarks");
-        ProviderInfo providerInfo = new ProviderInfo();
-        providerInfo.packageName = "org.chromium.chrome";
+        ProviderInfo providerInfo = createProviderInfo("org.chromium.chrome", Process.myUid());
 
         when(mContext.getPackageManager()).thenReturn(mPackageManager);
-        when(mContext.getPackageName()).thenReturn("org.chromium.chrome");
         when(mPackageManager.resolveContentProvider("org.chromium.chrome.ChromeBrowserProvider", 0))
                 .thenReturn(providerInfo);
 
@@ -459,11 +494,9 @@ public class PdfUtilsUnitTest {
         Uri contentUri =
                 Uri.parse(
                         "content://org.chromium.chrome.DownloadFileProvider/download?file=sample.pdf");
-        ProviderInfo providerInfo = new ProviderInfo();
-        providerInfo.packageName = "org.chromium.chrome";
+        ProviderInfo providerInfo = createProviderInfo("org.chromium.chrome", Process.myUid());
 
         when(mContext.getPackageManager()).thenReturn(mPackageManager);
-        when(mContext.getPackageName()).thenReturn("org.chromium.chrome");
         when(mPackageManager.resolveContentProvider("org.chromium.chrome.DownloadFileProvider", 0))
                 .thenReturn(providerInfo);
 
@@ -475,11 +508,9 @@ public class PdfUtilsUnitTest {
         Uri contentUri =
                 Uri.parse(
                         "content://org.chromium.chrome.DownloadFileProvider/download_external?file=sample.pdf");
-        ProviderInfo providerInfo = new ProviderInfo();
-        providerInfo.packageName = "org.chromium.chrome";
+        ProviderInfo providerInfo = createProviderInfo("org.chromium.chrome", Process.myUid());
 
         when(mContext.getPackageManager()).thenReturn(mPackageManager);
-        when(mContext.getPackageName()).thenReturn("org.chromium.chrome");
         when(mPackageManager.resolveContentProvider("org.chromium.chrome.DownloadFileProvider", 0))
                 .thenReturn(providerInfo);
 
@@ -491,11 +522,9 @@ public class PdfUtilsUnitTest {
         Uri contentUri =
                 Uri.parse(
                         "content://org.chromium.chrome.DownloadFileProvider/external_volume?file=sample.pdf");
-        ProviderInfo providerInfo = new ProviderInfo();
-        providerInfo.packageName = "org.chromium.chrome";
+        ProviderInfo providerInfo = createProviderInfo("org.chromium.chrome", Process.myUid());
 
         when(mContext.getPackageManager()).thenReturn(mPackageManager);
-        when(mContext.getPackageName()).thenReturn("org.chromium.chrome");
         when(mPackageManager.resolveContentProvider("org.chromium.chrome.DownloadFileProvider", 0))
                 .thenReturn(providerInfo);
 
@@ -507,15 +536,21 @@ public class PdfUtilsUnitTest {
         Uri contentUri =
                 Uri.parse(
                         "content://org.chromium.chrome.DownloadFileProvider/invalid_path?file=sample.pdf");
-        ProviderInfo providerInfo = new ProviderInfo();
-        providerInfo.packageName = "org.chromium.chrome";
+        ProviderInfo providerInfo = createProviderInfo("org.chromium.chrome", Process.myUid());
 
         when(mContext.getPackageManager()).thenReturn(mPackageManager);
-        when(mContext.getPackageName()).thenReturn("org.chromium.chrome");
         when(mPackageManager.resolveContentProvider("org.chromium.chrome.DownloadFileProvider", 0))
                 .thenReturn(providerInfo);
 
         Assert.assertFalse(PdfUtils.isUriSafeForSharing(contentUri, mContext));
+    }
+
+    private static ProviderInfo createProviderInfo(String packageName, int uid) {
+        ProviderInfo providerInfo = new ProviderInfo();
+        providerInfo.packageName = packageName;
+        providerInfo.applicationInfo = new ApplicationInfo();
+        providerInfo.applicationInfo.uid = uid;
+        return providerInfo;
     }
 
     @Implements(SdkExtensions.class)
@@ -583,6 +618,121 @@ public class PdfUtilsUnitTest {
     public void testIsInlinePdfV2Enabled_SdkT_HighExtension() {
         ShadowSdkExtensions.setExtensionVersion(13);
         Assert.assertTrue(PdfUtils.isInlinePdfV2Enabled());
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    public void testIsInlinePdfV2FormFillingEnabled_FeatureDisabled() {
+        Assert.assertFalse(PdfUtils.isInlinePdfV2FormFillingEnabled());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2 + ":enable_form_filling/false")
+    @Config(
+            sdk = Build.VERSION_CODES.S,
+            shadows = {PdfUtilsUnitTest.ShadowSdkExtensions.class})
+    public void testIsInlinePdfV2FormFillingEnabled_ParamDisabled() {
+        ShadowSdkExtensions.setExtensionVersion(13);
+        Assert.assertFalse(PdfUtils.isInlinePdfV2FormFillingEnabled());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2 + ":enable_form_filling/true")
+    @Config(
+            sdk = Build.VERSION_CODES.S,
+            shadows = {PdfUtilsUnitTest.ShadowSdkExtensions.class})
+    public void testIsInlinePdfV2FormFillingEnabled_ParamEnabled() {
+        ShadowSdkExtensions.setExtensionVersion(13);
+        Assert.assertTrue(PdfUtils.isInlinePdfV2FormFillingEnabled());
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    public void testIsInlinePdfV2EditEnabled_FeatureDisabled() {
+        Assert.assertFalse(PdfUtils.isInlinePdfV2EditEnabled());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    @Config(sdk = Build.VERSION_CODES.R)
+    public void testIsInlinePdfV2EditEnabled_LowSdk() {
+        Assert.assertFalse(PdfUtils.isInlinePdfV2EditEnabled());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    @Config(
+            sdk = Build.VERSION_CODES.S,
+            shadows = {PdfUtilsUnitTest.ShadowSdkExtensions.class})
+    public void testIsInlinePdfV2EditEnabled_SdkS_LowExtension() {
+        ShadowSdkExtensions.setExtensionVersion(17);
+        Assert.assertFalse(PdfUtils.isInlinePdfV2EditEnabled());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    @Config(
+            sdk = Build.VERSION_CODES.S,
+            shadows = {PdfUtilsUnitTest.ShadowSdkExtensions.class})
+    public void testIsInlinePdfV2EditEnabled_SdkS_HighExtension() {
+        ShadowSdkExtensions.setExtensionVersion(18);
+        Assert.assertTrue(PdfUtils.isInlinePdfV2EditEnabled());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    @Config(
+            sdk = Build.VERSION_CODES.TIRAMISU,
+            shadows = {PdfUtilsUnitTest.ShadowSdkExtensions.class})
+    public void testIsInlinePdfV2EditEnabled_SdkT_LowExtension() {
+        ShadowSdkExtensions.setExtensionVersion(17);
+        Assert.assertFalse(PdfUtils.isInlinePdfV2EditEnabled());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    @Config(
+            sdk = Build.VERSION_CODES.TIRAMISU,
+            shadows = {PdfUtilsUnitTest.ShadowSdkExtensions.class})
+    public void testIsInlinePdfV2EditEnabled_SdkT_HighExtension() {
+        ShadowSdkExtensions.setExtensionVersion(18);
+        Assert.assertTrue(PdfUtils.isInlinePdfV2EditEnabled());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    @Config(
+            sdk = Build.VERSION_CODES.VANILLA_ICE_CREAM,
+            shadows = {PdfUtilsUnitTest.ShadowSdkExtensions.class})
+    public void testIsInlinePdfV2EditEnabled_SdkV_LowExtension() {
+        ShadowSdkExtensions.setExtensionVersion(17);
+        Assert.assertFalse(PdfUtils.isInlinePdfV2EditEnabled());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    @Config(
+            sdk = Build.VERSION_CODES.VANILLA_ICE_CREAM,
+            shadows = {PdfUtilsUnitTest.ShadowSdkExtensions.class})
+    public void testIsInlinePdfV2EditEnabled_SdkV_HighExtension() {
+        ShadowSdkExtensions.setExtensionVersion(18);
+        Assert.assertTrue(PdfUtils.isInlinePdfV2EditEnabled());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.INLINE_PDF_V2)
+    @Config(sdk = Build.VERSION_CODES.BAKLAVA)
+    public void testIsInlinePdfV2EditEnabled_SdkBaklava() {
+        Assert.assertTrue(PdfUtils.isInlinePdfV2EditEnabled());
+    }
+
+    @Test
+    public void testIsInlinePdfV2EditEnabled_TestingOverride() {
+        PdfUtils.setInlinePdfV2EditEnabledForTesting(true);
+        Assert.assertTrue(PdfUtils.isInlinePdfV2EditEnabled());
+
+        PdfUtils.setInlinePdfV2EditEnabledForTesting(false);
+        Assert.assertFalse(PdfUtils.isInlinePdfV2EditEnabled());
     }
 
     @Test
@@ -657,5 +807,101 @@ public class PdfUtilsUnitTest {
         PdfUtils.recordHyperlinkClickResult(
                 PdfUtils.PdfHyperlinkClickResult.SUCCESS_LOAD_INITIATED);
         histogramExpectation.assertExpected();
+    }
+
+    @Test
+    public void testRecordDiscardAnnotations() {
+        PdfUtils.recordDiscardAnnotations();
+        Assert.assertTrue(
+                mUserActionTester.getActions().contains("Android.Pdf.DiscardAnnotations"));
+    }
+
+    @Test
+    public void testRecordEditFabAction() {
+        PdfUtils.recordEditFabAction();
+        assertTrue(mUserActionTester.getActions().contains("Android.Pdf.EditFab"));
+    }
+
+    @Test
+    public void testMaybeDeleteTransientFile_WebPdf_DeletesFile() throws Exception {
+        File tempFile = File.createTempFile("test_transient_web", ".pdf");
+        tempFile.deleteOnExit();
+        Assert.assertTrue(tempFile.exists());
+
+        PdfUtils.maybeDeleteTransientFile(tempFile.getAbsolutePath(), mPdfPageUrl);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        Assert.assertFalse("Transient file should be deleted for web PDF", tempFile.exists());
+    }
+
+    @Test
+    public void testMaybeDeleteTransientFile_LocalPdf_DoesNotDeleteFile() throws Exception {
+        File tempFile = File.createTempFile("test_transient_local", ".pdf");
+        tempFile.deleteOnExit();
+        Assert.assertTrue(tempFile.exists());
+
+        PdfUtils.maybeDeleteTransientFile(tempFile.getAbsolutePath(), CONTENT_URL);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        Assert.assertTrue("File should not be deleted for local PDF", tempFile.exists());
+        tempFile.delete();
+    }
+
+    @Test
+    public void testMaybeDeleteTransientFile_ContentUriPath_DoesNothing() {
+        PdfUtils.maybeDeleteTransientFile("content://downloads/1", mPdfPageUrl);
+        // Should not throw or perform file operations.
+    }
+
+    @Test
+    public void testRecordRecoveredFragmentUriMatches() {
+        HistogramWatcher histogramExpectationTrue =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.Pdf.RecoveredFragmentUriMatches", true);
+        PdfUtils.recordRecoveredFragmentUriMatches(true);
+        histogramExpectationTrue.assertExpected();
+
+        HistogramWatcher histogramExpectationFalse =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.Pdf.RecoveredFragmentUriMatches", false);
+        PdfUtils.recordRecoveredFragmentUriMatches(false);
+        histogramExpectationFalse.assertExpected();
+    }
+
+    @Test
+    public void testGetPageNumberFromUrl() {
+        Assert.assertEquals("Null url should return 0.", 0, PdfUtils.getPageNumberFromUrl(null));
+        Assert.assertEquals(
+                "Url without a fragment should return 0.",
+                0,
+                PdfUtils.getPageNumberFromUrl(PDF_LINK));
+        Assert.assertEquals(
+                "Direct http url with #page should return the page number.",
+                10,
+                PdfUtils.getPageNumberFromUrl(PDF_LINK + "#page=10"));
+        Assert.assertEquals(
+                "File url with #page should return the page number.",
+                2,
+                PdfUtils.getPageNumberFromUrl(FILE_URL + "#page=2"));
+        Assert.assertEquals(
+                "Wrapped pdf page url should return the page from the encoded download url.",
+                3,
+                PdfUtils.getPageNumberFromUrl(PdfUtils.encodePdfPageUrl(PDF_LINK + "#page=3")));
+        Assert.assertEquals(
+                "The page parameter should be parsed among other open parameters.",
+                5,
+                PdfUtils.getPageNumberFromUrl(PDF_LINK + "#nameddest=chapter1&page=5&zoom=100"));
+        Assert.assertEquals(
+                "page=0 is invalid and should return 0.",
+                0,
+                PdfUtils.getPageNumberFromUrl(PDF_LINK + "#page=0"));
+        Assert.assertEquals(
+                "Negative page should return 0.",
+                0,
+                PdfUtils.getPageNumberFromUrl(PDF_LINK + "#page=-1"));
+        Assert.assertEquals(
+                "Non-numeric page should return 0.",
+                0,
+                PdfUtils.getPageNumberFromUrl(PDF_LINK + "#page=abc"));
     }
 }

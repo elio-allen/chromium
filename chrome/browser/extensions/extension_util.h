@@ -56,9 +56,10 @@ bool IsExtensionForceInstalled(const std::string& extension_id,
                                content::BrowserContext* context,
                                std::u16string* reason = nullptr);
 
-// Sets whether `extension_id` can run in an incognito window. Reloads the
-// extension if it's enabled since this permission is applied at loading time
-// only. Note that an ExtensionService must exist.
+// Sets whether `extension_id` can run in an incognito window (or Enterprise
+// Isolated Mode window when it replaces Incognito). Reloads the extension if
+// it's enabled since this permission is applied at loading time only. Note that
+// an ExtensionService must exist.
 void SetIsIncognitoEnabled(const std::string& extension_id,
                            content::BrowserContext* context,
                            bool enabled);
@@ -103,12 +104,6 @@ bool AreExtensionsDisabled(const base::CommandLine& command_line,
 // main extensions page.
 GURL GetExtensionsPageUrl(const ExtensionId& extension_id);
 
-// Returns true if the extension with the given ID is allowed to use MojoJS
-// bindings.
-bool IsMojoJsEnabledForExtension(const ExtensionId& extension_id,
-                                 content::BrowserContext* context);
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 // Represents the type of settings override configured by the extension.
 // DSE = Default Search Engine.
 // NTP = New Tab Page.
@@ -117,10 +112,15 @@ enum class DseNtpOverrideType {
   kDse = 1,
   kNtp = 2,
   kBoth = 3,
+  kMaxValue = kBoth,
 };
 
+constexpr bool IsValidDseNtpOverrideType(int value) {
+  return value >= static_cast<int>(DseNtpOverrideType::kNone) &&
+         value <= static_cast<int>(DseNtpOverrideType::kMaxValue);
+}
+
 DseNtpOverrideType GetDseNtpOverrideType(const Extension& extension);
-#endif
 
 // Sources from which the CWS write review dialog can be launched.
 enum class CWSReviewSource {

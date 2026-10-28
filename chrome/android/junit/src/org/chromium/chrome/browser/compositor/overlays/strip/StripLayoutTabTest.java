@@ -18,7 +18,6 @@ import android.view.ContextThemeWrapper;
 import androidx.annotation.ColorInt;
 import androidx.core.content.res.ResourcesCompat;
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -28,22 +27,21 @@ import org.robolectric.annotation.Config;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.actor.ui.TabIndicatorStatus;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutTabDelegate.VisualState;
-import org.chromium.chrome.browser.tab.MediaState;
 import org.chromium.chrome.browser.ui.theme.ChromeSemanticColorUtils;
 import org.chromium.components.browser_ui.styles.ChromeColors;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
+import org.chromium.components.tabs.TabAlert;
 import org.chromium.ui.base.LocalizationUtils;
 import org.chromium.ui.util.ColorUtils;
 
 /** Tests for {@link StripLayoutTab}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE, qualifiers = "sw600dp")
+@Config(qualifiers = "sw600dp")
 public class StripLayoutTabTest {
 
-    private static final String TAG = "StripLayoutTabTest";
-    private static final float DIVIDER_FOLIO_LIGHT_OPACITY = 0.3f;
+    private static final float DIVIDER_FOLIO_LIGHT_OPACITY = 0.2f;
+    private static final float TAB_WIDTH = 150f;
 
     private Context mContext;
     private StripLayoutTab mNormalTab;
@@ -171,7 +169,7 @@ public class StripLayoutTabTest {
                         SemanticColorUtils.getDefaultIconColorAccent1(mContext),
                         DIVIDER_FOLIO_LIGHT_OPACITY);
         assertEquals(
-                "Light mode divider uses 30% primary color",
+                "Light mode divider uses 20% primary color",
                 expectedColor, mNormalTab.getDividerTint());
 
         // Incognito.
@@ -257,7 +255,6 @@ public class StripLayoutTabTest {
     }
 
     @Test
-    @SmallTest
     public void testAnchorRect() {
         int folioFootLengthPx =
                 Math.round(
@@ -274,41 +271,61 @@ public class StripLayoutTabTest {
     }
 
     @Test
-    public void testTabIndicatorPriorityHierarchy() {
-        // Case 1: Actuation vs. Recording Media (Recording Media should win)
-        StripLayoutTab tabWithRecording =
-                new StripLayoutTab(
-                        mContext,
-                        0,
-                        null,
-                        null,
-                        null,
-                        null,
-                        null,
-                        null,
-                        false,
-                        false,
-                        MediaState.RECORDING);
-        tabWithRecording.setTabIndicatorStatus(TabIndicatorStatus.DYNAMIC);
+    public void testAlertState_MediaRecording() {
+        StripLayoutTab tab = createStripLayoutTab(false);
+        tab.setAlertState(TabAlert.MEDIA_RECORDING);
 
         assertTrue(
-                "Indicator should be shown when recording is active",
-                tabWithRecording.shouldShowIndicator());
+                "Indicator should be shown when media recording is active",
+                tab.shouldShowAlertIndicator());
         assertEquals(
                 "Should return recording dot icon res",
                 R.drawable.radio_button_checked_24dp,
-                tabWithRecording.getIndicatorRes());
+                tab.getAlertIndicatorRes());
         assertEquals(
                 "Should return null overlay res when recording",
                 Resources.ID_NULL,
-                tabWithRecording.getIndicatorOverlayRes());
+                tab.getAlertIndicatorOverlayRes());
         assertEquals(
-                "Should return recording media color for tint",
-                mContext.getColor(R.color.tab_recording_media_color),
-                tabWithRecording.getIndicatorTint());
+                "Should return recording alert color for tint",
+                mContext.getColor(R.color.tab_recording_alert_color),
+                tab.getAlertIndicatorTint());
+        assertEquals(
+                "Should return default 16dp width for recording indicator",
+                StripLayoutTab.ALERT_INDICATOR_WIDTH,
+                tab.getAlertIndicatorWidth(),
+                0.0f);
+    }
 
-        // Case 2: Actuation vs. Audible Media (Actuation should win)
-        StripLayoutTab tabWithAudio =
+    @Test
+    public void testAlertState_ActorAccessing() {
+        StripLayoutTab tab = createStripLayoutTab(false);
+        tab.setAlertState(TabAlert.ACTOR_ACCESSING);
+
+        assertTrue(
+                "Indicator should be shown when actor accessing is active",
+                tab.shouldShowAlertIndicator());
+        assertEquals(
+                "Should return spark icon for actor accessing",
+                R.drawable.ic_arrow_selector_spark_24dp,
+                tab.getAlertIndicatorRes());
+        assertEquals(
+                "Should return spinner overlay for actor accessing",
+                R.drawable.tab_indicator_spinner,
+                tab.getAlertIndicatorOverlayRes());
+        assertEquals(
+                "Should return primary color tint for actor accessing",
+                SemanticColorUtils.getColorPrimary(mContext),
+                tab.getAlertIndicatorTint());
+        assertEquals(
+                "Should return 14dp width for dynamic actuation indicator",
+                StripLayoutTab.DYNAMIC_GLIC_ACTUATION_INDICATOR_WIDTH,
+                tab.getAlertIndicatorWidth(),
+                0.0f);
+    }
+
+    private StripLayoutTab createStripLayoutTab(boolean incognito) {
+        StripLayoutTab tab =
                 new StripLayoutTab(
                         mContext,
                         0,
@@ -318,31 +335,11 @@ public class StripLayoutTabTest {
                         null,
                         null,
                         null,
+                        incognito,
                         false,
-                        false,
-                        MediaState.AUDIBLE);
-        tabWithAudio.setTabIndicatorStatus(TabIndicatorStatus.DYNAMIC);
-
-        assertTrue(
-                "Indicator should be shown when actuation is active",
-                tabWithAudio.shouldShowIndicator());
-        assertEquals(
-                "Should return actuation icon res",
-                R.drawable.ic_arrow_selector_spark_14dp,
-                tabWithAudio.getIndicatorRes());
-        assertEquals(
-                "Should return spinner overlay res when actuating",
-                R.drawable.tab_indicator_spinner,
-                tabWithAudio.getIndicatorOverlayRes());
-        assertEquals(
-                "Should return primary color for actuation tint",
-                SemanticColorUtils.getColorPrimary(mContext),
-                tabWithAudio.getIndicatorTint());
-    }
-
-    private StripLayoutTab createStripLayoutTab(boolean incognito) {
-        return new StripLayoutTab(
-                mContext, 0, null, null, null, null, null, null, incognito, false, MediaState.NONE);
+                        TabAlert.NONE);
+        tab.setWidth(TAB_WIDTH);
+        return tab;
     }
 
     @Test

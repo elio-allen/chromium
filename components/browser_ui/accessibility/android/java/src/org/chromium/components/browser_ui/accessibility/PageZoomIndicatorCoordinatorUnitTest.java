@@ -6,7 +6,10 @@ package org.chromium.components.browser_ui.accessibility;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -15,7 +18,6 @@ import android.view.MotionEvent;
 import android.view.View;
 
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -30,6 +32,7 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLooper;
 
+import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.DeviceFormFactor;
@@ -38,7 +41,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 /** Unit tests for {@link PageZoomIndicatorCoordinator}. */
-@SmallTest
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(qualifiers = "sw600dp")
 public class PageZoomIndicatorCoordinatorUnitTest {
@@ -46,6 +48,7 @@ public class PageZoomIndicatorCoordinatorUnitTest {
 
     @Mock private PageZoomManager mManager;
     @Mock private WebContents mWebContents;
+    @Mock private Callback<Double> mOnZoomLevelChangedCallback;
     @Captor private ArgumentCaptor<ZoomEventsObserver> mObserverCaptor;
 
     private PageZoomIndicatorCoordinator mCoordinator;
@@ -63,7 +66,8 @@ public class PageZoomIndicatorCoordinatorUnitTest {
         when(mManager.getWebContents()).thenReturn(mWebContents);
         when(mManager.getZoomLevel()).thenReturn(0.0);
         when(mManager.getDefaultZoomLevel()).thenReturn(0.0);
-        when(mManager.canShowPopupWindow()).thenReturn(true);
+        when(mManager.canShowPopupWindow(anyString())).thenReturn(true);
+        when(mManager.isPageZoomSupported()).thenReturn(true);
         DeviceFormFactor.setIsTabletForTesting(true);
 
         mCoordinator = new PageZoomIndicatorCoordinator(anchorViewSupplier, mManager);
@@ -177,7 +181,7 @@ public class PageZoomIndicatorCoordinatorUnitTest {
 
     @Test
     public void testOnZoomLevelChanged_CannotShowPopupWindow_DoesNotShowPopup() {
-        when(mManager.canShowPopupWindow()).thenReturn(false);
+        when(mManager.canShowPopupWindow(anyString())).thenReturn(false);
         assertFalse(mCoordinator.isPopupWindowShowing());
 
         mObserverCaptor.getValue().onZoomLevelChanged("example.com", 0.52);
@@ -198,6 +202,30 @@ public class PageZoomIndicatorCoordinatorUnitTest {
     public void testShow_PhoneFormFactor_DoesNotShowPopup() {
         mCoordinator.show();
         assertFalse(mCoordinator.isPopupWindowShowing());
+    }
+
+    @Test
+    public void testShow_UnsupportedPageZoom_DoesNotShowPopup() {
+        when(mManager.isPageZoomSupported()).thenReturn(false);
+        mCoordinator.show();
+        assertFalse(mCoordinator.isPopupWindowShowing());
+    }
+
+    @Test
+    public void testIsZoomLevelDefault_DelegatesToManager() {
+        when(mManager.isZoomLevelDefault()).thenReturn(true);
+        assertTrue(mCoordinator.isZoomLevelDefault());
+
+        when(mManager.isZoomLevelDefault()).thenReturn(false);
+        assertFalse(mCoordinator.isZoomLevelDefault());
+    }
+
+    @Test
+    public void testSetTooltip_UnsupportedPageZoom_DoesNotInvokeCallback() {
+        when(mManager.isPageZoomSupported()).thenReturn(false);
+        mCoordinator.setOnZoomLevelChangedCallback(mOnZoomLevelChangedCallback);
+        mCoordinator.setTooltip();
+        verify(mOnZoomLevelChangedCallback, never()).onResult(any());
     }
 }
 

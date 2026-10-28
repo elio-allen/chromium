@@ -42,9 +42,9 @@
 #include "chrome/browser/send_tab_to_self/send_tab_to_self_util.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/omnibox/clipboard_utils.h"
@@ -57,10 +57,13 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/ui/views/frame/contents_web_view.h"
 #include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_placeholder_util.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_closer.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter_base.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_popup_webui_base_content.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_text_view.h"
 #include "chrome/browser/ui/views/page_action/page_action_container_view.h"
 #include "chrome/browser/ui/views/page_action/page_action_view.h"
@@ -72,6 +75,7 @@
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/omnibox_client.h"
+#include "components/omnibox/browser/omnibox_logging_utils.h"
 #include "components/omnibox/browser/omnibox_popup_selection.h"
 #include "components/omnibox/browser/omnibox_pref_names.h"
 #include "components/omnibox/browser/omnibox_prefs.h"
@@ -118,7 +122,9 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/compositor/layer.h"
+#include "ui/display/screen.h"
 #include "ui/events/event.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/font_list.h"
@@ -134,6 +140,8 @@
 #include "ui/views/button_drag_utils.h"
 #include "ui/views/controls/focus_ring.h"
 #include "ui/views/controls/textfield/textfield.h"
+#include "ui/views/focus/focus_manager.h"
+#include "ui/views/metrics.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
 #include "url/gurl.h"
@@ -150,48 +158,6 @@ namespace {
 
 using ::metrics::OmniboxEventProto;
 using ::ui::mojom::DragOperation;
-
-// This function provides a logging implementation that aligns with the original
-// definition of the `DEPRECATED_UMA_HISTOGRAM_MEDIUM_TIMES()` macro, which is
-// currently being used to log the `FocusToOpenTimeAnyPopupState3` Omnibox
-// metric.
-void LogHistogramMediumTimes(const std::string& histogram_name,
-                             base::TimeDelta elapsed) {
-  base::UmaHistogramCustomTimes(histogram_name, elapsed, base::Milliseconds(10),
-                                base::Minutes(3), 50);
-}
-
-void LogOmniboxFocusToCutOrCopyAllTextTime(
-    base::TimeDelta elapsed,
-    bool is_zero_prefix,
-    PageClassification page_classification) {
-  LogHistogramMediumTimes("Omnibox.FocusToCutOrCopyAllTextTime", elapsed);
-
-  const std::string page_context =
-      OmniboxEventProto::PageClassification_Name(page_classification);
-  LogHistogramMediumTimes(
-      base::StrCat(
-          {"Omnibox.FocusToCutOrCopyAllTextTime.ByPageContext.", page_context}),
-      elapsed);
-
-  if (is_zero_prefix) {
-    LogHistogramMediumTimes("Omnibox.FocusToCutOrCopyAllTextTime.ZeroSuggest",
-                            elapsed);
-    LogHistogramMediumTimes(
-        base::StrCat(
-            {"Omnibox.FocusToCutOrCopyAllTextTime.ZeroSuggest.ByPageContext.",
-             page_context}),
-        elapsed);
-  } else {
-    LogHistogramMediumTimes("Omnibox.FocusToCutOrCopyAllTextTime.TypedSuggest",
-                            elapsed);
-    LogHistogramMediumTimes(
-        base::StrCat(
-            {"Omnibox.FocusToCutOrCopyAllTextTime.TypedSuggest.ByPageContext.",
-             page_context}),
-        elapsed);
-  }
-}
 
 }  // namespace
 
@@ -305,7 +271,7 @@ void OmniboxViewViews::Init() {
 }
 
 void OmniboxViewViews::SaveStateToTab(content::WebContents* tab) {
-  DCHECK(tab);
+  CHECK(tab, base::NotFatalUntil::M162);
 
   // We don't want to keep the IME status, so force quit the current
   // session here.  It may affect the selection status, so order is
@@ -331,26 +297,28 @@ void OmniboxViewViews::OnTabChanged(content::WebContents* web_contents) {
   // placeholder text.
   Observe(web_contents);
 
-  const OmniboxState* state = static_cast<OmniboxState*>(
-      web_contents->GetUserData(OmniboxTabHelper::kOmniboxStateKey));
-  controller()->edit_model()->RestoreState(state ? &state->model_state
-                                                 : nullptr);
-  if (state) {
-    // This assumes that the omnibox has already been focused or blurred as
-    // appropriate; otherwise, a subsequent OnFocus() or OnBlur() call could
-    // goof up the selection.  See comments on OnActiveTabChanged() call in
-    // Browser::ActiveTabChanged().
-    if (state->model_state.user_input_in_progress &&
-        state->model_state.user_text.empty() &&
-        state->model_state.keyword.empty()) {
-      // See comment in OmniboxEditModel::GetStateForTabSwitch() for details on
-      // this.
-      SelectAll(true);
-      saved_selection_for_focus_change_ = gfx::Range();
-    } else {
-      SetSelectedRange(state->selection);
-      saved_selection_for_focus_change_ =
-          state->saved_selection_for_focus_change;
+  if (!IsFullWebUIOmnibox()) {
+    const OmniboxState* state = static_cast<OmniboxState*>(
+        web_contents->GetUserData(OmniboxTabHelper::kOmniboxStateKey));
+    controller()->edit_model()->RestoreState(state ? &state->model_state
+                                                   : nullptr);
+    if (state) {
+      // This assumes that the omnibox has already been focused or blurred as
+      // appropriate; otherwise, a subsequent OnFocus() or OnBlur() call could
+      // goof up the selection.  See comments on OnActiveTabChanged() call in
+      // Browser::ActiveTabChanged().
+      if (state->model_state.user_input_in_progress &&
+          state->model_state.user_text.empty() &&
+          state->model_state.keyword.empty()) {
+        // See comment in OmniboxEditModel::GetStateForTabSwitch() for details
+        // on this.
+        SelectAll(true);
+        saved_selection_for_focus_change_ = gfx::Range();
+      } else {
+        SetSelectedRange(state->selection);
+        saved_selection_for_focus_change_ =
+            state->saved_selection_for_focus_change;
+      }
     }
   }
 
@@ -364,24 +332,64 @@ void OmniboxViewViews::ResetTabState(content::WebContents* web_contents) {
 
 // static
 void OmniboxViewViews::SetUserTextForTab(content::WebContents* web_contents,
-                                         const std::u16string& text) {
+                                         const std::u16string& text,
+                                         size_t cursor_position) {
+  CHECK(web_contents, base::NotFatalUntil::M162);
   auto* existing_state = static_cast<OmniboxState*>(
       web_contents->GetUserData(OmniboxTabHelper::kOmniboxStateKey));
-  if (existing_state) {
-    OmniboxEditModel::State model_state(
-        /*user_input_in_progress=*/true,
-        /*user_text=*/text, existing_state->model_state.keyword,
-        existing_state->model_state.keyword_placeholder,
-        existing_state->model_state.keyword_state,
-        existing_state->model_state.keyword_mode_entry_method,
-        existing_state->model_state.focus_state,
-        existing_state->model_state.autocomplete_input);
-    web_contents->SetUserData(
-        OmniboxTabHelper::kOmniboxStateKey,
-        std::make_unique<OmniboxState>(
-            model_state, existing_state->selection,
-            existing_state->saved_selection_for_focus_change));
+  // Default to the end of the text if no position is specified.
+  size_t cursor = (cursor_position != std::u16string::npos)
+                      ? std::min(cursor_position, text.length())
+                      : text.length();
+  const bool text_unchanged =
+      existing_state && existing_state->model_state.user_text == text;
+  // Preserve existing selection if text is unchanged and
+  // no custom cursor position was explicitly provided. Otherwise, set the
+  // cursor to the specified position.
+  gfx::Range selection =
+      (text_unchanged && cursor_position == std::u16string::npos &&
+       existing_state->selection.IsValid())
+          ? existing_state->selection
+          : gfx::Range(cursor, cursor);
+  // If text is unchanged, preserve the existing parsed `AutocompleteInput`.
+  // Otherwise, start with a clean `AutocompleteInput` so it does not retain
+  // stale parsed URL components or types that mismatch the new draft text.
+  AutocompleteInput autocomplete_input =
+      text_unchanged ? existing_state->model_state.autocomplete_input
+                     : AutocompleteInput();
+  if (!text_unchanged) {
+    autocomplete_input.UpdateText(text, cursor, /*parts=*/url::Parsed());
   }
+
+  // Restore any existing state from the tab, setting defaults if none exists.
+  std::u16string keyword =
+      existing_state ? existing_state->model_state.keyword : std::u16string();
+  std::u16string keyword_placeholder =
+      existing_state ? existing_state->model_state.keyword_placeholder
+                     : std::u16string();
+  KeywordState keyword_state = existing_state
+                                   ? existing_state->model_state.keyword_state
+                                   : KeywordState::kNone;
+  metrics::OmniboxEventProto::KeywordModeEntryMethod keyword_mode_entry_method =
+      existing_state
+          ? existing_state->model_state.keyword_mode_entry_method
+          : metrics::OmniboxEventProto_KeywordModeEntryMethod_INVALID;
+  OmniboxFocusState focus_state = existing_state
+                                      ? existing_state->model_state.focus_state
+                                      : OmniboxFocusState::OMNIBOX_FOCUS_NONE;
+
+  OmniboxEditModel::State model_state(
+      /*user_input_in_progress=*/true,
+      /*user_text=*/text, keyword, keyword_placeholder, keyword_state,
+      keyword_mode_entry_method, focus_state, autocomplete_input);
+
+  web_contents->SetUserData(
+      OmniboxTabHelper::kOmniboxStateKey,
+      std::make_unique<OmniboxState>(
+          model_state, selection,
+          existing_state ? existing_state->saved_selection_for_focus_change
+                         : gfx::Range::InvalidRange(),
+          existing_state ? existing_state->show_full_url : false));
 }
 
 void OmniboxViewViews::InstallPlaceholderText() {
@@ -390,9 +398,22 @@ void OmniboxViewViews::InstallPlaceholderText() {
   omnibox::ComputePlaceholderText(location_bar_view_, placeholder_text,
                                   maybe_a11y_placeholder_text);
   SetPlaceholderText(placeholder_text);
-  if (maybe_a11y_placeholder_text.has_value()) {
-    GetViewAccessibility().SetPlaceholder(
-        base::UTF16ToUTF8(*maybe_a11y_placeholder_text));
+  const std::u16string a11y_text =
+      maybe_a11y_placeholder_text.value_or(placeholder_text);
+  const bool is_focused =
+      controller()->edit_model()->has_focus() || HasFocus();
+
+  if (is_focused) {
+    if (!a11y_text.empty()) {
+      GetViewAccessibility().SetPlaceholder(l10n_util::GetStringFUTF8(
+          IDS_CONCAT_TWO_STRINGS_WITH_PERIODS, a11y_text,
+          l10n_util::GetStringUTF16(IDS_ACC_OMNIBOX_AUTOCOMPLETE_PLACEHOLDER)));
+    } else {
+      GetViewAccessibility().SetPlaceholder(
+          l10n_util::GetStringUTF8(IDS_ACC_OMNIBOX_AUTOCOMPLETE_PLACEHOLDER));
+    }
+  } else {
+    GetViewAccessibility().SetPlaceholder(base::UTF16ToUTF8(a11y_text));
   }
 
   UpdatePlaceholderTextColor();
@@ -430,6 +451,7 @@ void OmniboxViewViews::Update() {
     // If the text is unchanged, we still need to re-emphasize the text, as the
     // security state may be different from before the Update.
     EmphasizeURLComponents();
+    InstallPlaceholderText();
   }
 }
 
@@ -465,6 +487,14 @@ void OmniboxViewViews::EnterKeywordModeForDefaultSearchProvider() {
 
 gfx::Range OmniboxViewViews::GetSelectionBounds() const {
   return GetSelectedRange();
+}
+
+void OmniboxViewViews::SetSelectionBounds(gfx::Range selection) {
+  SetSelectedRange(selection);
+}
+
+bool OmniboxViewViews::HasSelection() const {
+  return views::Textfield::HasSelection();
 }
 
 void OmniboxViewViews::SelectAll(bool reversed) {
@@ -510,16 +540,39 @@ void OmniboxViewViews::SetFocus(bool is_user_initiated) {
         ImmersiveModeController::From(location_bar_view_->browser())
             ->GetRevealedLock(ImmersiveModeController::ANIMATE_REVEAL_YES);
   }
+  is_user_initiated_focus_ = is_user_initiated;
 
-  const bool omnibox_already_focused = HasFocus();
+  const bool omnibox_already_focused =
+      HasFocus() ||
+      (IsFullWebUIOmnibox() && controller()->edit_model()->has_focus());
+  const bool is_full_webui_ready = IsFullWebUIOmniboxReady();
 
-  if (is_user_initiated) {
+  if (!is_full_webui_ready && is_user_initiated) {
     controller()->edit_model()->Unelide();
   }
 
-  RequestFocus();
+  const bool select_all = is_user_initiated || !omnibox_already_focused;
+  if (is_full_webui_ready) {
+    // Keyboard focus lives in the WebUI popup window and the
+    // native textfield has `FocusBehavior::NEVER`. Delegate directly to the
+    // popup view to open and focus the WebUI searchbox input.
+    if (auto* popup_view = location_bar_view_->GetOmniboxPopupView()) {
+      popup_view->OnFocus(/*query_zps=*/is_user_initiated, select_all,
+                          /*show_full_url=*/false);
+    }
+  } else {
+    // On browser startup while WebUI is still initializing asynchronously,
+    // grant temporary focus to the native textfield. Focus will be handed off
+    // to WebUI via `LocationBarView::OnFullWebUiOmniboxReady()` once ready.
+    RequestFocus();
+  }
 
-  if (omnibox_already_focused) {
+  // Re-focusing the already focused omnibox exits keyword mode, e.g. when the
+  // user presses Ctrl+L while in keyword mode. Once the full WebUI omnibox is
+  // ready, `LocationBarView` no longer reaches here, and the remaining caller,
+  // `search::FocusOmnibox()`, focuses it invisibly for NTP fakeboxes, which
+  // shouldn't exit keyword mode either.
+  if (omnibox_already_focused && !is_full_webui_ready) {
     controller()->edit_model()->ClearKeyword();
   }
 
@@ -537,16 +590,13 @@ void OmniboxViewViews::SetFocus(bool is_user_initiated) {
   //    finishes loading and then does a renderer-initiated focus, performing
   //    a select-all here would surprisingly overwrite the user's first few
   //    typed characters. https://crbug.com/40610912.
-  if (is_user_initiated || !omnibox_already_focused) {
+  if (!is_full_webui_ready && select_all) {
     SelectAll(true);
   }
 
   // |is_user_initiated| is true for focus events from keyboard accelerators.
   if (is_user_initiated) {
     controller()->edit_model()->StartZeroSuggestRequest();
-    if (location_bar_view_) {
-      location_bar_view_->OpenOmniboxPopup(/*query_zps=*/is_user_initiated);
-    }
   }
 
   // Restore caret visibility if focus is explicitly requested. This is
@@ -554,7 +604,9 @@ void OmniboxViewViews::SetFocus(bool is_user_initiated) {
   // call above will short-circuit, preventing us from reaching
   // OmniboxEditModel::OnSetFocus(), which handles restoring visibility when the
   // omnibox regains focus after losing focus.
-  controller()->edit_model()->SetCaretVisibility(true);
+  if (!is_full_webui_ready) {
+    controller()->edit_model()->SetCaretVisibility(true);
+  }
   // If the user attempts to focus the omnibox, and the ctrl key is pressed, we
   // want to prevent ctrl-enter behavior until the ctrl key is released and
   // re-pressed. This occurs even if the omnibox is already focused and we
@@ -638,7 +690,7 @@ void OmniboxViewViews::OnPaint(gfx::Canvas* canvas) {
   // TODO(crbug.com/478634529): Optimize and remove if possible.
   base::ScopedSafetyChecksExclusion excluded;
   if (latency_histogram_state_ == LatencyHistogramState::kCharTyped) {
-    DCHECK(!insert_char_time_.is_null());
+    CHECK(!insert_char_time_.is_null(), base::NotFatalUntil::M162);
     const auto now = base::TimeTicks::Now();
     UMA_HISTOGRAM_TIMES("Omnibox.CharTypedToRepaintLatency.ToPaint",
                         now - insert_char_time_);
@@ -662,6 +714,16 @@ void OmniboxViewViews::OnPaint(gfx::Canvas* canvas) {
 
   {
     SCOPED_UMA_HISTOGRAM_TIMER("Omnibox.PaintTime");
+    // In Full WebUI mode, once the popup is ready the native textfield has
+    // `FocusBehavior::NEVER`, so `Textfield::OnFocus()` is not called to set
+    // `render_text->focused(true)`. When the textfield has focus on startup or
+    // while the user is actively pressing/dragging the mouse over the location
+    // bar, ensure `render_text` is marked as focused so the live selection
+    // highlight and caret are visibly drawn, while keeping it unhighlighted
+    // in steady state on page load.
+    if (IsFullWebUIOmnibox()) {
+      GetRenderText()->set_focused(HasFocus() || is_mouse_pressed_);
+    }
     Textfield::OnPaint(canvas);
   }
 
@@ -708,9 +770,46 @@ void OmniboxViewViews::ShowContextMenuForViewImpl(
     views::View* source,
     const gfx::Point& point,
     ui::mojom::MenuSourceType source_type) {
+  if (HandOffContextMenuToWebUI(point, source_type)) {
+    return;
+  }
   PrepareToShowContextMenu(
       base::BindOnce(&OmniboxViewViews::ShowContextMenuForViewImplComplete,
                      weak_factory_.GetWeakPtr(), point, source_type));
+}
+
+bool OmniboxViewViews::HandOffContextMenuToWebUI(
+    const gfx::Point& point,
+    ui::mojom::MenuSourceType source_type) {
+  if (!IsFullWebUIOmniboxReady() || !location_bar_view_) {
+    return false;
+  }
+  // Open and focus the WebUI omnibox if it isn't already open. On Windows a
+  // right-click gets here after `OnMouseReleased()` has done so, but touch,
+  // keyboard and accessibility requests reach this method directly.
+  auto* popup_state_manager = controller()->popup_state_manager();
+  if (popup_state_manager->popup_state() != OmniboxPopupState::kFull) {
+    SelectAll(true);
+    location_bar_view_->OpenOmniboxPopup(/*query_zps=*/false);
+    // `OpenOmniboxPopup()` doesn't report failure, and it's ignored briefly
+    // after any popup state change. Show the native menu if it didn't open.
+    if (popup_state_manager->popup_state() != OmniboxPopupState::kFull) {
+      return false;
+    }
+  }
+  // Mac/Linux: the menu is shown on press. Consume the release, like
+  // `MenuRunner::RunMenuAt()`, so `OnMouseReleased()` doesn't refocus the
+  // WebUI omnibox and drop this request.
+  if (is_mouse_pressed_) {
+    select_all_on_mouse_release_ = false;
+    is_mouse_pressed_ = false;
+    filter_drag_events_for_unelision_ = false;
+    if (GetWidget() && GetWidget()->GetRootView()) {
+      GetWidget()->GetRootView()->SetMouseAndGestureHandler(nullptr);
+    }
+  }
+  auto* popup_view = location_bar_view_->GetOmniboxPopupView();
+  return popup_view && popup_view->RequestWebUIContextMenu(point, source_type);
 }
 
 void OmniboxViewViews::ShowContextMenuForViewImplComplete(
@@ -746,6 +845,14 @@ ui::TextInputType OmniboxViewViews::GetPreferredTextInputType() const {
   return ui::TEXT_INPUT_TYPE_URL;
 }
 
+bool OmniboxViewViews::IsFullWebUIOmnibox() const {
+  return location_bar_view_ && location_bar_view_->is_full_webui_omnibox();
+}
+
+bool OmniboxViewViews::IsFullWebUIOmniboxReady() const {
+  return location_bar_view_ && location_bar_view_->IsFullWebUiOmniboxReady();
+}
+
 void OmniboxViewViews::AddedToWidget() {
   views::Textfield::AddedToWidget();
   scoped_compositor_observation_.Observe(GetWidget()->GetCompositor());
@@ -770,8 +877,9 @@ bool OmniboxViewViews::IsContextMenuTextEditingCommandEnabled(
 }
 
 void OmniboxViewViews::UpdateSchemeStyle(const gfx::Range& range) {
-  DCHECK(range.IsValid());
-  DCHECK(!controller()->edit_model()->user_input_in_progress());
+  CHECK(range.IsValid(), base::NotFatalUntil::M162);
+  CHECK(!controller()->edit_model()->user_input_in_progress(),
+        base::NotFatalUntil::M162);
 
   // Do not style the scheme for non-http/https URLs. For such schemes, styling
   // could be confusing or misleading. For example, the scheme isn't meaningful
@@ -1001,7 +1109,13 @@ void OmniboxViewViews::UpdatePopup() {
 
 void OmniboxViewViews::ApplyCaretVisibility() {
   if (controller()->edit_model()->focus_state() != OMNIBOX_FOCUS_NONE) {
-    SetCursorEnabled(controller()->edit_model()->is_caret_visible());
+    if (!IsFullWebUIOmniboxReady()) {
+      // In Full WebUI mode, text input and caret rendering are handled by
+      // WebUI once the popup is ready. While the popup is not yet ready (or in
+      // classic mode), enable the native cursor timer so the caret blinks in
+      // the native textfield.
+      SetCursorEnabled(controller()->edit_model()->is_caret_visible());
+    }
 
     // TODO(tommycli): Because the LocationBarView has a somewhat different look
     // depending on whether or not the caret is visible, we have to resend a
@@ -1010,6 +1124,12 @@ void OmniboxViewViews::ApplyCaretVisibility() {
     if (location_bar_view_) {
       location_bar_view_->OnOmniboxFocused();
     }
+  } else if (location_bar_view_ && IsFullWebUIOmnibox()) {
+    // In Full WebUI mode, native Views `Textfield::OnBlur()` is never called by
+    // `FocusManager` because the textfield has `FocusBehavior::NEVER`. When
+    // focus state drops to `OMNIBOX_FOCUS_NONE`, explicitly notify
+    // `LocationBarView` to refresh and erase the focus ring.
+    location_bar_view_->OnOmniboxBlurred();
   }
   InstallPlaceholderText();
 }
@@ -1035,6 +1155,18 @@ void OmniboxViewViews::OnTemporaryTextMaybeChanged(
 void OmniboxViewViews::OnInlineAutocompleteTextMaybeChanged(
     const std::u16string& user_text,
     const std::u16string& inline_autocompletion) {
+  // In Full WebUI mode, the WebUI renders autocomplete results, and the native
+  // textfield only handles the mouse gestures that hand focus and the selection
+  // off to it. Don't let results that arrive in the middle of such a gesture
+  // overwrite the text. E.g. the second press of a double-click on the elided
+  // URL unelides it and selects a word. If the zero-prefix suggestions that the
+  // first click requested arrive before the second release, setting their text
+  // here would re-elide the URL and drop that selection, so the release would
+  // hand off the whole elided URL instead of the word.
+  if (is_mouse_pressed_ && IsFullWebUIOmniboxReady()) {
+    return;
+  }
+
   std::u16string display_text = user_text + inline_autocompletion;
   if (display_text == GetText()) {
     return;
@@ -1083,36 +1215,14 @@ void OmniboxViewViews::ClearAccessibilityLabel() {
 void OmniboxViewViews::SetAccessibilityLabel(const std::u16string& display_text,
                                              const AutocompleteMatch& match,
                                              bool notify_text_changed) {
-  if (controller()->edit_model()->GetPopupSelection().state ==
-      OmniboxPopupSelection::LineState::FOCUSED_BUTTON_AIM) {
-    friendly_suggestion_text_ =
-        controller()->edit_model()->GetPopupAccessibilityLabelForAimButton();
-  } else if (controller()->edit_model()->GetPopupSelection().line ==
-             OmniboxPopupSelection::kNoMatch) {
-    // If nothing is selected in the popup, we are in the no-default-match edge
-    // case, and |match| is a synthetically generated match. In that case,
-    // bypass OmniboxPopupModel and get the label from our synthetic |match|.
-    friendly_suggestion_text_ = AutocompleteMatchType::ToAccessibilityLabel(
-        match, /*header_text=*/u"", display_text,
-        OmniboxPopupSelection::kNoMatch,
-        controller()->autocomplete_controller()->result().size(),
-        std::u16string(), &friendly_suggestion_text_prefix_length_);
-  } else {
-    friendly_suggestion_text_ =
-        controller()
-            ->edit_model()
-            ->GetPopupAccessibilityLabelForCurrentSelection(
-                display_text, true, &friendly_suggestion_text_prefix_length_);
-
-    // If the line immediately after the current selection is the
-    // informational IPH row, append its accessibility label at the end of
-    // this selection's accessibility label.
-    friendly_suggestion_text_ +=
-        controller()
-            ->edit_model()
-            ->MaybeGetPopupAccessibilityLabelForIPHSuggestion();
+  if (IsSuggestionNarrationOwnedByWebUIPopup()) {
+    // The full WebUI popup narrates selections itself; also narrating here
+    // (especially the macOS announcement below) interrupts it.
+    ClearAccessibilityLabel();
+    return;
   }
-
+  friendly_suggestion_text_ = ComputeFriendlySuggestionTextForAccessibility(
+      display_text, match, friendly_suggestion_text_prefix_length_);
   UpdateAccessibleValue();
 
 #if BUILDFLAG(IS_MAC)
@@ -1304,6 +1414,16 @@ void OmniboxViewViews::OnMouseExited(const ui::MouseEvent& event) {
   }
 }
 
+bool OmniboxViewViews::SupportsDrag() const {
+  // In Full WebUI mode, mouse drags on the steady-state Omnibox are intended to
+  // perform text selection rather than initiating an OS-level Drag-and-Drop of
+  // the URL text. Returning false prevents `views::SelectionController` from
+  // marking the gesture as `initiating_drag_` when a drag starts inside
+  // existing selection bounds, ensuring drag-to-select works and can be synced
+  // to the WebUI popup input on mouse release.
+  return !IsFullWebUIOmniboxReady();
+}
+
 bool OmniboxViewViews::OnMousePressed(const ui::MouseEvent& event) {
   PermitExternalProtocolHandler();
 
@@ -1311,51 +1431,76 @@ bool OmniboxViewViews::OnMousePressed(const ui::MouseEvent& event) {
   if (controller()->IsPopupOpen()) {
     OmniboxPopupSelection selection =
         controller()->edit_model()->GetPopupSelection();
-    if (selection.state != OmniboxPopupSelection::KEYWORD_MODE) {
-      selection.state = OmniboxPopupSelection::NORMAL;
+    if (selection.state != OmniboxPopupSelection::LineState::kKeywordMode) {
+      selection.state = OmniboxPopupSelection::LineState::kNormal;
       controller()->edit_model()->SetPopupSelection(selection);
     }
   }
 
   is_mouse_pressed_ = true;
+  is_user_initiated_focus_ = true;
 
-  // Replicating native double-click word-selection in the Full WebUI Omnibox
-  // popup relies on forwarding raw mouse presses from the WebUI popup window to
-  // this native C++ textfield (`BrowserWidget`).
+  // A single click starts a new click gesture. Later clicks of a multi-click
+  // gesture (e.g. a double-click) inherit whether the first click requested
+  // zero-prefix suggestions.
   //
-  // However, in Full WebUI mode, the frameless WebUI popup window is the active
-  // OS window, so this underlying C++ textfield does not have native keyboard
-  // focus (`HasFocus()` is false). Furthermore, on the New Tab Page (NTP)
-  // before typing a query, `OmniboxController::IsPopupOpen()` logically returns
-  // false (because Autocomplete matches are completely empty or zero-suggest).
+  // Detect later clicks the same way `views::SelectionController` does (time
+  // and distance since the last click), rather than via
+  // `event.GetClickCount()`. In Full WebUI mode, the first click opens the
+  // popup over the location bar, so the second click is forwarded from the
+  // popup's widget. On macOS, its platform click count then restarts at 1, even
+  // though `views::SelectionController` still treats it as a double-click.
   //
-  // To prevent `OnMousePressed()` from mistakenly assuming this forwarded click
-  // is an initial focus-gaining action and setting
-  // `select_all_on_mouse_release_` (which would forcefully wipe out any partial
-  // or double-click highlight on mouse release), we also verify the physical UI
-  // state (`GetOmniboxPopupView()->IsOpen()`). If the real physical WebUI popup
-  // view is open, we completely lock out the "select all on mouse release"
-  // trigger and allow partial selections and caret placements to stick
-  // perfectly.
+  // `GetLastClickTime()` and `GetLastClickRootLocation()` still describe the
+  // previous left press here, since `views::Textfield::OnMousePressed()` below
+  // updates them.
+  if (event.IsOnlyLeftMouseButton()) {
+    const base::TimeTicks last_click_time = GetLastClickTime();
+    const bool continues_click_gesture =
+        event.GetClickCount() > 1 ||
+        (!last_click_time.is_null() &&
+         event.time_stamp() - last_click_time <=
+             views::GetDoubleClickInterval() &&
+         !ExceededDragThreshold(event.root_location() -
+                                GetLastClickRootLocation()));
+    if (!continues_click_gesture) {
+      click_gesture_requested_zps_ = false;
+    }
+  } else {
+    click_gesture_requested_zps_ = false;
+  }
+
+  // In Full WebUI mode, `controller()->IsPopupOpen()` may return false on the
+  // New Tab Page (NTP) before query suggestions arrive. Check physical popup
+  // visibility to avoid re-arming `select_all_on_mouse_release_` when forwarded
+  // mouse presses are received from an already-open WebUI popup.
   const bool is_popup_open =
       controller()->IsPopupOpen() ||
-      (location_bar_view_ && location_bar_view_->GetOmniboxPopupView() &&
+      (IsFullWebUIOmnibox() && location_bar_view_ &&
+       location_bar_view_->GetOmniboxPopupView() &&
        location_bar_view_->GetOmniboxPopupView()->IsOpen());
+
+  // In Full WebUI mode, the native textfield operates with
+  // `FocusBehavior::NEVER` (`HasFocus()` is false). Require a single click so
+  // multi-clicks (e.g. double-click word selection) do not arm
+  // `select_all_on_mouse_release_` and clobber selections on mouse release.
+  const bool is_click_valid =
+      !IsFullWebUIOmniboxReady() || event.GetClickCount() == 1;
 
   select_all_on_mouse_release_ =
       (event.IsOnlyLeftMouseButton() || event.IsOnlyRightMouseButton()) &&
-      !is_popup_open &&
+      is_click_valid && !is_popup_open &&
       (!HasFocus() ||
        (controller()->edit_model()->focus_state() == OMNIBOX_FOCUS_INVISIBLE));
   if (select_all_on_mouse_release_) {
     // Restore caret visibility whenever the user clicks in the omnibox in a way
-    // that would give it focus.  We must handle this case separately here
+    // that would give it focus. We must handle this case separately here
     // because if the omnibox currently has invisible focus, the mouse event
     // won't trigger either SetFocus() or OmniboxEditModel::OnSetFocus().
     controller()->edit_model()->SetCaretVisibility(true);
 
     // When we're going to select all on mouse release, invalidate any saved
-    // selection lest restoring it fights with the "select all" action.  It's
+    // selection lest restoring it fights with the "select all" action. It's
     // possible to later set select_all_on_mouse_release_ back to false, but
     // that happens for things like dragging, which are cases where having
     // invalidated this saved selection is still OK.
@@ -1467,9 +1612,13 @@ void OmniboxViewViews::OnMouseReleased(const ui::MouseEvent& event) {
   // drag is detected, the mouse cursor might end up a few characters distant
   // from the original click position, leading to selection of some characters
   // rather than the whole-URL selection the user intended.
-  if (base::FeatureList::IsEnabled(omnibox::kShowPopupOnMouseReleased) &&
+  //
+  // The same condition gates zero-prefix suggestions in Full WebUI mode below.
+  const bool should_query_zps =
       event.IsOnlyLeftMouseButton() &&
-      (select_all_on_mouse_release_ || GetText().empty())) {
+      (select_all_on_mouse_release_ || GetText().empty());
+  if (base::FeatureList::IsEnabled(omnibox::kShowPopupOnMouseReleased) &&
+      should_query_zps) {
     controller()->edit_model()->StartZeroSuggestRequest();
   }
   select_all_on_mouse_release_ = false;
@@ -1483,24 +1632,69 @@ void OmniboxViewViews::OnMouseReleased(const ui::MouseEvent& event) {
     TextChanged();
   }
 
-  if (location_bar_view_) {
-    location_bar_view_->OpenOmniboxPopup(/*query_zps=*/true);
-
-    // Transfer selection to the full webui popup.
-    if (location_bar_view_->GetOmniboxPopupView() &&
-        base::FeatureList::IsEnabled(
-            omnibox::kWebUIOmniboxFullPopupDoubleClick)) {
-      location_bar_view_->GetOmniboxPopupView()->SyncNativeStateToWebUI(
-          /*query_zps=*/true);
-    }
+  if (IsFullWebUIOmniboxReady()) {
+    // In Full WebUI mode, the native textfield maintains `FocusBehavior::NEVER`
+    // so `views::Textfield::OnMouseReleased()` does not acquire Views focus.
+    // Explicitly open and focus the WebUI popup searchbox via
+    // `OpenOmniboxPopup` rather than calling
+    // `SetFocus(/*is_user_initiated=*/true)`. Calling `SetFocus(true)` triggers
+    // `OmniboxEditModel::Unelide()`, which forces `view_->SelectAll(true)` and
+    // clobbers partial drag or double-click word selections made during mouse
+    // interactions.
+    //
+    // Only a click that focuses the omnibox (or one on an empty omnibox)
+    // queries zero-prefix suggestions. A drag or a multi-click selection only
+    // hands focus and the selection off to WebUI, without opening the
+    // dropdown.
+    //
+    // However, the later clicks of a multi-click gesture whose first click
+    // opened the dropdown (e.g. a double-click from the unfocused location
+    // bar) must keep it open. Sync their selection while preserving the
+    // WebUI's current matches (a plain selection sync without `query_zps`
+    // clears them), which also stops any in-flight zero-prefix query rather
+    // than re-requesting one for the new selection.
+    const bool preserve_matches = !should_query_zps &&
+                                  event.IsOnlyLeftMouseButton() &&
+                                  click_gesture_requested_zps_;
+    click_gesture_requested_zps_ |= should_query_zps;
+    // A left click that focuses the omnibox (or one on an empty omnibox)
+    // opens the suggestions dropdown. A right-click should focus the omnibox
+    // and select its text without showing suggestions, since the context menu
+    // follows this release.
+    OpenFullWebUIOmniboxPopup(should_query_zps, preserve_matches);
   }
+}
+
+void OmniboxViewViews::OnMouseCaptureLost() {
+  // In Full WebUI mode, `is_mouse_pressed_` directly controls whether selection
+  // highlights are rendered in steady-state (via `OnPaint`) and whether the
+  // popup presenter is held open. If mouse capture is interrupted mid-drag
+  // (e.g. by an OS window switch, Alt+Tab, or modal dialog),
+  // `OnMouseReleased()` is never dispatched. Reset transient mouse drag state
+  // here to prevent staying stuck in drag-selection painting mode.
+  if (IsFullWebUIOmnibox()) {
+    is_mouse_pressed_ = false;
+    select_all_on_mouse_release_ = false;
+    filter_drag_events_for_unelision_ = false;
+  }
+
+  views::Textfield::OnMouseCaptureLost();
 }
 
 void OmniboxViewViews::OnGestureEvent(ui::GestureEvent* event) {
   PermitExternalProtocolHandler();
 
+  const bool is_popup_open =
+      controller()->IsPopupOpen() ||
+      (IsFullWebUIOmnibox() && location_bar_view_ &&
+       location_bar_view_->GetOmniboxPopupView() &&
+       location_bar_view_->GetOmniboxPopupView()->IsOpen());
+  const bool is_tap_valid =
+      event->type() == ui::EventType::kGestureTap &&
+      (!IsFullWebUIOmniboxReady() || event->details().tap_count() == 1);
+
   const bool gesture_should_take_focus =
-      !HasFocus() && event->type() == ui::EventType::kGestureTap;
+      !is_popup_open && is_tap_valid && !HasFocus();
   if (gesture_should_take_focus) {
     select_all_on_gesture_tap_ = true;
 
@@ -1534,6 +1728,11 @@ void OmniboxViewViews::OnGestureEvent(ui::GestureEvent* event) {
       event->type() == ui::EventType::kGestureLongPress ||
       event->type() == ui::EventType::kGestureLongTap) {
     select_all_on_gesture_tap_ = false;
+  }
+
+  if (event->type() == ui::EventType::kGestureTap &&
+      IsFullWebUIOmniboxReady()) {
+    OpenFullWebUIOmniboxPopup(/*query_zps=*/true);
   }
 }
 
@@ -1610,8 +1809,18 @@ void OmniboxViewViews::OnFocus() {
   // Don't call WebLocationBar::OnSetFocus(), this view has already acquired
   // focus.
 
-  // Restore the selection we saved in OnBlur() if it's still valid.
-  if (saved_selection_for_focus_change_.IsValid()) {
+  const bool is_focus_traversal =
+      GetFocusManager() &&
+      GetFocusManager()->focus_change_reason() ==
+          views::FocusManager::FocusChangeReason::kFocusTraversal;
+
+  // Restore the selection we saved in OnBlur() if it's still valid. If focus
+  // was acquired via tab traversal under full WebUI popup, select all instead
+  // of restoring stale selection.
+  if (IsFullWebUIOmnibox() && is_focus_traversal) {
+    saved_selection_for_focus_change_ = gfx::Range::InvalidRange();
+    SelectAll(true);
+  } else if (saved_selection_for_focus_change_.IsValid()) {
     SetSelectedRange(saved_selection_for_focus_change_);
     saved_selection_for_focus_change_ = gfx::Range::InvalidRange();
     UpdateAccessibleTextSelection();
@@ -1629,23 +1838,83 @@ void OmniboxViewViews::OnFocus() {
   if (location_bar_view_) {
     location_bar_view_->OnOmniboxFocused();
   }
+
+  // When navigated to via Tab or Shift+Tab, open and focus the full WebUI
+  // popup instead of retaining focus in the native view.
+  if (IsFullWebUIOmniboxReady() && is_focus_traversal) {
+    if (location_bar_view_) {
+      location_bar_view_->OpenOmniboxPopup(/*query_zps=*/false);
+    }
+  }
 }
 
 void OmniboxViewViews::OnBlur() {
   views::Textfield::OnBlur();
+  is_user_initiated_focus_ = false;
+
+  views::FocusManager* focus_manager = GetFocusManager();
+  const bool focus_moved_to_another_view =
+      focus_manager && focus_manager->GetFocusedView() &&
+      focus_manager->GetFocusedView() != this;
+
+  // In Full WebUI mode, focus only moves from the native textfield to
+  // `LocationBarView` when `LocationBarView::OnFullWebUiOmniboxReady()` hands
+  // it off to the WebUI omnibox (e.g. the user started typing in a new window
+  // before WebUI was ready). That isn't a blur, but the popup is still closed,
+  // so the checks below would treat it as one.
+  if (IsFullWebUIOmnibox() && focus_manager &&
+      focus_manager->GetFocusedView() == location_bar_view_) {
+    // The native textfield stays visible whenever the popup is closed, but it
+    // can't take focus anymore, so it won't get another `OnBlur()`. Restore how
+    // it displays text while unfocused now.
+    ElideAndResetScrollPosition();
+    ClearAccessibilityLabel();
+    return;
+  }
+
+  const OmniboxPopupState popup_state =
+      controller()->popup_state_manager()->popup_state();
+  if (popup_state == OmniboxPopupState::kFull ||
+      popup_state == OmniboxPopupState::kAim) {
+    const bool is_full_popup =
+        IsFullWebUIOmnibox() && popup_state == OmniboxPopupState::kFull;
+
+    // Now that the native textfield has blurred after handing off focus to
+    // WebUI, switch its focus behavior to `NEVER`, so future focus routes to
+    // `LocationBarView`.
+    if (is_full_popup && location_bar_view_) {
+      location_bar_view_->UpdateFocusBehavior(
+          location_bar_view_->is_toolbar_visible());
+    }
+
+    // If focus is transferring to a WebUI popup widget (e.g., Full Popup or AIM
+    // Popup), treat this as a logical focus transfer rather than a true blur.
+    // Keep the edit model's focus state active, and skip all
+    // reversion/blurring.
+    if (!focus_moved_to_another_view) {
+      return;
+    }
+
+    // If the full WebUI popup was open and focus is truly leaving the Omnibox,
+    // notify the popup view and dismiss the popup unless there is an active
+    // draft.
+    if (is_full_popup) {
+      if (location_bar_view_ && location_bar_view_->GetOmniboxPopupView()) {
+        location_bar_view_->GetOmniboxPopupView()->OnBlur();
+      }
+      const bool user_input_in_progress =
+          controller()->edit_model()->user_input_in_progress();
+      const std::u16string& user_text = controller()->edit_model()->user_text();
+      if (!user_input_in_progress || user_text.empty()) {
+        controller()->popup_state_manager()->SetPopupState(
+            OmniboxPopupState::kNone);
+      }
+    }
+    return;
+  }
 
   // Save the user's existing selection to restore it later.
   saved_selection_for_focus_change_ = GetSelectedRange();
-
-  // If focus is transferring to a WebUI popup widget (e.g., Full Popup or AIM
-  // Popup), treat this as a logical focus transfer rather than a true blur.
-  // Keep the edit model's focus state active, and skip all reversion/blurring.
-  if (controller()->popup_state_manager()->popup_state() ==
-          OmniboxPopupState::kFull ||
-      controller()->popup_state_manager()->popup_state() ==
-          OmniboxPopupState::kAim) {
-    return;
-  }
 
   // If the view is showing text that's not user-text, revert the text to the
   // permanent display text. This usually occurs if Steady State Elisions is on
@@ -1683,9 +1952,7 @@ void OmniboxViewViews::OnBlur() {
     RevertAll();
   } else if (auto* popup_closer =
                  controller()->client()->GetOmniboxPopupCloser()) {
-    if (!base::FeatureList::IsEnabled(omnibox::kWebUIOmniboxFullPopup)) {
-      popup_closer->CloseWithReason(omnibox::PopupCloseReason::kBlur);
-    }
+    popup_closer->CloseWithReason(omnibox::PopupCloseReason::kBlur);
   }
 
   // Tell the model to reset itself.
@@ -1694,10 +1961,26 @@ void OmniboxViewViews::OnBlur() {
   // Deselect the text. Ensures the cursor is an I-beam.
   SetSelectedRange(gfx::Range(GetCursorPosition()));
 
-  // When deselected, elide and reset scroll position. After eliding, the old
-  // scroll offset is meaningless (since the string is guaranteed to fit within
-  // the view). The scroll must be reset or the text may be rendered partly or
-  // wholly off-screen.
+  ElideAndResetScrollPosition();
+
+  aim_hint_shown_ = false;
+
+  // `location_bar_view_` can be null in tests.
+  if (location_bar_view_) {
+    location_bar_view_->OnOmniboxBlurred();
+
+    // The location bar needs to repaint without a focus ring.
+    location_bar_view_->SchedulePaint();
+  }
+
+  ClearAccessibilityLabel();
+  InstallPlaceholderText();
+}
+
+void OmniboxViewViews::ElideAndResetScrollPosition() {
+  // After eliding, the old scroll offset is meaningless (since the string is
+  // guaranteed to fit within the view). The scroll must be reset or the text
+  // may be rendered partly or wholly off-screen.
   //
   // Important: Since the URL can contain bidirectional text, it is important to
   // set the display offset directly to 0 (not simply scroll to the start of the
@@ -1715,18 +1998,6 @@ void OmniboxViewViews::OnBlur() {
   // whitespace to the left of the elision point.
   render_text->SetWhitespaceElision(false);
   render_text->SetDisplayOffset(0);
-
-  aim_hint_shown_ = false;
-
-  // `location_bar_view_` can be null in tests.
-  if (location_bar_view_) {
-    location_bar_view_->OnOmniboxBlurred();
-
-    // The location bar needs to repaint without a focus ring.
-    location_bar_view_->SchedulePaint();
-  }
-
-  ClearAccessibilityLabel();
 }
 
 bool OmniboxViewViews::SupportsEmoji() const {
@@ -1778,7 +2049,8 @@ void OmniboxViewViews::DoInsertChar(char16_t ch) {
   // If |insert_char_time_| is not null, there's a pending insert char operation
   // that hasn't been painted yet. Keep the earlier time.
   if (insert_char_time_.is_null()) {
-    DCHECK_EQ(latency_histogram_state_, LatencyHistogramState::kNotActive);
+    CHECK_EQ(latency_histogram_state_, LatencyHistogramState::kNotActive,
+             base::NotFatalUntil::M162);
     latency_histogram_state_ = LatencyHistogramState::kCharTyped;
     insert_char_time_ = base::TimeTicks::Now();
     controller()->edit_model()->NotifyObserversCharTyped(insert_char_time_);
@@ -1948,8 +2220,8 @@ bool OmniboxViewViews::HandleKeyEvent(views::Textfield* textfield,
         //    `OmniboxEditModel` open a `kNoMatch`/`NORMAL` selection.
         OmniboxPopupSelection::LineState line_state =
             aim_page_action_icon_has_fake_focus_
-                ? OmniboxPopupSelection::LineState::FOCUSED_BUTTON_AIM
-                : OmniboxPopupSelection::LineState::NORMAL;
+                ? OmniboxPopupSelection::LineState::kFocusedButtonAim
+                : OmniboxPopupSelection::LineState::kNormal;
         controller()->edit_model()->OpenSelection(
             OmniboxPopupSelection(OmniboxPopupSelection::kNoMatch, line_state),
             event.time_stamp(), disposition, /*via_keyboard=*/true);
@@ -2067,8 +2339,8 @@ bool OmniboxViewViews::HandleKeyEvent(views::Textfield* textfield,
           controller()->edit_model()->OpenSelection(
               OmniboxPopupSelection(
                   OmniboxPopupSelection::kNoMatch,
-                  OmniboxPopupSelection::LineState::FOCUSED_BUTTON_AIM),
-              event.time_stamp(), WindowOpenDisposition::CURRENT_TAB,
+                  OmniboxPopupSelection::LineState::kFocusedButtonAim),
+              event.time_stamp(), WindowOpenDisposition::kCurrentTab,
               /*via_keyboard=*/true);
           return true;
         }
@@ -2082,7 +2354,7 @@ bool OmniboxViewViews::HandleKeyEvent(views::Textfield* textfield,
             controller()->edit_model()->GetPopupSelection();
         if (selection.IsButtonFocused()) {
           controller()->edit_model()->OpenSelection(
-              selection, event.time_stamp(), WindowOpenDisposition::CURRENT_TAB,
+              selection, event.time_stamp(), WindowOpenDisposition::kCurrentTab,
               /*via_keyboard=*/true);
           return true;
         }
@@ -2136,7 +2408,7 @@ void OmniboxViewViews::HandleCutOrCopyAdjustments(
     const auto last_omnibox_focus =
         controller()->edit_model()->last_omnibox_focus();
     if (!last_omnibox_focus.is_null()) {
-      LogOmniboxFocusToCutOrCopyAllTextTime(
+      omnibox::LogFocusToCutOrCopyAllTextTime(
           now - last_omnibox_focus,
           controller()->autocomplete_controller()->input().IsZeroSuggest(),
           controller()->edit_model()->GetPageClassification());
@@ -2260,7 +2532,7 @@ void OmniboxViewViews::OnDidPresentCompositorFrame(
     uint32_t frame_token,
     const gfx::PresentationFeedback& feedback) {
   if (latency_histogram_state_ == LatencyHistogramState::kCompositingStarted) {
-    DCHECK(!insert_char_time_.is_null());
+    CHECK(!insert_char_time_.is_null(), base::NotFatalUntil::M162);
 
     uint64_t event_id = base::trace_event::GetNextGlobalTraceId();
     base::trace_event::HistogramScope scoped_event(event_id);
@@ -2321,6 +2593,27 @@ void OmniboxViewViews::TitleWasSet(content::NavigationEntry* entry) {
 
 void OmniboxViewViews::PermitExternalProtocolHandler() {
   ExternalProtocolHandler::PermitLaunchUrl();
+}
+
+void OmniboxViewViews::OpenFullWebUIOmniboxPopup(bool query_zps,
+                                                 bool preserve_matches) {
+  if (!location_bar_view_) {
+    return;
+  }
+  location_bar_view_->OpenOmniboxPopup(query_zps);
+
+  // Transfer selection to the full webui popup (necessary when the popup is
+  // already open and double-click events are forwarded).
+  if (auto* popup_view = location_bar_view_->GetOmniboxPopupView();
+      popup_view && base::FeatureList::IsEnabled(
+                        omnibox::kWebUIOmniboxFullPopupDoubleClick)) {
+    if (preserve_matches) {
+      popup_view->SyncNativeStateToWebUIPreservingMatches();
+    } else {
+      popup_view->SyncNativeStateToWebUI(/*query_zps=*/false,
+                                         /*show_full_url=*/false);
+    }
+  }
 }
 
 void OmniboxViewViews::PerformDrop(

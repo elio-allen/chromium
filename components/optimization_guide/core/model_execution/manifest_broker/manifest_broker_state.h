@@ -16,7 +16,6 @@
 #include "components/optimization_guide/core/model_execution/on_device_capability.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_access_controller.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_download_progress_manager.h"
-#include "components/optimization_guide/core/model_execution/on_device_model_service_controller.h"
 #include "components/optimization_guide/core/model_execution/performance_class.h"
 #include "components/optimization_guide/core/model_execution/usage_tracker.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom.h"
@@ -28,11 +27,12 @@ namespace optimization_guide {
 
 // This holds the state for the manifest based on-device model broker.
 class ManifestBrokerState final : public OnDeviceCapability,
+                                  public OnDeviceModelControl,
                                   mojom::ModelBrokerDebug {
  public:
   ManifestBrokerState(
       PrefService& local_state,
-      std::unique_ptr<ManifestAssetManager::Delegate> delegate,
+      std::unique_ptr<ManifestAssetManagerDelegate> delegate,
       on_device_model::ServiceClient::LaunchFn launch_fn,
       component_updater::ComponentUpdateService* component_update_service);
   ~ManifestBrokerState() override;
@@ -43,6 +43,7 @@ class ManifestBrokerState final : public OnDeviceCapability,
   void BindModelBrokerDebug(
       base::PassKey<on_device_internals::PageHandler> key,
       mojo::PendingReceiver<mojom::ModelBrokerDebug> receiver) override;
+  OnDeviceModelControl* GetModelControl() override;
   std::unique_ptr<OnDeviceSession> StartSession(
       mojom::OnDeviceFeature feature,
       const SessionConfigParams& config_params,
@@ -61,12 +62,17 @@ class ManifestBrokerState final : public OnDeviceCapability,
       base::OnceCallback<void(OnDeviceModelEligibilityReason)> callback)
       override;
 
+  // OnDeviceModelControl
+  void UninstallCapability(const std::string& model_asset_id) override;
+
+  // mojom::ModelBrokerDebug, OnDeviceModelControl
+  void UninstallModels() override;
+
   // mojom::ModelBrokerDebug
   void GetStateInfo(
       mojom::ModelBrokerDebug::GetStateInfoCallback callback) override;
   void SetUseCaseRequested(const std::string& use_case,
                            bool requested) override;
-  void UninstallModels() override;
   void ResetModelCrashCount() override;
   void AddObserver(
       mojo::PendingRemote<mojom::ModelBrokerDebugObserver> observer) override;
@@ -109,7 +115,7 @@ class ManifestBrokerState final : public OnDeviceCapability,
   void NotifyObserversOfBrokerStateChange();
 
   raw_ref<PrefService> local_state_;
-  std::unique_ptr<ManifestAssetManager::Delegate> delegate_;
+  std::unique_ptr<ManifestAssetManagerDelegate> delegate_;
   on_device_model::ServiceClient service_client_;
   const raw_ptr<component_updater::ComponentUpdateService>
       component_update_service_;

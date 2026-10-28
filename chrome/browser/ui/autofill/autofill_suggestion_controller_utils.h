@@ -9,15 +9,14 @@
 
 #include "base/containers/span.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
+#include "components/autofill/core/common/aliases.h"
 
 namespace content {
-class RenderFrameHost;
 class WebContents;
 }  // namespace content
 
 namespace autofill {
 
-class AutofillSuggestionDelegate;
 struct SelectOption;
 struct Suggestion;
 
@@ -49,15 +48,10 @@ bool IsStandaloneSuggestionType(SuggestionType type);
 // styling (e.g. disabled text style and grayed-out icons).
 bool ShouldApplyDeactivatedStyle(const Suggestion& suggestion);
 
-// Will be removed together with kAutofillSimplifyFocusCheck.
-// Returns the `RenderFrameHost` corresponding to an
-// `AutofillSuggestionDelegate`.
-content::RenderFrameHost* GetRenderFrameHost_DoNotUse(
-    AutofillSuggestionDelegate& delegate);
-
-// Returns true if `ancestor` is an `ancestor` of `descendant`.
-bool IsAncestorOf(content::RenderFrameHost* ancestor,
-                  content::RenderFrameHost* descendant);
+// When suggestions update in an open popup, a 500ms lockout against accidental
+// clicks is normally restarted. Returns whether `trigger_source` restarts this
+// lockout.
+bool ShouldResetIdleBarrier(AutofillSuggestionTriggerSource trigger_source);
 
 // Returns whether the pointer is locked in `web_contents`.
 bool IsPointerLocked(content::WebContents* web_contents);
@@ -70,6 +64,10 @@ void NotifyUserEducationAboutAcceptedSuggestion(content::WebContents* contents,
 std::vector<Suggestion> UpdateSuggestionsFromDataList(
     base::span<const SelectOption> options,
     std::vector<Suggestion> suggestions);
+
+// Cleans up redundant, invalid separators in `suggestions` (leading separators,
+// trailing separators, and consecutive duplicate separators).
+void CleanUpRedundantSeparators(std::vector<Suggestion>& suggestions);
 
 }  // namespace autofill
 

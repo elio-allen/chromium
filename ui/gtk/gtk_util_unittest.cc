@@ -4,147 +4,110 @@
 
 #include "ui/gtk/gtk_util.h"
 
-#include <string>
+#include <glib.h>
 
-#include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
+#include "base/memory/raw_ptr.h"
+#include "base/test/bind.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/glib/scoped_gsignal.h"
 #include "ui/gtk/gtk_compat.h"
 
 namespace gtk {
 
-TEST(GtkUtilTest, IsValidThemeName) {
-  EXPECT_TRUE(IsValidThemeName(ThemeProperty::kThemeName, "Adwaita"));
-  EXPECT_TRUE(IsValidThemeName(ThemeProperty::kIconThemeName, "hicolor"));
-  EXPECT_TRUE(IsValidThemeName(ThemeProperty::kCursorThemeName, "Adwaita"));
-  EXPECT_TRUE(IsValidThemeName(ThemeProperty::kKeyThemeName, ""));
-  EXPECT_FALSE(IsValidThemeName(ThemeProperty::kThemeName, ""));
-  EXPECT_FALSE(IsValidThemeName(ThemeProperty::kCursorThemeName, ""));
-  EXPECT_FALSE(IsValidThemeName(ThemeProperty::kThemeName, "../invalid"));
-  EXPECT_FALSE(
-      IsValidThemeName(ThemeProperty::kThemeName, "/absolute/invalid"));
-  EXPECT_FALSE(IsValidThemeName(ThemeProperty::kThemeName, "."));
-}
-
-TEST(GtkUtilTest, GetThemeFallback) {
-  EXPECT_STREQ(GetThemeFallback(ThemeProperty::kIconThemeName), "hicolor");
-  EXPECT_STREQ(GetThemeFallback(ThemeProperty::kThemeName), "Adwaita");
-  EXPECT_STREQ(GetThemeFallback(ThemeProperty::kCursorThemeName), "Adwaita");
-  EXPECT_EQ(GetThemeFallback(ThemeProperty::kKeyThemeName), nullptr);
-}
-
-class GtkUtilInterceptorTest : public testing::Test {
+class GtkUtilXftDpiTest : public testing::Test {
  protected:
-  void SetUp() override { InstallGtkSettingsInterceptor(); }
-  void TearDown() override { UninstallGtkSettingsInterceptor(); }
+  void SetUp() override {
+    settings_ = GetDefaultGtkSettings();
+    ASSERT_TRUE(settings_);
+    g_object_get(settings_, "gtk-xft-dpi", &original_dpi_, nullptr);
+  }
+  void TearDown() override {
+    g_object_set(settings_, "gtk-xft-dpi", original_dpi_, nullptr);
+  }
+
+  void SetXftDpi(int dpi) {
+    g_object_set(settings_, "gtk-xft-dpi", dpi, nullptr);
+  }
+
+ private:
+  raw_ptr<GtkSettings> settings_ = nullptr;
+  int original_dpi_ = -1;
 };
 
-TEST_F(GtkUtilInterceptorTest, ThemeNamesSanitizedAtWriteTime) {
-  GtkSettings* settings = GetDefaultGtkSettings();
-  ASSERT_TRUE(settings);
-
-  std::string observed_theme_name;
-  auto callback = base::BindRepeating(
-      [](std::string* out_str, GtkSettings* settings, GParamSpec* pspec) {
-        gchar* name = nullptr;
-        g_object_get(settings, "gtk-theme-name", &name, nullptr);
-        if (name) {
-          *out_str = name;
-          g_free(name);
-        }
-      },
-      base::Unretained(&observed_theme_name));
-
-  ScopedGSignal signal(settings, "notify::gtk-theme-name", callback);
-
-  // Set to an invalid value (path traversal)
-  g_object_set(settings, "gtk-theme-name", "../../../invalid-theme", nullptr);
-
-  // The interceptor should have triggered and sanitized the theme name to
-  // "Adwaita" before the notify callback ran!
-  EXPECT_EQ(observed_theme_name, "Adwaita");
+TEST_F(GtkUtilXftDpiTest, GetFontScaleFromXftDpi) {
+  SetXftDpi(144 * 1024);
+  EXPECT_EQ(GetXftDpi(), 144 * 1024);
+  EXPECT_EQ(GetFontScale(), 1.5);
 }
 
-TEST_F(GtkUtilInterceptorTest, IconThemeNamesSanitizedAtWriteTime) {
-  GtkSettings* settings = GetDefaultGtkSettings();
-  ASSERT_TRUE(settings);
-
-  std::string observed_theme_name;
-  auto callback = base::BindRepeating(
-      [](std::string* out_str, GtkSettings* settings, GParamSpec* pspec) {
-        gchar* name = nullptr;
-        g_object_get(settings, "gtk-icon-theme-name", &name, nullptr);
-        if (name) {
-          *out_str = name;
-          g_free(name);
-        }
-      },
-      base::Unretained(&observed_theme_name));
-
-  ScopedGSignal signal(settings, "notify::gtk-icon-theme-name", callback);
-
-  // Set to an invalid value (path traversal)
-  g_object_set(settings, "gtk-icon-theme-name", "../../../invalid-theme",
-               nullptr);
-
-  // The interceptor should have triggered and sanitized the theme name to
-  // "hicolor" before the notify callback ran!
-  EXPECT_EQ(observed_theme_name, "hicolor");
+// Regression test for crbug.com/566241627: `gtk-xft-dpi` is unset on GTK4
+// Wayland when the xdg-desktop-portal Settings interface is unavailable.
+// GetFontScale() must not call GTK3-only GdkScreen APIs on GTK4, which are
+// unresolved there.
+TEST_F(GtkUtilXftDpiTest, GetFontScaleWithoutXftDpi) {
+  SetXftDpi(-1);
+  EXPECT_EQ(GetXftDpi(), 0);
+  const double font_scale = GetFontScale();
+  if (GtkCheckVersion(4)) {
+    EXPECT_EQ(font_scale, 1.0);
+  } else {
+    EXPECT_GT(font_scale, 0.0);
+  }
 }
 
-TEST_F(GtkUtilInterceptorTest, CursorThemeNamesSanitizedAtWriteTime) {
-  GtkSettings* settings = GetDefaultGtkSettings();
-  ASSERT_TRUE(settings);
+TEST(GtkUtilTest, IsGdkFatalErrorMessage) {
+  // Fatal Wayland error messages.
+  EXPECT_TRUE(
+      IsGdkFatalErrorMessage("Gdk", "Lost connection to Wayland compositor."));
+  EXPECT_TRUE(IsGdkFatalErrorMessage(
+      "Gdk", "Error 32 (Broken pipe) dispatching to Wayland display."));
+  EXPECT_TRUE(IsGdkFatalErrorMessage(
+      "Gdk", "Error reading events from display: Broken pipe"));
+  EXPECT_TRUE(
+      IsGdkFatalErrorMessage("Gdk", "Error flushing display: Broken pipe"));
 
-  std::string observed_theme_name;
-  auto callback = base::BindRepeating(
-      [](std::string* out_str, GtkSettings* settings, GParamSpec* pspec) {
-        gchar* name = nullptr;
-        g_object_get(settings, "gtk-cursor-theme-name", &name, nullptr);
-        if (name) {
-          *out_str = name;
-          g_free(name);
-        }
-      },
-      base::Unretained(&observed_theme_name));
+  // Fatal X11 error messages.
+  EXPECT_TRUE(IsGdkFatalErrorMessage(
+      "Gdk",
+      "Fatal IO error 11 (Resource temporarily unavailable) on X server :0."));
 
-  ScopedGSignal signal(settings, "notify::gtk-cursor-theme-name", callback);
+  // Non-fatal GDK messages.
+  EXPECT_FALSE(IsGdkFatalErrorMessage("Gdk", "Window 0x1234 is not mapped"));
+  EXPECT_FALSE(IsGdkFatalErrorMessage("Gdk", ""));
 
-  // Set to an invalid value (path traversal)
-  g_object_set(settings, "gtk-cursor-theme-name",
-               "../../../../tmp/w8_evil_cursor", nullptr);
-
-  // The interceptor should have triggered and sanitized the cursor theme name
-  // to "Adwaita" before the notify callback ran!
-  EXPECT_EQ(observed_theme_name, "Adwaita");
+  // Fatal message strings from other domains must not trigger.
+  EXPECT_FALSE(
+      IsGdkFatalErrorMessage("Gtk", "Lost connection to Wayland compositor."));
+  EXPECT_FALSE(
+      IsGdkFatalErrorMessage("GLib", "Lost connection to Wayland compositor."));
+  EXPECT_FALSE(
+      IsGdkFatalErrorMessage("", "Lost connection to Wayland compositor."));
 }
 
-TEST_F(GtkUtilInterceptorTest, CursorThemeSizesSanitizedAtWriteTime) {
-  GtkSettings* settings = GetDefaultGtkSettings();
-  ASSERT_TRUE(settings);
+TEST(GtkUtilTest, GtkLogWriterFatalDisconnectIntercepted) {
+  InstallGtkLogWriter();
 
-  int observed_size = -1;
-  auto callback = base::BindRepeating(
-      [](int* out_size, GtkSettings* settings, GParamSpec* pspec) {
-        gint size = 0;
-        g_object_get(settings, "gtk-cursor-theme-size", &size, nullptr);
-        *out_size = size;
-      },
-      base::Unretained(&observed_size));
+  bool shutdown_called = false;
+  SetGtkShutdownCb(base::BindLambdaForTesting([&] { shutdown_called = true; }));
 
-  ScopedGSignal signal(settings, "notify::gtk-cursor-theme-size", callback);
+  // Non-fatal GDK message should not trigger the callback.
+  g_log_structured("Gdk", G_LOG_LEVEL_MESSAGE, "MESSAGE",
+                   "Normal non-fatal informational message");
+  EXPECT_FALSE(shutdown_called);
 
-  // Set to an invalid value (negative)
-  g_object_set(settings, "gtk-cursor-theme-size", -1, nullptr);
+  // Message from another domain should not trigger the callback.
+  g_log_structured("Gtk", G_LOG_LEVEL_MESSAGE, "MESSAGE",
+                   "Lost connection to Wayland compositor.");
+  EXPECT_FALSE(shutdown_called);
 
-  // The interceptor should have triggered and sanitized the cursor theme size
-  // to 24 before the notify callback ran!
-  EXPECT_EQ(observed_size, 24);
+  // Fatal GDK message must trigger the shutdown callback.
+  g_log_structured("Gdk", G_LOG_LEVEL_MESSAGE, "MESSAGE",
+                   "Lost connection to Wayland compositor.");
+  EXPECT_TRUE(shutdown_called);
 
-  // Set to a valid value of 0 (unspecified/default)
-  g_object_set(settings, "gtk-cursor-theme-size", 0, nullptr);
-  EXPECT_EQ(observed_size, 0);
+  // Clean up.
+  SetGtkShutdownCb(base::NullCallback());
 }
 
 }  // namespace gtk

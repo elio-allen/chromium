@@ -23,9 +23,6 @@ class GeminiContainerMediatorEventHandler {
       ios::provider::GeminiClientMode processing_status,
       ios::provider::GeminiDormantReason dormant_reason) = 0;
 
-  // Collapses floaty if invoked.
-  virtual void CollapseFloatyIfInvoked() = 0;
-
   // Records the most recently presented state of the Gemini view to inform
   // future interactions.
   virtual void SetLastShownViewState(
@@ -45,6 +42,10 @@ class GeminiContainerMediatorEventHandler {
 
   // Called when the Gemini UI did appear.
   virtual void OnGeminiUIDidAppear() = 0;
+
+  // Forces the floaty to be dismissed and cleaned up, ignoring if it is
+  // temporarily hidden.
+  virtual void ForceDismissFloaty() = 0;
 };
 
 #endif  // IOS_CHROME_BROWSER_INTELLIGENCE_BWG_COORDINATOR_GEMINI_CONTAINER_MEDIATOR_EVENT_HANDLER_H_

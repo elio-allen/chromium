@@ -478,8 +478,6 @@ class ChannelAssociatedGroupController
     // See https://crbug.com/861607 for additional discussion.
   }
 
-  bool PrefersSerializedMessages() override { return true; }
-
   void SetUrgentMessageObserver(UrgentMessageObserver* observer) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     CHECK(!was_bound_or_message_sent_);
@@ -820,6 +818,7 @@ class ChannelAssociatedGroupController
       MessageWrapper message;
     };
 
+    uint32_t next_sync_message_id_ = 0;
     const raw_ptr<ChannelAssociatedGroupController> controller_;
     const mojo::InterfaceId id_;
 
@@ -833,7 +832,6 @@ class ChannelAssociatedGroupController
     std::unique_ptr<mojo::SequenceLocalSyncEventWatcher> sync_watcher_;
     base::circular_deque<std::pair<uint32_t, MessageWrapper>> sync_messages_;
     raw_ptr<ExclusiveSyncWait> exclusive_wait_ = nullptr;
-    uint32_t next_sync_message_id_ = 0;
   };
 
   class ControlMessageProxyThunk : public MessageReceiver {

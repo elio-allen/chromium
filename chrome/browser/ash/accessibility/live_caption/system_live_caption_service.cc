@@ -6,13 +6,15 @@
 
 #include "ash/accessibility/caption_bubble_context_ash.h"
 #include "ash/webui/settings/public/constants/routes.mojom.h"
+#include "base/check.h"
 #include "base/check_deref.h"
+#include "base/check_op.h"
+#include "base/i18n/legacy_language_tag_helpers.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "chrome/browser/accessibility/live_caption/live_caption_controller_factory.h"
 #include "chrome/browser/accessibility/live_caption/live_translate_controller_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/speech/speech_recognition_client_browser_interface.h"
 #include "chrome/browser/speech/speech_recognition_client_browser_interface_factory.h"
 #include "chrome/browser/speech/speech_recognizer_delegate.h"
@@ -23,6 +25,8 @@
 #include "components/live_caption/translation_util.h"
 #include "components/live_caption/views/caption_bubble_model.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/soda/constants.h"
 #include "media/audio/audio_device_description.h"
 #include "media/base/media_switches.h"
@@ -47,7 +51,12 @@ SystemLiveCaptionService::SystemLiveCaptionService(Profile* profile,
           base::BindRepeating(&SystemLiveCaptionService::OpenCaptionSettings,
                               base::Unretained(this))),
       source_(source) {
-  DCHECK_EQ(ProfileManager::GetPrimaryUserProfile(), profile);
+  const auto* primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  CHECK(primary_session);
+  CHECK_EQ(BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+               primary_session->account_id()),
+           profile, base::NotFatalUntil::M160);
   // The controller handles all SODA installation / languages etc. for us. We
   // just subscribe to the interface that informs us when we're ready to go.
   BindToBrowserInterface();
@@ -74,7 +83,7 @@ void SystemLiveCaptionService::OnSpeechResult(
     bool /*is_final*/,
     const std::optional<media::SpeechRecognitionResult>& result) {
   // TODO(robsc): add in the other sides stability functionality.
-  DCHECK(result.has_value());
+  CHECK(result.has_value(), base::NotFatalUntil::M160);
   if (!controller_) {
     StopRecognizing();
     // Hard and fast stop.
@@ -88,8 +97,8 @@ void SystemLiveCaptionService::OnSpeechResult(
       prefs->GetString(prefs::kLiveTranslateTargetLanguageCode);
   if (media::IsLiveTranslateEnabled() &&
       prefs->GetBoolean(prefs::kLiveTranslateEnabled) &&
-      l10n_util::GetLanguage(target_language) !=
-          l10n_util::GetLanguage(source_language_)) {
+      base::i18n::GetLanguageSubtagUsingLanguageTag(target_language) !=
+          base::i18n::GetLanguageSubtagUsingLanguageTag(source_language_)) {
     auto cache_result = translation_cache_.FindCachedTranslationOrRemaining(
         result->transcription, source_language_, target_language);
     std::string cached_translation = cache_result.second;
@@ -199,11 +208,6 @@ void SystemLiveCaptionService::SpeechRecognitionAvailabilityChanged(
     if (!client_) {
       // Need to wait for the recognizer to be ready before starting.
       CreateClient();
-      // Inject a fake audio system in tests.
-      if (!create_audio_system_for_testing_.is_null()) {
-        client_->set_audio_system_for_testing(  // IN-TEST
-            create_audio_system_for_testing_.Run());
-      }
     }
     // At startup, when asr becomes available, we need to know whether we are in
     // speech or not right now, and pretend that speech started at that
@@ -317,6 +321,12 @@ void SystemLiveCaptionService::CreateClient() {
           /*enable_formatting=*/true, GetPrimaryLanguageCode(),
           /*is_server_based=*/false, GetRecognizerClientType(),
           /*skip_continuously_empty_audio=*/true));
+
+  // Inject a fake audio system in tests.
+  if (!create_audio_system_for_testing_.is_null()) {
+    client_->set_audio_system_for_testing(  // IN-TEST
+        create_audio_system_for_testing_.Run());
+  }
 }
 
 void SystemLiveCaptionService::OnTranslationCallback(
@@ -376,7 +386,8 @@ void SystemLiveCaptionService::BindToBrowserInterface() {
   if (source_ == AudioSource::kLoopback) {
     SpeechRecognitionClientBrowserInterfaceFactory::GetForProfile(profile_)
         ->BindSpeechRecognitionBrowserObserver(
-            browser_observer_receiver_.BindNewPipeAndPassRemote());
+            browser_observer_receiver_.BindNewPipeAndPassRemote(),
+            content::GlobalRenderFrameHostId());
   }
 }
 

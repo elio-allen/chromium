@@ -591,10 +591,6 @@ base::Time VariationsFieldTrialCreator::GetSeedFetchTime() {
              : GetSeedStore()->GetLatestSeedFetchTime();
 }
 
-base::Time VariationsFieldTrialCreator::GetLatestSeedFetchTime() {
-  return GetSeedStore()->GetLatestSeedFetchTime();
-}
-
 Study::Platform VariationsFieldTrialCreator::GetPlatform() {
   if (platform_override_.has_value()) {
     return platform_override_.value();
@@ -741,8 +737,6 @@ CreateTrialsResult VariationsFieldTrialCreator::CreateTrialsFromSeed(
   std::string seed_data;              // Only set if not in safe mode.
   std::string base64_seed_signature;  // Only set if not in safe mode.
   const bool run_in_safe_mode = seed_type_ == SeedType::kSafeSeed;
-  // TODO: crbug.com/445600380 - Check if we can avoid copying the seed data
-  // when loading the seed.
   const bool seed_loaded =
       run_in_safe_mode
           ? GetSeedStore()->LoadSafeSeedSync(&seed, client_state.get())
@@ -806,17 +800,18 @@ CreateTrialsResult VariationsFieldTrialCreator::CreateTrialsFromSeed(
   // to create the field trials. But, as an optimization, skip this step when
   // running in safe mode – once running in safe mode, there can never be a need
   // to save the active state to the safe seed prefs.
+  const size_t applied_seed_size = seed_data.size();
   if (!run_in_safe_mode) {
     safe_seed_manager->SetActiveSeedState(
-        seed_data, base64_seed_signature,
-        local_state()->GetInteger(prefs::kVariationsSeedMilestone),
-        std::move(client_state), seed_store_->GetLatestSeedFetchTime());
+        std::move(seed_data), std::move(base64_seed_signature),
+        GetSeedStore()->GetLatestMilestone(), std::move(client_state),
+        GetSeedStore()->GetLatestSeedFetchTime());
   }
 
-  base::UmaHistogramCounts1M("Variations.AppliedSeed.Size", seed_data.size());
+  base::UmaHistogramCounts1M("Variations.AppliedSeed.Size", applied_seed_size);
 #if BUILDFLAG(IS_WIN)
   base::UmaHistogramCounts10M("Variations.AppliedSeed.Size.V2",
-                              seed_data.size());
+                              applied_seed_size);
 #endif  // BUILDFLAG(IS_WIN)
   base::UmaHistogramTimes("Variations.SeedProcessingTime",
                           base::TimeTicks::Now() - start_time);
@@ -872,7 +867,7 @@ void VariationsFieldTrialCreator::LoadSeedFromJsonFile(
   seed_store_->StoreSeedData(/*done_callback=*/base::DoNothing(), decoded_seed,
                              seed_signature->GetString(), /*country_code=*/"",
                              /*geo_level1=*/"",
-                             /*date_fetched=*/base::Time(),
+                             /*seed_date=*/base::Time(),
                              /*is_delta_compressed=*/false,
                              /*is_gzip_compressed=*/true,
                              /*require_synchronous=*/true);

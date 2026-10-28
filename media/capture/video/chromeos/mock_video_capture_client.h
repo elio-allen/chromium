@@ -18,7 +18,6 @@ namespace unittest_internal {
 class MockVideoCaptureClient : public VideoCaptureDevice::Client {
  public:
   MOCK_METHOD0(DoReserveOutputBuffer, void(void));
-  MOCK_METHOD0(DoOnIncomingCapturedBuffer, void(void));
   MOCK_METHOD0(DoOnIncomingCapturedVideoFrame, void(void));
   MOCK_METHOD0(OnCaptureConfigurationChanged, void(void));
   MOCK_METHOD3(OnError,
@@ -28,6 +27,7 @@ class MockVideoCaptureClient : public VideoCaptureDevice::Client {
   MOCK_METHOD1(OnFrameDropped, void(media::VideoCaptureFrameDropReason reason));
   MOCK_CONST_METHOD0(GetBufferPoolUtilization, double(void));
   MOCK_METHOD0(OnStarted, void(void));
+  MOCK_METHOD0(InvalidateBuffers, void());
 
   explicit MockVideoCaptureClient();
 
@@ -71,19 +71,14 @@ class MockVideoCaptureClient : public VideoCaptureDevice::Client {
       const gfx::Size& natural_size,
       const std::optional<media::VideoFrameMetadata>& metadata) override;
   // Trampoline methods to workaround GMOCK problems with std::unique_ptr<>.
-  ReserveResult ReserveOutputBuffer(const gfx::Size& dimensions,
-                                    VideoPixelFormat format,
-                                    int frame_feedback_id,
-                                    Buffer* buffer,
-                                    int* require_new_buffer_id,
-                                    int* retire_old_buffer_id) override;
-  void OnIncomingCapturedBuffer(
-      Buffer buffer,
-      const VideoCaptureFormat& format,
-      base::TimeTicks reference_time,
-      base::TimeDelta timestamp,
-      std::optional<base::TimeTicks> capture_begin_time,
-      const std::optional<media::VideoFrameMetadata>& metadata) override;
+  ReserveResult ReserveOutputBuffer(
+      const gfx::Size& dimensions,
+      VideoPixelFormat format,
+      int frame_feedback_id,
+      Buffer* buffer,
+      int* require_new_buffer_id,
+      int* retire_old_buffer_id,
+      const gfx::ColorSpace& color_space) override;
   void OnIncomingCapturedBufferExt(
       Buffer buffer,
       const VideoCaptureFormat& format,

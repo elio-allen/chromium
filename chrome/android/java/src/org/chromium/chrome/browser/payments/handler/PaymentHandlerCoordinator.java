@@ -7,7 +7,6 @@ package org.chromium.chrome.browser.payments.handler;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
-import android.view.View;
 
 import org.chromium.base.version_info.VersionInfo;
 import org.chromium.build.annotations.NullMarked;
@@ -17,8 +16,6 @@ import org.chromium.chrome.browser.content.WebContentsFactory;
 import org.chromium.chrome.browser.payments.handler.toolbar.PaymentHandlerToolbarCoordinator;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tab.TabObscuringHandler;
-import org.chromium.chrome.browser.tab.TabObscuringHandlerSupplier;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorSupplier;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
@@ -121,15 +118,11 @@ public class PaymentHandlerCoordinator {
         BottomSheetController bottomSheetController =
                 BottomSheetControllerProvider.from(windowAndroid);
         Tab currentTab = TabModelSelectorSupplier.getCurrentTabFrom(windowAndroid);
-        TabObscuringHandler tabObscuringHandler =
-                TabObscuringHandlerSupplier.getValueOrNullFrom(windowAndroid);
-        if (bottomSheetController == null || currentTab == null || tabObscuringHandler == null) {
+        if (bottomSheetController == null || currentTab == null) {
             return null;
         }
 
         PropertyModel model = new PropertyModel.Builder(PaymentHandlerProperties.ALL_KEYS).build();
-        View tabView = currentTab.getView();
-        assert tabView != null;
 
         PaymentHandlerMediator mediator =
                 new PaymentHandlerMediator(
@@ -138,13 +131,10 @@ public class PaymentHandlerCoordinator {
                         /* paymentRequestWebContents= */ paymentRequestWebContents,
                         /* paymentHandlerWebContents= */ mPaymentHandlerWebContents,
                         uiObserver,
-                        tabView,
-                        mToolbarCoordinator.getToolbarHeightPx(),
                         bottomSheetController,
-                        tabObscuringHandler,
+                        mToolbarCoordinator.getToolbarHeightPx(),
                         activity,
                         mInputProtector);
-        activity.getWindow().getDecorView().addOnLayoutChangeListener(mediator);
 
         bottomSheetController.addObserver(mediator);
         mediator.observe(mPaymentHandlerWebContents);
@@ -179,9 +169,6 @@ public class PaymentHandlerCoordinator {
                     bottomSheetController.removeObserver(mediator);
                     bottomSheetController.hideContent(/* content= */ view, /* animate= */ true);
                     uiObserver.onPaymentHandlerUiClosed();
-                    assert activity.getWindow() != null;
-                    assert activity.getWindow().getDecorView() != null;
-                    activity.getWindow().getDecorView().removeOnLayoutChangeListener(mediator);
                     mediator.destroy();
                     assumeNonNull(mToolbarCoordinator);
                     mToolbarCoordinator.destroy();
@@ -189,7 +176,7 @@ public class PaymentHandlerCoordinator {
                     assumeNonNull(mPaymentHandlerWebContents);
                     mPaymentHandlerWebContents.destroy();
                 };
-        boolean hasFrameworkCloseButton = bottomSheetController.isLargeFormFactorUiEnabled(view);
+        boolean hasFrameworkCloseButton = bottomSheetController.willShowFrameworkCloseButton(view);
         mToolbarCoordinator.setCloseButtonVisibility(!hasFrameworkCloseButton);
 
         boolean isShowSuccess = bottomSheetController.requestShowContent(view, /* animate= */ true);

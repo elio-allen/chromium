@@ -4,7 +4,10 @@
 
 #include "components/browser_actuator/public/features.h"
 
+#include <string>
+
 #include "base/strings/strcat.h"
+#include "net/base/url_util.h"
 #include "url/gurl.h"
 
 namespace browser_actuator {
@@ -25,6 +28,7 @@ const base::FeatureParam<std::string> kWatchSessionsPathParam{
 }  // namespace
 
 BASE_FEATURE(kBrowserActuator, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kBrowserActuatorInternals, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kEnableBrowserActuatorForGlicExperimentalTriggering,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -33,13 +37,15 @@ const base::FeatureParam<std::string> kBrowserActuatorOAuth2ScopeParam{
     "https://www.googleapis.com/auth/chrome.autobrowse.actuator"};
 
 GURL GetSendSessionMessageEndpoint() {
-  return GURL(base::StrCat({kBrowserActuatorEndpointUrlParam.Get(),
-                            kSendSessionMessagePathParam.Get()}));
+  GURL base_url(base::StrCat({kBrowserActuatorEndpointUrlParam.Get(),
+                              kSendSessionMessagePathParam.Get()}));
+  return net::AppendQueryParameter(base_url, "alt", "proto");
 }
 
 GURL GetWatchSessionsEndPoint() {
-  return GURL(base::StrCat(
+  GURL base_url(base::StrCat(
       {kBrowserActuatorEndpointUrlParam.Get(), kWatchSessionsPathParam.Get()}));
+  return net::AppendQueryParameter(base_url, "alt", "proto");
 }
 
 }  // namespace browser_actuator

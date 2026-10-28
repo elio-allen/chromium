@@ -3,18 +3,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/allocator/scheduler_loop_quarantine_config.h"
+
 #include <algorithm>
 #include <string_view>
 #include <vector>
 
 #include "base/allocator/partition_alloc_features.h"
-#include "base/allocator/scheduler_loop_quarantine_config.h"
 #include "base/base_switches.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/json/json_reader.h"
 #include "base/logging.h"
-#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/strings/safe_sprintf.h"
 #include "base/strings/strcat.h"
@@ -28,7 +28,8 @@ constexpr char kBranchTypeGlobalStr[] = "global";
 constexpr char kBranchTypeThreadLocalDefaultStr[] = "*";
 constexpr char kBranchTypeMainStr[] = "main";
 constexpr char kBranchTypeIOStr[] = "io";
-constexpr char kBranchTypeAdvancedMemorySafetyChecksStr[] = "amsc";
+// Named "amsc" (Advanced Memory Safety Checks) for historical reasons.
+constexpr char kBranchTypeSanitizedObjectStr[] = "amsc";
 constexpr char kBranchTypeVizCompositorStr[] = "viz-compositor";
 constexpr char kBranchTypeCompositorGpuStr[] = "compositor-gpu";
 
@@ -43,8 +44,8 @@ constexpr std::string_view GetSchedulerLoopQuarantineBranchTypeStr(
       return kBranchTypeMainStr;
     case SchedulerLoopQuarantineBranchType::kIO:
       return kBranchTypeIOStr;
-    case SchedulerLoopQuarantineBranchType::kAdvancedMemorySafetyChecks:
-      return kBranchTypeAdvancedMemorySafetyChecksStr;
+    case SchedulerLoopQuarantineBranchType::kSanitizedObject:
+      return kBranchTypeSanitizedObjectStr;
     case SchedulerLoopQuarantineBranchType::kVizCompositor:
       return kBranchTypeVizCompositorStr;
     case SchedulerLoopQuarantineBranchType::kCompositorGpu:
@@ -65,15 +66,17 @@ constexpr char kKeyEnableZapping[] = "enable-zapping";
 constexpr char kKeyLeakOnDestruction[] = "leak-on-destruction";
 constexpr char kKeyEnableTaskControlledPurge[] = "enable-task-controlled-purge";
 constexpr char kKeyPauseInBetweenTasks[] = "pause-in-between-tasks";
+constexpr char kKeyExcludeNonIpcTasks[] = "exclude-non-ipc-tasks";
 constexpr char kKeyBranchCapacityInBytes[] = "branch-capacity-in-bytes";
 constexpr char kKeyMaxQuarantineSize[] = "max-quarantine-size";
+constexpr char kKeyPurgeHeadroomPercent[] = "purge-headroom-percent";
 
 struct Match {
   const DictValue* dict;
   size_t length;
 };
 
-std::optional<DictValue> CreateConfigProcessesDict() {
+std::optional<DictValue> GetConfigProcessesDict() {
   std::string config_str;
 
   // This is called after switches initialization.
@@ -98,12 +101,6 @@ std::optional<DictValue> CreateConfigProcessesDict() {
     return std::nullopt;  // Ill-formed JSON; disabled.
   }
   return config_processes;
-}
-
-std::optional<DictValue>& GetConfigProcessesDict() {
-  static base::NoDestructor<std::optional<DictValue>> config_processes(
-      CreateConfigProcessesDict());
-  return *config_processes;
 }
 
 std::vector<Match> GetMatchingProcessConfigs(
@@ -176,7 +173,7 @@ GetSchedulerLoopQuarantineConfiguration(
   config.branch_name[kMaxBranchNameLen] = '\0';
 
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
-  const std::optional<DictValue>& config_processes = GetConfigProcessesDict();
+  std::optional<DictValue> config_processes = GetConfigProcessesDict();
   if (!config_processes) {
     return config;
   }
@@ -190,8 +187,7 @@ GetSchedulerLoopQuarantineConfiguration(
     // Falls back to thread-local default unless global nor AMSC.
     if (!config_entry &&
         branch_type != SchedulerLoopQuarantineBranchType::kGlobal &&
-        branch_type !=
-            SchedulerLoopQuarantineBranchType::kAdvancedMemorySafetyChecks) {
+        branch_type != SchedulerLoopQuarantineBranchType::kSanitizedObject) {
       config_entry = config_process->FindDict(kBranchTypeThreadLocalDefaultStr);
     }
 
@@ -217,6 +213,8 @@ GetSchedulerLoopQuarantineConfiguration(
   config.pause_in_between_tasks =
       config_entry->FindBool(kKeyPauseInBetweenTasks)
           .value_or(config.pause_in_between_tasks);
+  config.exclude_non_ipc_tasks = config_entry->FindBool(kKeyExcludeNonIpcTasks)
+                                     .value_or(config.exclude_non_ipc_tasks);
   config.branch_capacity_in_bytes =
       static_cast<size_t>(config_entry->FindInt(kKeyBranchCapacityInBytes)
                               .value_or(config.branch_capacity_in_bytes));
@@ -226,42 +224,23 @@ GetSchedulerLoopQuarantineConfiguration(
   if (0 < max_quarantine_size) {
     config.max_quarantine_size = static_cast<size_t>(max_quarantine_size);
   }
+
+  int purge_headroom_percent =
+      config_entry->FindInt(kKeyPurgeHeadroomPercent).value_or(0);
+  if (0 < purge_headroom_percent) {
+    config.purge_headroom_percent =
+        std::min(static_cast<size_t>(purge_headroom_percent),
+                 ::partition_alloc::internal::kMaxPurgeHeadroomPercent);
+  }
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
 
   return config;
 }
 
-bool HasMiracleObject(std::string_view process_type_identifier) {
-#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
-  const std::optional<DictValue>& config_processes = GetConfigProcessesDict();
-  if (!config_processes) {
-    return false;
-  }
-  std::vector<Match> matches =
-      GetMatchingProcessConfigs(*config_processes, process_type_identifier);
-  for (const auto& match : matches) {
-    const DictValue* config_process = match.dict;
-    for (auto [branch_key, branch_val] : *config_process) {
-      if (branch_key == kBranchTypeAdvancedMemorySafetyChecksStr) {
-        continue;
-      }
-      if (!branch_val.is_dict()) {
-        continue;
-      }
-      const DictValue& branch_dict = branch_val.GetDict();
-      if (branch_dict.FindBool(kKeyEnableQuarantine).value_or(false)) {
-        return true;
-      }
-    }
-  }
-#endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
-  return false;
-}
-
 bool HasSchedulerLoopQuarantineTaskControl(
     std::string_view process_type_identifier) {
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
-  const std::optional<DictValue>& config_processes = GetConfigProcessesDict();
+  std::optional<DictValue> config_processes = GetConfigProcessesDict();
   if (!config_processes) {
     return false;
   }
@@ -275,19 +254,14 @@ bool HasSchedulerLoopQuarantineTaskControl(
       }
       const DictValue& branch_dict = branch_val.GetDict();
       if (branch_dict.FindBool(kKeyEnableTaskControlledPurge).value_or(false) ||
-          branch_dict.FindBool(kKeyPauseInBetweenTasks).value_or(false)) {
+          branch_dict.FindBool(kKeyPauseInBetweenTasks).value_or(false) ||
+          branch_dict.FindBool(kKeyExcludeNonIpcTasks).value_or(false)) {
         return true;
       }
     }
   }
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
   return false;
-}
-
-void ResetSchedulerLoopQuarantineConfigForTesting() {
-#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
-  GetConfigProcessesDict() = CreateConfigProcessesDict();
-#endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
 }
 
 }  // namespace base::allocator

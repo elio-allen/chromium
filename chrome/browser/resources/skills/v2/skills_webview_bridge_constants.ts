@@ -24,6 +24,20 @@ export const SKILLS_OPEN_URL = 'open-url';
 /** Message type used by the guest to send a prompt to the host. */
 export const SKILLS_SEND_PROMPT = 'send-prompt';
 
+/** Message type used by the guest to open the full page editor. */
+export const SKILLS_OPEN_FULL_PAGE_EDITOR = 'open-full-page-editor';
+
+/** Message type used by the host to send skill dialog info to the guest. */
+export const SKILLS_DIALOG_INFO_TYPE = 'skills-dialog-info';
+/** Message type used by the host to send provided skills. */
+export const SKILLS_SEND_PROVIDED_SKILLS_TYPE = 'send-provided-skills';
+
+/** Message type used by the guest to fetch an provided skill. */
+export const SKILLS_GET_PROVIDED_SKILL = 'get-provided-skill';
+
+/** Message type used by the host to send provided skill info. */
+export const SKILLS_PROVIDED_SKILL_INFO_TYPE = 'provided-skill-info';
+
 /** Message type used by the host to send the Gemini prompt. */
 export const SKILLS_GEMINI_PROMPT_TYPE = 'skills-gemini-prompt';
 
@@ -33,8 +47,18 @@ export const IS_SAVING_GEMINI_QUERY_PARAMETER = 'isSavingGeminiPrompt';
 /** Message type used by the guest to report performance metrics. */
 export const SKILLS_LOG_METRIC = 'log-metric';
 
-/** Query parameter key used to indicate the skill is a first-party skill. */
-export const IS_FIRST_PARTY_QUERY_PARAMETER = 'isFirstParty';
+/** Query parameter key used to indicate the skill source. */
+export const SOURCE_QUERY_PARAMETER = 'source';
+
+/** Skill source types for the Webview UI. */
+export enum SkillSource {
+  FIRST_PARTY = 'first-party',
+  USER = 'user',
+  PROVIDED = 'provided',
+}
+
+/** Message type used by the guest to report UMA enum metrics. */
+export const SKILLS_LOG_UMA_ENUM = 'log-uma-enum';
 
 /**
  * Interval in milliseconds between successive handshake pings sent by the
@@ -86,6 +110,11 @@ export const SKILLS_UNDO_TYPE = 'skills-undo';
 export const SKILLS_TOAST_CLOSED_TYPE = 'toast-closed';
 
 /**
+ * Message type used by the host to notify guest that user skills were updated.
+ */
+export const SKILLS_UPDATED_TYPE = 'skills-updated';
+
+/**
  * Translates a Chrome WebUI path (e.g. '/yourSkills') to the corresponding
  * staging remote URL, including the localized 'hl' query parameter if present.
  */
@@ -117,7 +146,9 @@ export function getChromePathForRemoteUrl(url: URL): string {
 /** Loading stages for the Webview UI. */
 // LINT.IfChange(LoadingStage)
 export enum LoadingStage {
+  HOST_LOAD = 'HOST_LOAD',
   COOKIE_SYNC = 'COOKIE_SYNC',
+  HOST_DATA_FETCH = 'HOST_DATA_FETCH',
   NAVIGATION = 'NAVIGATION',
   HANDSHAKE = 'HANDSHAKE',
   GUEST_FRAMEWORK = 'GUEST_FRAMEWORK',

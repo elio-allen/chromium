@@ -35,7 +35,7 @@ class SelectType : public GarbageCollected<SelectType> {
   virtual void DidBlur() = 0;
   virtual void DidDetachLayoutTree();
   virtual void DidRecalcStyle(const StyleRecalcChange change);
-  virtual void DidSetSuggestedOption(HTMLOptionElement* option) = 0;
+  virtual void DidSetSuggestedOption(HTMLOptionElement* option);
   virtual void SaveLastSelection() = 0;
 
   // Update style of text in the CSS box on style or selected OPTION change.
@@ -72,7 +72,7 @@ class SelectType : public GarbageCollected<SelectType> {
   virtual bool PickerIsPopover() const = 0;
   virtual void SetIsAppearanceBasePickerForDisplayNone(bool) = 0;
   virtual HTMLSelectElement::SelectAutofillPreviewElement*
-  GetAutofillPreviewElement() const = 0;
+  GetAutofillPreviewElement() const;
   virtual Element& InnerElement() const;
   virtual void ShowPopup(PopupMenu::ShowEventType type);
   virtual void HidePopup(SelectPopupHideBehavior);
@@ -81,6 +81,7 @@ class SelectType : public GarbageCollected<SelectType> {
   virtual PopupMenu* PopupForTesting() const;
   virtual AXObject* PopupRootAXObject() const;
   virtual void ShowPicker();
+  HTMLDivElement* ShadowListBox() const { return listbox_.Get(); }
 
   enum SkipDirection { kSkipBackwards = -1, kSkipForwards = 1 };
   CORE_EXPORT HTMLOptionElement* NextSelectableOption(HTMLOptionElement*) const;
@@ -95,7 +96,14 @@ class SelectType : public GarbageCollected<SelectType> {
                                      SkipDirection direction,
                                      int skip) const;
 
+  void CreateAutofillPopover(ShadowRoot& root);
+
   const Member<HTMLSelectElement> select_;
+  Member<HTMLSelectElement::SelectAutofillPreviewElement> autofill_popover_;
+  Member<HTMLDivElement> autofill_popover_text_;
+  // Used by the FilterableSelect feature for the internal <div role=listbox>
+  // created when <select> has descendant <input> elements.
+  Member<HTMLDivElement> listbox_;
   bool will_be_destroyed_ = false;
 
  private:

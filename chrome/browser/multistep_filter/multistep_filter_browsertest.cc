@@ -25,11 +25,12 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/page_action/action_ids.h"
 #include "chrome/browser/ui/page_action/page_action_controller.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/browser/ui/toasts/toast_view.h"
@@ -45,8 +46,7 @@
 #include "components/multistep_filter/core/multistep_filter_service.h"
 #include "components/multistep_filter/core/storage/filter_store.h"
 #include "components/multistep_filter/core/switches.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
-#include "components/optimization_guide/core/optimization_guide_prefs.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
 #include "components/optimization_guide/proto/common_types.pb.h"
 #include "components/optimization_guide/proto/hints.pb.h"
@@ -93,8 +93,8 @@ constexpr char kTestAttributeValue[] = "red";
 constexpr char kTestAttributeKey2[] = "size";
 constexpr char kTestAttributeValue2[] = "large";
 
-FilterTabController* GetTabController(Browser* browser) {
-  tabs::TabInterface* active_tab = browser->tab_strip_model()->GetActiveTab();
+FilterTabController* GetTabController(BrowserWindowInterface* browser) {
+  tabs::TabInterface* active_tab = browser->GetTabStripModel()->GetActiveTab();
   if (!active_tab) {
     return nullptr;
   }
@@ -275,7 +275,7 @@ IN_PROC_BROWSER_TEST_F(MultistepFilterBrowserTest,
   EXPECT_TRUE(suggestion_future_.Take().has_value());
 
   FilterUiController* ui_controller =
-      FilterUiController::From(browser()->tab_strip_model()->GetActiveTab());
+      FilterUiController::From(browser()->GetTabStripModel()->GetActiveTab());
   ASSERT_TRUE(ui_controller);
   const std::optional<FilterUiController::SuggestionState>& state =
       test_api(*ui_controller).suggestion_state();
@@ -285,7 +285,7 @@ IN_PROC_BROWSER_TEST_F(MultistepFilterBrowserTest,
 
   page_actions::PageActionController* page_action_controller =
       browser()
-          ->tab_strip_model()
+          ->GetTabStripModel()
           ->GetActiveTab()
           ->GetTabFeatures()
           ->page_action_controller();
@@ -295,18 +295,18 @@ IN_PROC_BROWSER_TEST_F(MultistepFilterBrowserTest,
   }));
 
   content::TestNavigationObserver nav_observer(
-      browser()->tab_strip_model()->GetActiveWebContents());
+      browser()->GetTabStripModel()->GetActiveWebContents());
 
   actions::ActionItem* action = actions::ActionManager::Get().FindAction(
       kActionMultistepFilter,
-      browser()->GetFeatures().browser_actions()->root_action_item());
+      BrowserActions::From(browser())->root_action_item());
   ASSERT_TRUE(action);
   action->InvokeAction(actions::ActionInvocationContext());
 
   nav_observer.Wait();
 
   EXPECT_EQ(suggestion_url, browser()
-                                ->tab_strip_model()
+                                ->GetTabStripModel()
                                 ->GetActiveWebContents()
                                 ->GetLastCommittedURL());
   EXPECT_TRUE(nav_observer.last_navigation_succeeded());
@@ -404,19 +404,19 @@ IN_PROC_BROWSER_TEST_F(MultistepFilterBrowserTest,
   EXPECT_FALSE(suggestion_future_.Take().has_value());
 
   FilterUiController* ui_controller =
-      FilterUiController::From(browser()->tab_strip_model()->GetActiveTab());
+      FilterUiController::From(browser()->GetTabStripModel()->GetActiveTab());
   ASSERT_TRUE(ui_controller);
   EXPECT_FALSE(test_api(*ui_controller).suggestion_state().has_value());
 
-  ToastController* toast_controller =
-      browser()->GetFeatures().toast_controller();
+  ToastController* toast_controller = ToastController::From(browser());
   EXPECT_FALSE(toast_controller->IsShowingToast());
 }
 #endif
 
 IN_PROC_BROWSER_TEST_F(MultistepFilterBrowserTest,
                        ExecuteSettingsCommandOpensAiPage) {
-  tabs::TabInterface* active_tab = browser()->tab_strip_model()->GetActiveTab();
+  tabs::TabInterface* active_tab =
+      browser()->GetTabStripModel()->GetActiveTab();
   auto* ui_controller = multistep_filter::FilterUiController::From(active_tab);
   ASSERT_TRUE(ui_controller);
 
@@ -424,7 +424,7 @@ IN_PROC_BROWSER_TEST_F(MultistepFilterBrowserTest,
       .ExecuteCommand(multistep_filter::internal::kSettingsCommand, 0);
 
   ASSERT_TRUE(base::test::RunUntil([&]() {
-    return browser()->tab_strip_model()->GetActiveWebContents()->GetURL() ==
+    return browser()->GetTabStripModel()->GetActiveWebContents()->GetURL() ==
            GURL(base::StrCat({::chrome::kChromeUISettingsURL,
                               ::chrome::kSuggestionsSubPage}));
   }));
@@ -452,7 +452,7 @@ IN_PROC_BROWSER_TEST_F(MultistepFilterBrowserTest,
   EXPECT_FALSE(suggestion_future_.Take().has_value());
 
   FilterUiController* ui_controller =
-      FilterUiController::From(browser()->tab_strip_model()->GetActiveTab());
+      FilterUiController::From(browser()->GetTabStripModel()->GetActiveTab());
   ASSERT_TRUE(ui_controller);
   EXPECT_FALSE(test_api(*ui_controller).suggestion_state().has_value());
 }

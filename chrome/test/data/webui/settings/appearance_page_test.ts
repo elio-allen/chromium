@@ -98,11 +98,6 @@ async function createAppearancePage() {
       value: true,
     },
     {
-      key: 'organizer_panel.pinned_to_tabstrip',
-      type: chrome.settingsPrivate.PrefType.BOOLEAN,
-      value: true,
-    },
-    {
       key: 'everything_menu.pinned_to_tabstrip',
       type: chrome.settingsPrivate.PrefType.BOOLEAN,
       value: true,
@@ -111,6 +106,11 @@ async function createAppearancePage() {
       key: 'glass_frame.enabled',
       type: chrome.settingsPrivate.PrefType.BOOLEAN,
       value: false,
+    },
+    {
+      key: 'tab_scroll_buttons.pinned_to_tabstrip',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: true,
     },
     {
       key: 'vertical_tabs.enabled',
@@ -698,10 +698,6 @@ suite('TabStripPositionSettings', () => {
   setup(() => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
 
-    loadTimeData.overrideValues({
-      showVerticalTabsEnabled: true,
-    });
-
     appearanceBrowserProxy = new TestAppearanceBrowserProxy();
     AppearanceBrowserProxyImpl.setInstance(appearanceBrowserProxy);
 
@@ -771,11 +767,6 @@ suite('VerticalTabsExpandOnHoverSettings', () => {
   setup(async () => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
 
-    loadTimeData.overrideValues({
-      showVerticalTabsEnabled: true,
-      showVerticalTabsExpandOnHoverEnabled: true,
-    });
-
     appearanceBrowserProxy = new TestAppearanceBrowserProxy();
     AppearanceBrowserProxyImpl.setInstance(appearanceBrowserProxy);
 
@@ -810,20 +801,6 @@ suite('VerticalTabsExpandOnHoverSettings', () => {
     assertFalse(toggle.checked);
   });
 
-  test('Toggle is hidden when feature flag is disabled', async function() {
-    loadTimeData.overrideValues({
-      showVerticalTabsExpandOnHoverEnabled: false,
-    });
-
-    await createAppearancePage();
-    await prefService.setPrefValue('vertical_tabs.enabled', true);
-    await microtasksFinished();
-
-    const toggle = appearancePage.shadowRoot.querySelector(
-        '#showVerticalTabsExpandOnHover');
-    assertTrue(!toggle);
-  });
-
   test(
       'Toggle is hidden when vertical tabs pref is disabled', async function() {
         await createAppearancePage();
@@ -837,9 +814,101 @@ suite('VerticalTabsExpandOnHoverSettings', () => {
       });
 });
 
-suite('TabStripComboButtonSettings', () => {
-  let metricsBrowserProxy: TestMetricsBrowserProxy;
+suite('TabScrollButtonsSettings', () => {
+  setup(async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
 
+    loadTimeData.overrideValues({
+      tabStripUnificationEnabled: true,
+    });
+
+    appearanceBrowserProxy = new TestAppearanceBrowserProxy();
+    AppearanceBrowserProxyImpl.setInstance(appearanceBrowserProxy);
+    metricsBrowserProxy = new TestMetricsBrowserProxy();
+    MetricsBrowserProxyImpl.setInstance(metricsBrowserProxy);
+
+    await createAppearancePage();
+    await prefService.setPrefValue('vertical_tabs.enabled', false);
+    await microtasksFinished();
+  });
+
+  test('Toggle records metrics', async function() {
+    const toggle =
+        appearancePage.shadowRoot.querySelector<SettingsToggleButtonElement>(
+            '#tabScrollAutoShowOnOverflow');
+    assertTrue(!!toggle);
+    toggle.click();
+    let action = await metricsBrowserProxy.whenCalled('recordAction');
+    assertEquals('Settings_Appearance_TabScrollButtons_Unpinned', action);
+
+    metricsBrowserProxy.resetResolver('recordAction');
+    toggle.click();
+    action = await metricsBrowserProxy.whenCalled('recordAction');
+    assertEquals('Settings_Appearance_TabScrollButtons_Pinned', action);
+  });
+
+  test(
+      'Toggle updates tab_scroll_buttons.pinned_to_tabstrip pref',
+      async function() {
+        assertFalse(
+            prefService.getPref<boolean>('vertical_tabs.enabled').value);
+        assertTrue(
+            prefService
+                .getPref<boolean>('tab_scroll_buttons.pinned_to_tabstrip')
+                .value);
+
+        const toggle = appearancePage.shadowRoot
+                           .querySelector<SettingsToggleButtonElement>(
+                               '#tabScrollAutoShowOnOverflow');
+        assertTrue(!!toggle);
+        assertTrue(toggle.checked);
+
+        toggle.click();
+        await microtasksFinished();
+
+        assertFalse(
+            prefService
+                .getPref<boolean>('tab_scroll_buttons.pinned_to_tabstrip')
+                .value);
+        assertFalse(toggle.checked);
+
+        toggle.click();
+        await microtasksFinished();
+
+        assertTrue(
+            prefService
+                .getPref<boolean>('tab_scroll_buttons.pinned_to_tabstrip')
+                .value);
+        assertTrue(toggle.checked);
+      });
+
+  test('Toggle is hidden when vertical tabs pref is enabled', async function() {
+    await prefService.setPrefValue('vertical_tabs.enabled', true);
+    await microtasksFinished();
+
+    const toggle =
+        appearancePage.shadowRoot.querySelector('#tabScrollAutoShowOnOverflow');
+    assertTrue(!!toggle);
+    assertTrue(toggle.parentElement!.hasAttribute('hidden'));
+  });
+
+  test(
+      'Toggle is not rendered when tabStripUnification is disabled',
+      async function() {
+        loadTimeData.overrideValues({
+          tabStripUnificationEnabled: false,
+        });
+        await createAppearancePage();
+        await prefService.setPrefValue('vertical_tabs.enabled', false);
+        await microtasksFinished();
+
+        const toggle = appearancePage.shadowRoot.querySelector(
+            '#tabScrollAutoShowOnOverflow');
+        assertFalse(!!toggle);
+      });
+});
+
+suite('TabStripComboButtonSettings', () => {
   setup(() => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
 
@@ -859,15 +928,8 @@ suite('TabStripComboButtonSettings', () => {
   test('Toggles update correct prefs', async function() {
     assertTrue(
         prefService.getPref<boolean>('tab_search.pinned_to_tabstrip').value);
-    assertTrue(
-        prefService.getPref<boolean>('organizer_panel.pinned_to_tabstrip')
-            .value);
-
-    const tabSearchToggle =
-        appearancePage.shadowRoot.querySelector<SettingsToggleButtonElement>(
-            '#showTabSearchButton');
-    assertTrue(!!tabSearchToggle);
-    assertTrue(tabSearchToggle.checked);
+    assertFalse(
+        !!appearancePage.shadowRoot.querySelector('#showTabSearchButton'));
 
     const projectsToggle =
         appearancePage.shadowRoot.querySelector<SettingsToggleButtonElement>(
@@ -875,40 +937,64 @@ suite('TabStripComboButtonSettings', () => {
     assertTrue(!!projectsToggle);
     assertTrue(projectsToggle.checked);
 
-    tabSearchToggle.click();
+    projectsToggle.click();
     await microtasksFinished();
     assertFalse(
         prefService.getPref<boolean>('tab_search.pinned_to_tabstrip').value);
 
-    projectsToggle.click();
+    loadTimeData.overrideValues({
+      showOrganizerPanelEnabled: false,
+    });
+    await createAppearancePage();
+
+    assertTrue(
+        prefService.getPref<boolean>('tab_search.pinned_to_tabstrip').value);
+    assertFalse(
+        !!appearancePage.shadowRoot.querySelector('#showOrganizerPanelButton'));
+
+    const tabSearchToggle =
+        appearancePage.shadowRoot.querySelector<SettingsToggleButtonElement>(
+            '#showTabSearchButton');
+    assertTrue(!!tabSearchToggle);
+    assertTrue(tabSearchToggle.checked);
+
+    tabSearchToggle.click();
     await microtasksFinished();
     assertFalse(
-        prefService.getPref<boolean>('organizer_panel.pinned_to_tabstrip')
-            .value);
+        prefService.getPref<boolean>('tab_search.pinned_to_tabstrip').value);
   });
 
   test('Toggles record metrics', async function() {
+    const projectsToggle =
+        appearancePage.shadowRoot.querySelector<SettingsToggleButtonElement>(
+            '#showOrganizerPanelButton');
+    assertTrue(!!projectsToggle);
+    projectsToggle.click();
+    let action = await metricsBrowserProxy.whenCalled('recordAction');
+    assertEquals('TabStripComboButton.OrganizerPanel.Unpinned', action);
+
+    metricsBrowserProxy.resetResolver('recordAction');
+    projectsToggle.click();
+    action = await metricsBrowserProxy.whenCalled('recordAction');
+    assertEquals('TabStripComboButton.OrganizerPanel.Pinned', action);
+
+    loadTimeData.overrideValues({
+      showOrganizerPanelEnabled: false,
+    });
+    await createAppearancePage();
+
     const tabSearchToggle =
         appearancePage.shadowRoot.querySelector<SettingsToggleButtonElement>(
             '#showTabSearchButton');
     assertTrue(!!tabSearchToggle);
     tabSearchToggle.click();
-    let action = await metricsBrowserProxy.whenCalled('recordAction');
+    action = await metricsBrowserProxy.whenCalled('recordAction');
     assertEquals('TabStripComboButton.TabSearch.Unpinned', action);
 
     metricsBrowserProxy.resetResolver('recordAction');
     tabSearchToggle.click();
     action = await metricsBrowserProxy.whenCalled('recordAction');
     assertEquals('TabStripComboButton.TabSearch.Pinned', action);
-
-    const projectsToggle =
-        appearancePage.shadowRoot.querySelector<SettingsToggleButtonElement>(
-            '#showOrganizerPanelButton');
-    assertTrue(!!projectsToggle);
-    metricsBrowserProxy.resetResolver('recordAction');
-    projectsToggle.click();
-    action = await metricsBrowserProxy.whenCalled('recordAction');
-    assertEquals('TabStripComboButton.OrganizerPanel.Unpinned', action);
   });
 
   test('Everything menu toggle updates correct pref', async function() {

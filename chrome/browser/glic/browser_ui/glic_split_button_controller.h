@@ -10,14 +10,14 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic.mojom-shared.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
-class ActorTaskListBubbleController;
 class BrowserWindowInterface;
 
 namespace glic {
 
+class GlicActivityListBubbleController;
 class GlicActorNudgeController;
 class GlicButtonController;
 class GlicKeyedService;
@@ -37,7 +37,7 @@ class GlicSplitButtonController {
   GlicSplitButtonController& operator=(const GlicSplitButtonController&) =
       delete;
 
-  ~GlicSplitButtonController();
+  virtual ~GlicSplitButtonController();
 
   // TODO(crbug.com/511309088): Rename these to toolbar and tab strip delegate
   // since they no longer necessarily correspond to vertical tab mode.
@@ -47,7 +47,7 @@ class GlicSplitButtonController {
 
   void OnGlicButtonClicked();
 
-  GlicSplitButtonDelegate* GetActiveDelegate();
+  virtual GlicSplitButtonDelegate* GetActiveDelegate();
   void CallOnBoth(base::RepeatingCallback<void(GlicSplitButtonDelegate&)> fn);
 
   GlicNudgeController* nudge_controller() {
@@ -56,6 +56,11 @@ class GlicSplitButtonController {
   GlicActorNudgeController* actor_nudge_controller() {
     return glic_actor_nudge_controller_.get();
   }
+  GlicActivityListBubbleController* activity_list_bubble_controller() {
+    return activity_list_bubble_controller_.get();
+  }
+  void SetActorNudgeControllerForTesting(
+      std::unique_ptr<GlicActorNudgeController> controller);
 
  private:
   bool IsToolbarButton() const;
@@ -69,10 +74,8 @@ class GlicSplitButtonController {
 
   std::unique_ptr<GlicNudgeController> glic_nudge_controller_;
   std::unique_ptr<GlicButtonController> glic_button_controller_;
-#if !BUILDFLAG(IS_ANDROID)
-  std::unique_ptr<ActorTaskListBubbleController>
-      actor_task_list_bubble_controller_;
-#endif
+  std::unique_ptr<GlicActivityListBubbleController>
+      activity_list_bubble_controller_;
   std::unique_ptr<GlicActorNudgeController> glic_actor_nudge_controller_;
 
   ui::ScopedUnownedUserData<GlicSplitButtonController>

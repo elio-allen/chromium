@@ -86,7 +86,7 @@ TEST_F(TimelineTriggerTest, ComputeBoundariesTest) {
     </div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   TimelineTrigger* trigger =
       DynamicTo<TimelineTrigger>(target->NamedTriggers()->begin()->value.Get());
   EXPECT_NE(trigger, nullptr);
@@ -126,69 +126,77 @@ TEST_F(TimelineTriggerTest, ComputeBoundariesTest) {
   trigger->SetRangeBoundariesForTest(cover_10, cover_90, auto_offset,
                                      auto_offset);
   double dummy_offset = 0;
-  TriggerBoundaries boundaries = trigger->ComputeTriggerBoundariesForTest(
-      dummy_offset, timeline_source, timeline);
-  ExpectRelativeErrorWithinEpsilon(boundaries.activation_start, cover_10_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.activation_end, cover_90_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.active_start, cover_10_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.active_end, cover_90_px);
+  std::optional<TriggerBoundaries> boundaries =
+      trigger->ComputeTriggerBoundariesForTest(dummy_offset, timeline_source,
+                                               timeline);
+  ASSERT_TRUE(boundaries.has_value());
+  ExpectRelativeErrorWithinEpsilon(boundaries->activation_start, cover_10_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->activation_end, cover_90_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->active_start, cover_10_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->active_end, cover_90_px);
 
   // contain 20% contain 80% auto normal.
   trigger->SetRangeBoundariesForTest(contain_20, contain_80, auto_offset,
                                      normal);
   boundaries = trigger->ComputeTriggerBoundariesForTest(
       dummy_offset, timeline_source, timeline);
-  ExpectRelativeErrorWithinEpsilon(boundaries.activation_start, contain_20_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.activation_end, contain_80_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.active_start, contain_20_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.active_end, cover_100_px);
+  ASSERT_TRUE(boundaries.has_value());
+  ExpectRelativeErrorWithinEpsilon(boundaries->activation_start, contain_20_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->activation_end, contain_80_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->active_start, contain_20_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->active_end, cover_100_px);
 
   // cover 10% cover 90% normal auto.
   trigger->SetRangeBoundariesForTest(cover_10, cover_90, normal, auto_offset);
   boundaries = trigger->ComputeTriggerBoundariesForTest(
       dummy_offset, timeline_source, timeline);
-  ExpectRelativeErrorWithinEpsilon(boundaries.activation_start, cover_10_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.activation_end, cover_90_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.active_start, cover_0_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.active_end, cover_90_px);
+  ASSERT_TRUE(boundaries.has_value());
+  ExpectRelativeErrorWithinEpsilon(boundaries->activation_start, cover_10_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->activation_end, cover_90_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->active_start, cover_0_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->active_end, cover_90_px);
 
   // contain 20% contain 80% normal normal.
   trigger->SetRangeBoundariesForTest(contain_20, contain_80, normal, normal);
   boundaries = trigger->ComputeTriggerBoundariesForTest(
       dummy_offset, timeline_source, timeline);
-  ExpectRelativeErrorWithinEpsilon(boundaries.activation_start, contain_20_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.activation_end, contain_80_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.active_start, cover_0_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.active_end, cover_100_px);
+  ASSERT_TRUE(boundaries.has_value());
+  ExpectRelativeErrorWithinEpsilon(boundaries->activation_start, contain_20_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->activation_end, contain_80_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->active_start, cover_0_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->active_end, cover_100_px);
 
   // contain 20% contain 80% cover 10% normal.
   trigger->SetRangeBoundariesForTest(contain_20, contain_80, cover_10, normal);
   boundaries = trigger->ComputeTriggerBoundariesForTest(
       dummy_offset, timeline_source, timeline);
-  ExpectRelativeErrorWithinEpsilon(boundaries.activation_start, contain_20_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.activation_end, contain_80_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.active_start, cover_10_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.active_end, cover_100_px);
+  ASSERT_TRUE(boundaries.has_value());
+  ExpectRelativeErrorWithinEpsilon(boundaries->activation_start, contain_20_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->activation_end, contain_80_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->active_start, cover_10_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->active_end, cover_100_px);
 
   // contain 20% contain 80% cover 10% auto.
   trigger->SetRangeBoundariesForTest(contain_20, contain_80, cover_10,
                                      auto_offset);
   boundaries = trigger->ComputeTriggerBoundariesForTest(
       dummy_offset, timeline_source, timeline);
-  ExpectRelativeErrorWithinEpsilon(boundaries.activation_start, contain_20_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.activation_end, contain_80_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.active_start, cover_10_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.active_end, contain_80_px);
+  ASSERT_TRUE(boundaries.has_value());
+  ExpectRelativeErrorWithinEpsilon(boundaries->activation_start, contain_20_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->activation_end, contain_80_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->active_start, cover_10_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->active_end, contain_80_px);
 
   // contain 20% contain 80% cover 10% cover 90%.
   trigger->SetRangeBoundariesForTest(contain_20, contain_80, cover_10,
                                      cover_90);
   boundaries = trigger->ComputeTriggerBoundariesForTest(
       dummy_offset, timeline_source, timeline);
-  ExpectRelativeErrorWithinEpsilon(boundaries.activation_start, contain_20_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.activation_end, contain_80_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.active_start, cover_10_px);
-  ExpectRelativeErrorWithinEpsilon(boundaries.active_end, cover_90_px);
+  ASSERT_TRUE(boundaries.has_value());
+  ExpectRelativeErrorWithinEpsilon(boundaries->activation_start, contain_20_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->activation_end, contain_80_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->active_start, cover_10_px);
+  ExpectRelativeErrorWithinEpsilon(boundaries->active_end, cover_90_px);
 }
 
 class TimelineTriggerPlayBackwardsForwardsTest : public TimelineTriggerTest {
@@ -230,12 +238,12 @@ class TimelineTriggerPlayBackwardsForwardsTest : public TimelineTriggerTest {
 TEST_F(TimelineTriggerPlayBackwardsForwardsTest, BackwardsInterruptsForwards) {
   Initialize("play-forwards play-backwards");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ElementAnimations* animations = target->GetElementAnimations();
   CSSAnimation* animation =
       DynamicTo<CSSAnimation>((*animations->Animations().begin()).key.Get());
-  Element* subject = GetDocument().getElementById(AtomicString("subject"));
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* subject = GetElementById("subject");
+  Element* scroller = GetElementById("scroller");
 
   UpdateAllLifecyclePhasesForTest();
 
@@ -287,10 +295,10 @@ TEST_F(TimelineTriggerPlayBackwardsForwardsTest,
        PlayForwardsFinishedAtEndNoOp) {
   Initialize("play-forwards");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   CSSAnimation* animation = DynamicTo<CSSAnimation>(
       (*target->GetElementAnimations()->Animations().begin()).key.Get());
-  Element* subject = GetDocument().getElementById(AtomicString("subject"));
+  Element* subject = GetElementById("subject");
 
   UpdateAllLifecyclePhasesForTest();
 
@@ -315,10 +323,10 @@ TEST_F(TimelineTriggerPlayBackwardsForwardsTest,
        PlayForwardsReversesFinishedAtStart) {
   Initialize("play-forwards");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   CSSAnimation* animation = DynamicTo<CSSAnimation>(
       (*target->GetElementAnimations()->Animations().begin()).key.Get());
-  Element* subject = GetDocument().getElementById(AtomicString("subject"));
+  Element* subject = GetElementById("subject");
 
   UpdateAllLifecyclePhasesForTest();
 
@@ -348,10 +356,10 @@ TEST_F(TimelineTriggerPlayBackwardsForwardsTest,
        PlayBackwardsFinishedAtStartNoOp) {
   Initialize("play-backwards");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   CSSAnimation* animation = DynamicTo<CSSAnimation>(
       (*target->GetElementAnimations()->Animations().begin()).key.Get());
-  Element* subject = GetDocument().getElementById(AtomicString("subject"));
+  Element* subject = GetElementById("subject");
 
   UpdateAllLifecyclePhasesForTest();
 
@@ -377,10 +385,10 @@ TEST_F(TimelineTriggerPlayBackwardsForwardsTest,
        PlayBackwardsReversesFinishedAtEnd) {
   Initialize("play-backwards");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   CSSAnimation* animation = DynamicTo<CSSAnimation>(
       (*target->GetElementAnimations()->Animations().begin()).key.Get());
-  Element* subject = GetDocument().getElementById(AtomicString("subject"));
+  Element* subject = GetElementById("subject");
 
   UpdateAllLifecyclePhasesForTest();
 
@@ -407,6 +415,8 @@ TEST_F(TimelineTriggerPlayBackwardsForwardsTest,
 
 TEST_F(TimelineTriggerTest, CSSUseCounter) {
   EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kTimelineTrigger));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kV8TimelineTrigger_Constructor));
 
   SetBodyInnerHTML(R"HTML(
     <style>
@@ -424,10 +434,14 @@ TEST_F(TimelineTriggerTest, CSSUseCounter) {
   UpdateAllLifecyclePhasesForTest();
 
   EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kTimelineTrigger));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kV8TimelineTrigger_Constructor));
 }
 
 TEST_F(TimelineTriggerTest, JSUseCounter) {
   EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kTimelineTrigger));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kV8TimelineTrigger_Constructor));
   GetDocument().GetSettings()->SetScriptEnabled(true);
 
   ClassicScript::CreateUnspecifiedScript(
@@ -435,6 +449,8 @@ TEST_F(TimelineTriggerTest, JSUseCounter) {
       ->RunScript(GetDocument().domWindow());
 
   EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kTimelineTrigger));
+  EXPECT_TRUE(
+      GetDocument().IsUseCounted(WebFeature::kV8TimelineTrigger_Constructor));
 }
 
 TEST_F(TimelineTriggerTest, ScrollAndTimeDrivenAnimationReplay) {
@@ -475,17 +491,15 @@ TEST_F(TimelineTriggerTest, ScrollAndTimeDrivenAnimationReplay) {
 
   UpdateAllLifecyclePhasesForTest();
 
-  Element* sda_target =
-      GetDocument().getElementById(AtomicString("sda-target"));
+  Element* sda_target = GetElementById("sda-target");
   CSSAnimation* sda = DynamicTo<CSSAnimation>(
       (*sda_target->GetElementAnimations()->Animations().begin()).key.Get());
-  Element* tda_target =
-      GetDocument().getElementById(AtomicString("tda-target"));
+  Element* tda_target = GetElementById("tda-target");
   CSSAnimation* tda = DynamicTo<CSSAnimation>(
       (*tda_target->GetElementAnimations()->Animations().begin()).key.Get());
 
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
-  Element* wrapper = GetDocument().getElementById(AtomicString("wrapper"));
+  Element* scroller = GetElementById("scroller");
+  Element* wrapper = GetElementById("wrapper");
 
   // Retrieve the trigger from wrapper.
   TimelineTrigger* trigger = DynamicTo<TimelineTrigger>(

@@ -26,6 +26,10 @@ MEDIA_EXPORT const libyuv::ArgbConstants* GetArgbConstantsForColorSpace(
 //
 // If a method doesn't support scaling it's noted in the comments.
 
+// Scaling not supported.
+MEDIA_EXPORT void CopyVisiblePlanes(const VideoFrame& src_frame,
+                                    VideoFrame& dst_frame);
+
 bool ARGBScale(const VideoFrame& src_frame,
                VideoFrame& dst_frame,
                libyuv::FilterMode filter);
@@ -34,13 +38,21 @@ bool ARGBToI420x(const VideoFrame& src_frame,
                  VideoFrame& dst_frame,
                  const libyuv::ArgbConstants* matrix);
 
+bool ARGBToI422x(const VideoFrame& src_frame,
+                 VideoFrame& dst_frame,
+                 const libyuv::ArgbConstants* matrix);
+
 bool ARGBToI444x(const VideoFrame& src_frame,
                  VideoFrame& dst_frame,
                  const libyuv::ArgbConstants* matrix);
 
-bool ARGBToNV12x(const VideoFrame& src_frame,
-                 VideoFrame& dst_frame,
-                 const libyuv::ArgbConstants* matrix);
+bool ARGBToNVxx(const VideoFrame& src_frame,
+                VideoFrame& dst_frame,
+                const libyuv::ArgbConstants* matrix);
+
+bool ARGBToPx10(const VideoFrame& src_frame,
+                VideoFrame& dst_frame,
+                const libyuv::ArgbConstants* matrix);
 
 // Also converts between I420, I422, I444 and vice versa.
 void I4xxxScale(const VideoFrame& src_frame, VideoFrame& dst_frame);
@@ -54,29 +66,42 @@ void Convert8To16Plane(const VideoFrame& src_frame, VideoFrame& dst_frame);
 void Shift12To10(VideoFrame& frame);
 
 // Scaling not supported.
-bool I420xToNV12x(const VideoFrame& src_frame, VideoFrame& dst_frame);
+bool I4xxxToNVxx(const VideoFrame& src_frame, VideoFrame& dst_frame);
 
 // Scaling not supported.
-bool I444xToNV12x(const VideoFrame& src_frame, VideoFrame& dst_frame);
-
-// Scaling not supported.
-void MergeUV(const VideoFrame& src_frame, VideoFrame& dst_frame);
+MEDIA_EXPORT void MergeUV(const VideoFrame& src_frame, VideoFrame& dst_frame);
 
 // Scaling not supported.
 void SplitUV(const VideoFrame& src_frame, VideoFrame& dst_frame);
 
-bool NV12xScale(const VideoFrame& src_frame,
-                VideoFrame& dst_frame,
-                libyuv::FilterMode filter);
+bool NVxxScale(const VideoFrame& src_frame,
+               VideoFrame& dst_frame,
+               libyuv::FilterMode filter);
+
+bool Px10Scale(const VideoFrame& src_frame,
+               VideoFrame& dst_frame,
+               libyuv::FilterMode filter);
 
 // Scaling not supported.
-bool NV12xToI420x(const VideoFrame& src_frame, VideoFrame& dst_frame);
+void NVxxToI4xxx(const VideoFrame& src_frame, VideoFrame& dst_frame);
 
 // Scaling not supported.
-bool NV12xToP010(const VideoFrame& src_frame, VideoFrame& dst_frame);
+bool NVxxToPx10(const VideoFrame& src_frame, VideoFrame& dst_frame);
 
 // Scaling not supported.
-bool I4xxxPxxToP010(const VideoFrame& src_frame, VideoFrame& dst_frame);
+bool I4xxxToPx10(const VideoFrame& src_frame, VideoFrame& dst_frame);
+
+// Scaling not supported.
+bool I4xxxPxxToPx10(const VideoFrame& src_frame, VideoFrame& dst_frame);
+
+// Scaling not supported.
+bool Px10ToIx10(const VideoFrame& src_frame, VideoFrame& dst_frame);
+
+// Scaling not supported.
+bool Px10ToI420(const VideoFrame& src_frame, VideoFrame& dst_frame);
+
+// Scaling not supported.
+void Px10ToNVxx(const VideoFrame& src_frame, VideoFrame& dst_frame);
 
 }  // namespace media::internals
 

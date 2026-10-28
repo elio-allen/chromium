@@ -10,8 +10,6 @@ import android.app.Activity;
 import android.util.SizeF;
 import android.view.View;
 
-import androidx.annotation.VisibleForTesting;
-
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.media.immersive_playback.ImmersiveVideoPlaybackDelegate;
@@ -21,6 +19,7 @@ import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 import org.chromium.ui.xr.scenecore.XrEntityHolder;
 import org.chromium.ui.xr.scenecore.XrMovableComponent;
 import org.chromium.ui.xr.scenecore.XrPanelEntityHolder;
+import org.chromium.ui.xr.scenecore.XrPixelDensity;
 import org.chromium.ui.xr.scenecore.XrPose;
 import org.chromium.ui.xr.scenecore.XrSceneCoreSessionManager;
 import org.chromium.ui.xr.scenecore.XrSpace;
@@ -46,21 +45,12 @@ public class ImmersiveVideoControlCoordinator {
         void onControlPanelAccessibilityFocusChanged(boolean focused);
     }
 
-    private final PropertyModel mModel =
-            new PropertyModel.Builder(ImmersiveVideoControlProperties.ALL_KEYS)
-                    .with(ImmersiveVideoControlProperties.DEFAULT_SPATIAL_WIDTH, 0.7f)
-                    .with(ImmersiveVideoControlProperties.DEFAULT_SPATIAL_HEIGHT, 0.08f)
-                    .with(ImmersiveVideoControlProperties.DURATION_MS, 0L)
-                    .with(ImmersiveVideoControlProperties.POSITION_MS, 0L)
-                    .with(ImmersiveVideoControlProperties.PLAYBACK_RATE, 1.0)
-                    .with(ImmersiveVideoControlProperties.IS_PLAYING, false)
-                    .with(ImmersiveVideoControlProperties.FORMAT_BUTTON_SELECTED, false)
-                    .with(ImmersiveVideoControlProperties.IS_MOVABLE, false)
-                    .build();
-
+    private final PropertyModel mModel;
+    private final XrPixelDensity mPixelDensity;
     private final Activity mActivity;
     private final XrSceneCoreSessionManager mSessionManager;
     private final Delegate mVideoControlDelegate;
+    private final ImmersiveVideoControlMediator mMediator;
     private final XrMovableComponent.OnMoveListener mOnMoveListener =
             new XrMovableComponent.OnMoveListener() {
                 @Override
@@ -81,7 +71,6 @@ public class ImmersiveVideoControlCoordinator {
             };
 
     private @Nullable ImmersiveVideoControlView mView;
-    private @Nullable ImmersiveVideoControlMediator mMediator;
     private @Nullable XrPanelEntityHolder<?> mHolder;
     private @Nullable PropertyModelChangeProcessor<
                     PropertyModel, ImmersiveVideoControlSpatialView, PropertyKey>
@@ -103,13 +92,27 @@ public class ImmersiveVideoControlCoordinator {
         mActivity = activity;
         mSessionManager = sessionManager;
         mVideoControlDelegate = videoControlDelegate;
+        mPixelDensity = sessionManager.getPixelDensity();
+
+        mModel =
+                new PropertyModel.Builder(ImmersiveVideoControlProperties.ALL_KEYS)
+                        .with(ImmersiveVideoControlProperties.DEFAULT_PIXEL_DENSITY, mPixelDensity)
+                        .with(ImmersiveVideoControlProperties.DEFAULT_WIDTH_DP, 700)
+                        .with(ImmersiveVideoControlProperties.DEFAULT_HEIGHT_DP, 80)
+                        .with(ImmersiveVideoControlProperties.DURATION_MS, 0L)
+                        .with(ImmersiveVideoControlProperties.POSITION_MS, 0L)
+                        .with(ImmersiveVideoControlProperties.PLAYBACK_RATE, 1.0)
+                        .with(ImmersiveVideoControlProperties.IS_PLAYING, false)
+                        .with(ImmersiveVideoControlProperties.FORMAT_BUTTON_SELECTED, false)
+                        .with(ImmersiveVideoControlProperties.IS_MOVABLE, false)
+                        .build();
+        mMediator = new ImmersiveVideoControlMediator(mModel, mVideoControlDelegate);
     }
 
     private void ensureInitialized() {
         if (mHolder != null) return;
 
-        mMediator = new ImmersiveVideoControlMediator(mModel, mVideoControlDelegate);
-        mView = createView(mActivity, mMediator);
+        mView = new ImmersiveVideoControlView(mActivity, mMediator);
         mHolder = mSessionManager.createPanelEntity(mView, "MediaControlPanel");
         mHolder.getMovableComponent().addMoveListener(mOnMoveListener);
 
@@ -118,12 +121,6 @@ public class ImmersiveVideoControlCoordinator {
                         mModel,
                         new ImmersiveVideoControlSpatialView(mView, mHolder),
                         ImmersiveVideoControlViewBinder::bind);
-    }
-
-    @VisibleForTesting
-    ImmersiveVideoControlView createView(
-            Activity activity, ImmersiveVideoControlView.UserInteractionListener listener) {
-        return new ImmersiveVideoControlView(activity, listener);
     }
 
     /**
@@ -147,9 +144,7 @@ public class ImmersiveVideoControlCoordinator {
             mView.setAccessibilityFocusListener(
                     mVideoControlDelegate::onControlPanelAccessibilityFocusChanged);
         }
-        if (mMediator != null) {
-            mMediator.setVisible(true);
-        }
+        mMediator.setVisible(true);
     }
 
     /**
@@ -168,9 +163,7 @@ public class ImmersiveVideoControlCoordinator {
         if (mIsDisposed || !mIsShowing) return;
 
         mIsShowing = false;
-        if (mMediator != null) {
-            mMediator.setVisible(false);
-        }
+        mMediator.setVisible(false);
         if (mView != null) {
             mView.setHoverListener(null);
             mView.setAccessibilityFocusListener(null);
@@ -188,9 +181,7 @@ public class ImmersiveVideoControlCoordinator {
 
         mIsDisposed = true;
         mIsShowing = false;
-        if (mMediator != null) {
-            mMediator.destroy();
-        }
+        mMediator.destroy();
         if (mModelChangeProcessor != null) {
             mModelChangeProcessor.destroy();
             mModelChangeProcessor = null;
@@ -208,7 +199,6 @@ public class ImmersiveVideoControlCoordinator {
         }
         mHolder = null;
         mView = null;
-        mMediator = null;
     }
 
     /** Returns true if the control panel is currently showing, false otherwise. */
@@ -221,14 +211,16 @@ public class ImmersiveVideoControlCoordinator {
         return mHolder;
     }
 
-    /** Returns the size of the control panel in spatial units. */
+    /** Returns the size of the control panel in meters. */
     public SizeF getSize() {
         if (mHolder != null) {
             return mHolder.getEntitySize();
         }
+        int widthDp = mModel.get(ImmersiveVideoControlProperties.DEFAULT_WIDTH_DP);
+        int heightDp = mModel.get(ImmersiveVideoControlProperties.DEFAULT_HEIGHT_DP);
         return new SizeF(
-                mModel.get(ImmersiveVideoControlProperties.DEFAULT_SPATIAL_WIDTH),
-                mModel.get(ImmersiveVideoControlProperties.DEFAULT_SPATIAL_HEIGHT));
+                mPixelDensity.convertDpToMeters(widthDp),
+                mPixelDensity.convertDpToMeters(heightDp));
     }
 
     /**
@@ -238,9 +230,7 @@ public class ImmersiveVideoControlCoordinator {
      * @param rotation The rotation from the parent {@link XrSpace}.
      */
     public void updatePose(XrPose pose) {
-        if (mMediator != null) {
-            mMediator.updatePose(pose);
-        }
+        mMediator.updatePose(pose);
     }
 
     /**
@@ -249,9 +239,7 @@ public class ImmersiveVideoControlCoordinator {
      * @param isMovable True if movable, false otherwise.
      */
     public void setMovable(boolean isMovable) {
-        if (mMediator != null) {
-            mMediator.setMovable(isMovable);
-        }
+        mMediator.setMovable(isMovable);
     }
 
     /**
@@ -262,9 +250,7 @@ public class ImmersiveVideoControlCoordinator {
      * @param playbackRate The current playback rate.
      */
     public void updateMediaPosition(long durationMs, long positionMs, double playbackRate) {
-        if (mMediator != null) {
-            mMediator.updateMediaPosition(durationMs, positionMs, playbackRate);
-        }
+        mMediator.updateMediaPosition(durationMs, positionMs, playbackRate);
     }
 
     /**
@@ -273,9 +259,7 @@ public class ImmersiveVideoControlCoordinator {
      * @param isPlaying True if playing, false otherwise.
      */
     public void updatePlaybackState(boolean isPlaying) {
-        if (mMediator != null) {
-            mMediator.updatePlaybackState(isPlaying);
-        }
+        mMediator.updatePlaybackState(isPlaying);
     }
 
     /**
@@ -284,9 +268,7 @@ public class ImmersiveVideoControlCoordinator {
      * @param selected True if selected, false otherwise.
      */
     public void setFormatButtonSelected(boolean selected) {
-        if (mMediator != null) {
-            mMediator.setFormatButtonSelected(selected);
-        }
+        mMediator.setFormatButtonSelected(selected);
     }
 
     /** Requests accessibility focus on the format button. */
@@ -318,7 +300,6 @@ public class ImmersiveVideoControlCoordinator {
         return assumeNonNull(mView);
     }
 
-    @VisibleForTesting
     PropertyModel getModelForTesting() {
         return mModel;
     }

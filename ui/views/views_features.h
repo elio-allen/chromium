@@ -14,10 +14,17 @@ namespace views::features {
 // Please keep alphabetized.
 VIEWS_EXPORT BASE_DECLARE_FEATURE(kAllowWindowCaptureExclusionInRemoteSessions);
 VIEWS_EXPORT BASE_DECLARE_FEATURE(kApplyInitialUrlToWebContents);
+VIEWS_EXPORT BASE_DECLARE_FEATURE(kDisableDragDropForUnneededWidgets);
 VIEWS_EXPORT BASE_DECLARE_FEATURE(kEnableInputProtection);
 VIEWS_EXPORT BASE_DECLARE_FEATURE(kEnableTouchDragCursorSync);
 VIEWS_EXPORT BASE_DECLARE_FEATURE(kKeyboardAccessibleTooltipInViews);
-VIEWS_EXPORT BASE_DECLARE_FEATURE(kNativeViewHostManagesLayers);
+VIEWS_EXPORT BASE_DECLARE_FEATURE(kLabelDefaultTooltipFastPath);
+#if BUILDFLAG(IS_MAC)
+VIEWS_EXPORT BASE_DECLARE_FEATURE(kMacActivateWidgetOnFocusRequest);
+VIEWS_EXPORT BASE_DECLARE_FEATURE(kNotifyCompositorOfSpaceVisibilityOnMacOs);
+VIEWS_EXPORT BASE_DECLARE_FEATURE(kNotifyCompositorOfWindowOcclusionOnMacOs);
+VIEWS_EXPORT BASE_DECLARE_FEATURE(kNotifyCompositorOfWindowVisibilityOnMacOs);
+#endif
 
 }  // namespace views::features
 

@@ -15,13 +15,11 @@
 #include "base/time/time.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/command_updater.h"
-#include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
 #include "chrome/browser/ui/waap/waap_ui_metrics_service.h"
 #include "chrome/browser/ui/webui/metrics_reporter/metrics_reporter_service.h"
 #include "chrome/browser/ui/webui/webui_toolbar/testing/toy_browser.h"
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_test_utils.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/browser_apis/browser_controls/browser_controls_api.mojom.h"
 #include "content/public/test/web_contents_tester.h"
@@ -73,7 +71,6 @@ class BrowserControlsServiceTest : public ChromeRenderViewHostTestHarness {
     // TimeTicks and avoid underflow issues when subtracting offsets in
     // validation tests.
     task_environment()->FastForwardBy(base::Seconds(100));
-    feature_list_.InitAndEnableFeature(features::kInitialWebUIMetrics);
 
     service_ = std::make_unique<BrowserControlsService>(
         mojo::PendingReceiver<mojom::BrowserControlsService>(),
@@ -98,7 +95,6 @@ class BrowserControlsServiceTest : public ChromeRenderViewHostTestHarness {
   MockBrowserControlsServiceDelegate& delegate() { return delegate_; }
 
  private:
-  base::test::ScopedFeatureList feature_list_;
   testing::ToyBrowser toy_browser_;
   std::unique_ptr<BrowserControlsService> service_;
   base::HistogramTester histogram_tester_;
@@ -132,7 +128,7 @@ TEST_F(BrowserControlsServiceReloadTest, ReloadWithMiddleMouseButton) {
       std::move(metadata));
 
   EXPECT_EQ(IDC_RELOAD, toy_browser().received_commands().back().command_id);
-  EXPECT_EQ(WindowOpenDisposition::NEW_BACKGROUND_TAB,
+  EXPECT_EQ(WindowOpenDisposition::kNewBackgroundTab,
             toy_browser().received_commands().back().disposition);
 }
 
@@ -143,7 +139,7 @@ TEST_F(BrowserControlsServiceReloadTest, ReloadBypassingCache) {
   EXPECT_EQ(size_t{1}, toy_browser().received_commands().size());
   EXPECT_EQ(IDC_RELOAD_BYPASSING_CACHE,
             toy_browser().received_commands().back().command_id);
-  EXPECT_EQ(WindowOpenDisposition::CURRENT_TAB,
+  EXPECT_EQ(WindowOpenDisposition::kCurrentTab,
             toy_browser().received_commands().back().disposition);
 }
 
@@ -347,7 +343,7 @@ TEST_F(BrowserControlsServiceStopLoadTest, StopLoad) {
   std::ignore = service().StopLoad();
 
   EXPECT_EQ(IDC_STOP, toy_browser().received_commands().back().command_id);
-  EXPECT_EQ(WindowOpenDisposition::CURRENT_TAB,
+  EXPECT_EQ(WindowOpenDisposition::kCurrentTab,
             toy_browser().received_commands().back().disposition);
 }
 
@@ -356,7 +352,7 @@ TEST_F(BrowserControlsServiceStopLoadTest, StopLoad) {
 TEST_F(BrowserControlsServiceTest, Back_CurrentTab) {
   std::ignore = service().Back({});
   EXPECT_EQ(IDC_BACK, toy_browser().received_commands().back().command_id);
-  EXPECT_EQ(WindowOpenDisposition::CURRENT_TAB,
+  EXPECT_EQ(WindowOpenDisposition::kCurrentTab,
             toy_browser().received_commands().back().disposition);
 }
 
@@ -366,7 +362,7 @@ TEST_F(BrowserControlsServiceTest, Back_MiddleClick) {
   std::ignore = service().Back(
       {browser_controls_api::mojom::EventDispositionFlag::kMiddleMouseButton});
   EXPECT_EQ(IDC_BACK, toy_browser().received_commands().back().command_id);
-  EXPECT_EQ(WindowOpenDisposition::NEW_BACKGROUND_TAB,
+  EXPECT_EQ(WindowOpenDisposition::kNewBackgroundTab,
             toy_browser().received_commands().back().disposition);
 }
 
@@ -376,7 +372,7 @@ TEST_F(BrowserControlsServiceTest, Back_MiddleClick) {
 TEST_F(BrowserControlsServiceTest, Back_MetaOrCtrlClick) {
   std::ignore = service().Back({control_or_meta_disposition});
   EXPECT_EQ(IDC_BACK, toy_browser().received_commands().back().command_id);
-  EXPECT_EQ(WindowOpenDisposition::NEW_BACKGROUND_TAB,
+  EXPECT_EQ(WindowOpenDisposition::kNewBackgroundTab,
             toy_browser().received_commands().back().disposition);
 }
 
@@ -386,7 +382,7 @@ TEST_F(BrowserControlsServiceTest, Back_ShiftClick) {
   std::ignore = service().Back(
       {browser_controls_api::mojom::EventDispositionFlag::kShiftKeyDown});
   EXPECT_EQ(IDC_BACK, toy_browser().received_commands().back().command_id);
-  EXPECT_EQ(WindowOpenDisposition::NEW_WINDOW,
+  EXPECT_EQ(WindowOpenDisposition::kNewWindow,
             toy_browser().received_commands().back().disposition);
 }
 
@@ -395,7 +391,7 @@ TEST_F(BrowserControlsServiceTest, Back_ShiftClick) {
 TEST_F(BrowserControlsServiceTest, Forward_CurrentTab) {
   std::ignore = service().Forward({});
   EXPECT_EQ(IDC_FORWARD, toy_browser().received_commands().back().command_id);
-  EXPECT_EQ(WindowOpenDisposition::CURRENT_TAB,
+  EXPECT_EQ(WindowOpenDisposition::kCurrentTab,
             toy_browser().received_commands().back().disposition);
 }
 
@@ -405,7 +401,7 @@ TEST_F(BrowserControlsServiceTest, Forward_MiddleClick) {
   std::ignore = service().Forward(
       {browser_controls_api::mojom::EventDispositionFlag::kMiddleMouseButton});
   EXPECT_EQ(IDC_FORWARD, toy_browser().received_commands().back().command_id);
-  EXPECT_EQ(WindowOpenDisposition::NEW_BACKGROUND_TAB,
+  EXPECT_EQ(WindowOpenDisposition::kNewBackgroundTab,
             toy_browser().received_commands().back().disposition);
 }
 
@@ -415,7 +411,7 @@ TEST_F(BrowserControlsServiceTest, Forward_MiddleClick) {
 TEST_F(BrowserControlsServiceTest, Forward_MetaOrCtrlClick) {
   std::ignore = service().Forward({control_or_meta_disposition});
   EXPECT_EQ(IDC_FORWARD, toy_browser().received_commands().back().command_id);
-  EXPECT_EQ(WindowOpenDisposition::NEW_BACKGROUND_TAB,
+  EXPECT_EQ(WindowOpenDisposition::kNewBackgroundTab,
             toy_browser().received_commands().back().disposition);
 }
 
@@ -425,7 +421,7 @@ TEST_F(BrowserControlsServiceTest, Forward_ShiftClick) {
   std::ignore = service().Forward(
       {browser_controls_api::mojom::EventDispositionFlag::kShiftKeyDown});
   EXPECT_EQ(IDC_FORWARD, toy_browser().received_commands().back().command_id);
-  EXPECT_EQ(WindowOpenDisposition::NEW_WINDOW,
+  EXPECT_EQ(WindowOpenDisposition::kNewWindow,
             toy_browser().received_commands().back().disposition);
 }
 
@@ -441,7 +437,7 @@ TEST_F(BrowserControlsServiceTest, BackButtonHovered) {
 TEST_F(BrowserControlsServiceTest, NavigateHome_CurrentTab) {
   std::ignore = service().NavigateHome({});
   EXPECT_EQ(IDC_HOME, toy_browser().received_commands().back().command_id);
-  EXPECT_EQ(WindowOpenDisposition::CURRENT_TAB,
+  EXPECT_EQ(WindowOpenDisposition::kCurrentTab,
             toy_browser().received_commands().back().disposition);
 }
 
@@ -451,7 +447,7 @@ TEST_F(BrowserControlsServiceTest, NavigateHome_MiddleClick) {
   std::ignore = service().NavigateHome(
       {browser_controls_api::mojom::EventDispositionFlag::kMiddleMouseButton});
   EXPECT_EQ(IDC_HOME, toy_browser().received_commands().back().command_id);
-  EXPECT_EQ(WindowOpenDisposition::NEW_BACKGROUND_TAB,
+  EXPECT_EQ(WindowOpenDisposition::kNewBackgroundTab,
             toy_browser().received_commands().back().disposition);
 }
 
@@ -461,7 +457,7 @@ TEST_F(BrowserControlsServiceTest, NavigateHome_MiddleClick) {
 TEST_F(BrowserControlsServiceTest, NavigateHome_MetaOrCtrlClick) {
   std::ignore = service().NavigateHome({control_or_meta_disposition});
   EXPECT_EQ(IDC_HOME, toy_browser().received_commands().back().command_id);
-  EXPECT_EQ(WindowOpenDisposition::NEW_BACKGROUND_TAB,
+  EXPECT_EQ(WindowOpenDisposition::kNewBackgroundTab,
             toy_browser().received_commands().back().disposition);
 }
 
@@ -473,7 +469,7 @@ TEST_F(BrowserControlsServiceTest, NavigateHome_MetaOrCtrlShiftClick) {
       control_or_meta_disposition,
   });
   EXPECT_EQ(IDC_HOME, toy_browser().received_commands().back().command_id);
-  EXPECT_EQ(WindowOpenDisposition::NEW_FOREGROUND_TAB,
+  EXPECT_EQ(WindowOpenDisposition::kNewForegroundTab,
             toy_browser().received_commands().back().disposition);
 }
 
@@ -483,7 +479,7 @@ TEST_F(BrowserControlsServiceTest, NavigateHome_ShiftClick) {
   std::ignore = service().NavigateHome(
       {browser_controls_api::mojom::EventDispositionFlag::kShiftKeyDown});
   EXPECT_EQ(IDC_HOME, toy_browser().received_commands().back().command_id);
-  EXPECT_EQ(WindowOpenDisposition::NEW_WINDOW,
+  EXPECT_EQ(WindowOpenDisposition::kNewWindow,
             toy_browser().received_commands().back().disposition);
 }
 

@@ -23,8 +23,10 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.keyboard_accessory.R;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetFeatureMap;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
-import org.chromium.components.browser_ui.bottomsheet.EmptyBottomSheetObserver;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
+import org.chromium.components.browser_ui.bottomsheet.UserCriticalFeature;
 import org.chromium.ui.base.LocalizationUtils;
 
 /**
@@ -34,28 +36,39 @@ import org.chromium.ui.base.LocalizationUtils;
  */
 @NullMarked
 class AllPasswordsBottomSheetView implements BottomSheetContent {
+    private static final BottomSheetType BOTTOM_SHEET_TYPE =
+            new BottomSheetType.Builder()
+                    .setUserInitiated(true)
+                    .setUserCritical(UserCriticalFeature.ALL_PASSWORDS)
+                    .build();
+
     private final BottomSheetController mBottomSheetController;
     private @Nullable Callback<Integer> mDismissHandler;
     private final RecyclerView mSheetItemListView;
     private final LinearLayout mContentView;
 
     private final BottomSheetObserver mBottomSheetObserver =
-            new EmptyBottomSheetObserver() {
+            new BottomSheetObserver() {
                 @Override
                 public void onSheetClosed(@BottomSheetController.StateChangeReason int reason) {
-                    super.onSheetClosed(reason);
-                    assert mDismissHandler != null;
-                    mDismissHandler.onResult(reason);
-                    mBottomSheetController.removeObserver(mBottomSheetObserver);
+                    onDismissed(reason);
                 }
 
                 @Override
                 public void onSheetStateChanged(int newState, int reason) {
-                    super.onSheetStateChanged(newState, reason);
-                    assert mDismissHandler != null;
                     if (newState != BottomSheetController.SheetState.HIDDEN) return;
                     // This is a fail-safe for cases where onSheetClosed isn't triggered.
-                    mDismissHandler.onResult(BottomSheetController.StateChangeReason.NONE);
+                    onDismissed(BottomSheetController.StateChangeReason.NONE);
+                }
+
+                private void onDismissed(@BottomSheetController.StateChangeReason int reason) {
+                    assert mDismissHandler != null;
+                    if (BottomSheetFeatureMap.sBottomSheetDeferContentSwapOnHidden.isEnabled()
+                            && mBottomSheetController.getCurrentSheetContent()
+                                    != AllPasswordsBottomSheetView.this) {
+                        return;
+                    }
+                    mDismissHandler.onResult(reason);
                     mBottomSheetController.removeObserver(mBottomSheetObserver);
                 }
             };
@@ -168,6 +181,11 @@ class AllPasswordsBottomSheetView implements BottomSheetContent {
     }
 
     @Override
+    public BottomSheetType getSheetType() {
+        return BOTTOM_SHEET_TYPE;
+    }
+
+    @Override
     public int getPriority() {
         return BottomSheetContent.ContentPriority.HIGH;
     }
@@ -190,16 +208,6 @@ class AllPasswordsBottomSheetView implements BottomSheetContent {
     @Override
     public float getHalfHeightRatio() {
         return BottomSheetContent.HeightMode.DISABLED;
-    }
-
-    @Override
-    public boolean hideOnScroll() {
-        return false;
-    }
-
-    @Override
-    public String getSheetContentDescription(Context context) {
-        return context.getString(R.string.all_passwords_bottom_sheet_content_description);
     }
 
     @Override

@@ -41,8 +41,21 @@ void RecordBrowserBoundKeyRetrieval(
 
 void RecordBrowserBoundKeyMetadataUpdated(bool success) {
   base::UmaHistogramBoolean(
-      "PaymentRequest.SecurePaymentConfirmation.BrowserBoundKeyMetdataUpdate",
+      "PaymentRequest.SecurePaymentConfirmation.BrowserBoundKeyMetadataUpdate",
       success);
+}
+
+void RecordOSStoreUplift(bool has_uplift) {
+  base::UmaHistogramBoolean(
+      "PaymentRequest.SecurePaymentConfirmation.CredentialFinder.OSStoreUplift",
+      has_uplift);
+}
+
+void RecordWebDatabaseHasOrphanedCredentials(bool has_orphaned_credentials) {
+  base::UmaHistogramBoolean(
+      "PaymentRequest.SecurePaymentConfirmation.CredentialFinder."
+      "WebDatabaseHasOrphanedCredentials",
+      has_orphaned_credentials);
 }
 
 }  // namespace payments

@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.ui.autofill;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -14,6 +15,7 @@ import static org.mockito.Mockito.when;
 
 import android.view.ContextThemeWrapper;
 import android.view.View;
+import android.widget.EditText;
 
 import androidx.test.core.app.ApplicationProvider;
 
@@ -21,6 +23,7 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
@@ -28,11 +31,11 @@ import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.chrome.browser.personal_context.first_run.PersonalContextFirstRunService;
-import org.chromium.chrome.browser.personal_context.first_run.PersonalContextFirstRunServiceJni;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.ui.autofill.internal.R;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.StateChangeReason;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
 
 import java.util.List;
 
@@ -45,13 +48,11 @@ public class AtMemoryBottomSheetCoordinatorTest {
     @Mock private BottomSheetController mBottomSheetController;
     @Mock private AtMemoryBottomSheetCoordinator.Delegate mMockDelegate;
     @Mock private Profile mProfile;
-    @Mock private PersonalContextFirstRunService.Natives mFirstRunServiceJniMock;
 
     private AtMemoryBottomSheetCoordinator mCoordinator;
 
     @Before
     public void setUp() {
-        PersonalContextFirstRunServiceJni.setInstanceForTesting(mFirstRunServiceJniMock);
         mCoordinator =
                 new AtMemoryBottomSheetCoordinator(
                         new ContextThemeWrapper(
@@ -71,7 +72,7 @@ public class AtMemoryBottomSheetCoordinatorTest {
     public void testShow_Success() {
         when(mBottomSheetController.requestShowContent(any(), eq(true))).thenReturn(true);
 
-        mCoordinator.show(List.of());
+        mCoordinator.show(List.of(), /* searchBarInitialValue= */ null);
 
         verify(mBottomSheetController).requestShowContent(any(), eq(true));
     }
@@ -80,7 +81,7 @@ public class AtMemoryBottomSheetCoordinatorTest {
     public void testShow_Failed() {
         when(mBottomSheetController.requestShowContent(any(), eq(true))).thenReturn(false);
 
-        mCoordinator.show(List.of());
+        mCoordinator.show(List.of(), /* searchBarInitialValue= */ null);
 
         verify(mMockDelegate).onDismissed();
     }
@@ -94,14 +95,32 @@ public class AtMemoryBottomSheetCoordinatorTest {
 
     @Test
     public void testShow_FocusSearchArea() {
+        ArgumentCaptor<BottomSheetObserver> observerCaptor =
+                ArgumentCaptor.forClass(BottomSheetObserver.class);
         when(mBottomSheetController.requestShowContent(any(), eq(true))).thenReturn(true);
+        when(mBottomSheetController.getCurrentSheetContent())
+                .thenReturn(mCoordinator.getBottomSheetContentForTesting());
 
-        mCoordinator.show(List.of());
+        mCoordinator.show(List.of(), /* searchBarInitialValue= */ null);
+        verify(mBottomSheetController).addObserver(observerCaptor.capture());
+        observerCaptor.getValue().onSheetOpened(StateChangeReason.NONE);
 
         View contentView = mCoordinator.getBottomSheetContentForTesting().getContentView();
         View searchInput = contentView.findViewById(R.id.search_query_input);
         assertNotNull(searchInput);
         assertTrue(searchInput.hasFocus());
+    }
+
+    @Test
+    public void testShow_PreservedQuery() {
+        when(mBottomSheetController.requestShowContent(any(), eq(true))).thenReturn(true);
+
+        mCoordinator.show(List.of(), /* searchBarInitialValue= */ "city");
+
+        View contentView = mCoordinator.getBottomSheetContentForTesting().getContentView();
+        EditText searchInput = contentView.findViewById(R.id.search_query_input);
+        assertNotNull(searchInput);
+        assertEquals("city", searchInput.getText().toString());
     }
 
     @Test

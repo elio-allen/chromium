@@ -6,6 +6,7 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "base/feature_list.h"
 #include "base/notreached.h"
@@ -55,7 +56,7 @@ class SupervisedUserUrlFilteringServiceWebFilterTypeAndroidTest
 TEST_P(SupervisedUserUrlFilteringServiceWebFilterTypeAndroidTest,
        WebFilterTypeTest) {
   if (GetParam().family_link != WebFilterType::kDisabled) {
-    EnableParentalControls(*test_environment().pref_service());
+    test_environment().EnableSupervisedAccount();
     test_environment().SetWebFilterType(GetParam().family_link);
   }
 
@@ -82,69 +83,71 @@ TEST_P(SupervisedUserUrlFilteringServiceWebFilterTypeAndroidTest,
             test_environment().url_filtering_service()->GetWebFilterType());
 }
 
-const WebFilterTypeTestParams kWebFilterTypeTestParams[] = {
-    // If any of the settings is kTryToBlockMatureSites, the result is
-    // kTryToBlockMatureSites.
-    {.test_name = "TryToBlockMatureSites_1",
-     .family_link = WebFilterType::kTryToBlockMatureSites,
-     .device = WebFilterType::kTryToBlockMatureSites,
-     .result = WebFilterType::kTryToBlockMatureSites},
-    {.test_name = "TryToBlockMatureSites_2",
-     .family_link = WebFilterType::kTryToBlockMatureSites,
-     .device = WebFilterType::kAllowAllSites,
-     .result = WebFilterType::kTryToBlockMatureSites},
-    {.test_name = "TryToBlockMatureSites_3",
-     .family_link = WebFilterType::kTryToBlockMatureSites,
-     .device = WebFilterType::kDisabled,
-     .result = WebFilterType::kTryToBlockMatureSites},
-    {.test_name = "TryToBlockMatureSites_4",
-     .family_link = WebFilterType::kCertainSites,
-     .device = WebFilterType::kTryToBlockMatureSites,
-     .result = WebFilterType::kTryToBlockMatureSites},
-    {.test_name = "TryToBlockMatureSites_5",
-     .family_link = WebFilterType::kAllowAllSites,
-     .device = WebFilterType::kTryToBlockMatureSites,
-     .result = WebFilterType::kTryToBlockMatureSites},
-    {.test_name = "TryToBlockMatureSites_6",
-     .family_link = WebFilterType::kDisabled,
-     .device = WebFilterType::kTryToBlockMatureSites,
-     .result = WebFilterType::kTryToBlockMatureSites},
+std::vector<WebFilterTypeTestParams> GetWebFilterTypeTestParams() {
+  return {
+      // If any of the settings is kTryToBlockMatureSites, the result is
+      // kTryToBlockMatureSites.
+      {.test_name = "TryToBlockMatureSites_1",
+       .family_link = WebFilterType::kTryToBlockMatureSites,
+       .device = WebFilterType::kTryToBlockMatureSites,
+       .result = WebFilterType::kTryToBlockMatureSites},
+      {.test_name = "TryToBlockMatureSites_2",
+       .family_link = WebFilterType::kTryToBlockMatureSites,
+       .device = WebFilterType::kAllowAllSites,
+       .result = WebFilterType::kTryToBlockMatureSites},
+      {.test_name = "TryToBlockMatureSites_3",
+       .family_link = WebFilterType::kTryToBlockMatureSites,
+       .device = WebFilterType::kDisabled,
+       .result = WebFilterType::kTryToBlockMatureSites},
+      {.test_name = "TryToBlockMatureSites_4",
+       .family_link = WebFilterType::kCertainSites,
+       .device = WebFilterType::kTryToBlockMatureSites,
+       .result = WebFilterType::kTryToBlockMatureSites},
+      {.test_name = "TryToBlockMatureSites_5",
+       .family_link = WebFilterType::kAllowAllSites,
+       .device = WebFilterType::kTryToBlockMatureSites,
+       .result = WebFilterType::kTryToBlockMatureSites},
+      {.test_name = "TryToBlockMatureSites_6",
+       .family_link = WebFilterType::kDisabled,
+       .device = WebFilterType::kTryToBlockMatureSites,
+       .result = WebFilterType::kTryToBlockMatureSites},
 
-    // Then if family link is kCertainSites, the result is kCertainSites.
-    {.test_name = "CertainSites_1",
-     .family_link = WebFilterType::kCertainSites,
-     .device = WebFilterType::kAllowAllSites,
-     .result = WebFilterType::kCertainSites},
-    {.test_name = "CertainSites_2",
-     .family_link = WebFilterType::kCertainSites,
-     .device = WebFilterType::kDisabled,
-     .result = WebFilterType::kCertainSites},
+      // Then if family link is kCertainSites, the result is kCertainSites.
+      {.test_name = "CertainSites_1",
+       .family_link = WebFilterType::kCertainSites,
+       .device = WebFilterType::kAllowAllSites,
+       .result = WebFilterType::kCertainSites},
+      {.test_name = "CertainSites_2",
+       .family_link = WebFilterType::kCertainSites,
+       .device = WebFilterType::kDisabled,
+       .result = WebFilterType::kCertainSites},
 
-    // Then if any setting is kAllowAllSites, the result is kAllowAllSites.
-    {.test_name = "AllowAllSites_1",
-     .family_link = WebFilterType::kAllowAllSites,
-     .device = WebFilterType::kAllowAllSites,
-     .result = WebFilterType::kAllowAllSites},
-    {.test_name = "AllowAllSites_2",
-     .family_link = WebFilterType::kAllowAllSites,
-     .device = WebFilterType::kDisabled,
-     .result = WebFilterType::kAllowAllSites},
-    {.test_name = "AllowAllSites_3",
-     .family_link = WebFilterType::kDisabled,
-     .device = WebFilterType::kAllowAllSites,
-     .result = WebFilterType::kAllowAllSites},
+      // Then if any setting is kAllowAllSites, the result is kAllowAllSites.
+      {.test_name = "AllowAllSites_1",
+       .family_link = WebFilterType::kAllowAllSites,
+       .device = WebFilterType::kAllowAllSites,
+       .result = WebFilterType::kAllowAllSites},
+      {.test_name = "AllowAllSites_2",
+       .family_link = WebFilterType::kAllowAllSites,
+       .device = WebFilterType::kDisabled,
+       .result = WebFilterType::kAllowAllSites},
+      {.test_name = "AllowAllSites_3",
+       .family_link = WebFilterType::kDisabled,
+       .device = WebFilterType::kAllowAllSites,
+       .result = WebFilterType::kAllowAllSites},
 
-    // Then both disabled, the result is kDisabled.
-    {.test_name = "Disabled_1",
-     .family_link = WebFilterType::kDisabled,
-     .device = WebFilterType::kDisabled,
-     .result = WebFilterType::kDisabled},
-};
+      // Then both disabled, the result is kDisabled.
+      {.test_name = "Disabled_1",
+       .family_link = WebFilterType::kDisabled,
+       .device = WebFilterType::kDisabled,
+       .result = WebFilterType::kDisabled},
+  };
+}
 
 INSTANTIATE_TEST_SUITE_P(
     ,
     SupervisedUserUrlFilteringServiceWebFilterTypeAndroidTest,
-    testing::ValuesIn(kWebFilterTypeTestParams),
+    testing::ValuesIn(GetWebFilterTypeTestParams()),
     [](const testing::TestParamInfo<
         SupervisedUserUrlFilteringServiceWebFilterTypeAndroidTest::ParamType>&
            info) {
@@ -166,7 +169,7 @@ class SupervisedUserUrlFilteringServiceSyncBehaviorAndroidTest
 
 TEST_F(SupervisedUserUrlFilteringServiceSyncBehaviorAndroidTest,
        EnabledDeviceParentalControls_DontAffectSyncBehavior) {
-  EnableParentalControls(*test_environment().pref_service());
+  test_environment().EnableSupervisedAccount();
   test_environment().SetWebFilterType(WebFilterType::kCertainSites);
   test_environment().SetManualFilterForHost("http://google.com",
                                             /*allowlist=*/true);
@@ -208,7 +211,7 @@ class SupervisedUserUrlFilteringServiceAsyncBehaviorAndroidTest
 
 TEST_F(SupervisedUserUrlFilteringServiceAsyncBehaviorAndroidTest,
        OnlyFamilyLinkFilterIsUsed) {
-  EnableParentalControls(*test_environment().pref_service());
+  test_environment().EnableSupervisedAccount();
   ASSERT_FALSE(
       test_environment().device_parental_controls().IsWebFilteringEnabled());
 
@@ -283,7 +286,7 @@ TEST_F(SupervisedUserUrlFilteringServiceAsyncBehaviorAndroidTest,
 TEST_F(SupervisedUserUrlFilteringServiceAsyncBehaviorAndroidTest,
        DeviceParenalControlsHavePriorityOverFamilyLink) {
   // Both systems are enabled.
-  EnableParentalControls(*test_environment().pref_service());
+  test_environment().EnableSupervisedAccount();
   test_environment()
       .device_parental_controls()
       .SetBrowserContentFiltersEnabledForTesting(true);
@@ -323,7 +326,7 @@ TEST_F(SupervisedUserUrlFilteringServiceAsyncBehaviorAndroidTest,
 TEST_F(SupervisedUserUrlFilteringServiceAsyncBehaviorAndroidTest,
        FamilyLinkIsFallbackToDeviceParentalControls) {
   // Both systems are enabled.
-  EnableParentalControls(*test_environment().pref_service());
+  test_environment().EnableSupervisedAccount();
   test_environment()
       .device_parental_controls()
       .SetBrowserContentFiltersEnabledForTesting(true);

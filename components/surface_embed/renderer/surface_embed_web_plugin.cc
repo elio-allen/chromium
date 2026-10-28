@@ -12,6 +12,7 @@
 #include "components/viz/common/surfaces/frame_sink_id.h"
 #include "components/viz/common/surfaces/surface_id.h"
 #include "content/public/renderer/render_frame.h"
+#include "content/public/renderer/render_frame_observer.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/common/frame/frame_visual_properties.h"
 #include "third_party/blink/public/platform/platform.h"
@@ -21,13 +22,37 @@
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/public/web/web_plugin_container.h"
 #include "third_party/blink/public/web/web_plugin_params.h"
+#include "third_party/blink/public/web/web_view.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkBlendMode.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkImage.h"
+#include "ui/accessibility/ax_node_id_forward.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace surface_embed {
+
+class SurfaceEmbedWebPlugin::AccessibilityObserver
+    : public content::RenderFrameObserver {
+ public:
+  AccessibilityObserver(content::RenderFrame* render_frame,
+                        SurfaceEmbedWebPlugin* plugin)
+      : content::RenderFrameObserver(render_frame), plugin_(plugin) {}
+  AccessibilityObserver(const AccessibilityObserver&) = delete;
+  AccessibilityObserver& operator=(const AccessibilityObserver&) = delete;
+  ~AccessibilityObserver() override = default;
+
+  void AccessibilityModeChanged(const ui::AXMode& mode) override {
+    if (mode.has_mode(ui::AXMode::kWebContents)) {
+      plugin_->OnAccessibilityModeEnabled();
+    }
+  }
+
+  void OnDestruct() override {}
+
+ private:
+  raw_ptr<SurfaceEmbedWebPlugin> plugin_;
+};
 
 namespace {
 
@@ -48,22 +73,29 @@ SurfaceEmbedWebPlugin* SurfaceEmbedWebPlugin::Create(
     const blink::WebPluginParams& params) {
   // Read the content ID from the data-content-id attribute
   base::UnguessableToken contents_id;
+  bool allow_pinch_zoom = false;
   for (size_t i = 0; i < params.attribute_names.size(); ++i) {
-    if (params.attribute_names[i].Utf8() == "data-content-id") {
+    const std::string attribute_name = params.attribute_names[i].Utf8();
+    if (attribute_name == "data-content-id") {
       contents_id = DecodeContentId(params.attribute_values[i].Utf8());
-      break;
+    } else if (attribute_name == "data-allow-pinch-zoom") {
+      allow_pinch_zoom = true;
     }
   }
 
-  return new SurfaceEmbedWebPlugin(contents_id, render_frame, params);
+  return new SurfaceEmbedWebPlugin(contents_id, allow_pinch_zoom, render_frame,
+                                   params);
 }
 
 SurfaceEmbedWebPlugin::SurfaceEmbedWebPlugin(
     const base::UnguessableToken& contents_id,
+    bool allow_pinch_zoom,
     content::RenderFrame* render_frame,
     const blink::WebPluginParams& params)
-    : contents_id_(contents_id) {
+    : contents_id_(contents_id), allow_pinch_zoom_(allow_pinch_zoom) {
   render_frame->GetRemoteAssociatedInterfaces()->GetInterface(&host_);
+  accessibility_observer_ =
+      std::make_unique<AccessibilityObserver>(render_frame, this);
 }
 
 SurfaceEmbedWebPlugin::~SurfaceEmbedWebPlugin() = default;
@@ -85,10 +117,63 @@ bool SurfaceEmbedWebPlugin::Initialize(blink::WebPluginContainer* container) {
 
   // Then attach with the content ID.
   if (!contents_id_.is_empty()) {
-    host_->AttachConnector(contents_id_);
+    bool is_focused =
+        container_ &&
+        container_->GetDocument().FocusedElement() == container_->GetElement();
+    host_->AttachConnector(contents_id_, is_focused, allow_pinch_zoom_);
   }
 
+  // If accessibility was already enabled before the plugin was created,
+  // send the info now. AccessibilityModeChanged only fires on transitions.
+  SendAccessibilityInfo();
+
   return true;
+}
+
+void SurfaceEmbedWebPlugin::OnAccessibilityModeEnabled() {
+  SendAccessibilityInfo();
+}
+
+void SurfaceEmbedWebPlugin::SendAccessibilityInfo() {
+  if (!container_ || !host_) {
+    return;
+  }
+
+  content::RenderFrame* render_frame =
+      accessibility_observer_ ? accessibility_observer_->render_frame()
+                              : nullptr;
+  if (!render_frame || !render_frame->GetRenderAccessibility()) {
+    return;
+  }
+
+  // The embed element's AX ID identifies the parent-side node that the child
+  // accessibility tree is stitched onto.
+  //
+  // Note the plugin is always created before the AX tree is fully built, so we
+  // can't fetch the AX ID at this time. However, AX ID always maps to DOM Node
+  // ID so we can use this as a substitute. AXObjectCacheImpl keys every
+  // DOM-backed AXObject by its DOMNodeId and derives the AXID from
+  // DOMNodeIds::ExistingIdForNode(), so the id read here is exactly the AXID
+  // the object will have once it is created.
+  //
+  // The alternative, blink::WebAXObject::FromWebNode(), cannot be used here: it
+  // calls AXObjectCache::UpdateAXForAllDocuments(), which forces the *parent*
+  // renderer to synchronously serialize its entire AX tree. That serialization
+  // re-emits the persisted parent->child stitch link, so the parent->child link
+  // reaches the browser ahead of the child->parent link being requested here.
+  // A child->parent link arriving first is harmless (AX clients traverse from
+  // parent to child), but a parent->child link with no reciprocal child->parent
+  // link is a transient half-stitched state that crashes AX consumers.
+  //
+  // TODO(accessibility): Expose a supported way to obtain the AX ID for a node
+  // without forcing a full AX tree update, and use it here instead of relying
+  // on the DOM Node ID / AX ID equivalence.
+  ui::AXNodeID ax_id = container_->GetElement().GetDomNodeId();
+  if (ax_id == ui::kInvalidAXNodeID) {
+    return;
+  }
+
+  host_->SetParentAccessibilityInfo(ax_id);
 }
 
 void SurfaceEmbedWebPlugin::Destroy() {
@@ -185,6 +270,56 @@ void SurfaceEmbedWebPlugin::UpdateRenderThrottlingStatus(bool is_throttled,
   }
 }
 
+void SurfaceEmbedWebPlugin::DidChangeDataAttribute(
+    const blink::WebString& name,
+    const blink::WebString& new_value) {
+  const std::string attribute_name = name.Utf8();
+  if (attribute_name == "data-allow-pinch-zoom") {
+    const bool allow_pinch_zoom = !new_value.IsNull();
+    if (allow_pinch_zoom == allow_pinch_zoom_) {
+      return;
+    }
+    allow_pinch_zoom_ = allow_pinch_zoom;
+    if (host_) {
+      host_->SetAllowPinchZoom(allow_pinch_zoom_);
+    }
+    return;
+  }
+
+  if (attribute_name != "data-content-id") {
+    return;
+  }
+
+  base::UnguessableToken new_contents_id = DecodeContentId(new_value.Utf8());
+  if (new_contents_id == contents_id_) {
+    return;
+  }
+  contents_id_ = new_contents_id;
+
+  if (!container_ || !host_) {
+    return;
+  }
+
+  paint_holding_helper_.ClearPaintHolding(layer_.get());
+  frame_sink_id_ = viz::FrameSinkId();
+  sent_visual_properties_.reset();
+  sent_last_is_visible_.reset();
+  ReleaseCrashedLayer();
+  container_->SetCcLayer(nullptr);
+  container_->ScheduleAnimation();
+
+  if (!contents_id_.is_empty()) {
+    bool is_focused =
+        container_->GetDocument().FocusedElement() == container_->GetElement();
+    host_->AttachConnector(contents_id_, is_focused, allow_pinch_zoom_);
+    host_->OnEmbedElementThrottlingStatusChanged(
+        mojom::RenderThrottlingStatus::New(
+            last_is_throttled_, last_subtree_throttled_, last_display_locked_));
+  } else {
+    host_->DetachConnector();
+  }
+}
+
 blink::WebInputEventResult SurfaceEmbedWebPlugin::HandleInputEvent(
     const blink::WebCoalescedInputEvent& event,
     ui::Cursor* cursor) {
@@ -214,7 +349,6 @@ void SurfaceEmbedWebPlugin::InitializeSurfaceLayer() {
   // We'll be embedding an outside surface layer.
   layer_ = cc::SurfaceLayer::Create();
   layer_->SetIsDrawable(true);
-  layer_->SetContentsOpaque(true);
   layer_->SetBackgroundColor(SkColors::kTransparent);
   layer_->SetSurfaceHitTestable(true);
   // Don't use the layer for `container_` yet because it does not have a valid
@@ -337,6 +471,11 @@ void SurfaceEmbedWebPlugin::SynchronizeVisualProperties(
 }
 
 void SurfaceEmbedWebPlugin::OnHostDisconnected() {
+  // Unbind the Mojo endpoints so subsequent methods (e.g.
+  // DidChangeDataAttribute()) know the browser host connection is gone and do
+  // not attempt to use `host_` or overwrite `crashed_layer_`.
+  receiver_.reset();
+  host_.reset();
   // We handle closing the connection unexpectedly via the sad plugin path,
   // since that provides fallback painting behavior suggesting that something
   // went wrong.
@@ -393,12 +532,25 @@ void SurfaceEmbedWebPlugin::RequestFocusOnEmbedElement(
   std::move(callback).Run();
 }
 
+void SurfaceEmbedWebPlugin::AdvanceFocusFromEmbedElement(bool reverse) {
+  if (!container_) {
+    return;
+  }
+  if (container_->GetDocument().FocusedElement() != container_->GetElement()) {
+    return;
+  }
+  if (auto* frame = container_->GetDocument().GetFrame()) {
+    if (auto* view = frame->View()) {
+      view->AdvanceFocus(reverse);
+    }
+  }
+}
+
 scoped_refptr<cc::DisplayItemList>
 SurfaceEmbedWebPlugin::PaintContentsToDisplayList() {
   blink::WebFrameWidget* ancestor_widget =
       container_->GetDocument().GetFrame()->LocalRoot()->FrameWidget();
-  auto device_scale_factor =
-      ancestor_widget->GetOriginalScreenInfo().device_scale_factor;
+  auto device_scale_factor = ancestor_widget->GetOriginalDeviceScaleFactor();
   // Adapted from ChildFrameCompositingHelper::PaintContentsToDisplayList().
   auto layer_size = crashed_layer_->bounds();
   auto display_list = base::MakeRefCounted<cc::DisplayItemList>();

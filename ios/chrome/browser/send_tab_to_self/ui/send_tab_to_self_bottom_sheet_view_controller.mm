@@ -6,9 +6,10 @@
 
 #import "base/apple/foundation_util.h"
 #import "base/strings/sys_string_conversions.h"
-#import "components/send_tab_to_self/target_device_info.h"
 #import "components/strings/grit/components_strings.h"
 #import "components/sync_device_info/device_info.h"
+#import "components/sync_device_info/remote_device_info.h"
+#import "ios/chrome/browser/send_tab_to_self/ui/send_tab_to_self_constants.h"
 #import "ios/chrome/browser/send_tab_to_self/ui/send_tab_to_self_modal_delegate.h"
 #import "ios/chrome/browser/shared/ui/bottom_sheet/table_view_bottom_sheet_view_controller+subclassing.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
@@ -23,12 +24,6 @@
 
 namespace {
 constexpr CGFloat kSymbolSize = 22;
-NSString* const kSendTabToSelfModalSendButton =
-    @"kSendTabToSelfModalSendButton";
-NSString* const kSendTabToSelfModalCancelButton =
-    @"kSendTabToSelfModalCancelButton";
-NSString* const kSendTabToSelfModalMenuButton =
-    @"kSendTabToSelfModalMenuButton";
 }  // namespace
 
 @interface SendTabToSelfBottomSheetViewController () <
@@ -37,14 +32,13 @@ NSString* const kSendTabToSelfModalMenuButton =
 @end
 
 @implementation SendTabToSelfBottomSheetViewController {
-  std::vector<send_tab_to_self::TargetDeviceInfo> _targetDeviceList;
+  std::vector<syncer::RemoteDeviceInfo> _targetDeviceList;
   NSString* _accountEmail;
   __weak id<SendTabToSelfModalDelegate> _delegate;
 }
 
 - (instancetype)initWithDeviceList:
-                    (std::vector<send_tab_to_self::TargetDeviceInfo>)
-                        targetDeviceList
+                    (std::vector<syncer::RemoteDeviceInfo>)targetDeviceList
                       accountEmail:(NSString*)accountEmail
                           delegate:(id<SendTabToSelfModalDelegate>)delegate {
   ButtonStackConfiguration* configuration =
@@ -163,15 +157,18 @@ NSString* const kSendTabToSelfModalMenuButton =
   }
 
   NSInteger index = [self selectedRow];
-  if (index >= 0 && index < static_cast<NSInteger>(_targetDeviceList.size())) {
-    const send_tab_to_self::TargetDeviceInfo& device = _targetDeviceList[index];
-
-    [_delegate
-        sendTabToTargetDeviceCacheGUID:base::SysUTF8ToNSString(
-                                           device.cache_guid)
-                      targetDeviceName:base::SysUTF8ToNSString(
-                                           device.device_name)];
+  if (index < 0 || index >= static_cast<NSInteger>(_targetDeviceList.size())) {
+    return;
   }
+
+  const syncer::RemoteDeviceInfo& device = _targetDeviceList[index];
+
+  [self showLoadingState];
+
+  [_delegate
+      sendTabToTargetDeviceCacheGUID:base::SysUTF8ToNSString(device.cache_guid)
+                    targetDeviceName:base::SysUTF8ToNSString(
+                                         device.device_name)];
 }
 
 #pragma mark - TableViewBottomSheetViewController
@@ -201,6 +198,14 @@ NSString* const kSendTabToSelfModalMenuButton =
 
 #pragma mark - Private
 
+// Transitions the primary action button to a loading spinner state and
+// disables user interaction on the sheet while sending is pending.
+- (void)showLoadingState {
+  [self setLoading:YES];
+  self.modalInPresentation = YES;
+  self.view.userInteractionEnabled = NO;
+}
+
 - (void)closeButtonTapped {
   [_delegate dismissViewControllerAnimated];
 }
@@ -208,8 +213,7 @@ NSString* const kSendTabToSelfModalMenuButton =
 - (UITableViewCell*)layoutCell:(UITableViewCell*)cell
              forTableViewWidth:(CGFloat)tableViewWidth
                    atIndexPath:(NSIndexPath*)indexPath {
-  const send_tab_to_self::TargetDeviceInfo& device =
-      _targetDeviceList[indexPath.row];
+  const syncer::RemoteDeviceInfo& device = _targetDeviceList[indexPath.row];
 
   TableViewCellContentConfiguration* configuration =
       [[TableViewCellContentConfiguration alloc] init];

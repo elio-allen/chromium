@@ -4,10 +4,18 @@
 
 #include "chrome/browser/ui/extensions/extension_install_ui_desktop.h"
 
+#include <string>
+#include <utility>
+
+#include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/scoped_observation.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/infobars/browser_infobar_manager.h"
+#include "chrome/browser/infobars/infobar_features.h"
+#include "chrome/browser/infobars/infobar_spec.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
@@ -20,6 +28,7 @@
 #include "chrome/browser/ui/extensions/extension_installed_watcher.h"
 #include "chrome/browser/ui/extensions/extension_post_install_dialog.h"
 #include "chrome/browser/ui/extensions/extension_post_install_dialog_model.h"
+#include "chrome/browser/ui/extensions/extensions_container.h"
 #include "chrome/browser/ui/extensions/installation_error_infobar_delegate.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
@@ -29,25 +38,24 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
-#include "chrome/browser/ui/views/extensions/extensions_toolbar_desktop.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/toolbar/toolbar_action_view.h"
-#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/common/pref_names.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/infobars/content/content_infobar_manager.h"
+#include "components/infobars/core/infobar_delegate.h"
 #include "components/prefs/pref_service.h"
+#include "components/strings/grit/components_strings.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/install/crx_install_error.h"
 #include "extensions/common/extension.h"
+#include "ui/base/l10n/l10n_util.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/notifier_catalogs.h"
 #include "ash/public/cpp/system/toast_data.h"
 #include "ash/public/cpp/system/toast_manager.h"
 #include "chrome/grit/generated_resources.h"
-#include "ui/base/l10n/l10n_util.h"
 #else
 #include "chrome/common/url_constants.h"
 #endif
@@ -147,17 +155,9 @@ void ExtensionInstallUIDesktop::OnInstallSuccess(
               if (!browser_interface) {
                 return;
               }
-              Browser* browser =
-                  browser_interface->GetBrowserForMigrationOnly();
-              BrowserView* browser_view =
-                  BrowserView::GetBrowserViewForBrowser(browser);
-              if (!browser_view->toolbar()) {
-                return;
-              }
-              ExtensionsToolbarDesktop* extensions_toolbar =
-                  browser_view->toolbar()->extensions_container();
-              if (extensions_toolbar) {
-                extensions_toolbar->ShowPinnedByDefaultIPH(extension_id);
+              if (ExtensionsContainer* extensions_container =
+                      ExtensionsContainer::From(*browser_interface)) {
+                extensions_container->ShowPinnedByDefaultIPH(extension_id);
               }
             },
             extension->id()));
@@ -172,7 +172,7 @@ void ExtensionInstallUIDesktop::OnInstallSuccess(
 
 void ExtensionInstallUIDesktop::OnInstallFailure(
     const extensions::CrxInstallError& error) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   if (IsUiDisabled() || skip_post_install_ui()) {
     return;
   }
@@ -183,11 +183,32 @@ void ExtensionInstallUIDesktop::OnInstallFailure(
   if (!browser) {  // Can be nullptr in unittests.
     return;
   }
-  WebContents* web_contents =
-      browser->GetTabStripModel()->GetActiveWebContents();
-  if (!web_contents) {
+  tabs::TabInterface* const tab = browser->GetTabStripModel()->GetActiveTab();
+  if (!tab) {
     return;
   }
+
+  if (infobars::IsInfoBarMigrated(
+          infobars::InfoBarDelegate::INSTALLATION_ERROR_INFOBAR_DELEGATE)) {
+    infobars::InfoBarShowParams params;
+    params.message_text = error.message();
+    if (error.type() == extensions::CrxInstallErrorType::OTHER &&
+        error.detail() ==
+            extensions::CrxInstallErrorDetail::OFFSTORE_INSTALL_DISALLOWED) {
+      params.link_text = l10n_util::GetStringUTF16(IDS_LEARN_MORE);
+    }
+    auto* browser_infobar_manager =
+        infobars::BrowserInfoBarManager::From(g_browser_process);
+     CHECK(browser_infobar_manager);
+    // `browser_infobar_manager` is always present in production when the
+    // feature is enabled, but can be nullptr in unit tests.
+    browser_infobar_manager->Show(
+        tab, infobars::InfoBarDelegate::INSTALLATION_ERROR_INFOBAR_DELEGATE,
+        std::move(params));
+    return;
+  }
+
   InstallationErrorInfoBarDelegate::Create(
-      infobars::ContentInfoBarManager::FromWebContents(web_contents), error);
+      infobars::ContentInfoBarManager::FromWebContents(tab->GetContents()),
+      error);
 }

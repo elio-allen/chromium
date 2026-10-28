@@ -10,9 +10,9 @@
 #include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/extensions/api/passwords_private/passwords_private_delegate.h"
 #include "chrome/browser/password_manager/chrome_password_change_service.h"
+#include "chrome/browser/password_manager/password_change/features.h"
 #include "chrome/browser/password_manager/password_change_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/sync_service_factory.h"
@@ -23,6 +23,7 @@
 #include "chrome/common/extensions/api/passwords_private.h"
 #include "components/password_manager/core/browser/export/export_progress_status.h"
 #include "components/password_manager/core/browser/features/password_features.h"
+#include "components/password_manager/core/browser/password_store/stored_credential.h"
 #include "components/password_manager/core/browser/password_ui_utils.h"
 #include "components/password_manager/core/browser/ui/actor_login_permission.h"
 #include "components/password_manager/core/browser/ui/credential_ui_entry.h"
@@ -33,41 +34,6 @@
 #include "mojo/public/cpp/bindings/remote.h"
 
 namespace {
-
-password_manager::mojom::ExportProgressStatus ToExportProgressMojomStatus(
-    password_manager::ExportProgressStatus status) {
-  switch (status) {
-    case password_manager::ExportProgressStatus::kNotStarted:
-      return password_manager::mojom::ExportProgressStatus::kNotStarted;
-    case password_manager::ExportProgressStatus::kInProgress:
-      return password_manager::mojom::ExportProgressStatus::kInProgress;
-    case password_manager::ExportProgressStatus::kSucceeded:
-      return password_manager::mojom::ExportProgressStatus::kSucceeded;
-    case password_manager::ExportProgressStatus::kFailedCancelled:
-      return password_manager::mojom::ExportProgressStatus::kFailed;
-    case password_manager::ExportProgressStatus::kFailedWrite:
-      return password_manager::mojom::ExportProgressStatus::kFailedWrite;
-  }
-}
-
-password_manager::mojom::ExportProgressStatus ToExportProgressMojomStatus(
-    extensions::api::passwords_private::ExportProgressStatus status) {
-  switch (status) {
-    case extensions::api::passwords_private::ExportProgressStatus::kNotStarted:
-    case extensions::api::passwords_private::ExportProgressStatus::kNone:
-      return password_manager::mojom::ExportProgressStatus::kNotStarted;
-    case extensions::api::passwords_private::ExportProgressStatus::kInProgress:
-      return password_manager::mojom::ExportProgressStatus::kInProgress;
-    case extensions::api::passwords_private::ExportProgressStatus::kSucceeded:
-      return password_manager::mojom::ExportProgressStatus::kSucceeded;
-    case extensions::api::passwords_private::ExportProgressStatus::
-        kFailedCancelled:
-      return password_manager::mojom::ExportProgressStatus::kFailed;
-    case extensions::api::passwords_private::ExportProgressStatus::
-        kFailedWriteFailed:
-      return password_manager::mojom::ExportProgressStatus::kFailedWrite;
-  }
-}
 
 password_manager::mojom::ExportPasswordsResult ToExportPasswordsMojomResult(
     extensions::PasswordsPrivateDelegate::ExportPasswordsResult result) {
@@ -80,53 +46,6 @@ password_manager::mojom::ExportPasswordsResult ToExportPasswordsMojomResult(
     case extensions::PasswordsPrivateDelegate::ExportPasswordsResult::
         kReauthFailed:
       return password_manager::mojom::ExportPasswordsResult::kReauthFailed;
-  }
-}
-
-password_manager::mojom::PasswordManagerActionableError ToActionableMojomError(
-    password_manager::ActionableError error) {
-  using password_manager::mojom::PasswordManagerActionableError;
-  switch (error) {
-    case password_manager::ActionableError::kNoError:
-      return PasswordManagerActionableError::kNoError;
-    case password_manager::ActionableError::kInactionable:
-      return PasswordManagerActionableError::kInactionable;
-    case password_manager::ActionableError::kInactionableTemporaryError:
-      return PasswordManagerActionableError::kInactionableTemporaryError;
-    case password_manager::ActionableError::kSignInNeeded:
-      return PasswordManagerActionableError::kSignInNeeded;
-    case password_manager::ActionableError::kKeychainError:
-      return PasswordManagerActionableError::kKeychainError;
-    case password_manager::ActionableError::kTrustedVaultKeyNeeded:
-      return PasswordManagerActionableError::kTrustedVaultKeyNeeded;
-    case password_manager::ActionableError::kNeedsPassphrase:
-      return PasswordManagerActionableError::kNeedsPassphrase;
-  }
-}
-
-password_manager::mojom::PasswordAutomaticChangeState
-ToPasswordAutomaticChangeMojomState(
-    PasswordChangeFromCheckupDelegate::PasswordAutomaticChangeState state) {
-  using password_manager::mojom::PasswordAutomaticChangeState;
-  switch (state) {
-    case PasswordChangeFromCheckupDelegate::PasswordAutomaticChangeState::
-        kInactive:
-      return PasswordAutomaticChangeState::kInactive;
-    case PasswordChangeFromCheckupDelegate::PasswordAutomaticChangeState::
-        kAttemptingSignIn:
-      return PasswordAutomaticChangeState::kAttemptingSignIn;
-    case PasswordChangeFromCheckupDelegate::PasswordAutomaticChangeState::
-        kChangingPassword:
-      return PasswordAutomaticChangeState::kChangingPassword;
-    case PasswordChangeFromCheckupDelegate::PasswordAutomaticChangeState::
-        kConfirmingChangedPassword:
-      return PasswordAutomaticChangeState::kConfirmingChangedPassword;
-    case PasswordChangeFromCheckupDelegate::PasswordAutomaticChangeState::
-        kPasswordChangedSuccessfully:
-      return PasswordAutomaticChangeState::kPasswordChangedSuccessfully;
-    case PasswordChangeFromCheckupDelegate::PasswordAutomaticChangeState::
-        kError:
-      return PasswordAutomaticChangeState::kError;
   }
 }
 
@@ -218,8 +137,8 @@ password_manager::mojom::ImportResultsPtr ToMojomImportResults(
 }
 
 extensions::api::passwords_private::PasswordStoreSet ConvertPasswordStoreSet(
-    password_manager::mojom::PasswordStoreSet to_store) {
-  switch (to_store) {
+    password_manager::mojom::PasswordStoreSet store) {
+  switch (store) {
     case password_manager::mojom::PasswordStoreSet::kDevice:
       return extensions::api::passwords_private::PasswordStoreSet::kDevice;
     case password_manager::mojom::PasswordStoreSet::kAccount:
@@ -270,6 +189,13 @@ void PasswordManagerUIHandler::RemoveBackupPassword(int id) {
   passwords_private_delegate_->RemoveBackupPassword(id);
 }
 
+void PasswordManagerUIHandler::RemoveCredential(
+    int id,
+    password_manager::mojom::PasswordStoreSet from_stores) {
+  passwords_private_delegate_->RemoveCredential(
+      id, ConvertPasswordStoreSet(from_stores));
+}
+
 void PasswordManagerUIHandler::RemovePasswordException(int id) {
   passwords_private_delegate_->RemovePasswordException(id);
 }
@@ -291,24 +217,17 @@ void PasswordManagerUIHandler::ResetImporter(bool delete_file,
 
 void PasswordManagerUIHandler::GetActorLoginPermissions(
     GetActorLoginPermissionsCallback callback) {
-  std::vector<password_manager::mojom::ActorLoginPermissionPtr> result;
   syncer::SyncService* sync_service = SyncServiceFactory::GetForProfile(
       Profile::FromBrowserContext(web_contents_->GetBrowserContext()));
-  for (const auto& site :
-       GetSavedPasswordsPresenter()->GetActorLoginPermissions(sync_service)) {
-    auto url = password_manager::mojom::DomainInfo::New(
-        site.domain_info.name, site.domain_info.url,
-        site.domain_info.signon_realm);
-    result.push_back(password_manager::mojom::ActorLoginPermission::New(
-        std::move(url), site.favicon_url, base::UTF16ToUTF8(site.username)));
-  }
-  std::move(callback).Run(std::move(result));
+  std::move(callback).Run(GetSavedPasswordsPresenter()
+                              ->GetActorLoginPermissions(sync_service)
+                              .extract());
 }
 
 void PasswordManagerUIHandler::RevokeActorLoginPermission(
-    password_manager::mojom::ActorLoginPermissionPtr site) {
+    const password_manager::ActorLoginPermission& site) {
   GetSavedPasswordsPresenter()->RevokeActorLoginPermission(
-      site->domain_info->signon_realm, site->username);
+      site.domain_info.signon_realm, site.username);
 }
 
 void PasswordManagerUIHandler::ChangePasswordManagerPin(
@@ -338,16 +257,6 @@ void PasswordManagerUIHandler::IsAccountStorageActive(
   std::move(callback).Run(result);
 }
 
-void PasswordManagerUIHandler::SetAccountStorageEnabled(bool enabled) {
-  passwords_private_delegate_->SetAccountStorageEnabled(enabled);
-}
-
-void PasswordManagerUIHandler::ShouldShowAccountStorageSettingToggle(
-    ShouldShowAccountStorageSettingToggleCallback callback) {
-  std::move(callback).Run(
-      passwords_private_delegate_->ShouldShowAccountStorageSettingToggle());
-}
-
 void PasswordManagerUIHandler::SwitchBiometricAuthBeforeFillingState(
     SwitchBiometricAuthBeforeFillingStateCallback callback) {
   passwords_private_delegate_->SwitchBiometricAuthBeforeFillingState(
@@ -356,7 +265,7 @@ void PasswordManagerUIHandler::SwitchBiometricAuthBeforeFillingState(
 
 void PasswordManagerUIHandler::StartPasswordChange(int credential_id) {
   CHECK(base::FeatureList::IsEnabled(
-      password_manager::features::kPasswordCheckupPrototype));
+      password_change::features::kPasswordChangeWithGlic));
   CHECK(web_contents_);
   auto credential =
       passwords_private_delegate_->GetCredentialFromId(credential_id);
@@ -364,40 +273,59 @@ void PasswordManagerUIHandler::StartPasswordChange(int credential_id) {
     return;
   }
 
+  auto* presenter = passwords_private_delegate_->GetSavedPasswordsPresenter();
+  if (!presenter) {
+    return;
+  }
+  std::vector<password_manager::StoredCredential> stored_credentials =
+      presenter->GetCorrespondingStoredCredentials(*credential);
+  if (stored_credentials.empty()) {
+    return;
+  }
+
   Profile* profile =
       Profile::FromBrowserContext(web_contents_->GetBrowserContext());
   auto* service = PasswordChangeServiceFactory::GetForProfile(profile);
   if (service) {
-    service->StartPasswordChangeFromCheckup(
-        *credential, web_contents_,
-        base::BindRepeating(&PasswordManagerUIHandler::OnPasswordAutomaticChangeStateUpdated,
-                            weak_ptr_factory_.GetWeakPtr(), credential_id));
+    password_change_from_checkup_delegates_[credential_id] =
+        service->StartPasswordChangeFromCheckup(
+            std::move(stored_credentials.front()), web_contents_,
+            base::BindRepeating(&PasswordManagerUIHandler::
+                                    OnPasswordAutomaticChangeStateUpdated,
+                                weak_ptr_factory_.GetWeakPtr(), credential_id));
   }
 }
 
-void PasswordManagerUIHandler::StopPasswordChange() {
+void PasswordManagerUIHandler::StopPasswordChange(int credential_id) {
   CHECK(base::FeatureList::IsEnabled(
-      password_manager::features::kPasswordCheckupPrototype));
+      password_change::features::kPasswordChangeWithGlic));
   CHECK(web_contents_);
-  Profile* profile =
-      Profile::FromBrowserContext(web_contents_->GetBrowserContext());
-  auto* service = PasswordChangeServiceFactory::GetForProfile(profile);
-  if (service) {
-    service->StopPasswordChangeFromCheckup();
+  auto it = password_change_from_checkup_delegates_.find(credential_id);
+  if (it != password_change_from_checkup_delegates_.end() && it->second) {
+    it->second->Stop(actor::ActorTask::StoppedReason::kStoppedByUser);
+    password_change_from_checkup_delegates_.erase(it);
+  }
+}
+
+void PasswordManagerUIHandler::OpenPasswordChangeTab(int credential_id) {
+  CHECK(base::FeatureList::IsEnabled(
+      password_change::features::kPasswordChangeWithGlic));
+  CHECK(web_contents_);
+  auto it = password_change_from_checkup_delegates_.find(credential_id);
+  if (it != password_change_from_checkup_delegates_.end() && it->second) {
+    it->second->OpenActuationTab();
   }
 }
 
 void PasswordManagerUIHandler::OnPasswordAutomaticChangeStateUpdated(
     int credential_id,
     PasswordChangeFromCheckupDelegate::PasswordAutomaticChangeState state) {
-  page_->OnPasswordAutomaticChangeStateUpdated(
-      credential_id, ToPasswordAutomaticChangeMojomState(state));
+  page_->OnPasswordAutomaticChangeStateUpdated(credential_id, state);
 }
 
 void PasswordManagerUIHandler::GetPasswordManagerActionableError(
     GetPasswordManagerActionableErrorCallback callback) {
-  std::move(callback).Run(ToActionableMojomError(
-      passwords_private_delegate_->GetActionableError()));
+  std::move(callback).Run(passwords_private_delegate_->GetActionableError());
 }
 
 void PasswordManagerUIHandler::ShowLastExportedFileInShell() {
@@ -435,15 +363,15 @@ void PasswordManagerUIHandler::RequestPasswordsExport(
 
 void PasswordManagerUIHandler::GetPasswordsExportProgress(
     GetPasswordsExportProgressCallback callback) {
-  std::move(callback).Run(ToExportProgressMojomStatus(
-      passwords_private_delegate_->GetExportProgressStatus()));
+  std::move(callback).Run(
+      passwords_private_delegate_->GetExportProgressStatus());
 }
 
 void PasswordManagerUIHandler::OnPasswordsExportProgress(
     password_manager::ExportProgressStatus status,
     const std::string& folder_name) {
   page_->OnPasswordsExportProgress(
-      ToExportProgressMojomStatus(status),
+      status,
       folder_name.empty() ? std::nullopt : std::make_optional(folder_name));
 }
 
@@ -469,6 +397,7 @@ void PasswordManagerUIHandler::StartTrustedVaultUnlock() {
           GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
               web_contents_)) {
     OpenTabForSyncKeyRetrieval(
-        browser, trusted_vault::TrustedVaultUserActionTriggerForUMA::kSettings);
+        browser, trusted_vault::TrustedVaultUserActionTriggerForUMA::
+                     kPasswordManagerSettings);
   }
 }

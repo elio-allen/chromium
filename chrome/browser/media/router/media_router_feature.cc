@@ -50,11 +50,15 @@ BASE_FEATURE(kCastAllowAllIPsFeature,
              base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kAllowAllSitesToInitiateMirroring,
              base::FEATURE_DISABLED_BY_DEFAULT);
-BASE_FEATURE(kDialMediaRouteProvider, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kDelayMediaSinkDiscovery, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kShowCastPermissionRejectedError,
              base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kCastMessageLogging, base::FEATURE_DISABLED_BY_DEFAULT);
+
+#if BUILDFLAG(IS_WIN)
+BASE_FEATURE(kCastDesktopMirroringKeepLocalAudio,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(ENABLE_MEDIA_REMOTING_REDIRECTION)
 // If enabled, the redirection (MMR) Media Route Provider is registered.
@@ -180,10 +184,6 @@ std::string GetReceiverIdHashToken(PrefService* pref_service) {
     pref_service->SetString(prefs::kMediaRouterReceiverIdHashToken, token);
   }
   return token;
-}
-
-bool DialMediaRouteProviderEnabled() {
-  return base::FeatureList::IsEnabled(kDialMediaRouteProvider);
 }
 
 bool RedirectionMediaRouteProviderEnabled() {

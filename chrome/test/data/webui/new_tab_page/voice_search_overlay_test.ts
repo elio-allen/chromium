@@ -252,6 +252,12 @@ suite('NewTabPageVoiceSearchOverlayTest', () => {
         });
       });
 
+  test('details link does not have aria-label', () => {
+    const detailsLink = voiceSearchOverlay.shadowRoot.querySelector(
+        '#errorLinks *[link="details"]')!;
+    assertFalse(detailsLink.hasAttribute('aria-label'));
+  });
+
   test('on end received shows error text if no final result', async () => {
     // Act.
     mockSpeechRecognition.onend!();
@@ -366,7 +372,7 @@ suite('NewTabPageVoiceSearchOverlayTest', () => {
     assertTrue(mockSpeechRecognition.abortCalled);
   });
 
-  test(`clicking '#retryLink' starts voice search if in retry state`, () => {
+  test('clicking \'#retryLink\' starts voice search if in retry state', () => {
     // Arrange.
     mockSpeechRecognition.onnomatch!();
     mockSpeechRecognition.startCalled = false;

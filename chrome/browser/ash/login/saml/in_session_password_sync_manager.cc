@@ -20,18 +20,20 @@ namespace ash {
 
 InSessionPasswordSyncManager::InSessionPasswordSyncManager(
     PrefService* local_state,
-    Profile* primary_profile)
+    Profile* primary_profile,
+    signin::IdentityManager* identity_manager)
     : local_state_(CHECK_DEREF(local_state)),
       primary_profile_(primary_profile),
       primary_account_id_(
           CHECK_DEREF(ProfileHelper::Get()->GetUserByProfile(primary_profile))
-              .GetAccountId()) {}
+              .GetAccountId()),
+      identity_manager_(CHECK_DEREF(identity_manager)) {}
 
 InSessionPasswordSyncManager::~InSessionPasswordSyncManager() = default;
 
 void InSessionPasswordSyncManager::CreateTokenAsync() {
   password_sync_token_fetcher_ = std::make_unique<PasswordSyncTokenFetcher>(
-      primary_profile_->GetURLLoaderFactory(), primary_profile_, this);
+      primary_profile_->GetURLLoaderFactory(), &identity_manager_.get(), this);
   password_sync_token_fetcher_->StartTokenCreate();
 }
 
@@ -46,7 +48,7 @@ void InSessionPasswordSyncManager::OnTokenCreated(const std::string& token) {
 
 void InSessionPasswordSyncManager::FetchTokenAsync() {
   password_sync_token_fetcher_ = std::make_unique<PasswordSyncTokenFetcher>(
-      primary_profile_->GetURLLoaderFactory(), primary_profile_, this);
+      primary_profile_->GetURLLoaderFactory(), &identity_manager_.get(), this);
   password_sync_token_fetcher_->StartTokenGet();
 }
 

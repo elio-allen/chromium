@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/functional/callback_helpers.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/to_string.h"
 #include "base/test/bind.h"
@@ -18,14 +19,19 @@
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
+#include "chrome/common/webui_url_constants.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_data.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/ukm/test_ukm_recorder.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/page.h"
 #include "content/public/browser/render_widget_host_view.h"
+#include "content/public/browser/web_contents_observer.h"
+#include "content/public/browser/web_ui.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
@@ -33,6 +39,8 @@
 #include "content/public/test/prerender_test_util.h"
 #include "extensions/browser/api/constants.h"
 #include "extensions/browser/event_router.h"
+#include "extensions/browser/permissions/active_tab_permission_granter.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "extensions/test/result_catcher.h"
@@ -41,20 +49,23 @@
 #include "services/metrics/public/cpp/ukm_builders.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #endif
 
-#if BUILDFLAG(IS_WIN)
-#include "ui/aura/window.h"
-#include "ui/aura/window_tree_host.h"
+#if BUILDFLAG(IS_ANDROID)
+#include "components/feature_engagement/public/feature_constants.h"
 #endif
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 class ExtensionApiTabTest : public extensions::ExtensionApiTest {
  public:
-  ExtensionApiTabTest() = default;
+  ExtensionApiTabTest() {
+#if BUILDFLAG(IS_ANDROID)
+    feature_list_.InitAndDisableFeature(
+        feature_engagement::kIPHAndroidVerticalTabsPromoFeature);
+#endif
+  }
   ~ExtensionApiTabTest() override = default;
   ExtensionApiTabTest(const ExtensionApiTabTest&) = delete;
   ExtensionApiTabTest& operator=(const ExtensionApiTabTest&) = delete;
@@ -64,6 +75,11 @@ class ExtensionApiTabTest : public extensions::ExtensionApiTest {
     host_resolver()->AddRule("*", "127.0.0.1");
     ASSERT_TRUE(StartEmbeddedTestServer());
   }
+
+ private:
+#if BUILDFLAG(IS_ANDROID)
+  base::test::ScopedFeatureList feature_list_;
+#endif
 };
 
 class ExtensionApiTabBackForwardCacheTest : public ExtensionApiTabTest {
@@ -151,7 +167,13 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTabTest, Duplicate) {
   ASSERT_TRUE(RunExtensionTest("tabs/basics/duplicate")) << message_;
 }
 
-IN_PROC_BROWSER_TEST_F(ExtensionApiTabTest, Size) {
+// TODO(crbug.com/565586485): Disabled on Android.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_Size DISABLED_Size
+#else
+#define MAYBE_Size Size
+#endif
+IN_PROC_BROWSER_TEST_F(ExtensionApiTabTest, MAYBE_Size) {
   ASSERT_TRUE(RunExtensionTest("tabs/basics/tab_size")) << message_;
 }
 
@@ -167,13 +189,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTabTest, Pinned) {
   ASSERT_TRUE(RunExtensionTest("tabs/basics/pinned")) << message_;
 }
 
-// Flakes reported on Linux debug and Mac, see crbug.com/40936001.
-#if (BUILDFLAG(IS_LINUX) && !defined(NDEBUG)) || BUILDFLAG(IS_MAC)
-#define MAYBE_Move DISABLED_Move
-#else
-#define MAYBE_Move Move
-#endif
-IN_PROC_BROWSER_TEST_F(ExtensionApiTabTest, MAYBE_Move) {
+IN_PROC_BROWSER_TEST_F(ExtensionApiTabTest, Move) {
   ASSERT_TRUE(RunExtensionTest("tabs/basics/move")) << message_;
 }
 
@@ -446,48 +462,6 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTabTest, NoPermissions) {
 IN_PROC_BROWSER_TEST_F(ExtensionApiTabTest, DISABLED_HostPermission) {
   ASSERT_TRUE(RunExtensionTest("tabs/host_permission")) << message_;
 }
-
-// TODO(https://crbug.com/449095632): Enable these tests.
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-
-// Flaky on Windows, Mac and Linux. http://crbug.com/41375473.
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
-    BUILDFLAG(IS_CHROMEOS)
-#define MAYBE_UpdateWindowResize DISABLED_UpdateWindowResize
-#else
-#define MAYBE_UpdateWindowResize UpdateWindowResize
-#endif
-IN_PROC_BROWSER_TEST_F(ExtensionApiTabTest, MAYBE_UpdateWindowResize) {
-  ASSERT_TRUE(RunExtensionTest("window_update/resize")) << message_;
-}
-
-#if BUILDFLAG(IS_WIN)
-IN_PROC_BROWSER_TEST_F(ExtensionApiTabTest, FocusWindowDoesNotUnmaximize) {
-  HWND window = browser()
-                    ->GetWindow()
-                    ->GetNativeWindow()
-                    ->GetHost()
-                    ->GetAcceleratedWidget();
-  ::SendMessage(window, WM_SYSCOMMAND, SC_MAXIMIZE, 0);
-  ASSERT_TRUE(RunExtensionTest("window_update/focus")) << message_;
-  ASSERT_TRUE(::IsZoomed(window));
-}
-#endif  // BUILDFLAG(IS_WIN)
-
-#if defined(USE_AURA) || BUILDFLAG(IS_MAC)
-// Maximizing/fullscreen popup window doesn't work on aura's managed mode.
-// See bug crbug.com/40162971.
-// Mac: http://crbug.com/40113467
-// On desktop Android, throws Java exception during minimize().
-#define MAYBE_UpdateWindowShowState DISABLED_UpdateWindowShowState
-#else
-#define MAYBE_UpdateWindowShowState UpdateWindowShowState
-#endif  // defined(USE_AURA) || BUILDFLAG(IS_MAC)
-IN_PROC_BROWSER_TEST_F(ExtensionApiTabTest, MAYBE_UpdateWindowShowState) {
-  ASSERT_TRUE(RunExtensionTest("window_update/show_state")) << message_;
-}
-
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
 IN_PROC_BROWSER_TEST_F(ExtensionApiTabTest, IncognitoDisabledByPref) {
   IncognitoModePrefs::SetAvailability(
@@ -779,6 +753,149 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTabTest, MovingAGroupToANewWindow) {
   EXPECT_TRUE(catcher.GetNextResult()) << catcher.message();
 }
 
+// Tests that extensions cannot navigate to chrome://feedback, which is more
+// of a native surface that shouldn't be accessible to (or triggerable by)
+// extensions.
+IN_PROC_BROWSER_TEST_F(ExtensionApiTabTest, CannotNavigateToFeedback) {
+  static constexpr char kManifest[] =
+      R"({
+           "name": "Disallow Feedback Navigation",
+           "version": "1.0",
+           "manifest_version": 3,
+           "background": {"service_worker": "background.js"}
+         })";
+
+  static constexpr char kBackgroundJs[] =
+      R"(const kExpectedError = 'Cannot navigate to internal page.';
+         chrome.test.runTests([
+           async function createTab() {
+             await chrome.test.assertPromiseRejects(
+                 chrome.tabs.create({url: 'chrome://feedback'}),
+                 `Error: ${kExpectedError}`);
+             await chrome.test.assertPromiseRejects(
+                 chrome.tabs.create({url: 'chrome://feedback/'}),
+                 `Error: ${kExpectedError}`);
+             chrome.test.succeed();
+           },
+           async function updateTab() {
+             const [tab] =
+                 await chrome.tabs.query({active: true, currentWindow: true});
+             chrome.test.assertTrue(!!tab);
+             await chrome.test.assertPromiseRejects(
+                 chrome.tabs.update(tab.id, {url: 'chrome://feedback'}),
+                 `Error: ${kExpectedError}`);
+             await chrome.test.assertPromiseRejects(
+                 chrome.tabs.update(tab.id, {url: 'chrome://feedback/'}),
+                 `Error: ${kExpectedError}`);
+             chrome.test.succeed();
+           },
+         ]);)";
+
+  extensions::TestExtensionDir test_dir;
+  test_dir.WriteManifest(kManifest);
+  test_dir.WriteFile(FILE_PATH_LITERAL("background.js"), kBackgroundJs);
+
+  extensions::ResultCatcher catcher;
+  ASSERT_TRUE(LoadExtension(test_dir.UnpackedPath()));
+  EXPECT_TRUE(catcher.GetNextResult()) << catcher.message();
+}
+
+#if !BUILDFLAG(IS_ANDROID)
+// Helper observer to suppress unhandled WebUI messages in chrome://feedback.
+// FeedbackUI is designed to be hosted in a FeedbackDialog (a
+// ui::WebDialogDelegate), which attaches message handlers for "showDialog".
+// When navigated to directly in a browser tab (as in this test), no delegate is
+// attached, so the frontend's chrome.send("showDialog") call goes unhandled and
+// triggers a fatal NOTREACHED on bots running with DCHECKs enabled.
+// NOTE: This is admittedly hacky; FeedbackUI should ideally handle or ignore
+// "showDialog" gracefully when loaded outside a dialog delegate, but we swallow
+// it here to keep this test working without modifying WebUI production code.
+class FeedbackWebUIObserver : public content::WebContentsObserver {
+ public:
+  explicit FeedbackWebUIObserver(content::WebContents* web_contents)
+      : content::WebContentsObserver(web_contents) {
+    HandleWebUI(web_contents->GetWebUI());
+  }
+
+  void RenderFrameCreated(
+      content::RenderFrameHost* render_frame_host) override {
+    HandleWebUI(render_frame_host->GetWebUI());
+  }
+
+  void PrimaryPageChanged(content::Page& page) override {
+    HandleWebUI(page.GetMainDocument().GetWebUI());
+  }
+
+ private:
+  void HandleWebUI(content::WebUI* web_ui) {
+    if (web_ui) {
+      web_ui->RegisterMessageCallback("showDialog", base::DoNothing());
+    }
+  }
+};
+
+// Tests that extensions cannot capture chrome://feedback (e.g. via
+// tabs.captureVisibleTab or pageCapture.saveAsMHTML), even when activeTab is
+// granted, because it is more of a native surface that shouldn't be
+// accessible to (or triggerable by) extensions.
+// Note that chrome://feedback is not supported on Android and, unlike the
+// tests above, this relies on having a committed chrome://feedback page.
+IN_PROC_BROWSER_TEST_F(ExtensionApiTabTest, CannotCaptureFeedback) {
+  static constexpr char kManifest[] =
+      R"({
+           "name": "Disallow Feedback Capture",
+           "version": "1.0",
+           "manifest_version": 3,
+           "permissions": ["activeTab", "pageCapture"],
+           "background": {"service_worker": "background.js"}
+         })";
+
+  static constexpr char kBackgroundJs[] =
+      R"(chrome.test.sendMessage('ready', () => {
+           chrome.test.runTests([
+             async function captureFeedback() {
+               const [tab] =
+                   await chrome.tabs.query({active: true, currentWindow: true});
+               chrome.test.assertTrue(!!tab);
+               await chrome.test.assertPromiseRejects(
+                   chrome.tabs.captureVisibleTab(),
+                   'Error: Cannot access a chrome:// URL');
+               await chrome.test.assertPromiseRejects(
+                   chrome.pageCapture.saveAsMHTML({tabId: tab.id}),
+                   "Error: Don't have permissions required to capture this " +
+                       "page.");
+               chrome.test.succeed();
+             },
+           ]);
+         });)";
+
+  FeedbackWebUIObserver observer(GetActiveWebContents());
+  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(),
+                            GURL(chrome::kChromeUIFeedbackURL)));
+
+  extensions::TestExtensionDir test_dir;
+  test_dir.WriteManifest(kManifest);
+  test_dir.WriteFile(FILE_PATH_LITERAL("background.js"), kBackgroundJs);
+
+  ExtensionTestMessageListener listener("ready", ReplyBehavior::kWillReply);
+  const extensions::Extension* extension =
+      LoadExtension(test_dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+  ASSERT_TRUE(listener.WaitUntilSatisfied());
+
+  // Grant activeTab to the extension on the feedback page.
+  content::WebContents* web_contents = GetActiveWebContents();
+  extensions::ActiveTabPermissionGranter* granter =
+      extensions::ActiveTabPermissionGranter::FromWebContents(web_contents);
+  ASSERT_TRUE(granter);
+  granter->GrantIfRequested(extension, base::DoNothing());
+
+  extensions::ResultCatcher catcher;
+  listener.Reply("");
+  EXPECT_TRUE(catcher.GetNextResult()) << catcher.message();
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
 class ExtensionApiTabDSERedirectTest : public ExtensionApiTabTest {
  public:
   ExtensionApiTabDSERedirectTest() = default;
@@ -980,8 +1097,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTabDSERedirectTest,
   ASSERT_TRUE(extension);
 
   auto event = std::make_unique<extensions::Event>(
-      extensions::events::FOR_TEST, "test.onMessage", base::ListValue(),
-      profile());
+      extensions::events::FOR_TEST, "test.onMessage", nullptr, profile());
   event->user_gesture = extensions::EventRouter::UserGestureState::kEnabled;
   // Dispatch the event which will ultimately trigger RouteDispatchEvent
   // with `params->is_user_gesture` = true.
@@ -1111,6 +1227,53 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTabDSERedirectTest,
                                      3 /* kDSERemovalsAfterLandingOnSERP */, 1);
 }
 
+IN_PROC_BROWSER_TEST_F(ExtensionApiTabDSERedirectTest,
+                       DSETabsRemoveAction_BackgroundTabWithOpener) {
+  content::WebContents::CreateParams params(profile());
+  params.opener_id = GetTabListInterface()
+                         ->GetActiveTab()
+                         ->GetContents()
+                         ->GetPrimaryMainFrame()
+                         ->GetGlobalId();
+  params.initially_hidden = true;
+  tabs::TabInterface* new_tab = GetTabListInterface()->InsertWebContentsAt(
+      -1, content::WebContents::Create(params), /*should_pin=*/false,
+      std::nullopt);
+  ASSERT_TRUE(new_tab);
+  std::ignore = content::NavigateToURL(
+      new_tab->GetContents(), embedded_test_server()->GetURL("/search?q=foo"));
+
+  base::HistogramTester histogram_tester;
+
+  static constexpr char kManifest[] =
+      R"({
+         "name": "RemoveAction Extension",
+         "version": "0.1",
+         "manifest_version": 3,
+         "permissions": ["tabs"],
+         "background": { "service_worker" : "background.js" }
+       })";
+  static constexpr char kBackground[] =
+      R"(
+        chrome.tabs.query({active: false}, (tabs) => {
+          chrome.tabs.remove(tabs[0].id, () => {
+            chrome.test.succeed();
+          });
+        });
+      )";
+
+  extensions::TestExtensionDir test_dir;
+  test_dir.WriteManifest(kManifest);
+  test_dir.WriteFile(FILE_PATH_LITERAL("background.js"), kBackground);
+
+  extensions::ResultCatcher result_catcher;
+  ASSERT_TRUE(LoadExtension(test_dir.UnpackedPath()));
+  ASSERT_TRUE(result_catcher.GetNextResult());
+
+  histogram_tester.ExpectBucketCount("Extensions.Tabs.RemoveAction",
+                                     0 /* kOtherRemovals */, 1);
+}
+
 class ExtensionApiTabSplitViewTest : public ExtensionApiTabTest {
  public:
   ExtensionApiTabSplitViewTest() = default;
@@ -1121,125 +1284,19 @@ class ExtensionApiTabSplitViewTest : public ExtensionApiTabTest {
       extensions_features::kApiTabsSplitView};
 };
 
-IN_PROC_BROWSER_TEST_F(ExtensionApiTabSplitViewTest,
-                       CreateSplitWithTabIdValidation) {
-  constexpr char kManifest[] = R"({
-    "name": "Create Split With Tab Id Test",
-    "version": "1.0",
-    "manifest_version": 3,
-    "permissions": ["tabs"],
-    "background": {"service_worker": "background.js"}
-  })";
-
-  constexpr char kBackgroundJs[] = R"(
-    async function createFreshTab() {
-      return await chrome.tabs.create({url: 'about:blank'});
-    }
-
-    chrome.test.runTests([
-      async function validUnspecifiedIndex() {
-        const tab = await createFreshTab();
-        const newTab = await chrome.tabs.create({
-          splitWithTabId: tab.id
-        });
-        chrome.test.assertTrue(!!newTab);
-        chrome.test.succeed();
-      },
-
-      async function validAdjacentIndexRight() {
-        const tab = await createFreshTab();
-        const newTab = await chrome.tabs.create({
-          splitWithTabId: tab.id,
-          index: tab.index + 1
-        });
-        chrome.test.assertTrue(!!newTab);
-        await chrome.tabs.remove([tab.id, newTab.id]);
-        chrome.test.succeed();
-      },
-
-      async function validAdjacentIndexLeft() {
-        const tab = await createFreshTab();
-        const newTab = await chrome.tabs.create({
-          splitWithTabId: tab.id,
-          index: tab.index
-        });
-        chrome.test.assertTrue(!!newTab);
-        await chrome.tabs.remove([tab.id, newTab.id]);
-        chrome.test.succeed();
-      },
-
-      async function errorTabNotFound() {
-        await chrome.test.assertPromiseRejects(
-          chrome.tabs.create({
-            splitWithTabId: 999999
-          }),
-          'Error: No tab with id: 999999.'
-        );
-        chrome.test.succeed();
-      },
-
-      // TODO(crbug.com/456257896): Add a test for
-      // kSplitWithTabAlreadyInSplitViewError once there is an API to put a tab
-      // into a split view.
-
-      async function errorNotInSameWindow() {
-        const primaryWin = (await chrome.windows.getAll())[0];
-        const tab = await chrome.tabs.create({
-          windowId: primaryWin.id, url: 'about:blank'
-        });
-        const otherWin = await chrome.windows.create({url: ['about:blank']});
-        await chrome.test.assertPromiseRejects(
-          chrome.tabs.create({
-            windowId: otherWin.id,
-            splitWithTabId: tab.id,
-          }),
-          `Error: Cannot create split view with 'splitWithTabId': ${tab.id}. ` +
-              `Tab is not in the same window as the target window.`
-        );
-        await chrome.tabs.remove(tab.id);
-        await chrome.windows.remove(otherWin.id);
-        await chrome.windows.update(primaryWin.id, {focused: true});
-        chrome.test.succeed();
-      },
-
-      async function errorIndexTooSmall() {
-        const tab1 = await createFreshTab();
-        const tab2 = await createFreshTab();
-        await chrome.test.assertPromiseRejects(
-          chrome.tabs.create({
-            splitWithTabId: tab2.id,
-            index: 0
-          }),
-          `Error: Cannot create split view with 'splitWithTabId': Tab ID ` +
-              `${tab2.id} is at index ${tab2.index}, which is not adjacent ` +
-              `to 'index' 0.`
-        );
-        await chrome.tabs.remove([tab1.id, tab2.id]);
-        chrome.test.succeed();
-      },
-
-      async function errorIndexTooLarge() {
-        const tab = await createFreshTab();
-        await chrome.test.assertPromiseRejects(
-          chrome.tabs.create({
-            splitWithTabId: tab.id,
-            index: 100
-          }),
-          `Error: Cannot create split view with 'splitWithTabId': Tab ID ` +
-              `${tab.id} is at index ${tab.index}, which is not adjacent ` +
-              `to 'index' 100.`
-        );
-        await chrome.tabs.remove(tab.id);
-        chrome.test.succeed();
-      }
-    ]);
-  )";
-
-  extensions::TestExtensionDir test_dir;
-  test_dir.WriteManifest(kManifest);
-  test_dir.WriteFile(FILE_PATH_LITERAL("background.js"), kBackgroundJs);
-
-  extensions::ResultCatcher result_catcher;
-  ASSERT_TRUE(LoadExtension(test_dir.UnpackedPath()));
-  EXPECT_TRUE(result_catcher.GetNextResult());
+// TODO(https://crbug.com/480192698): Remove this restriction once split tabs
+// are supported on Desktop Android.
+#if !BUILDFLAG(IS_ANDROID)
+IN_PROC_BROWSER_TEST_F(ExtensionApiTabSplitViewTest, CreateSplitWithTabId) {
+  ASSERT_TRUE(RunExtensionTest("tabs/split_view_create_split_with_id"))
+      << message_;
 }
+
+IN_PROC_BROWSER_TEST_F(ExtensionApiTabSplitViewTest, CreateSplit) {
+  ASSERT_TRUE(RunExtensionTest("tabs/split_view_create_split")) << message_;
+}
+
+IN_PROC_BROWSER_TEST_F(ExtensionApiTabSplitViewTest, Unsplit) {
+  ASSERT_TRUE(RunExtensionTest("tabs/split_view_unsplit")) << message_;
+}
+#endif  // !BUILDFLAG(IS_ANDROID)

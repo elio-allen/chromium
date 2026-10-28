@@ -8,18 +8,15 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
+#include "base/timer/timer.h"
 #include "base/types/strong_alias.h"
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/optimization_guide/core/model_execution/remote_model_executor.h"
+#include "components/optimization_guide/proto/features/password_change_submission.pb.h"
 #include "content/public/browser/web_contents_observer.h"
 
 class AnnotatedPageContentCapturer;
 class OptimizationGuideKeyedService;
-
-namespace optimization_guide::proto {
-class PasswordChangeSubmissionLoggingData;
-}  // namespace optimization_guide::proto
 
 namespace content {
 class NavigationHandle;
@@ -31,11 +28,32 @@ class PasswordManagerClient;
 }  // namespace password_manager
 
 struct LoginCheckResult {
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  //
+  // LINT.IfChange(LoginCheckResult)
   enum class Status {
     kLoggedIn = 0,
     kLoggedOut = 1,
     kError = 2,
+    kMaxValue = kError,
   };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/password/enums.xml:LoginCheckResult)
+
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  //
+  // LINT.IfChange(LoginCheckError)
+  enum class LoginCheckError {
+    kLoginFailed = 0,
+    kForgotPasswordPage = 1,
+    kServerError = 2,
+    kFailedToParseResponse = 3,
+    kTimeout = 4,
+    kUnknown = 5,
+    kMaxValue = kUnknown,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/password/enums.xml:LoginCheckError)
 
   LoginCheckResult();
   LoginCheckResult(
@@ -44,7 +62,8 @@ struct LoginCheckResult {
       base::TimeDelta duration,
       std::unique_ptr<
           optimization_guide::proto::PasswordChangeSubmissionLoggingData>
-          logging_data);
+          logging_data,
+      std::optional<LoginCheckError> error = std::nullopt);
   ~LoginCheckResult();
   LoginCheckResult(LoginCheckResult&&);
   LoginCheckResult& operator=(LoginCheckResult&&);
@@ -55,6 +74,7 @@ struct LoginCheckResult {
   std::unique_ptr<
       optimization_guide::proto::PasswordChangeSubmissionLoggingData>
       logging_data;
+  std::optional<LoginCheckError> error;
 };
 
 // Helper class which checks if the user is fully signed in on the main tab
@@ -65,6 +85,7 @@ class LoginStateChecker : public content::WebContentsObserver {
  public:
   // Maximum amount of login state checks.
   static constexpr int kMaxLoginChecks = 5;
+  static constexpr base::TimeDelta kLoginCheckTimeout = base::Minutes(5);
   using LoginStateResultCallback =
       base::RepeatingCallback<void(LoginCheckResult)>;
 
@@ -85,17 +106,25 @@ class LoginStateChecker : public content::WebContentsObserver {
       LoginCheckResult::Status result,
       std::unique_ptr<
           optimization_guide::proto::PasswordChangeSubmissionLoggingData>
-          logging_data = nullptr) {
+          logging_data = nullptr,
+      std::optional<LoginCheckResult::LoginCheckError> error = std::nullopt) {
+    if (result == LoginCheckResult::Status::kLoggedIn) {
+      timer_.Stop();
+    }
     result_check_callback_.Run(LoginCheckResult(
         result, state_checks_count_, base::Time::Now() - creation_time_,
-        std::move(logging_data)));
+        std::move(logging_data), error));
   }
 #endif
 
  private:
+  // Starts the timeout timer for login checks if Private Inference is enabled.
+  void StartTimeoutTimer();
+
   // To be called when the login checks should be terminated due
   // to max retries or an unexpected state.
   void TerminateLoginChecks(
+      LoginCheckResult::LoginCheckError error,
       std::unique_ptr<
           optimization_guide::proto::PasswordChangeSubmissionLoggingData>
           logging_data = nullptr);
@@ -135,6 +164,8 @@ class LoginStateChecker : public content::WebContentsObserver {
 
   // The number of login state checks performed.
   int state_checks_count_ = 0;
+
+  base::OneShotTimer timer_;
 
   base::WeakPtrFactory<LoginStateChecker> weak_ptr_factory_{this};
 };

@@ -4,7 +4,12 @@
 
 #import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_ui_catalog_view_controller.h"
 
+#import "ios/chrome/browser/ai_prototyping/ui/actuation_worklog_debug_view_controller.h"
 #import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_actor_tool_chip_view_controller.h"
+#import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_actuation_header_view_controller.h"
+#import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_actuation_intervention_view_controller.h"
+#import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_actuation_task_button_view_controller.h"
+#import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_actuation_task_card_view_controller.h"
 #import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_mutator.h"
 #import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_worklog_compact_view_controller.h"
 #import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_worklog_item_showcase_view_controller.h"
@@ -60,7 +65,40 @@ NSString* const kUICatalogCellIdentifier = @"UICatalogCell";
   compactWorklogItem.viewControllerClass =
       [AIPrototypingWorklogCompactViewController class];
 
-  _items = @[ chipsItem, worklogItem, compactWorklogItem ];
+  AIPrototypingUICatalogItem* actuationSandboxItem =
+      [[AIPrototypingUICatalogItem alloc] init];
+  actuationSandboxItem.title = @"Actuation Worklog Sandbox";
+  actuationSandboxItem.viewControllerClass =
+      [ActuationWorklogDebugViewController class];
+
+  AIPrototypingUICatalogItem* taskButtonItem =
+      [[AIPrototypingUICatalogItem alloc] init];
+  taskButtonItem.title = @"Actuation Task Button";
+  taskButtonItem.viewControllerClass =
+      [AIPrototypingActuationTaskButtonViewController class];
+
+  AIPrototypingUICatalogItem* taskCardItem =
+      [[AIPrototypingUICatalogItem alloc] init];
+  taskCardItem.title = @"Actuation Task Card";
+  taskCardItem.viewControllerClass =
+      [AIPrototypingActuationTaskCardViewController class];
+
+  AIPrototypingUICatalogItem* headerItem =
+      [[AIPrototypingUICatalogItem alloc] init];
+  headerItem.title = @"Actuation Header";
+  headerItem.viewControllerClass =
+      [AIPrototypingActuationHeaderViewController class];
+
+  AIPrototypingUICatalogItem* interventionItem =
+      [[AIPrototypingUICatalogItem alloc] init];
+  interventionItem.title = @"Actuation Intervention";
+  interventionItem.viewControllerClass =
+      [AIPrototypingActuationInterventionViewController class];
+
+  _items = @[
+    chipsItem, worklogItem, compactWorklogItem, actuationSandboxItem,
+    taskButtonItem, taskCardItem, headerItem, interventionItem
+  ];
 }
 
 #pragma mark - UITableViewDataSource

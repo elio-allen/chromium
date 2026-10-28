@@ -4,11 +4,13 @@
 
 #include "media/muxers/mp4_movie_box_writer.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "base/big_endian.h"
 #include "base/numerics/safe_conversions.h"
 #include "media/base/audio_timestamp_helper.h"
 #include "media/formats/mp4/box_constants.h"
@@ -16,7 +18,6 @@
 #include "media/muxers/box_byte_stream.h"
 #include "media/muxers/mp4_muxer_context.h"
 #include "media/muxers/mp4_type_conversion.h"
-#include "media/muxers/output_position_tracker.h"
 
 namespace media {
 
@@ -817,7 +818,7 @@ void Mp4MovieAVCDecoderConfigurationBoxWriter::Write(BoxByteStream& writer) {
   std::vector<uint8_t> write_data;
   CHECK(box_->avc_config_record.Serialize(write_data));
 
-  writer.WriteBytes(write_data.data(), write_data.size());
+  writer.WriteBytes(write_data);
 
   writer.EndBox();
 }
@@ -841,7 +842,7 @@ void Mp4MovieElementaryStreamDescriptorBoxWriter::Write(BoxByteStream& writer) {
 
   std::vector<uint8_t> esds =
       mp4::ESDescriptor::CreateEsds(box_->aac_codec_description);
-  writer.WriteBytes(esds.data(), esds.size());
+  writer.WriteBytes(esds);
 
   writer.EndBox();
 }
@@ -868,7 +869,7 @@ void Mp4MovieHEVCDecoderConfigurationBoxWriter::Write(BoxByteStream& writer) {
   std::vector<uint8_t> write_data;
   CHECK(box_->hevc_config_record.Serialize(write_data));
 
-  writer.WriteBytes(write_data.data(), write_data.size());
+  writer.WriteBytes(write_data);
 
   writer.EndBox();
 }
@@ -1039,8 +1040,7 @@ void Mp4MovieAV1CodecConfigurationBoxWriter::Write(BoxByteStream& writer) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   writer.StartBox(mp4::FOURCC_AV1C);
-  writer.WriteBytes(box_->av1_decoder_configuration_data.data(),
-                    box_->av1_decoder_configuration_data.size());
+  writer.WriteBytes(box_->av1_decoder_configuration_data);
   writer.EndBox();
 }
 

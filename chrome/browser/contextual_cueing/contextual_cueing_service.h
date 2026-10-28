@@ -15,7 +15,8 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/contextual_cueing/cue_target.h"
-#include "chrome/browser/contextual_cueing/nudge_cap_tracker.h"
+#include "components/contextual_cueing/nudge_cap_tracker.h"
+#include "components/contextual_cueing/ucb_scorer.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "url/gurl.h"
@@ -30,6 +31,15 @@ class PrefService;
 namespace contextual_cueing {
 
 enum class ContextualCueingDecision;
+enum class ContextualCueSurveyCategory;
+
+// Determines the HaTS survey category for a given cue target type and CUJ.
+ContextualCueSurveyCategory GetSurveyCategory(CueTargetType cue_type,
+                                              const std::string& cuj);
+
+// Returns the sanitized CUJ name to log in the HaTS survey metadata, converting
+// internal code names (e.g. "Indigo") to external identifiers.
+std::string GetSurveyCujName(const std::string& cuj);
 
 class ContextualCueingService : public KeyedService {
  public:
@@ -42,17 +52,32 @@ class ContextualCueingService : public KeyedService {
   // page loads requirement after a cueing UI is shown.
   void ReportPageLoad();
 
+  enum class AllowedIntrusivenessResult {
+    kLoud,
+    kQuiet,
+    kBlocked,
+  };
+
   // Called when the user clicks the cue action button.
-  void OnCueClicked(CueTargetType type);
+  void OnCueClicked(CueTargetType type, bool record_ucb_stats);
 
   // Called when the user dismisses the cue.
-  void OnCueDismissed(CueTargetType type);
+  void OnCueDismissed(CueTargetType type, bool record_ucb_stats);
 
   // Called when the cue is shown to the user.
-  void OnCueShown(const GURL& url, CueTargetType type);
+  void OnCueShown(const GURL& url,
+                  CueTargetType type,
+                  bool record_ucb_stats,
+                  CueIntrusiveness intrusiveness = CueIntrusiveness::kLoud);
 
-  // Returns true if a nudge can be shown.
-  ContextualCueingDecision CanShowCue(const GURL& url) const;
+  // Returns true if a nudge can be shown at the specified intrusiveness level.
+  ContextualCueingDecision CanShowCue(
+      const GURL& url,
+      CueIntrusiveness intrusiveness = CueIntrusiveness::kLoud) const;
+
+  // Returns the highest allowed intrusiveness tier and the associated decision.
+  std::pair<AllowedIntrusivenessResult, ContextualCueingDecision>
+  GetAllowedIntrusiveness(const GURL& url) const;
 
   // Returns the UCB score for the given target, incorporating per-target
   // interaction stats and UCB hyperparameters from Finch.

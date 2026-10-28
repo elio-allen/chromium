@@ -5,9 +5,9 @@
 #include "components/services/print_compositor/print_compositor_impl.h"
 
 #include <algorithm>
-#include <tuple>
 #include <utility>
 
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/memory/discardable_memory.h"
 #include "base/task/single_thread_task_runner.h"
@@ -19,9 +19,7 @@
 #include "components/services/print_compositor/public/cpp/print_service_mojo_types.h"
 #include "content/public/utility/utility_thread.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
-#include "mojo/public/cpp/system/platform_handle.h"
 #include "printing/common/metafile_utils.h"
-#include "printing/mojom/print.mojom.h"
 #include "skia/ext/font_utils.h"
 #include "third_party/blink/public/platform/web_image_generator.h"
 #include "third_party/skia/include/core/SkCanvas.h"
@@ -42,8 +40,7 @@
 #endif
 
 #if BUILDFLAG(ENTERPRISE_WATERMARK)
-#include "components/enterprise/watermarking/mojom/watermark.mojom.h"  // nogncheck
-#include "components/enterprise/watermarking/watermark.h"  // nogncheck
+#include "components/services/print_compositor/print_watermark.h"
 #endif
 
 using MojoDiscardableSharedMemoryManager =
@@ -67,32 +64,13 @@ sk_sp<SkDocument> MakeDocument(
 
 }  // namespace
 
-#if BUILDFLAG(ENTERPRISE_WATERMARK)
+void PrintCompositorImpl::Addon::OnDrawPage(SkCanvas* canvas,
+                                            const SkSize& size) {}
 
-void DrawEnterpriseWatermark(
-    SkCanvas* canvas,
-    SkSize size,
-    const watermark::mojom::WatermarkBlockPtr& watermark_block) {
-  if (!watermark_block) {
-    return;
-  }
-  base::ReadOnlySharedMemoryMapping mapping =
-      watermark_block->serialized_skpicture.Map();
-  if (!mapping.IsValid()) {
-    LOG(ERROR)
-        << "Error serializing the watermark block received from the browser";
-    return;
-  }
-  auto skpicture_span = mapping.GetMemoryAsSpan<uint8_t>();
-  SkMemoryStream stream(gfx::MakeSkDataFromSpanWithoutCopy(skpicture_span));
-  sk_sp<SkPicture> picture = SkPicture::MakeFromStream(&stream);
-
-  enterprise_watermark::DrawWatermark(canvas, picture.get(),
-                                      watermark_block->width,
-                                      watermark_block->height, size);
+base::ReadOnlySharedMemoryRegion PrintCompositorImpl::Addon::OnOverlayPdf(
+    base::ReadOnlySharedMemoryRegion pdf_region) {
+  return pdf_region;
 }
-
-#endif
 
 PrintCompositorImpl::PrintCompositorImpl(
     mojo::PendingReceiver<mojom::PrintCompositor> receiver,
@@ -146,6 +124,11 @@ PrintCompositorImpl::~PrintCompositorImpl() {
 #if BUILDFLAG(IS_WIN)
   content::UninitializeFontIntegration();
 #endif
+}
+
+void PrintCompositorImpl::SetAddonForTesting(std::unique_ptr<Addon> addon) {
+  addon_ = std::move(addon);
+  addon_init_failed_ = false;
 }
 
 void PrintCompositorImpl::NotifyUnavailableSubframe(uint64_t frame_guid) {
@@ -229,6 +212,11 @@ void PrintCompositorImpl::CompositeDocument(
 
 void PrintCompositorImpl::PrepareToCompositeDocument(
     mojom::PrintCompositor::PrepareToCompositeDocumentCallback callback) {
+  if (addon_init_failed_) {
+    std::move(callback).Run(
+        mojom::PrintCompositor::Status::kContentFormatError);
+    return;
+  }
   CHECK(!doc_info_);
   doc_info_ = std::make_unique<DocumentInfo>();
   std::move(callback).Run(mojom::PrintCompositor::Status::kSuccess);
@@ -340,11 +328,14 @@ void PrintCompositorImpl::HandleCompositionRequest(
     const ContentToFrameMap& subframe_content_map,
     bool is_pdf,
     CompositePagesCallback callback) {
+  if (addon_init_failed_) {
+    std::move(callback).Run(mojom::PrintCompositor::Status::kContentFormatError,
+                            base::ReadOnlySharedMemoryRegion());
+    return;
+  }
+
   if (is_pdf) {
-    // TODO(crbug.com/518763216): Handle PDF documents in PrintCompositorImpl.
-    // For now, pass the PDF document through to the callback.
-    std::move(callback).Run(mojom::PrintCompositor::Status::kSuccess,
-                            std::move(serialized_content));
+    FulfillPdfRequest(std::move(serialized_content), std::move(callback));
     return;
   }
 
@@ -454,7 +445,7 @@ mojom::PrintCompositor::Status PrintCompositorImpl::CompositePages(
     return mojom::PrintCompositor::Status::kHandleMapError;
   }
 
-  wstream.copyToAndReset(region_mapping.mapping.memory());
+  wstream.copyToAndReset(region_mapping.mapping.data());
   *region = std::move(region_mapping.region);
   return mojom::PrintCompositor::Status::kSuccess;
 }
@@ -497,9 +488,9 @@ void PrintCompositorImpl::DrawPage(SkDocument* doc,
                                    const SkDocumentPage& page) {
   SkCanvas* canvas = doc->beginPage(page.fSize.width(), page.fSize.height());
   canvas->drawPicture(page.fPicture);
-#if BUILDFLAG(ENTERPRISE_WATERMARK)
-  DrawEnterpriseWatermark(canvas, page.fSize, watermark_block_);
-#endif
+  if (addon_) {
+    addon_->OnDrawPage(canvas, page.fSize);
+  }
   doc->endPage();
 }
 
@@ -513,6 +504,29 @@ void PrintCompositorImpl::FulfillRequest(
   std::move(callback).Run(status, std::move(region));
 }
 
+void PrintCompositorImpl::FulfillPdfRequest(
+    base::ReadOnlySharedMemoryRegion serialized_content,
+    CompositePagesCallback callback) {
+  // Pass-through case: if no addon is attached, return the PDF content
+  // unmodified with kSuccess.
+  if (!addon_) {
+    std::move(callback).Run(mojom::PrintCompositor::Status::kSuccess,
+                            std::move(serialized_content));
+    return;
+  }
+
+  base::ReadOnlySharedMemoryRegion output_region =
+      addon_->OnOverlayPdf(std::move(serialized_content));
+
+  // If Addon post-processing fails, abort printing with kContentFormatError
+  // rather than silently falling back to unmodified PDF content.
+  mojom::PrintCompositor::Status status =
+      output_region.IsValid() ? mojom::PrintCompositor::Status::kSuccess
+                              : mojom::PrintCompositor::Status::kContentFormatError;
+
+  std::move(callback).Run(status, std::move(output_region));
+}
+
 void PrintCompositorImpl::FinishDocumentRequest(
     FinishDocumentCompositionCallback callback) {
   mojom::PrintCompositor::Status status;
@@ -524,8 +538,7 @@ void PrintCompositorImpl::FinishDocumentRequest(
       base::ReadOnlySharedMemoryRegion::Create(
           doc_info_->compositor_stream.bytesWritten());
   if (region_mapping.IsValid()) {
-    doc_info_->compositor_stream.copyToAndReset(
-        region_mapping.mapping.memory());
+    doc_info_->compositor_stream.copyToAndReset(region_mapping.mapping.data());
     region = std::move(region_mapping.region);
     status = mojom::PrintCompositor::Status::kSuccess;
   } else {
@@ -574,14 +587,17 @@ void PrintCompositorImpl::SetTitle(const std::string& title) {
 #if BUILDFLAG(ENTERPRISE_WATERMARK)
 void PrintCompositorImpl::SetWatermarkBlock(
     watermark::mojom::WatermarkBlockPtr watermark_block) {
-  watermark_block_ = std::move(watermark_block);
+  if (watermark_block) {
+    auto watermark = PrintWatermark::Create(std::move(watermark_block));
+    watermark_for_testing_ = watermark.get();
+    addon_ = std::move(watermark);
+    addon_init_failed_ = !addon_;
+  } else {
+    watermark_for_testing_ = nullptr;
+    addon_.reset();
+    addon_init_failed_ = false;
+  }
 }
-
-const watermark::mojom::WatermarkBlockPtr&
-PrintCompositorImpl::watermark_block_for_testing() const {
-  return watermark_block_;
-}
-
 #endif
 
 }  // namespace printing

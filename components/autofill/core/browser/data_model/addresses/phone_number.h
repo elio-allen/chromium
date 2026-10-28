@@ -53,9 +53,11 @@ class PhoneNumber : public FormGroup {
 
   explicit PhoneNumber(const AutofillProfile* profile);
   PhoneNumber(const PhoneNumber& number);
+  PhoneNumber(PhoneNumber&& number) noexcept;
   ~PhoneNumber() override;
 
   PhoneNumber& operator=(const PhoneNumber& number);
+  PhoneNumber& operator=(PhoneNumber&& number) noexcept;
   bool operator==(const PhoneNumber& other) const;
 
   void set_profile(const AutofillProfile* profile) { profile_ = profile; }
@@ -64,14 +66,13 @@ class PhoneNumber : public FormGroup {
   void GetMatchingTypes(std::u16string_view text,
                         std::string_view app_locale,
                         FieldTypeSet* matching_types) const override;
-  using FormGroup::GetInfo;
-  std::u16string GetInfo(const AutofillType& type,
+  std::u16string GetInfo(FieldType type,
                          std::string_view app_locale) const override;
   std::u16string GetRawInfo(FieldType type) const override;
   void SetRawInfoWithVerificationStatus(FieldType type,
                                         std::u16string_view value,
                                         VerificationStatus status) override;
-  bool SetInfoWithVerificationStatus(const AutofillType& type,
+  bool SetInfoWithVerificationStatus(FieldType type,
                                      std::u16string_view value,
                                      std::string_view app_locale,
                                      const VerificationStatus status) override;
@@ -127,8 +128,7 @@ class PhoneNumber : public FormGroup {
   // FormGroup:
   FieldTypeSet GetSupportedTypes() const override;
 
-  // Updates the cached parsed number if the profile's region has changed
-  // since the last time the cache was updated.
+  // Updates the cached parsed number if the number has changed substantially.
   void UpdateCacheIfNeeded(std::string_view app_locale) const;
 
   // The phone number.

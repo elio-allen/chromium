@@ -196,8 +196,10 @@ public class InterceptNavigationDelegateImpl extends InterceptNavigationDelegate
         cancelPendingShouldIgnoreCheck();
 
         if (mWebContents != null) {
-            assumeNonNull(mWebContentsObserver).observe(null);
-            mWebContentsObserver = null;
+            if (mWebContentsObserver != null) {
+                mWebContentsObserver.observe(null);
+                mWebContentsObserver = null;
+            }
             InterceptNavigationDelegateImplJni.get().clearWebContentsAssociation(mWebContents);
         }
         mWebContents = webContents;
@@ -206,7 +208,6 @@ public class InterceptNavigationDelegateImpl extends InterceptNavigationDelegate
         // Lazily initialize the external navigation handler.
         if (mExternalNavHandler == null) {
             setExternalNavigationHandler(mClient.createExternalNavigationHandler());
-            if (mExternalNavHandler == null) return;
         }
 
         InterceptNavigationDelegateImplJni.get().associateWithWebContents(this, mWebContents);
@@ -215,14 +216,16 @@ public class InterceptNavigationDelegateImpl extends InterceptNavigationDelegate
                 new WebContentsObserver(mWebContents) {
                     @Override
                     public void didStartNavigationInPrimaryMainFrame(NavigationHandle navigation) {
-                        assumeNonNull(mExternalNavHandler);
-                        mExternalNavHandler.onNavigationStarted(navigation.getNavigationId());
+                        if (mExternalNavHandler != null) {
+                            mExternalNavHandler.onNavigationStarted(navigation.getNavigationId());
+                        }
                     }
 
                     @Override
                     public void didFinishNavigationInPrimaryMainFrame(NavigationHandle navigation) {
-                        assumeNonNull(mExternalNavHandler);
-                        mExternalNavHandler.onNavigationFinished(navigation.getNavigationId());
+                        if (mExternalNavHandler != null) {
+                            mExternalNavHandler.onNavigationFinished(navigation.getNavigationId());
+                        }
                     }
                 };
     }
@@ -316,6 +319,7 @@ public class InterceptNavigationDelegateImpl extends InterceptNavigationDelegate
             case OverrideUrlLoadingResultType.OVERRIDE_CLOSING_AFTER_AUTH:
                 shouldIgnore = true;
                 break;
+            case OverrideUrlLoadingResultType.OVERRIDE_WITH_REPARENT_TO_SAME_PWA:
             case OverrideUrlLoadingResultType.OVERRIDE_WITH_REPARENT_TO_BROWSER:
             case OverrideUrlLoadingResultType.NO_OVERRIDE:
             default:
@@ -343,6 +347,16 @@ public class InterceptNavigationDelegateImpl extends InterceptNavigationDelegate
                 && !mClient.isTabDetached()) {
             // Reparenting task must be executed after runResultCallback has been called.
             mClient.startReparentingTaskToNewWindow();
+        }
+
+        if (!shouldIgnore
+                && result.getResultType()
+                        == OverrideUrlLoadingResultType.OVERRIDE_WITH_REPARENT_TO_SAME_PWA
+                && !mClient.isTabDetached()) {
+            // Reparenting task must be executed after runResultCallback has been called.
+            if (mExternalNavHandler != null) {
+                mExternalNavHandler.reparentTabToSamePwa();
+            }
         }
     }
 
@@ -481,6 +495,7 @@ public class InterceptNavigationDelegateImpl extends InterceptNavigationDelegate
                         .setNavigationId(navigationId)
                         .setIsTabInPWA(mClient.isTabInPWA())
                         .setIsTabInBrowser(mClient.isTabInBrowser())
+                        .setIsTabInPopup(mClient.isTabInPopup())
                         .setIsInDesktopWindowingMode(mClient.isInDesktopWindowingMode())
                         .build();
         if (!shouldRunAsync) return doShouldOverrideUrlLoading(params, isExternalProtocol);
@@ -669,7 +684,7 @@ public class InterceptNavigationDelegateImpl extends InterceptNavigationDelegate
             return false;
         }
 
-        return mExternalNavHandler.shouldReparentTab(
+        return mExternalNavHandler.willReparentTab(
                 url,
                 mClient.isTabInPWA(),
                 isInitialNavigation(),

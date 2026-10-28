@@ -104,26 +104,10 @@ class BrowsingDataRemover {
   // storage.
   static constexpr DataType DATA_TYPE_TRUST_TOKENS = 1 << 13;
 
-  // Aggregation Service
-  // (https://github.com/WICG/attribution-reporting-api/blob/main/AGGREGATE.md#data-processing-through-a-secure-aggregation-service)
-  // persistent storage.
-  static constexpr DataType DATA_TYPE_AGGREGATION_SERVICE = 1 << 15;
-
   // Interest groups are stored as part of the Interest Group API experiment
   // Public explainer here:
   // https://github.com/WICG/turtledove/blob/main/FLEDGE.md
   static constexpr DataType DATA_TYPE_INTEREST_GROUPS = 1 << 16;
-
-  // Shared storage API
-  // (https://github.com/pythagoraskitty/shared-storage) persistent storage.
-  static constexpr DataType DATA_TYPE_SHARED_STORAGE = 1 << 17;
-
-  // Private Aggregation API
-  // (https://github.com/alexmturner/private-aggregation-api) persistent
-  // storage. This only refers to data stored internally by the API, such as
-  // privacy budgeting information. Note that currently the API does not persist
-  // any other data. Should only be cleared by user-initiated deletions.
-  static constexpr DataType DATA_TYPE_PRIVATE_AGGREGATION_INTERNAL = 1 << 19;
 
   // Similar to DATA_TYPE_INTEREST_GROUPS, but only refers to data stored
   // internally by the API, such as k-Anonymity cache and rate limiting
@@ -157,20 +141,23 @@ class BrowsingDataRemover {
   // should be refactored to use a dedicated options struct instead.
   static constexpr DataType DATA_TYPE_LOGICAL_CLEAR = 1 << 26;
 
+  // Reports and policies for Declarative Performance Observer
+  // (https://github.com/explainers-by-googlers/declarative-performance-observer).
+  static constexpr DataType DATA_TYPE_DECLARATIVE_PERFORMANCE_OBSERVER = 1
+                                                                         << 27;
+
   // Embedders can add more datatypes beyond this point.
-  static constexpr DataType DATA_TYPE_CONTENT_END = DATA_TYPE_LOGICAL_CLEAR;
+  static constexpr DataType DATA_TYPE_CONTENT_END =
+      DATA_TYPE_DECLARATIVE_PERFORMANCE_OBSERVER;
 
   // Data stored by APIs in The Privacy Sandbox (https://privacysandbox.com/).
   static constexpr DataType DATA_TYPE_PRIVACY_SANDBOX =
-      DATA_TYPE_TRUST_TOKENS | DATA_TYPE_AGGREGATION_SERVICE |
-      DATA_TYPE_INTEREST_GROUPS | DATA_TYPE_SHARED_STORAGE |
-      DATA_TYPE_PRIVATE_AGGREGATION_INTERNAL |
+      DATA_TYPE_TRUST_TOKENS | DATA_TYPE_INTEREST_GROUPS |
       DATA_TYPE_INTEREST_GROUPS_INTERNAL | DATA_TYPE_INTEREST_GROUPS_USER_CLEAR;
 
   // Internal data stored by APIs in the Privacy Sandbox, e.g. privacy budgeting
   // information.
   static constexpr DataType DATA_TYPE_PRIVACY_SANDBOX_INTERNAL =
-      DATA_TYPE_PRIVATE_AGGREGATION_INTERNAL |
       DATA_TYPE_INTEREST_GROUPS_INTERNAL;
 
   // Data types stored within a StoragePartition (i.e. not Profile-scoped).
@@ -179,7 +166,7 @@ class BrowsingDataRemover {
       DATA_TYPE_AVOID_CLOSING_CONNECTIONS | DATA_TYPE_CACHE |
       DATA_TYPE_PRIVACY_SANDBOX | DATA_TYPE_DEVICE_BOUND_SESSIONS |
       DATA_TYPE_PREFETCH_CACHE | DATA_TYPE_PRERENDER_CACHE |
-      DATA_TYPE_LOGICAL_CLEAR;
+      DATA_TYPE_LOGICAL_CLEAR | DATA_TYPE_DECLARATIVE_PERFORMANCE_OBSERVER;
 
   using OriginType = uint64_t;
   // Web storage origins that StoragePartition recognizes as NOT protected

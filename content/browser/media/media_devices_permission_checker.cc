@@ -34,7 +34,7 @@ namespace {
 MediaDevicesManager::BoolDeviceTypes DoCheckPermissionsOnUIThread(
     MediaDevicesManager::BoolDeviceTypes requested_device_types,
     GlobalRenderFrameHostId render_frame_host_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   RenderFrameHostImpl* frame_host =
       RenderFrameHostImpl::FromID(render_frame_host_id);
 
@@ -43,6 +43,10 @@ MediaDevicesManager::BoolDeviceTypes DoCheckPermissionsOnUIThread(
     return MediaDevicesManager::BoolDeviceTypes();
 
   RenderFrameHostDelegate* delegate = frame_host->delegate();
+  if (!delegate) {
+    return MediaDevicesManager::BoolDeviceTypes();
+  }
+
   url::Origin origin = frame_host->GetLastCommittedOrigin();
   bool microphone_permission = delegate->CheckMediaAccessPermission(
       frame_host, origin, blink::mojom::MediaStreamType::DEVICE_AUDIO_CAPTURE);
@@ -94,7 +98,7 @@ MediaDevicesManager::BoolDeviceTypes DoCheckPermissionsOnUIThread(
 bool CheckSinglePermissionOnUIThread(
     MediaDeviceType device_type,
     GlobalRenderFrameHostId render_frame_host_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   MediaDevicesManager::BoolDeviceTypes requested;
   requested[static_cast<size_t>(device_type)] = true;
   MediaDevicesManager::BoolDeviceTypes result =
@@ -106,7 +110,7 @@ void GetSpeakerSelectionAndMicrophoneState(
     GlobalRenderFrameHostId render_frame_host_id,
     base::OnceCallback<void(MediaDevicesManager::PermissionDeniedState, bool)>
         callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   RenderFrameHostImpl* frame_host =
       RenderFrameHostImpl::FromID(render_frame_host_id);
 
@@ -229,7 +233,7 @@ void MediaDevicesPermissionChecker::CheckPermissions(
 // static
 bool MediaDevicesPermissionChecker::HasPanTiltZoomPermissionGrantedOnUIThread(
     GlobalRenderFrameHostId render_frame_host_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 #if BUILDFLAG(IS_ANDROID)
   // The PTZ permission is automatically granted on Android. This way, zoom is
   // not initially empty in ImageCapture. It is safe to do so because pan and
@@ -244,7 +248,7 @@ bool MediaDevicesPermissionChecker::HasPanTiltZoomPermissionGrantedOnUIThread(
 
   auto* permission_controller =
       frame_host->GetBrowserContext()->GetPermissionController();
-  DCHECK(permission_controller);
+  CHECK(permission_controller, base::NotFatalUntil::M160);
 
   blink::mojom::PermissionStatus status =
       permission_controller->GetPermissionStatusForCurrentDocument(

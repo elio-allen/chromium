@@ -15,6 +15,7 @@
 #include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/no_destructor.h"
@@ -46,9 +47,11 @@
 #include "extensions/browser/api/web_request/web_request_permissions.h"
 #include "extensions/browser/api/web_request/web_request_time_tracker.h"
 #include "extensions/browser/api_activity_monitor.h"
+#include "extensions/browser/bad_message.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_navigation_registry.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/browser/extension_util.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/process_map.h"
 #include "extensions/browser/rules_registry_ids.h"
@@ -58,6 +61,7 @@
 #include "extensions/common/api/web_request/web_request_constants.h"
 #include "extensions/common/api/web_request/web_request_filter.h"
 #include "extensions/common/api/web_request/web_request_resource_type.h"
+#include "extensions/common/event_args.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/mojom/event_dispatcher.mojom.h"
@@ -97,9 +101,6 @@ enum class RequestAction {
 };
 
 constexpr char kEventMessage[] = "webViewInternal.onMessage";
-
-constexpr char kWebRequestEventPrefix[] = "webRequest.";
-constexpr char kWebViewEventPrefix[] = "webViewInternal.";
 
 constexpr size_t kWebRequestEventPrefixLen =
     std::char_traits<char>::length(kWebRequestEventPrefix);
@@ -278,13 +279,12 @@ void SendOnMessageEventOnUI(
     return;
   }
 
-  base::ListValue event_args;
-  event_args.Append(event_details->GetAndClearDict());
+  auto event_args = base::MakeRefCounted<EventArgs>();
+  event_args->data.Append(event_details->GetAndClearDict());
 
   EventRouter* event_router = EventRouter::Get(browser_context);
 
-  mojom::EventFilteringInfoPtr event_filtering_info =
-      mojom::EventFilteringInfo::New();
+  auto event_filtering_info = mojom::EventFilteringInfo::New();
 
   events::HistogramValue histogram_value = events::UNKNOWN;
   std::string event_name;
@@ -327,10 +327,12 @@ void NotifyIgnoredActionsOnUI(
               ignored_action.action_type);
 
     details.action = ignored_action.action_type;
-    auto event = std::make_unique<Event>(
-        events::WEB_REQUEST_ON_ACTION_IGNORED,
-        web_request::OnActionIgnored::kEventName,
-        web_request::OnActionIgnored::Create(details), browser_context);
+    auto event_args = base::MakeRefCounted<EventArgs>(
+        web_request::OnActionIgnored::Create(details));
+    auto event =
+        std::make_unique<Event>(events::WEB_REQUEST_ON_ACTION_IGNORED,
+                                web_request::OnActionIgnored::kEventName,
+                                std::move(event_args), browser_context);
     event_router->DispatchEventToExtension(ignored_action.extension_id,
                                            std::move(event));
   }
@@ -429,10 +431,11 @@ void OnDNRActionMatched(content::BrowserContext* browser_context,
 // The `use_dynamic_url` feature for web accessible resources requires that the
 // requested url be a dynamic url. A dynamic url is one where a session GUID is
 // used for the host instead of the static extension id.
-GURL GetNewUrl(const GURL& redirect_url,
+GURL GetNewUrl(const ExtensionId& extension_id,
+               const GURL& redirect_url,
                content::BrowserContext* browser_context) {
-  auto dynamic_url =
-      TransformToDynamicURLIfNecessary(redirect_url, browser_context);
+  auto dynamic_url = TransformToDynamicURLIfNecessary(
+      extension_id, redirect_url, browser_context);
   return dynamic_url.value_or(redirect_url);
 }
 
@@ -538,6 +541,61 @@ void WebRequestEventRouter::Shutdown() {
 WebRequestEventRouter* WebRequestEventRouter::Get(
     content::BrowserContext* browser_context) {
   return WebRequestEventRouterFactory::GetForBrowserContext(browser_context);
+}
+
+// static
+void WebRequestEventRouter::BindForRenderer(
+    content::ChildProcessId render_process_id,
+    mojo::PendingAssociatedReceiver<mojom::WebRequestHost> receiver) {
+  auto* host = content::RenderProcessHost::FromID(render_process_id);
+  if (!host) {
+    return;
+  }
+  // The router might be null for some irregular profile, e.g. the System
+  // Profile.
+  WebRequestEventRouter* router = Get(host->GetBrowserContext());
+  if (!router) {
+    return;
+  }
+
+  router->receivers_.Add(router, std::move(receiver), render_process_id);
+}
+
+void WebRequestEventRouter::EventHandlingDone(
+    const std::optional<ExtensionId>& extension_id,
+    const std::string& event_name,
+    uint64_t request_id,
+    int32_t web_view_instance_id,
+    int32_t worker_thread_id,
+    int64_t service_worker_version_id) {
+  auto* process =
+      content::RenderProcessHost::FromID(receivers_.current_context());
+  if (!process) {
+    return;
+  }
+  // The browser starts per-context webRequest event dispatches only when the
+  // feature is enabled, and only for parent event names, so a well-behaved
+  // renderer never sends anything else.
+  if (!base::FeatureList::IsEnabled(
+          extensions_features::kWebRequestPerContextEventDispatch) ||
+      EventRouter::IsSubEventName(event_name)) {
+    bad_message::ReceivedBadMessage(
+        process, bad_message::WER_UNEXPECTED_EVENT_HANDLING_DONE);
+    return;
+  }
+  content::BrowserContext* browser_context = process->GetBrowserContext();
+  // A null id is valid solely for WebUI/ControlledFrame webview embedders.
+  if (extension_id ? !ProcessMap::Get(browser_context)
+                          ->Contains(*extension_id, process->GetID())
+                   : web_view_instance_id == 0) {
+    bad_message::ReceivedBadMessage(process,
+                                    bad_message::WER_INVALID_EXTENSION_ID);
+    return;
+  }
+  OnEventHandlingDone(browser_context,
+                      extension_id.value_or(base::EmptyString()), event_name,
+                      request_id, process->GetID(), web_view_instance_id,
+                      worker_thread_id, service_worker_version_id);
 }
 
 // static
@@ -1016,7 +1074,8 @@ int WebRequestEventRouter::OnBeforeRequest(
           DCHECK_EQ(1u, actions.size());
           DCHECK(action.redirect_url);
           OnDNRActionMatched(browser_context, *request, action);
-          *new_url = GetNewUrl(action.redirect_url.value(), browser_context);
+          *new_url = GetNewUrl(action.extension_id, action.redirect_url.value(),
+                               browser_context);
           // Collect redirect action data for the Extension Telemetry Service.
           if (action.type == DNRRequestAction::Type::REDIRECT) {
             ExtensionsBrowserClient::Get()
@@ -1250,7 +1309,8 @@ int WebRequestEventRouter::OnHeadersReceived(
 
           extension_web_request_api_helpers::
               RedirectRequestAfterHeadersReceived(
-                  GetNewUrl(action.redirect_url.value(), browser_context),
+                  GetNewUrl(action.extension_id, action.redirect_url.value(),
+                            browser_context),
                   **override_response_headers,
                   preserve_fragment_on_redirect_url);
           return net::OK;
@@ -1665,9 +1725,9 @@ void WebRequestEventRouter::DispatchEventToListeners(
     }
 
     // Filter out the optional keys that this listener didn't request.
-    base::ListValue args_filtered;
+    scoped_refptr<EventArgs> args_filtered = base::MakeRefCounted<EventArgs>();
 
-    args_filtered.Append(event_details->GetFilteredDict(
+    args_filtered->data.Append(event_details->GetFilteredDict(
         listener->extra_info_spec, PermissionHelper::Get(browser_context),
         listener->id.extension_id, crosses_incognito));
 
@@ -1819,8 +1879,8 @@ int WebRequestEventRouter::DispatchEventToTargets(
     // The renderer matches its listeners itself and filters the details per
     // listener, so the dispatched details carry the union of the group's
     // options.
-    base::ListValue args;
-    args.Append(event_details.GetFilteredDict(
+    scoped_refptr<EventArgs> args = base::MakeRefCounted<EventArgs>();
+    args->data.Append(event_details.GetFilteredDict(
         union_spec_all, PermissionHelper::Get(browser_context),
         key.extension_id, crosses_incognito));
     // An additional payload provides what the renderer needs to do the
@@ -1829,7 +1889,7 @@ int WebRequestEventRouter::DispatchEventToTargets(
     payload.Set(kContextDispatchWindowIdKey, request->frame_data.window_id);
     payload.Set(kContextDispatchInstanceIdKey, key.web_view_instance_id);
     payload.Set(kContextDispatchAwaitResponseKey, await_response);
-    args.Append(std::move(payload));
+    args->data.Append(std::move(payload));
 
     if (await_response) {
       BlockedRequest& blocked_request =
@@ -2145,6 +2205,13 @@ void WebRequestEventRouter::AppendResponseDelta(
     const std::string& event_name,
     EventResponse& response,
     int extra_info_spec) {
+  // Extensions may not redirect to a file:// URL without explicit local file
+  // access.
+  if (response.new_url.SchemeIsFile() &&
+      !util::AllowFileAccess(extension_id, blocked_request.browser_context)) {
+    response.new_url = GURL();
+  }
+
   helpers::EventResponseDelta delta =
       CalculateDelta(&blocked_request, &response, extra_info_spec);
 
@@ -3198,7 +3265,7 @@ int WebRequestEventRouter::ExecuteDeltas(
   if (blocked_request.event == EventTypes::kOnBeforeRequest) {
     CHECK(!blocked_request.callback.is_null());
     helpers::MergeOnBeforeRequestResponses(
-        request->url, blocked_request.response_deltas, blocked_request.new_url,
+        *request, blocked_request.response_deltas, blocked_request.new_url,
         &extension_id, &ignored_actions);
   } else if (blocked_request.event == EventTypes::kOnBeforeSendHeaders) {
     CHECK(!blocked_request.before_send_headers_callback.is_null());

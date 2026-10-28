@@ -36,6 +36,7 @@ namespace content {
 class BrowserContext;
 class RenderFrameHost;
 class WebContents;
+struct PermissionResult;
 }  // namespace content
 
 namespace content_settings {
@@ -68,10 +69,13 @@ class PermissionsClient {
   // Return the permissions client.
   static PermissionsClient* Get();
 
-  // It returns whether the embedded permission prompt is enabled
-  // allowlisted surfaces, such as new tab page, contextual tasks, and omnibox
-  // popup.
-  static bool AllowEmbeddedPermissionPromptForAllowlistedSurfaces();
+  // Returns true if the surface is omnibox everywhere, or if the embedded
+  // permission prompt flag is enabled for allowlisted surfaces (such as
+  // contextual tasks, NTP, omnibox popup).
+  static bool AllowEmbeddedPermissionPromptForSurface(
+      content::WebContents* web_contents);
+
+  virtual bool IsOmniboxEverywhere(content::WebContents* web_contents);
 
   // Retrieves the HostContentSettingsMap for this context. The returned pointer
   // has the same lifetime as |browser_context|.
@@ -243,6 +247,15 @@ class PermissionsClient {
   virtual std::optional<GURL> GetEmbeddingOriginOverride(
       const GURL& requesting_origin,
       content::RenderFrameHost* render_frame_host);
+
+  // Allows embedders to override the permission result for a specific
+  // RenderFrameHost (e.g. for PrivilegedWebContents). `requesting_origin` is
+  // the origin making the request. Returns std::nullopt if no embedder
+  // override applies.
+  virtual std::optional<content::PermissionResult> GetPermissionResultOverride(
+      content::RenderFrameHost* render_frame_host,
+      const GURL& requesting_origin,
+      ContentSettingsType permission);
 
   // Only verifies that WebUI is internal (chrome://) and trusted enough to skip
   // tab interface usage and use embedded permission prompt. Its identity is

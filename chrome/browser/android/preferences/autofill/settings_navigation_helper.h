@@ -42,13 +42,13 @@ enum class AutofillOptionsReferrer {
   // Private inference notice.
   kPrivateInferenceNotice = 8,
 
-  // Personal context AtMemory notice.
-  kPersonalContextAtmemoryNotice = 9,
+  // Obsolete: kPersonalContextAtmemoryNotice = 9,
+  // Obsolete: kPersonalContextAmbientAutofillNotice = 10,
 
-  // Personal context ambient autofill notice.
-  kPersonalContextAmbientAutofillNotice = 10,
+  // Settings search in Chrome settings.
+  kSettingsSearch = 11,
 
-  kMaxValue = kPersonalContextAmbientAutofillNotice,
+  kMaxValue = kSettingsSearch,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/autofill/enums.xml:AutofillOptionsReferrer)
 
@@ -68,11 +68,10 @@ void ShowAutofillTravelSettings(content::WebContents* web_contents);
 void ShowAutofillShoppingSettings(content::WebContents* web_contents);
 
 // Opens the autofill settings page for personal context.
-void ShowAutofillPersonalContextSettings(content::WebContents* web_contents,
-                                         AutofillOptionsReferrer referrer);
+void ShowAutofillPersonalContextSettings(content::WebContents* web_contents);
 
 // Open the autofill settings page.
-void ShowAutofillSettings(content::WebContents* web_contents);
+void ShowAutofillSettingsPage(content::WebContents* web_contents);
 
 }  // namespace autofill
 

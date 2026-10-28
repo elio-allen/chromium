@@ -8,7 +8,6 @@
 
 #include <utility>
 
-// TODO(crbug.com/445720439): Remove this import.
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/strings/string_number_conversions.h"
@@ -20,7 +19,6 @@
 #include "extensions/browser/api/alarms/alarms_api_constants.h"
 #include "extensions/common/api/alarms.h"
 #include "extensions/common/error_utils.h"
-// TODO(crbug.com/445720439): Remove this import.
 #include "extensions/common/extension_features.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom.h"
 
@@ -41,29 +39,22 @@ constexpr char kMaxAlarmsError[] =
     "An extension cannot have more than %d active alarms.";
 
 constexpr char kWarningMinimumDevDelay[] =
-    "Alarm %s is less than the minimum duration of %zu seconds."
+    "Alarm %s is less than the minimum duration of %zu %s."
     " In packed extensions, alarm \"%s\" will fire after the minimum duration.";
 
 constexpr char kWarningMinimumReleaseDelay[] =
-    "Alarm %s is less than the minimum duration of %zu seconds."
+    "Alarm %s is less than the minimum duration of %zu %s."
     " Alarm \"%s\" will fire after the minimum duration.";
 
 constexpr size_t kMaximumNameLength = 1024;
 
-constexpr char kWarningMaximumNameLength[] =
-    "Alarm length is %u characters which exceeds future limit of %u "
-    "characters. Chrome 150 will throw an error for alarm creation with names "
-    "longer than %u characters.";
-
 constexpr char kErrorMaximumNameLength[] =
-    "Alarm name size is %u bytes which exceeds the limit of %u bytes.";
+    "Alarm name size is %zu bytes which exceeds the limit of %zu bytes.";
 
-// TODO(crbug.com/445720439): Remove length_limit param around M155.
 bool ValidateAlarmCreateInfo(const alarms::AlarmCreateInfo& create_info,
                              const Extension* extension,
                              std::string* error,
-                             std::vector<std::string>* warnings,
-                             bool length_limit) {
+                             std::vector<std::string>& warnings) {
   if (create_info.delay_in_minutes && create_info.when) {
     *error = kBothRelativeAndAbsoluteTime;
     return false;
@@ -74,8 +65,7 @@ bool ValidateAlarmCreateInfo(const alarms::AlarmCreateInfo& create_info,
     *error = kNoScheduledTime;
     return false;
   }
-  // TODO(crbug.com/445720439): Remove length_limit switch around M155.
-  if (length_limit && (create_info.name->length() > kMaximumNameLength)) {
+  if (create_info.name->length() > kMaximumNameLength) {
     *error = base::StringPrintf(kErrorMaximumNameLength,
                                 create_info.name->length(), kMaximumNameLength);
     return false;
@@ -96,40 +86,41 @@ bool ValidateAlarmCreateInfo(const alarms::AlarmCreateInfo& create_info,
   const bool is_unpacked = Manifest::IsUnpackedLocation(extension->location());
   if (create_info.delay_in_minutes) {
     if (base::Minutes(*create_info.delay_in_minutes) < min_packed_delay) {
-      if (is_unpacked) {
-        warnings->push_back(base::StringPrintf(kWarningMinimumDevDelay, "delay",
-                                               min_packed_delay.InSeconds(),
-                                               create_info.name->c_str()));
+      if (is_unpacked && extension->manifest_version() == 2) {
+        warnings.push_back(base::StringPrintf(
+            kWarningMinimumDevDelay, "delay", min_packed_delay.InSeconds(),
+            min_packed_delay.InSeconds() == 1 ? "second" : "seconds",
+            create_info.name->c_str()));
       } else {
-        warnings->push_back(base::StringPrintf(
+        // Manifest V3 has the same delay for packed and unpacked extensions, so
+        // it is fine to use the packed delay here even though we may be in this
+        // case for an unpacked MV3 item.
+        warnings.push_back(base::StringPrintf(
             kWarningMinimumReleaseDelay, "delay", min_packed_delay.InSeconds(),
+            min_packed_delay.InSeconds() == 1 ? "second" : "seconds",
             create_info.name->c_str()));
       }
     }
   }
   if (create_info.period_in_minutes) {
     if (base::Minutes(*create_info.period_in_minutes) < min_packed_delay) {
-      if (is_unpacked) {
-        warnings->push_back(base::StringPrintf(
+      if (is_unpacked && extension->manifest_version() == 2) {
+        warnings.push_back(base::StringPrintf(
             kWarningMinimumDevDelay, "period", min_packed_delay.InSeconds(),
+            min_packed_delay.InSeconds() == 1 ? "second" : "seconds",
             create_info.name->c_str()));
       } else {
-        warnings->push_back(base::StringPrintf(
+        // Manifest V3 has the same delay for packed and unpacked extensions, so
+        // it is fine to use the packed delay here even though we may be in this
+        // case for an unpacked MV3 item.
+        warnings.push_back(base::StringPrintf(
             kWarningMinimumReleaseDelay, "period", min_packed_delay.InSeconds(),
+            min_packed_delay.InSeconds() == 1 ? "second" : "seconds",
             create_info.name->c_str()));
       }
     }
   }
 
-  // W3C WECG plans to restrict overly long alarm names. Raise awareness about
-  // this upcoming limit to encourage migration to local StorageArea
-  // (chrome.storage.local).
-  // TODO(crbug.com/445720439): Convert this warning into an error around M155.
-  if (create_info.name->length() > kMaximumNameLength) {
-    warnings->push_back(base::StringPrintf(
-        kWarningMaximumNameLength, create_info.name->length(),
-        kMaximumNameLength, kMaximumNameLength));
-  }
   return true;
 }
 
@@ -162,13 +153,6 @@ ExtensionFunction::ResponseAction AlarmsCreateFunction::Run() {
         kMaxAlarmsError, AlarmManager::kMaxAlarmsPerExtension)));
   }
 
-  // Length limit always applies to strings passed via object "name" attribute,
-  // but can be disabled for old-style alarm names passed as the first argument.
-  // TODO(crbug.com/445720439): Remove length_limit switch around M155.
-  const bool length_limit =
-      params->alarm_info.name.has_value() ||
-      base::FeatureList::IsEnabled(
-          extensions_features::kApiAlarmsCreateLengthLimit);
   if (!params->alarm_info.name.has_value()) {
     params->alarm_info.name = params->name.value_or(kDefaultAlarmName);
   }
@@ -176,7 +160,7 @@ ExtensionFunction::ResponseAction AlarmsCreateFunction::Run() {
   std::vector<std::string> warnings;
   std::string error;
   if (!ValidateAlarmCreateInfo(params->alarm_info, extension(), &error,
-                               &warnings, length_limit)) {
+                               warnings)) {
     return RespondNow(Error(std::move(error)));
   }
   for (const std::string& warning : warnings) {
@@ -266,7 +250,10 @@ ExtensionFunction::ResponseAction AlarmsClearAllFunction::Run() {
 }
 
 void AlarmsClearAllFunction::Callback() {
-  Respond(WithArguments(true));
+  Respond(base::FeatureList::IsEnabled(
+              extensions_features::kApiAlarmsClearAllReturnUndefined)
+              ? NoArguments()
+              : WithArguments(true));
 }
 
 }  // namespace extensions

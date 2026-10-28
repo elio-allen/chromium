@@ -15,10 +15,10 @@
 #include "base/time/time.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_event_dispatcher.h"
-#include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animation_observer.h"
 #include "ui/compositor/layer_animation_sequence.h"
 #include "ui/compositor/layer_animator.h"
+#include "ui/compositor/layer_solid_color.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 
 namespace ash {
@@ -208,6 +208,7 @@ void DisplayAnimator::ClearHidingLayers() {
 std::unique_ptr<ui::LayerSolidColor> DisplayAnimator::AddHidingLayer(
     aura::Window* root_window) {
   auto layer = std::make_unique<ui::LayerSolidColor>();
+  layer->SetName("DisplayAnimator:Hiding");
   layer->SetColor(SkColors::kBlack);
   layer->SetBounds(root_window->bounds());
 

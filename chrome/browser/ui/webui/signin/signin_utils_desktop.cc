@@ -26,7 +26,7 @@
 
 SigninUIError CanOfferSignin(Profile* profile,
                              const GaiaId& gaia_id,
-                             const std::string& email,
+                             std::string_view email,
                              bool allow_account_from_other_profile,
                              bool ignore_reauth_error) {
   if (!profile) {
@@ -132,7 +132,7 @@ SigninUIError CanOfferSignin(Profile* profile,
 }
 
 bool IsCrossAccountError(Profile* profile, const GaiaId& gaia_id) {
-  DCHECK(!gaia_id.empty());
+  CHECK(!gaia_id.empty(), base::NotFatalUntil::M162);
   const GaiaId last_gaia_id(
       profile->GetPrefs()->GetString(prefs::kGoogleServicesLastSyncingGaiaId));
   return !last_gaia_id.empty() && gaia_id != last_gaia_id;

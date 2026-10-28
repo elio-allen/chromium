@@ -69,14 +69,13 @@ void LayoutGridLanes::RemoveChild(LayoutObject* child) {
 void LayoutGridLanes::StyleDidChange(
     StyleDifference diff,
     const ComputedStyle* old_style,
+    const ComputedStyle& new_style,
     const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
-  LayoutBlock::StyleDidChange(diff, old_style, style_change_context);
+  LayoutBlock::StyleDidChange(diff, old_style, new_style, style_change_context);
   if (!old_style) {
     return;
   }
-
-  const ComputedStyle& new_style = StyleRef();
 
   // The full direction captures the orientation and the fill/track reverse
   // flags, and the packing mode changes how auto-placed items fill the lanes;
@@ -100,12 +99,12 @@ void LayoutGridLanes::StyleDidChange(
 
 bool LayoutGridLanes::HasTopOverflow() const {
   NOT_DESTROYED();
-  return GetOverflowConverter(StyleRef()).Top();
+  return GetOverflowConverter(Style()).Top();
 }
 
 bool LayoutGridLanes::HasLeftOverflow() const {
   NOT_DESTROYED();
-  return GetOverflowConverter(StyleRef()).Left();
+  return GetOverflowConverter(Style()).Left();
 }
 
 const GridLayoutData* LayoutGridLanes::LayoutData() const {
@@ -115,7 +114,7 @@ const GridLayoutData* LayoutGridLanes::LayoutData() const {
 Vector<LayoutUnit> LayoutGridLanes::GridTrackPositions(
     GridTrackSizingDirection track_direction) const {
   NOT_DESTROYED();
-  if (track_direction != StyleRef().GridLanesTrackSizingDirection()) {
+  if (track_direction != Style().GridLanesTrackSizingDirection()) {
     return {};
   }
   return LayoutGrid::ComputeExpandedPositions(track_direction == kForColumns
@@ -184,7 +183,7 @@ wtf_size_t LayoutGridLanes::ExplicitGridEndForDirection(
 Vector<LayoutUnit, 1> LayoutGridLanes::TrackSizesForComputedStyle(
     GridTrackSizingDirection track_direction) const {
   NOT_DESTROYED();
-  if (track_direction != StyleRef().GridLanesTrackSizingDirection()) {
+  if (track_direction != Style().GridLanesTrackSizingDirection()) {
     return {};
   }
   return LayoutGrid::CollectTrackSizesForComputedStyle(LayoutData(),

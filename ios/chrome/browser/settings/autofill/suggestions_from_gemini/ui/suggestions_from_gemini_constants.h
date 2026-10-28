@@ -9,14 +9,21 @@
 
 #import "ios/chrome/browser/shared/ui/table_view/table_view_model.h"
 
+// The policy states for the Suggestions from Gemini settings.
+enum class SuggestionsFromGeminiPolicyState {
+  kFullyAllowed,
+  kLoggingDisabled,
+  kFullyDisabled,
+};
+
 // Section identifiers for the Suggestions from Gemini table view.
-typedef NS_ENUM(NSInteger, SectionIdentifier) {
+typedef NS_ENUM(NSInteger, SuggestionsFromGeminiSectionIdentifier) {
   SectionIdentifierSuggestionsFromGemini = kSectionIdentifierEnumZero,
   SectionIdentifierHelpImprove,
 };
 
 // Item types for the Suggestions from Gemini table view.
-typedef NS_ENUM(NSInteger, ItemType) {
+typedef NS_ENUM(NSInteger, SuggestionsFromGeminiItemType) {
   ItemTypeFindAndFillSwitch = kItemTypeEnumZero,
   ItemTypeManageConnectedApps,
   ItemTypeHelpImprove,

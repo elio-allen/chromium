@@ -152,6 +152,19 @@ class AwMetricsServiceClient
   void SetFastStartupForTesting(bool fast_startup_for_testing);
   void SetUploadIntervalForTesting(const base::TimeDelta& upload_interval);
 
+  // Returns true if SetHaveMetricsConsent() has been called.
+  bool IsConsentDetermined() const;
+
+  // Registers a synthetic field trial with the MetricsService.
+  void RegisterSyntheticFieldTrial(
+      std::string_view trial_name,
+      std::string_view group_name,
+      variations::SyntheticTrialAnnotationMode annotation_mode);
+
+  // Flushes any synthetic field trials that were queued in Java before native
+  // metrics initialization.
+  void FlushPendingSyntheticTrialsFromJava();
+
   // EnabledStateProvider:
   bool IsConsentGiven() const override;
   bool IsReportingEnabled() const override;
@@ -238,9 +251,6 @@ class AwMetricsServiceClient
   // Path where files related to metrics are stored.
   base::FilePath GetMetricsDir();
 
-  // Path for the pre-migration metrics directory, used for migration testing.
-  base::FilePath GetOldMetricsDirForTesting();
-
   // Set up the path used to store metrics. Separate from `Initialize` to enable
   // this to check feature flags, which aren't initialized yet when `Initialize`
   // runs.
@@ -322,7 +332,6 @@ class AwMetricsServiceClient
   base::Time time_created_;
   std::unique_ptr<Delegate> delegate_;
   base::FilePath metrics_dir_;
-  base::FilePath old_metrics_dir_;
 
   base::WeakPtrFactory<AwMetricsServiceClient> weak_ptr_factory_{this};
 };

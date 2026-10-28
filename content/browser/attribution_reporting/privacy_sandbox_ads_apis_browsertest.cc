@@ -35,12 +35,6 @@ namespace content {
 
 namespace {
 constexpr char kBaseDataDir[] = "content/test/data/";
-
-constexpr char kAddFencedFrameScript[] = R"(
-  const fenced_frame = document.createElement('fencedframe');
-  document.body.appendChild(fenced_frame);
-)";
-
 }  // namespace
 
 class PrivacySandboxAdsAPIsBrowserTestBase : public ContentBrowserTest {
@@ -88,8 +82,7 @@ class PrivacySandboxAdsAPIsM1OverrideBrowserTest
     feature_list_.InitWithFeatures(
         {features::kPrivacySandboxAdsAPIsM1Override,
          network::features::kBrowsingTopics, blink::features::kFledge,
-         blink::features::kAdInterestGroupAPI, blink::features::kFencedFrames,
-         network::features::kSharedStorageAPI},
+         blink::features::kAdInterestGroupAPI, blink::features::kFencedFrames},
         /*disabled_features=*/{});
   }
 
@@ -104,18 +97,13 @@ IN_PROC_BROWSER_TEST_F(PrivacySandboxAdsAPIsM1OverrideBrowserTest,
   EXPECT_EQ(true, EvalJs(shell(),
                          "document.featurePolicy.features().includes('"
                          "browsing-topics')"));
-  EXPECT_EQ(true, EvalJs(shell(),
-                         "document.featurePolicy.features().includes('"
-                         "join-ad-interest-group')"));
 
-  EXPECT_EQ(true, ExecJs(root(), "sharedStorage !== undefined"));
   EXPECT_EQ(true, EvalJs(shell(), "document.browsingTopics !== undefined"));
   EXPECT_EQ(true, EvalJs(shell(), "navigator.runAdAuction !== undefined"));
   EXPECT_EQ(true,
             EvalJs(shell(), "navigator.joinAdInterestGroup !== undefined"));
-
-  EXPECT_TRUE(ExecJs(root(), kAddFencedFrameScript));
-  EXPECT_EQ(1U, root()->child_count());
+  EXPECT_EQ(true,
+            EvalJs(shell(), "window.HTMLFencedFrameElement !== undefined"));
 }
 
 class PrivacySandboxAdsAPIsM1OverrideNoFeatureBrowserTest
@@ -126,7 +114,7 @@ class PrivacySandboxAdsAPIsM1OverrideNoFeatureBrowserTest
         {features::kPrivacySandboxAdsAPIsM1Override},
         {network::features::kBrowsingTopics,
          blink::features::kAdInterestGroupAPI, blink::features::kFledge,
-         blink::features::kFencedFrames, network::features::kSharedStorageAPI});
+         blink::features::kFencedFrames});
   }
 
  private:
@@ -140,20 +128,8 @@ IN_PROC_BROWSER_TEST_F(PrivacySandboxAdsAPIsM1OverrideNoFeatureBrowserTest,
   EXPECT_EQ(false, EvalJs(shell(),
                           "document.featurePolicy.features().includes('"
                           "browsing-topics')"));
-  EXPECT_EQ(false, EvalJs(shell(),
-                          "document.featurePolicy.features().includes('"
-                          "join-ad-interest-group')"));
-  EXPECT_EQ(false, EvalJs(shell(),
-                          "document.featurePolicy.features().includes('"
-                          "run-ad-auction')"));
-  EXPECT_EQ(false, EvalJs(shell(),
-                          "document.featurePolicy.features().includes('"
-                          "shared-storage')"));
-  EXPECT_EQ(false, EvalJs(shell(),
-                          "document.featurePolicy.features().includes('"
-                          "private-aggregation')"));
-  EXPECT_TRUE(ExecJs(root(), kAddFencedFrameScript));
-  EXPECT_EQ(0U, root()->child_count());
+  EXPECT_EQ(false,
+            EvalJs(shell(), "window.HTMLFencedFrameElement !== undefined"));
 }
 
 }  // namespace content

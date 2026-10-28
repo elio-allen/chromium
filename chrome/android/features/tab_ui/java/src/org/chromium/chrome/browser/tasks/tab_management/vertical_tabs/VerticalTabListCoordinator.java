@@ -8,76 +8,106 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
-import android.content.res.Resources;
+import android.content.Context;
 import android.graphics.Point;
 import android.graphics.PointF;
 import android.graphics.Rect;
+import android.view.DragEvent;
 import android.view.GestureDetector;
+import android.view.HapticFeedbackConstants;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewStub;
+import android.view.Window;
 
+import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import org.chromium.base.Callback;
+import org.chromium.base.CallbackUtils;
+import org.chromium.base.MathUtils;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.Token;
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
+import org.chromium.chrome.browser.back_press.BackPressManager;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
 import org.chromium.chrome.browser.compositor.overlays.strip.TabContextMenuCoordinator;
+import org.chromium.chrome.browser.compositor.overlays.strip.TabContextMenuCoordinator.AnchorInfo;
 import org.chromium.chrome.browser.compositor.overlays.strip.TabContextMenuCoordinator.TabStripLayoutType;
 import org.chromium.chrome.browser.compositor.overlays.strip.TabGroupContextMenuCoordinator;
 import org.chromium.chrome.browser.compositor.overlays.strip.TabStripContextMenuCoordinator;
+import org.chromium.chrome.browser.compositor.overlays.strip.TabUnderlineManager;
+import org.chromium.chrome.browser.compositor.overlays.strip.reorder.StripDragShadowView;
+import org.chromium.chrome.browser.contextual_tasks.ContextualTasksUtils;
 import org.chromium.chrome.browser.data_sharing.DataSharingTabManager;
 import org.chromium.chrome.browser.dragdrop.ChromeDragAndDropBrowserDelegate;
+import org.chromium.chrome.browser.dragdrop.ChromeDragDropUtils;
+import org.chromium.chrome.browser.dragdrop.ChromeMultiTabDropDataAndroid;
+import org.chromium.chrome.browser.dragdrop.ChromeTabDropDataAndroid;
+import org.chromium.chrome.browser.dragdrop.ChromeTabGroupDropDataAndroid;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.hub.PaneId;
+import org.chromium.chrome.browser.glic.GlicEnabling;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager;
+import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestratorFactory;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabFavicon;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabSelectionType;
+import org.chromium.chrome.browser.tab_ui.MultiThumbnailCardProvider;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tab_ui.TabListFaviconProvider;
 import org.chromium.chrome.browser.tab_ui.TabListMode;
+import org.chromium.chrome.browser.tabmodel.NextTabSelectionUtil;
 import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabCreatorUtil;
+import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
+import org.chromium.chrome.browser.tabmodel.TabGroupMetadata;
 import org.chromium.chrome.browser.tabmodel.TabGroupUtils.TabGroupCreationCallback;
+import org.chromium.chrome.browser.tabmodel.TabList;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
-import org.chromium.chrome.browser.tasks.tab_management.StaticPinnedTabsMediator;
+import org.chromium.chrome.browser.tabwindow.TabWindowManager;
+import org.chromium.chrome.browser.tasks.tab_management.NestedTabReorderUtils;
 import org.chromium.chrome.browser.tasks.tab_management.TabActionButtonData;
+import org.chromium.chrome.browser.tasks.tab_management.TabActionButtonData.TabActionButtonType;
 import org.chromium.chrome.browser.tasks.tab_management.TabActionListener;
 import org.chromium.chrome.browser.tasks.tab_management.TabComponentId;
-import org.chromium.chrome.browser.tasks.tab_management.TabGridViewBinder;
+import org.chromium.chrome.browser.tasks.tab_management.TabDragHandlerBase;
+import org.chromium.chrome.browser.tasks.tab_management.TabListConfig;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorCoordinator;
 import org.chromium.chrome.browser.tasks.tab_management.TabListMediator;
-import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListConfigDelegate;
 import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListItemOnClickListenerProvider;
 import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListLayoutType;
 import org.chromium.chrome.browser.tasks.tab_management.TabListModel;
 import org.chromium.chrome.browser.tasks.tab_management.TabListRecyclerView;
+import org.chromium.chrome.browser.tasks.tab_management.TabMultiSelectHelper;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.UiType;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherBackPressHandlerManager;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherDragHandler;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherDragHandler.DragHandlerDelegate;
-import org.chromium.chrome.browser.tasks.tab_management.TabUiThemeUtil;
-import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTabHoverCardController.TabHoverCardListener;
+import org.chromium.chrome.browser.tasks.tab_management.TabUiUtils;
+import org.chromium.chrome.browser.tasks.tab_management.pinned_tabs.PinnedTabGridMediator;
+import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalExternalViewDragDropReorderStrategy.DropTargetResult;
+import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTabItemHoverController.TabHoverListener;
 import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTabListProperties.RailCollapseState;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
@@ -88,19 +118,26 @@ import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateMa
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager.AppHeaderObserver;
 import org.chromium.components.browser_ui.util.motion.MotionEventInfo;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
+import org.chromium.ui.accessibility.KeyboardFocusUtil;
 import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.dragdrop.DragAndDropDelegate;
 import org.chromium.ui.dragdrop.DragAndDropDelegateImpl;
+import org.chromium.ui.dragdrop.DragDropGlobalState;
+import org.chromium.ui.dragdrop.DragDropMetricUtils;
+import org.chromium.ui.dragdrop.DragDropMetricUtils.DragDropType;
+import org.chromium.ui.modelutil.ListObservable;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
-import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 import org.chromium.ui.recyclerview.widget.ItemTouchHelper2;
 import org.chromium.ui.widget.RectProvider;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
@@ -108,8 +145,43 @@ import java.util.function.Supplier;
 /** Coordinator to manage and display the Vertical Tab List. */
 @NullMarked
 public class VerticalTabListCoordinator {
-    static final int DEFAULT_GRID_SPAN_COUNT = 4;
-    static final int COLLAPSED_GRID_SPAN_COUNT = 1;
+    /**
+     * Observes external (i.e. OS-level) drags of tabs or tab groups started from this list. Drags
+     * started in other windows and internal (in-list) reorders are not reported.
+     */
+    interface ExternalDragObserver {
+        /**
+         * Called once an external drag started from this list has successfully started. Called in
+         * the same stack as the OS accepting the drag, before any later event can be processed.
+         */
+        void onExternalDragStarted();
+
+        /**
+         * Called once the external drag reported by {@link #onExternalDragStarted} has ended, or
+         * when this list is destroyed while that drag is in progress. Called from within the
+         * dispatch of the drag's {@code ACTION_DRAG_ENDED} event.
+         */
+        void onExternalDragEnded();
+    }
+
+    /**
+     * Where on the rail a drop landed. The rail is not only its two lists: between and around them
+     * sit the header, the new tab button and the rail's own margin, and a drop there is currently
+     * accepted and reparented against the nearest item. This records how often that happens, which
+     * is the input to deciding whether it should.
+     */
+    // LINT.IfChange(AndroidVerticalTabsDropRegion)
+    @IntDef({DropRegion.MAIN_LIST, DropRegion.PINNED_GRID, DropRegion.OUTSIDE_BOTH_LISTS})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface DropRegion {
+        int MAIN_LIST = 0;
+        int PINNED_GRID = 1;
+        int OUTSIDE_BOTH_LISTS = 2;
+        int COUNT = 3;
+    }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:AndroidVerticalTabsDropRegion)
+
     private static @Nullable Supplier<TabSwitcherDragHandler>
             sTabSwitcherDragHandlerSupplierForTesting;
     private final VerticalTabRailLayout mContainerView;
@@ -118,11 +190,11 @@ public class VerticalTabListCoordinator {
     private final TabListMediator mMediator;
     private final VerticalTabListRecyclerView mRecyclerView;
     private final TabListModel mPinnedTabsModelList;
-    private final StaticPinnedTabsMediator mPinnedTabsMediator;
-    private final TabListRecyclerView mPinnedTabsRecyclerView;
-    private final SimpleRecyclerViewAdapter mPinnedTabsAdapter;
-    private final GridLayoutManager mPinnedLayoutManager;
+    private final PinnedTabGridMediator mPinnedTabsMediator;
+    private final VerticalPinnedTabListRecyclerView mPinnedTabsRecyclerView;
+    private final ListObservable.ListObserver<Void> mPinnedTabsListObserver;
     private final TabModelSelector mTabModelSelector;
+    private final Profile mProfile;
     private final WindowAndroid mWindowAndroid;
     private final ActivityResultTracker mActivityResultTracker;
     private final MultiInstanceManager mMultiInstanceManager;
@@ -134,26 +206,95 @@ public class VerticalTabListCoordinator {
     private final MonotonicObservableSupplier<ShareDelegate> mShareDelegateSupplier;
     private final DataSharingTabManager mDataSharingTabManager;
     private final VerticalTabGroupSpineDecoration mSpineDecoration;
+    private final VerticalTabDropIndicatorDecoration mDropIndicatorDecoration;
+    private final VerticalTabPinnedDropIndicatorDecoration mPinnedDropIndicatorDecoration;
     private final TabModelSelectorTabModelObserver mTabModelSelectorTabModelObserver;
     private final NonNullObservableSupplier<Boolean> mVerticalTabsActiveSupplier;
+    private final SettableNonNullObservableSupplier<Integer> mVerticalTabsWidthSupplier;
     private final VerticalTabRailCollapseController mCollapseController;
+    private final VerticalTabRailHoverController mRailHoverController;
     private final Callback<Boolean> mActiveObserver = this::setActive;
     private final PropertyModel mContainerModel;
-    private final List<TabSwitcherDragHandler> mTabSwitcherDragHandlers = new ArrayList<>();
+    private final VerticalExternalViewDragDropReorderStrategy mReorderStrategy;
     private final View.OnLayoutChangeListener mContainerLayoutChangeListener;
-    private final VerticalTabHoverCardController mTabHoverCardController;
+    private final View.OnLayoutChangeListener mPinnedTabsLayoutChangeListener;
+    private final VerticalTabItemHoverController mTabItemHoverController;
     private final RecyclerView.OnScrollListener mOnScrollListener;
+    private final VerticalTabKeyboardHandler mKeyboardHandler;
+    private final BackPressManager mBackPressManager;
+    private final TabSwitcherBackPressHandlerManager mBackPressHandlerManager =
+            new TabSwitcherBackPressHandlerManager();
     private final @Nullable DesktopWindowStateManager mDesktopWindowStateManager;
     private final @Nullable AppHeaderObserver mAppHeaderObserver;
     private final @Nullable BooleanSupplier mCanActivateTabLayoutToggleMenuSupplier;
     private final @Nullable UndoBarThrottle mUndoBarThrottle;
+    private final @Nullable TabUnderlineManager mTabUnderlineManager;
+    private final BrowserControlsStateProvider mBrowserControlsStateProvider;
+    private final Supplier<@Nullable TabContentManager> mTabContentManagerSupplier;
+    private final List<DragSurface> mDragSurfaces = new ArrayList<>();
+    private final TabSwitcherDragHandler mTabSwitcherDragHandler;
+    private final DragHandlerDelegate mNonOriginatingDragHandlerDelegate;
     private @Nullable TabStripContextMenuCoordinator mTabStripContextMenuCoordinator;
+    private @Nullable VerticalTabCollapseButtonContextMenuCoordinator
+            mCollapseButtonContextMenuCoordinator;
     private @Nullable TabContextMenuCoordinator mTabContextMenuCoordinator;
     private @Nullable TabGroupContextMenuCoordinator mTabGroupContextMenuCoordinator;
-    private @Nullable Token mLastDraggedGroupId;
-    private @Nullable VerticalTabListItemTouchHelperCallback mMainTouchHelperCallback;
+    private @Nullable StripDragShadowView mDragShadowView;
+    private @Nullable MultiThumbnailCardProvider mMultiThumbnailCardProvider;
+
+    /** Decor view the drag-end relay is installed on while a rail-initiated drag is in flight. */
+    private @Nullable View mDragEndRelayView;
+
+    private @Nullable ExternalDragObserver mExternalDragObserver;
+
+    /** Whether an external drag started from this list is in progress. */
+    private boolean mIsExternalDragInProgress;
 
     private boolean mIsActive;
+
+    /**
+     * The per-{@link RecyclerView} drag machinery that the coordinator routes between.
+     *
+     * <p>The drag handler is not part of a surface: a single listener on the rail container
+     * receives every drag event for both lists. The {@link ItemTouchHelper2} and its callback stay
+     * strictly one per list: they own that list's item positions, so driving one with the other's
+     * coordinates is crbug.com/509226293.
+     */
+    static class DragSurface {
+        public final RecyclerView recyclerView;
+        public final ItemTouchHelper2 itemTouchHelper;
+        public final VerticalTabListItemTouchHelperCallback touchHelperCallback;
+        private final RecyclerView.OnItemTouchListener mBeforeTouchListener;
+        private final RecyclerView.OnItemTouchListener mMouseDragDetector;
+        private final RecyclerView.OnItemTouchListener mAfterTouchListener;
+
+        DragSurface(
+                RecyclerView recyclerView,
+                ItemTouchHelper2 itemTouchHelper,
+                VerticalTabListItemTouchHelperCallback touchHelperCallback,
+                RecyclerView.OnItemTouchListener beforeTouchListener,
+                RecyclerView.OnItemTouchListener mouseDragDetector,
+                RecyclerView.OnItemTouchListener afterTouchListener) {
+            this.recyclerView = recyclerView;
+            this.itemTouchHelper = itemTouchHelper;
+            this.touchHelperCallback = touchHelperCallback;
+            mBeforeTouchListener = beforeTouchListener;
+            mMouseDragDetector = mouseDragDetector;
+            mAfterTouchListener = afterTouchListener;
+        }
+
+        void destroy() {
+            touchHelperCallback.setOnLongPressTabItemEventListener(null);
+            touchHelperCallback.setOnDragStartCallback(null);
+            touchHelperCallback.setOnDragStateChangedCallback(null);
+            touchHelperCallback.setOnDragOutListener(null);
+            touchHelperCallback.cancelDelayedExternalItemRestoration();
+            recyclerView.removeOnItemTouchListener(mBeforeTouchListener);
+            recyclerView.removeOnItemTouchListener(mMouseDragDetector);
+            recyclerView.removeOnItemTouchListener(mAfterTouchListener);
+            itemTouchHelper.attachToRecyclerView(null);
+        }
+    }
 
     private class VerticalTabListClickHandler implements TabListItemOnClickListenerProvider {
         private final TabActionListener mTabGroupClickedListener =
@@ -167,7 +308,7 @@ public class VerticalTabListCoordinator {
                     @Override
                     public void run(
                             View view, String syncId, @Nullable MotionEventInfo triggeringMotion) {
-                        // Intentional no-op.
+                        // Intentional no-op: Sync groups are not supported in Vertical Tabs.
                     }
                 };
 
@@ -182,9 +323,7 @@ public class VerticalTabListCoordinator {
         }
 
         @Override
-        public void onTabSelecting(int tabId, boolean fromActionButton) {
-            // TODO(crbug.com/509226293): Coordinate tab selection with smooth side panel
-            // dismissal or collapse animations when running on narrow screens.
+        public void onTabSelecting(int tabId) {
             TabModelUtils.selectTabById(mTabModelSelector, tabId, TabSelectionType.FROM_USER);
         }
 
@@ -201,12 +340,58 @@ public class VerticalTabListCoordinator {
                 Tab tab,
                 PropertyModel model,
                 Supplier<TabActionListener> defaultOverflowListenerSupplier) {
-            // Vertical Tabs group header cards act strictly as accordion expansion toggles
-            // and do not display any action button (neither close nor overflow menu).
-            return null;
+            Token tabGroupId = tab.getTabGroupId();
+            if (tabGroupId == null) {
+                return null;
+            }
+            return new TabActionButtonData(
+                    TabActionButtonType.OVERFLOW,
+                    new TabActionListener() {
+                        @Override
+                        public void run(
+                                View view, int tabId, @Nullable MotionEventInfo triggeringMotion) {
+                            RecordUserAction.record(
+                                    "Android.VerticalTabs.GroupHeaderMenuButtonClicked");
+                            showTabGroupHeaderContextMenu(
+                                    getItemViewAnchorRectProvider(view), tabGroupId);
+                        }
+
+                        @Override
+                        public void run(
+                                View view,
+                                String syncId,
+                                @Nullable MotionEventInfo triggeringMotion) {
+                            // Intentional no-op: Sync groups are not supported in Vertical Tabs.
+                        }
+                    });
         }
     }
 
+    /**
+     * Constructs a {@link VerticalTabListCoordinator}.
+     *
+     * @param activity The host activity.
+     * @param tabModelSelector The selector for accessing tab models.
+     * @param profile The current user profile.
+     * @param verticalTabsActionDelegate Delegate for performing actions on tabs.
+     * @param windowAndroid The window hosting the UI.
+     * @param activityResultTracker Tracker for activity results.
+     * @param multiInstanceManager Manager for multi-instance Chrome.
+     * @param snackbarManager Manager for displaying snackbars.
+     * @param desktopWindowStateManager Manager for desktop window state.
+     * @param shareDelegateSupplier Supplier for the share delegate.
+     * @param dataSharingTabManager Manager for collaborative tab group sharing.
+     * @param verticalTabsActiveSupplier Supplier indicating if vertical tabs UI is active.
+     * @param verticalTabsWidthSupplier Supplier for the width of the vertical tabs rail.
+     * @param canActivateTabLayoutToggleMenuSupplier Supplier for whether layout toggle menu is
+     *     enabled.
+     * @param tabHoverCardViewStub ViewStub for inflating the tab hover card.
+     * @param tabGroupHoverCardViewStub ViewStub for inflating the tab group hover card.
+     * @param tabContentManagerSupplier Supplier for the tab content manager.
+     * @param undoBarThrottle Throttler for undo bar messages.
+     * @param browserControlsStateProvider Provider for browser controls sizing and state.
+     * @param backPressManager Manager for intercepting system back press and physical ESC keys.
+     */
     @SuppressLint("ClickableViewAccessibility")
     public VerticalTabListCoordinator(
             Activity activity,
@@ -224,11 +409,16 @@ public class VerticalTabListCoordinator {
             SettableNonNullObservableSupplier<Integer> verticalTabsWidthSupplier,
             @Nullable BooleanSupplier canActivateTabLayoutToggleMenuSupplier,
             @Nullable ViewStub tabHoverCardViewStub,
-            Supplier<TabContentManager> tabContentManagerSupplier,
-            @Nullable UndoBarThrottle undoBarThrottle) {
+            @Nullable ViewStub tabGroupHoverCardViewStub,
+            Supplier<@Nullable TabContentManager> tabContentManagerSupplier,
+            @Nullable UndoBarThrottle undoBarThrottle,
+            BrowserControlsStateProvider browserControlsStateProvider,
+            BackPressManager backPressManager) {
         mCanActivateTabLayoutToggleMenuSupplier = canActivateTabLayoutToggleMenuSupplier;
         mVerticalTabsActiveSupplier = verticalTabsActiveSupplier;
+        mVerticalTabsWidthSupplier = verticalTabsWidthSupplier;
         mTabModelSelector = tabModelSelector;
+        mProfile = profile;
         mWindowAndroid = windowAndroid;
         mActivityResultTracker = activityResultTracker;
         mMultiInstanceManager = multiInstanceManager;
@@ -236,58 +426,21 @@ public class VerticalTabListCoordinator {
         mShareDelegateSupplier = shareDelegateSupplier;
         mDataSharingTabManager = dataSharingTabManager;
         mUndoBarThrottle = undoBarThrottle;
-        mCollapseController = new VerticalTabRailCollapseController(this::setRailCollapseState);
+        mBrowserControlsStateProvider = browserControlsStateProvider;
+        mBackPressManager = backPressManager;
+        // Register the TabSwitcherBackPressHandlerManager to receive ESC / Back events.
+        mBackPressManager.addHandler(
+                mBackPressHandlerManager, BackPressHandler.Type.CANCEL_TAB_SWITCHER_DRAG);
+        mTabContentManagerSupplier = tabContentManagerSupplier;
+        if (GlicEnabling.isEnabledByFlags() || ContextualTasksUtils.isContextualTasksUiEnabled()) {
+            mTabUnderlineManager = new TabUnderlineManager(windowAndroid);
+        } else {
+            mTabUnderlineManager = null;
+        }
+        mCollapseController =
+                new VerticalTabRailCollapseController(
+                        this::setRailCollapseState, this::setCollapseButtonEnabled, mWindowAndroid);
         mModelList = new TabListModel();
-        SimpleRecyclerViewAdapter adapter =
-                new SimpleRecyclerViewAdapter(mModelList) {
-                    @Override
-                    public int getItemViewType(int position) {
-                        ListItem item = mModelList.get(position);
-                        if (item.type == UiType.TAB) {
-                            if (TabProperties.isPinnedTab(item.model)) {
-                                return UiType.PINNED_TAB;
-                            } else if (TabProperties.isTabGroupHeader(item.model)) {
-                                return UiType.TAB_GROUP;
-                            }
-                        }
-                        return super.getItemViewType(position);
-                    }
-                };
-
-        adapter.registerType(
-                UiType.TAB,
-                parent ->
-                        (ViewGroup)
-                                LayoutInflater.from(activity)
-                                        .inflate(
-                                                R.layout.vertical_tab_item,
-                                                parent,
-                                                /* attachToRoot= */ false),
-                TabVerticalViewBinder::bindTab);
-
-        // Pinned tabs are rendered in a separate sticky layout. This zero-height hidden layout in
-        // the main list preserves the 1:1 index alignment with the TabModel without taking space.
-        adapter.registerType(
-                UiType.PINNED_TAB,
-                parent ->
-                        (ViewGroup)
-                                LayoutInflater.from(activity)
-                                        .inflate(
-                                                R.layout.vertical_tab_pinned_item_hidden,
-                                                parent,
-                                                /* attachToRoot= */ false),
-                TabVerticalViewBinder::bindPinnedTab);
-
-        adapter.registerType(
-                UiType.TAB_GROUP,
-                parent ->
-                        (ViewGroup)
-                                LayoutInflater.from(activity)
-                                        .inflate(
-                                                R.layout.vertical_tab_group_header,
-                                                parent,
-                                                /* attachToRoot= */ false),
-                TabVerticalViewBinder::bindTabGroupHeader);
 
         mContainerView =
                 (VerticalTabRailLayout)
@@ -299,26 +452,36 @@ public class VerticalTabListCoordinator {
         mContainerView.setLayoutParams(
                 new ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        mRailHoverController =
+                new VerticalTabRailHoverController(
+                        mContainerView,
+                        mCollapseController,
+                        mWindowAndroid,
+                        this::isAnyContextMenuShowing);
 
-        @SuppressWarnings("NullAway")
-        Supplier<@Nullable TabContentManager> nullableSupplier = tabContentManagerSupplier;
-        mTabHoverCardController =
-                new VerticalTabHoverCardController(
+        mTabItemHoverController =
+                new VerticalTabItemHoverController(
                         mContainerView,
                         tabHoverCardViewStub,
+                        tabGroupHoverCardViewStub,
                         tabModelSelector,
-                        nullableSupplier,
+                        tabContentManagerSupplier,
                         this::isAnyContextMenuShowing);
 
         VerticalTabListRecyclerView recyclerView = mContainerView.getRecyclerView();
         mRecyclerView = recyclerView;
-        mRecyclerView.initialize(adapter);
+        mRecyclerView.initialize(mModelList);
         mOnScrollListener =
                 new RecyclerView.OnScrollListener() {
                     @Override
                     public void onScrollStateChanged(RecyclerView recyclerView, int newState) {
                         if (newState != RecyclerView.SCROLL_STATE_IDLE) {
-                            mTabHoverCardController.hideHoverCard();
+                            mTabItemHoverController.hideHoverCard();
+                        } else {
+                            mTabItemHoverController.resetHoverState();
+                        }
+                        if (newState == RecyclerView.SCROLL_STATE_DRAGGING) {
+                            dismissActiveContextMenus();
                         }
                     }
                 };
@@ -367,13 +530,6 @@ public class VerticalTabListCoordinator {
                     });
         }
 
-        View gridButton = mContainerView.findViewById(R.id.grid_button);
-        if (gridButton != null) {
-            gridButton.setOnTouchListener(createLocalCoordinateTrackingTouchListener());
-            gridButton.setOnContextClickListener(
-                    createEmptySpaceContextClickListener(activity, gridButton));
-        }
-
         View tabSearchButton = mContainerView.findViewById(R.id.tab_search_button);
         if (tabSearchButton != null) {
             tabSearchButton.setOnTouchListener(createLocalCoordinateTrackingTouchListener());
@@ -401,12 +557,18 @@ public class VerticalTabListCoordinator {
         // Handle right-clicks on the root background space and fully consume the window event.
         mContainerView.setOnContextClickListener(
                 createEmptySpaceContextClickListener(activity, mContainerView));
+        mContainerView.setOnTouchDownListener(this::dismissActiveContextMenus);
 
         mContainerLayoutChangeListener =
                 (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
                     int width = right - left;
                     boolean isVisible = mContainerView.getVisibility() == View.VISIBLE;
-                    verticalTabsWidthSupplier.set(isVisible ? width : 0);
+                    if (mCollapseController.getEffectiveRailCollapseState()
+                                    != RailCollapseState.EXPANDED_FOR_HOVERING
+                            && mCollapseController.getRailCollapseStateSupplier().get()
+                                    != RailCollapseState.EXPANDED_FOR_HOVERING) {
+                        mVerticalTabsWidthSupplier.set(isVisible ? width : 0);
+                    }
                     if (isVisible && width > 0 && width != (oldRight - oldLeft)) {
                         updatePinnedLayoutSpanCount();
                     }
@@ -420,6 +582,16 @@ public class VerticalTabListCoordinator {
                         R.dimen.default_favicon_corner_radius,
                         TabFavicon::getBitmap);
 
+        mTabSwitcherDragHandler = createTabSwitcherDragHandler(activity, tabModelSelector);
+        mNonOriginatingDragHandlerDelegate =
+                createNonOriginatingDragHandlerDelegate(mTabSwitcherDragHandler);
+        mTabSwitcherDragHandler.setDragHandlerDelegate(mNonOriginatingDragHandlerDelegate);
+        // The only drag listener on the rail. The container spans the header, both lists, the new
+        // tab button and the rail margin, so ACTION_DRAG_EXITED means the pointer left the rail. No
+        // descendant may claim drags: a droppable child wins over its parent in
+        // ViewGroup#findFrontmostDroppableChildAt and would take LOCATION and DROP away from here.
+        mContainerView.setOnDragListener(this::onRailDrag);
+
         setupItemTouchHelper(activity, recyclerView, mModelList, tabModelSelector);
 
         mSpineDecoration =
@@ -427,61 +599,54 @@ public class VerticalTabListCoordinator {
                         activity, recyclerView::postInvalidate, mModelList, tabModelSelector);
         recyclerView.addItemDecoration(mSpineDecoration);
 
-        TabListConfigDelegate tabListConfigDelegate =
-                new TabListConfigDelegate() {
-                    @Override
-                    public @TabListLayoutType int getLayoutType() {
-                        return TabListLayoutType.NESTED;
-                    }
+        mDropIndicatorDecoration = new VerticalTabDropIndicatorDecoration(activity);
+        recyclerView.addItemDecoration(mDropIndicatorDecoration);
 
-                    @Override
-                    public boolean supportsMessageCards() {
-                        return false;
-                    }
+        TabListConfig tabListConfig =
+                new TabListConfig.Builder(TabListLayoutType.NESTED)
+                        .setSupportsTabGroups(/* supportsTabGroups= */ true)
+                        .setSupportsModifierMultiSelect(/* supportsModifierMultiSelect= */ true)
+                        .setSupportsTabLoadingState(/* supportsTabLoadingState= */ true)
+                        .setTabClosingSource(TabClosingSource.VERTICAL_TAB_STRIP)
+                        .setRailCollapseStateSupplier(
+                                mCollapseController.getRailCollapseStateSupplier())
+                        .setTabHoverListener(mTabItemHoverController.getTabHoverListener())
+                        .setTabUnderlineManager(mTabUnderlineManager)
+                        .build();
 
-                    @Override
-                    public @Nullable NonNullObservableSupplier<@RailCollapseState Integer>
-                            getRailCollapseStateSupplier() {
-                        return mCollapseController.getRailCollapseStateSupplier();
-                    }
-
-                    @Override
-                    public @Nullable TabHoverCardListener getTabHoverCardListener() {
-                        return mTabHoverCardController.getTabHoverCardListener();
-                    }
-                };
-
+        // The tab search button is only shown when tab search is enabled, matching the
+        // horizontal tab strip.
+        boolean isTabSearchEnabled = ChromeFeatureList.sTabSearchForDesktop.isEnabled();
         mContainerModel =
                 new PropertyModel.Builder(VerticalTabListProperties.ALL_KEYS)
-                        .with(
-                                VerticalTabListProperties.ON_GRID_CLICK_LISTENER,
-                                v -> verticalTabsActionDelegate.openHubPane(PaneId.TAB_GROUPS))
                         .with(
                                 VerticalTabListProperties.ON_SEARCH_CLICK_LISTENER,
                                 v -> {
                                     RecordUserAction.record(
                                             "Android.VerticalTabs.SearchButtonClicked");
-                                    if (ChromeFeatureList.sTabSearchForDesktop.isEnabled()) {
-                                        verticalTabsActionDelegate.openTabSearch();
-                                    } else {
-                                        verticalTabsActionDelegate.openHubSearch();
-                                    }
+                                    verticalTabsActionDelegate.openTabSearch();
                                 })
+                        .with(
+                                VerticalTabListProperties.IS_SEARCH_BUTTON_VISIBLE,
+                                isTabSearchEnabled)
                         .with(
                                 VerticalTabListProperties.ON_NEW_TAB_CLICK_LISTENER,
                                 v -> handleNewTabButtonClick())
                         .with(
+                                VerticalTabListProperties.ON_INCOGNITO_CLICK_LISTENER,
+                                v -> handleIncognitoButtonClick())
+                        .with(
+                                VerticalTabListProperties.IS_INCOGNITO_BUTTON_VISIBLE,
+                                isIncognitoButtonVisible())
+                        .with(
                                 VerticalTabListProperties.ON_COLLAPSE_CLICK_LISTENER,
                                 v -> mCollapseController.toggleCollapseState())
                         .with(
-                                VerticalTabListProperties.EXPAND_OR_COLLAPSE_ON_HOVER_LISTENER,
-                                mCollapseController::expandOrCollapseOnHover)
-                        .with(
                                 VerticalTabListProperties.IS_COLLAPSE_BUTTON_ENABLED,
-                                mCollapseController.isCollapseButtonEnabled())
+                                !mCollapseController.isForcedCollapsed())
                         .with(
                                 VerticalTabListProperties.COLLAPSE_STATE,
-                                mCollapseController.getRailCollapseStateByUser())
+                                mCollapseController.getEffectiveRailCollapseState())
                         .build();
         PropertyModelChangeProcessor.create(
                 mContainerModel, mContainerView, VerticalTabListViewBinder::bind);
@@ -490,15 +655,14 @@ public class VerticalTabListCoordinator {
                 new TabListMediator(
                         activity,
                         mModelList,
-                        TabListMode.VERTICAL,
                         /* modalDialogManager */ null,
                         tabModelSelector.getCurrentTabModelSupplier(),
                         /* thumbnailProvider */ null,
                         mTabListFaviconProvider,
                         /* selectionDelegateProvider */ null,
                         new VerticalTabListClickHandler(),
-                        tabListConfigDelegate,
-                        /* dialogHandler */ null,
+                        tabListConfig,
+                        /* ungroupBarStatusHandler= */ null,
                         /* priceWelcomeMessageControllerSupplier */ null,
                         TabComponentId.VERTICAL_TABS,
                         TabProperties.TabActionState.CLOSABLE,
@@ -507,44 +671,37 @@ public class VerticalTabListCoordinator {
                         /* undoBarExplicitTrigger */ null,
                         /* snackbarManager */ null,
                         TabListEditorCoordinator.UNLIMITED_SELECTION,
-                        /* isSingleContextMode */ false,
-                        /* onDragStateChangedListener */ () -> {});
+                        /* onDragStateChangedListener */ CallbackUtils.emptyRunnable());
 
         mMediator.initWithNative(profile.getOriginalProfile());
+        mMediator.setupAccessibilityDelegate(mRecyclerView);
+        mMediator.setOnLongPressTabItemEventListener(
+                (tabId, cardView) -> {
+                    if (cardView != null) {
+                        showMenuForItemView(getItemViewAnchorRectProvider(cardView), cardView);
+                    }
+                    return this::dismissActiveContextMenus;
+                });
 
         // Setup Pinned Tabs UI & Mediator.
-        TabListRecyclerView pinnedTabsRecyclerView = mContainerView.getPinnedTabsRecyclerView();
+        VerticalPinnedTabListRecyclerView pinnedTabsRecyclerView =
+                mContainerView.getPinnedTabsRecyclerView();
         mPinnedTabsRecyclerView = pinnedTabsRecyclerView;
         TabListModel pinnedTabsModelList = new TabListModel();
         mPinnedTabsModelList = pinnedTabsModelList;
-        SimpleRecyclerViewAdapter pinnedTabsAdapter =
-                new SimpleRecyclerViewAdapter(pinnedTabsModelList) {
-                    @Override
-                    public int getItemViewType(int position) {
-                        ListItem item = pinnedTabsModelList.get(position);
-                        if (item.type == UiType.TAB) {
-                            return UiType.PINNED_TAB;
-                        }
-                        return super.getItemViewType(position);
+        pinnedTabsRecyclerView.initialize(pinnedTabsModelList, getRailCollapseState());
+
+        mPinnedDropIndicatorDecoration = new VerticalTabPinnedDropIndicatorDecoration(activity);
+        pinnedTabsRecyclerView.addItemDecoration(mPinnedDropIndicatorDecoration);
+
+        mPinnedTabsLayoutChangeListener =
+                (_, left, _, right, _, oldLeft, _, oldRight, _) -> {
+                    int width = right - left;
+                    if (width > 0 && width != (oldRight - oldLeft)) {
+                        updatePinnedLayoutSpanCount();
                     }
                 };
-
-        pinnedTabsAdapter.registerType(
-                UiType.PINNED_TAB,
-                parent ->
-                        (ViewGroup)
-                                LayoutInflater.from(activity)
-                                        .inflate(
-                                                R.layout.vertical_tab_pinned_item,
-                                                parent,
-                                                /* attachToRoot= */ false),
-                TabVerticalViewBinder::bindPinnedTab);
-
-        pinnedTabsRecyclerView.setAdapter(pinnedTabsAdapter);
-        mPinnedTabsAdapter = pinnedTabsAdapter;
-        pinnedTabsRecyclerView.setupCustomItemAnimator(/* useClipAnimations= */ true);
-        mPinnedLayoutManager = new GridLayoutManager(activity, getSpanCount());
-        pinnedTabsRecyclerView.setLayoutManager(mPinnedLayoutManager);
+        pinnedTabsRecyclerView.addOnLayoutChangeListener(mPinnedTabsLayoutChangeListener);
 
         // Create a gesture detector to catch long-presses on the pinned tabs rv empty background
         // area.
@@ -569,19 +726,59 @@ public class VerticalTabListCoordinator {
         setupItemTouchHelper(
                 activity, pinnedTabsRecyclerView, pinnedTabsModelList, tabModelSelector);
 
+        mPinnedTabsListObserver =
+                new ListObservable.ListObserver<>() {
+                    @Override
+                    public void onItemRangeInserted(ListObservable source, int index, int count) {
+                        updatePinnedLayoutSpanCount();
+                    }
+
+                    @Override
+                    public void onItemRangeRemoved(ListObservable source, int index, int count) {
+                        updatePinnedLayoutSpanCount();
+                    }
+
+                    @Override
+                    public void onItemRangeChanged(
+                            ListObservable source, int index, int count, @Nullable Void payload) {}
+
+                    @Override
+                    public void onItemMoved(ListObservable source, int curIndex, int newIndex) {
+                        mPinnedTabsRecyclerView.invalidateItemDecorations();
+                    }
+                };
+        pinnedTabsModelList.addObserver(mPinnedTabsListObserver);
+        mReorderStrategy =
+                new VerticalExternalViewDragDropReorderStrategy(
+                        mTabModelSelector::getCurrentModel,
+                        mModelList,
+                        mRecyclerView,
+                        pinnedTabsRecyclerView);
+
         mPinnedTabsMediator =
-                new StaticPinnedTabsMediator(
+                new PinnedTabGridMediator(
                         tabModelSelector.getCurrentModel(),
                         mModelList,
                         pinnedTabsModelList,
                         this::updatePinnedTabsVisibility);
         updatePinnedTabsVisibility();
 
+        mKeyboardHandler =
+                new VerticalTabKeyboardHandler(
+                        tabModelSelector,
+                        mModelList,
+                        pinnedTabsModelList,
+                        mRecyclerView,
+                        pinnedTabsRecyclerView,
+                        mTabItemHoverController);
+        mContainerView.setKeyEventListener(mKeyboardHandler);
+
         mTabModelSelectorObserver =
                 new TabModelSelectorObserver() {
                     @Override
                     public void onTabStateInitialized() {
                         resetWithListOfTabs(mTabModelSelector.getCurrentModel());
+                        updateIncognitoButtonVisibility();
                     }
                 };
         tabModelSelector.addObserver(mTabModelSelectorObserver);
@@ -597,16 +794,16 @@ public class VerticalTabListCoordinator {
                     new AppHeaderObserver() {
                         @Override
                         public void onAppHeaderStateChanged(AppHeaderState newState) {
-                            updateSpacerVisibility(newState);
+                            updateSpacerHeight(newState);
                         }
 
                         @Override
                         public void onDesktopWindowingModeChanged(boolean isInDesktopWindow) {
-                            updateSpacerVisibility(mDesktopWindowStateManager.getAppHeaderState());
+                            updateSpacerHeight(mDesktopWindowStateManager.getAppHeaderState());
                         }
                     };
             mDesktopWindowStateManager.addObserver(mAppHeaderObserver);
-            updateSpacerVisibility(mDesktopWindowStateManager.getAppHeaderState());
+            updateSpacerHeight(mDesktopWindowStateManager.getAppHeaderState());
         } else {
             mAppHeaderObserver = null;
         }
@@ -617,40 +814,96 @@ public class VerticalTabListCoordinator {
                 new TabModelSelectorTabModelObserver(tabModelSelector) {
                     @Override
                     public void didSelectTab(Tab tab, @TabSelectionType int type, int lastId) {
-                        if (mIsActive) {
+                        if (mIsActive && type != TabSelectionType.FROM_DRAG) {
                             scrollActiveTabIntoView();
                         }
-                        mTabHoverCardController.hideHoverCard();
+                        mTabItemHoverController.resetHoverState();
+                    }
+
+                    @Override
+                    public void didChangePinState(Tab tab) {
+                        // Scroll the newly unpinned active tab into view.
+                        if (!tab.getIsPinned()
+                                && tab.getId() == mTabModelSelector.getCurrentTabId()) {
+                            mRecyclerView.post(() -> scrollActiveTabIntoView());
+                        }
+                        updatePinnedTabsSeparatorVisibility();
+                    }
+
+                    @Override
+                    public void didAddTab(
+                            Tab tab,
+                            @TabLaunchType int type,
+                            @TabCreationState int creationState,
+                            boolean markedForSelection) {
+                        updateIncognitoButtonVisibility();
+                        updatePinnedTabsSeparatorVisibility();
+                    }
+
+                    @Override
+                    public void tabRemoved(Tab tab) {
+                        updateIncognitoButtonVisibility();
+                        updatePinnedTabsSeparatorVisibility();
+                    }
+
+                    @Override
+                    public void didRemoveTabForClosure(Tab tab) {
+                        updateIncognitoButtonVisibility();
+                        updatePinnedTabsSeparatorVisibility();
                     }
 
                     @Override
                     public void willCloseTab(Tab tab, boolean didCloseAlone) {
-                        mTabHoverCardController.hideHoverCard();
+                        mTabItemHoverController.resetHoverState();
+                    }
+
+                    @Override
+                    public void willCloseTabs(
+                            List<Tab> tabs, boolean isAllTabs, boolean allowUndo) {
+                        mTabItemHoverController.resetHoverState();
                     }
 
                     @Override
                     public void tabClosureCommitted(Tab tab) {
-                        mTabHoverCardController.hideHoverCard();
+                        mTabItemHoverController.resetHoverState();
                     }
 
                     @Override
                     public void willAddTab(Tab tab, @TabLaunchType int type) {
-                        mTabHoverCardController.hideHoverCard();
+                        mTabItemHoverController.resetHoverState();
                     }
                 };
 
         mVerticalTabsActiveSupplier.addSyncObserverAndCallIfNonNull(mActiveObserver);
 
-        // Context menus should not appear upon right-clicking the new tab button or the collapse
-        // button.
         View newTabButton = mContainerView.findViewById(R.id.new_tab_button);
         if (newTabButton != null) {
-            newTabButton.setOnContextClickListener(v -> true);
+            newTabButton.setOnTouchListener(createLocalCoordinateTrackingTouchListener());
+            newTabButton.setOnContextClickListener(
+                    createEmptySpaceContextClickListener(activity, newTabButton));
+            newTabButton.setOnLongClickListener(
+                    v -> {
+                        showEmptySpaceContextMenu(
+                                calculateTouchAnchor(v, mLastTouchPoint.x, mLastTouchPoint.y),
+                                activity);
+                        return true;
+                    });
         }
 
+        // Right-clicking the collapse button shows a menu to turn expand-on-hover on or off. The
+        // empty space context menu should not appear there.
         View collapseButton = mContainerView.findViewById(R.id.collapse_button);
         if (collapseButton != null) {
-            collapseButton.setOnContextClickListener(v -> true);
+            collapseButton.setOnTouchListener(createLocalCoordinateTrackingTouchListener());
+            collapseButton.setOnContextClickListener(
+                    v -> {
+                        if (VerticalTabUtils.isExpandOnHoverFeatureEnabled()) {
+                            showCollapseButtonContextMenu(
+                                    calculateTouchAnchor(v, mLastTouchPoint.x, mLastTouchPoint.y),
+                                    activity);
+                        }
+                        return true;
+                    });
         }
     }
 
@@ -659,10 +912,43 @@ public class VerticalTabListCoordinator {
         return mContainerView;
     }
 
+    /** Requests keyboard focus on the first tab in the rail. */
+    public void requestKeyboardFocus() {
+        if (!mPinnedTabsModelList.isEmpty()) {
+            if (KeyboardFocusUtil.setFocusOnFirstFocusableDescendant(mPinnedTabsRecyclerView)) {
+                return;
+            }
+            requestFocusAtFirstItem(mPinnedTabsRecyclerView);
+            return;
+        }
+
+        if (!mModelList.isEmpty()) {
+            RecyclerView.ViewHolder holder = mRecyclerView.findViewHolderForAdapterPosition(0);
+            if (holder != null && KeyboardFocusUtil.setFocus(holder.itemView)) {
+                return;
+            }
+            mRecyclerView.scrollToPositionWithOffset(0);
+            requestFocusAtFirstItem(mRecyclerView);
+            return;
+        }
+
+        View collapseButton = mContainerView.findViewById(R.id.collapse_button);
+        if (collapseButton != null && KeyboardFocusUtil.setFocus(collapseButton)) {
+            return;
+        }
+        KeyboardFocusUtil.setFocusOnFirstFocusableDescendant(mContainerView);
+    }
+
     public void destroy() {
+        mContainerView.setKeyEventListener(null);
+        mContainerView.setOnTouchDownListener(/* listener= */ null);
+        mPinnedTabsModelList.removeObserver(mPinnedTabsListObserver);
         mPinnedTabsMediator.destroy();
         mPinnedTabsRecyclerView.setAdapter(null);
+        mPinnedTabsModelList.clear();
         mMediator.destroy();
+        mRecyclerView.setAdapter(null);
+        mModelList.clear();
         mTabModelSelector.removeObserver(mTabModelSelectorObserver);
         mTabModelSelector.getCurrentTabModelSupplier().removeObserver(mCurrentTabModelObserver);
         mTabListFaviconProvider.destroy();
@@ -670,6 +956,11 @@ public class VerticalTabListCoordinator {
         if (mTabStripContextMenuCoordinator != null) {
             mTabStripContextMenuCoordinator.destroy();
             mTabStripContextMenuCoordinator = null;
+        }
+
+        if (mCollapseButtonContextMenuCoordinator != null) {
+            mCollapseButtonContextMenuCoordinator.destroy();
+            mCollapseButtonContextMenuCoordinator = null;
         }
 
         if (mDesktopWindowStateManager != null && mAppHeaderObserver != null) {
@@ -689,18 +980,59 @@ public class VerticalTabListCoordinator {
         mSpineDecoration.destroy();
         mTabModelSelectorTabModelObserver.destroy();
         mVerticalTabsActiveSupplier.removeObserver(mActiveObserver);
-        for (TabSwitcherDragHandler dragHandler : mTabSwitcherDragHandlers) {
-            dragHandler.destroy();
+        if (mBackPressManager.has(BackPressHandler.Type.CANCEL_TAB_SWITCHER_DRAG)) {
+            mBackPressManager.removeHandler(BackPressHandler.Type.CANCEL_TAB_SWITCHER_DRAG);
         }
-        mTabSwitcherDragHandlers.clear();
+        removeDragEndRelay();
+        // The drag handler is destroyed without ending an in-progress drag through its listener,
+        // so the drag's end would never be reported otherwise.
+        notifyExternalDragEnded();
+        mExternalDragObserver = null;
+        mContainerView.setOnDragListener(null);
+        mTabSwitcherDragHandler.destroy();
 
-        mTabHoverCardController.destroy();
+        mTabItemHoverController.destroy();
 
         mContainerView.removeOnLayoutChangeListener(mContainerLayoutChangeListener);
+        mPinnedTabsRecyclerView.removeOnLayoutChangeListener(mPinnedTabsLayoutChangeListener);
         mRecyclerView.removeOnScrollListener(mOnScrollListener);
 
+        mRailHoverController.destroy();
         mCollapseController.destroy();
-        mLastDraggedGroupId = null;
+        if (mTabUnderlineManager != null) {
+            mTabUnderlineManager.destroy();
+        }
+        for (DragSurface surface : mDragSurfaces) {
+            surface.destroy();
+        }
+        mDragSurfaces.clear();
+        mReorderStrategy.clear();
+        mDropIndicatorDecoration.clear();
+        mPinnedDropIndicatorDecoration.clear();
+        if (mDragShadowView != null) {
+            mDragShadowView.clear();
+            ViewGroup parent = (ViewGroup) mDragShadowView.getParent();
+            if (parent != null) {
+                parent.removeView(mDragShadowView);
+            }
+            mDragShadowView = null;
+        }
+        if (mMultiThumbnailCardProvider != null) {
+            mMultiThumbnailCardProvider.destroy();
+            mMultiThumbnailCardProvider = null;
+        }
+    }
+
+    public VerticalExternalViewDragDropReorderStrategy getReorderStrategyForTesting() {
+        return mReorderStrategy;
+    }
+
+    public VerticalTabDropIndicatorDecoration getDropIndicatorDecorationForTesting() {
+        return mDropIndicatorDecoration;
+    }
+
+    public VerticalTabPinnedDropIndicatorDecoration getPinnedDropIndicatorDecorationForTesting() {
+        return mPinnedDropIndicatorDecoration;
     }
 
     /** Returns the {@link VerticalTabRailCollapseController} for managing rail collapse state. */
@@ -709,27 +1041,110 @@ public class VerticalTabListCoordinator {
     }
 
     /**
-     * Sets the collapsed state of the vertical tab rail.
+     * Sets the {@link ExternalDragObserver} to notify of external drags started from this list.
+     *
+     * @param observer The observer, or null to stop notifying.
+     */
+    void setExternalDragObserver(@Nullable ExternalDragObserver observer) {
+        mExternalDragObserver = observer;
+    }
+
+    /** Returns whether an external drag started from this list is in progress. */
+    boolean isExternalDragInProgress() {
+        return mIsExternalDragInProgress;
+    }
+
+    private void notifyExternalDragStarted() {
+        if (mIsExternalDragInProgress) return;
+        mIsExternalDragInProgress = true;
+        if (mExternalDragObserver != null) mExternalDragObserver.onExternalDragStarted();
+    }
+
+    private void notifyExternalDragEnded() {
+        if (!mIsExternalDragInProgress) return;
+        mIsExternalDragInProgress = false;
+        if (mExternalDragObserver != null) mExternalDragObserver.onExternalDragEnded();
+    }
+
+    /**
+     * Applies the collapsed state of the vertical tab rail.
      *
      * <p>This updates the model properties and layouts for the rail container and all tab items to
      * transition between the expanded (icons + text) and collapsed (icons only) states.
      *
+     * <p>Only invoked by {@link VerticalTabRailCollapseController}, which owns this state. Do not
+     * call directly; feed the controller inputs instead.
+     *
      * @param railCollapseState The {@link RailCollapseState} to apply to the rail.
      */
     void setRailCollapseState(@RailCollapseState int railCollapseState) {
+        mTabItemHoverController.resetHoverState();
         mContainerModel.set(VerticalTabListProperties.COLLAPSE_STATE, railCollapseState);
         updatePinnedLayoutSpanCount();
-        mCollapseController.setRailCollapseStateSupplierValue(railCollapseState);
+        updatePinnedTabsSeparatorVisibility();
     }
 
     /**
-     * Sets whether the rail collapse button is enabled.
+     * Updates the reserved width of the vertical tab rail in {@code mVerticalTabsWidthSupplier}.
+     */
+    void setVerticalTabsReservedWidth(int widthPx) {
+        mVerticalTabsWidthSupplier.set(widthPx);
+    }
+
+    /**
+     * Applies the collapse button enabled state to the model.
+     *
+     * <p>Only invoked by {@link VerticalTabRailCollapseController}, which owns this state. Do not
+     * call directly; feed the controller inputs instead.
      *
      * @param enabled True if the collapse button should be enabled, false otherwise.
      */
     void setCollapseButtonEnabled(boolean enabled) {
         mContainerModel.set(VerticalTabListProperties.IS_COLLAPSE_BUTTON_ENABLED, enabled);
-        mCollapseController.setCollapseButtonEnabled(enabled);
+    }
+
+    /**
+     * Sets whether an animated rail collapse/expand transition is in progress.
+     *
+     * @param inTransition True if the rail is actively transitioning.
+     */
+    void setInTransition(boolean inTransition) {
+        mPinnedTabsRecyclerView.setInTransition(inTransition);
+        mRailHoverController.setInTransition(inTransition);
+    }
+
+    /**
+     * Opens the context menu for the currently keyboard-focused tab item, group header, or new tab
+     * button, if any.
+     *
+     * @return Whether the context menu was successfully opened.
+     */
+    boolean openKeyboardFocusedContextMenu() {
+        if (mRecyclerView.hasFocus()) {
+            return openContextMenuForFocusedItem(mRecyclerView);
+        }
+        if (mPinnedTabsRecyclerView.hasFocus()) {
+            return openContextMenuForFocusedItem(mPinnedTabsRecyclerView);
+        }
+        View newTabButton = mContainerView.findViewById(R.id.new_tab_button);
+        if (newTabButton != null && newTabButton.isFocused()) {
+            Activity activity = mWindowAndroid.getActivity().get();
+            if (activity == null) return false;
+            showEmptySpaceContextMenu(getItemViewAnchorRectProvider(newTabButton), activity);
+            newTabButton.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Toggles the expanded/collapsed visual and layout state of a tab group.
+     *
+     * @param tabId The ID of a tab in the tab group.
+     */
+    @VisibleForTesting
+    void toggleTabGroupExpansion(int tabId) {
+        mMediator.toggleTabGroupExpansion(tabId);
     }
 
     private void setActive(boolean isActive) {
@@ -737,7 +1152,7 @@ public class VerticalTabListCoordinator {
         if (mIsActive) {
             scrollActiveTabIntoView();
         } else {
-            mTabHoverCardController.hideHoverCard();
+            mTabItemHoverController.resetHoverState();
         }
     }
 
@@ -753,7 +1168,7 @@ public class VerticalTabListCoordinator {
         int uiIndex = getIndexForTabScroll(activeTabId);
 
         if (uiIndex != TabModel.INVALID_TAB_INDEX) {
-            mRecyclerView.scrollToPositionWithOffset(uiIndex);
+            mRecyclerView.scrollToPositionIfNotCompletelyVisible(uiIndex);
         }
     }
 
@@ -775,13 +1190,26 @@ public class VerticalTabListCoordinator {
     }
 
     /**
-     * Toggles the expanded/collapsed visual and layout state of a tab group.
-     *
-     * @param tabId the ID of the representative tab representing the tab group.
+     * Attempts to request keyboard focus on the first item view in {@code recyclerView}. If the
+     * view holder is not yet attached, posts a fallback request to the message queue to wait for
+     * layout completion.
      */
-    @VisibleForTesting
-    void toggleTabGroupExpansion(int tabId) {
-        mMediator.toggleTabGroupExpansion(tabId);
+    private void requestFocusAtFirstItem(RecyclerView recyclerView) {
+        RecyclerView.ViewHolder holder = recyclerView.findViewHolderForAdapterPosition(0);
+        if (holder != null && KeyboardFocusUtil.setFocus(holder.itemView)) {
+            return;
+        }
+        recyclerView.post(
+                () -> {
+                    RecyclerView.ViewHolder postHolder =
+                            recyclerView.findViewHolderForAdapterPosition(0);
+                    if (postHolder != null && KeyboardFocusUtil.setFocus(postHolder.itemView)) {
+                        return;
+                    }
+                    if (!KeyboardFocusUtil.setFocusOnFirstFocusableDescendant(recyclerView)) {
+                        KeyboardFocusUtil.setFocusOnFirstFocusableDescendant(mContainerView);
+                    }
+                });
     }
 
     private void onCurrentTabModelChanged(TabModel tabModel) {
@@ -805,6 +1233,8 @@ public class VerticalTabListCoordinator {
         boolean isIncognito =
                 !IncognitoUtils.shouldOpenIncognitoAsWindow() && tabModel.isIncognitoBranded();
         mContainerModel.set(VerticalTabListProperties.IS_INCOGNITO, isIncognito);
+        updateIncognitoButtonVisibility();
+        updatePinnedTabsSeparatorVisibility();
     }
 
     private void handleNewTabButtonClick() {
@@ -815,17 +1245,41 @@ public class VerticalTabListCoordinator {
         RecordUserAction.record("MobileNewTabOpened.VerticalTabs");
     }
 
+    /** Switches between standard and incognito tab models when the incognito button is clicked. */
+    private void handleIncognitoButtonClick() {
+        mTabModelSelector.selectModel(!mTabModelSelector.isIncognitoSelected());
+        RecordUserAction.record("MobileToolbarModelSelected");
+    }
+
+    private boolean isIncognitoButtonVisible() {
+        if (mProfile.shutdownStarted() || IncognitoUtils.shouldOpenIncognitoAsWindow()) {
+            return false;
+        }
+        TabModel incognitoModel = mTabModelSelector.getModel(/* incognito= */ true);
+        boolean hasIncognitoTabs = incognitoModel != null && incognitoModel.getCount() > 0;
+        return hasIncognitoTabs && IncognitoUtils.isIncognitoModeEnabled(mProfile);
+    }
+
+    private void updateIncognitoButtonVisibility() {
+        if (mContainerModel != null) {
+            mContainerModel.set(
+                    VerticalTabListProperties.IS_INCOGNITO_BUTTON_VISIBLE,
+                    isIncognitoButtonVisible());
+        }
+    }
+
     private void updatePinnedTabsVisibility() {
         boolean isEmpty = mPinnedTabsModelList.isEmpty();
         if (isEmpty) {
             if (mPinnedTabsRecyclerView.getVisibility() != View.GONE) {
                 mPinnedTabsRecyclerView.setVisibility(View.GONE);
-                mPinnedTabsRecyclerView.swapAdapter(
-                        mPinnedTabsAdapter, /* removeAndRecycleExistingViews= */ true);
+                mPinnedTabsRecyclerView.recycleItemViews();
             }
         } else {
             mPinnedTabsRecyclerView.setVisibility(View.VISIBLE);
         }
+        updatePinnedLayoutSpanCount();
+        updatePinnedTabsSeparatorVisibility();
     }
 
     private void setupItemTouchHelper(
@@ -839,9 +1293,6 @@ public class VerticalTabListCoordinator {
                         modelList,
                         tabModelSelector.getCurrentTabModelSupplier().asNonNull(),
                         mUndoBarThrottle);
-        if (mMainTouchHelperCallback == null) {
-            mMainTouchHelperCallback = touchHelperCallback;
-        }
 
         // Handles long-presses for tab item/group context menus. Long-presses for empty space
         // context menus are handled by the gesture detector.
@@ -854,35 +1305,41 @@ public class VerticalTabListCoordinator {
                     if (trueChildView == null) return null;
 
                     int position = recyclerView.getChildAdapterPosition(trueChildView);
-                    showMenuForAdapterPosition(activity, recyclerView, trueChildView, position);
+                    showMenuForAdapterPosition(
+                            calculateTouchAnchor(
+                                    recyclerView, mLastTouchPoint.x, mLastTouchPoint.y),
+                            activity,
+                            recyclerView,
+                            position);
 
                     return this::dismissActiveContextMenus;
                 });
+        touchHelperCallback.setOnDragStartCallback(
+                () -> {
+                    dismissActiveContextMenus();
+                    mTabItemHoverController.resetHoverState();
+                });
 
-        recyclerView.addOnItemTouchListener(
+        RecyclerView.OnItemTouchListener beforeTouchListener =
                 VerticalTabListItemTouchHelperCallback.createBeforeOnItemTouchListener(
-                        touchHelperCallback));
+                        touchHelperCallback);
+        recyclerView.addOnItemTouchListener(beforeTouchListener);
 
         ItemTouchHelper2 itemTouchHelper =
                 new ItemTouchHelper2(touchHelperCallback, /* externalLongPressHandler= */ null);
 
-        recyclerView.addOnItemTouchListener(
-                touchHelperCallback.createMouseDragDetector(itemTouchHelper));
+        RecyclerView.OnItemTouchListener mouseDragDetector =
+                touchHelperCallback.createMouseDragDetector(itemTouchHelper);
+        recyclerView.addOnItemTouchListener(mouseDragDetector);
 
-        TabSwitcherDragHandler dragHandler =
-                createTabSwitcherDragHandler(activity, tabModelSelector);
-        recyclerView.setOnDragListener(dragHandler);
-        if (recyclerView == mRecyclerView) {
-            mContainerView.setOnDragListener(dragHandler);
-            View newTabButton = mContainerView.findViewById(R.id.new_tab_button);
-            if (newTabButton != null) {
-                newTabButton.setOnDragListener(dragHandler);
-            }
-        }
+        touchHelperCallback.setOnDragStateChangedCallback(
+                mTabSwitcherDragHandler::onDragStateChanged);
+
+        // No setOnDragListener on the list: the rail container's listener serves both lists.
 
         touchHelperCallback.setOnDragOutListener(
                 (viewHolder, dX, dY) -> {
-                    if (!VerticalTabUtils.isExternalDragEnabled()) {
+                    if (mTabSwitcherDragHandler.isViewDraggingInProgress()) {
                         return;
                     }
 
@@ -898,80 +1355,142 @@ public class VerticalTabListCoordinator {
                     if (tabModel == null) return;
 
                     boolean isGroupHeader = TabProperties.isTabGroupHeader(model);
+                    @Nullable Tab tab = null;
+                    @Nullable Token tabGroupId = null;
+                    @Nullable Tab firstGroupTab = null;
+                    if (isGroupHeader) {
+                        tabGroupId = assumeNonNull(model.get(TabProperties.TAB_GROUP_HEADER_ID));
+                        List<Tab> groupTabs = tabModel.getTabsInGroup(tabGroupId);
+                        if (groupTabs.isEmpty()) return;
+                        firstGroupTab = groupTabs.get(0);
+                    } else {
+                        int tabId = model.get(TabProperties.TAB_ID);
+                        if (tabId == Tab.INVALID_TAB_ID) return;
+
+                        tab = tabModel.getTabById(tabId);
+                        if (tab == null) return;
+
+                        // Do not allow dragging out the last tab in a group.
+                        // (To be handled when dragging out tab groups is enabled).
+                        if (tabModel.getTabCountForGroup(tab.getTabGroupId()) == 1) {
+                            return;
+                        }
+                    }
+
                     PointF startPoint = new PointF(mLastTouchPoint.x + dX, mLastTouchPoint.y + dY);
 
-                    if (isGroupHeader) {
-                        Token tabGroupId =
-                                assumeNonNull(model.get(TabProperties.TAB_GROUP_HEADER_ID));
-
-                        itemTouchHelper.setExternalDragItem(viewHolder);
-                        dragHandler.setDragHandlerDelegate(
-                                createDragHandlerDelegate(itemTouchHelper, model));
-
-                        mLastDraggedGroupId = tabGroupId;
-
-                        View groupDragShadowView = null;
-                        List<Tab> groupTabs = tabModel.getTabsInGroup(tabGroupId);
-                        if (!groupTabs.isEmpty()) {
-                            int repTabId = groupTabs.get(0).getId();
-                            // TODO(crbug.com/509226293): Construct or fetch 2D GTS grid card drag
-                            // shadow for collapsed tab groups.
-                            PropertyModel repModel = mModelList.getModelFromTabId(repTabId);
-                            if (repModel != null) {
-                                groupDragShadowView = buildGridCardDragShadow(activity, repModel);
-                            }
-                        }
-                        if (groupDragShadowView == null) {
-                            groupDragShadowView = buildGroupHeaderDragShadow(activity, model);
-                        }
-
-                        dragHandler.startGroupDragAction(
-                                viewHolder.itemView, tabGroupId, startPoint, groupDragShadowView);
-
-                        if (!TabProperties.isTabGroupCollapsed(model) && !groupTabs.isEmpty()) {
-                            int repTabId = groupTabs.get(0).getId();
-                            recyclerView.post(() -> toggleTabGroupExpansion(repTabId));
-                        }
-                        return;
-                    }
-
-                    int tabId = model.get(TabProperties.TAB_ID);
-                    if (tabId == Tab.INVALID_TAB_ID) return;
-
-                    Tab tab = tabModel.getTabById(tabId);
-                    if (tab == null) return;
-
-                    // Do not allow dragging out the last tab in a group.
-                    // (To be handled when dragging out tab groups is enabled).
-                    if (tabModel.isTabInTabGroup(tab)
-                            && tabModel.getRelatedTabList(tabId).size() == 1) {
-                        return;
-                    }
-
                     itemTouchHelper.setExternalDragItem(viewHolder);
-                    dragHandler.setDragHandlerDelegate(
-                            createDragHandlerDelegate(itemTouchHelper, model));
+                    mTabSwitcherDragHandler.setDragHandlerDelegate(
+                            createDragHandlerDelegate(
+                                    recyclerView,
+                                    itemTouchHelper,
+                                    touchHelperCallback,
+                                    mTabSwitcherDragHandler,
+                                    mNonOriginatingDragHandlerDelegate,
+                                    viewHolder,
+                                    model));
 
-                    mLastDraggedGroupId = null;
-                    View gridCardView = buildGridCardDragShadow(activity, model);
-                    dragHandler.startTabDragAction(
-                            viewHolder.itemView, tab, startPoint, gridCardView);
+                    initDragShadowView(viewHolder.itemView.getContext());
+
+                    // Installed before the drag starts: ACTION_DRAG_STARTED is dispatched
+                    // asynchronously, but only a view that already has a listener can claim it.
+                    installDragEndRelay(mTabSwitcherDragHandler);
+
+                    boolean dragStarted;
+                    if (isGroupHeader) {
+                        if (mDragShadowView != null) {
+                            mDragShadowView.prepareForGroupDrag(
+                                    assumeNonNull(firstGroupTab), viewHolder.itemView.getWidth());
+                        }
+
+                        dragStarted =
+                                mTabSwitcherDragHandler.startGroupDragAction(
+                                        viewHolder.itemView,
+                                        assumeNonNull(tabGroupId),
+                                        startPoint,
+                                        mDragShadowView);
+                    } else {
+                        if (mDragShadowView != null) {
+                            mDragShadowView.prepareForTabDrag(
+                                    assumeNonNull(tab), viewHolder.itemView.getWidth());
+                        }
+                        dragStarted =
+                                mTabSwitcherDragHandler.startTabDragAction(
+                                        viewHolder.itemView,
+                                        assumeNonNull(tab),
+                                        startPoint,
+                                        mDragShadowView);
+                    }
+
+                    if (!dragStarted) {
+                        removeDragEndRelay();
+                        if (mDragShadowView != null) {
+                            mDragShadowView.clear();
+                        }
+                        itemTouchHelper.onExternalDragStop(/* recoverItem= */ true);
+                        mTabSwitcherDragHandler.setDragHandlerDelegate(
+                                mNonOriginatingDragHandlerDelegate);
+                    } else {
+                        notifyExternalDragStarted();
+                    }
                 });
 
         itemTouchHelper.attachToRecyclerView(recyclerView);
         touchHelperCallback.setRecyclerView(recyclerView);
 
-        recyclerView.addOnItemTouchListener(
+        RecyclerView.OnItemTouchListener afterTouchListener =
                 VerticalTabListItemTouchHelperCallback.createAfterOnItemTouchListener(
-                        touchHelperCallback));
+                        touchHelperCallback);
+        recyclerView.addOnItemTouchListener(afterTouchListener);
+
+        mDragSurfaces.add(
+                new DragSurface(
+                        recyclerView,
+                        itemTouchHelper,
+                        touchHelperCallback,
+                        beforeTouchListener,
+                        mouseDragDetector,
+                        afterTouchListener));
+    }
+
+    /**
+     * Initializes the custom drag shadow view and multi-thumbnail card provider for external drag.
+     */
+    private void initDragShadowView(Context context) {
+        if (mDragShadowView != null) return;
+
+        TabContentManager tabContentManager = mTabContentManagerSupplier.get();
+        if (tabContentManager == null) return;
+
+        mMultiThumbnailCardProvider =
+                new MultiThumbnailCardProvider(
+                        context,
+                        mBrowserControlsStateProvider,
+                        tabContentManager,
+                        mTabModelSelector.getCurrentTabModelSupplier(),
+                        TabFavicon::getBitmap);
+        mMultiThumbnailCardProvider.initWithNative(mProfile.getOriginalProfile());
+
+        mDragShadowView =
+                (StripDragShadowView)
+                        LayoutInflater.from(context).inflate(R.layout.strip_drag_shadow_view, null);
+        mDragShadowView.initialize(
+                mBrowserControlsStateProvider,
+                mMultiThumbnailCardProvider,
+                tabContentManager,
+                /* layerTitleCacheSupplier= */ null,
+                mTabModelSelector,
+                () -> {
+                    if (mTabSwitcherDragHandler.hasActiveDragShadow()) {
+                        mTabSwitcherDragHandler.refreshDragShadow(mDragShadowView);
+                    }
+                });
     }
 
     private TabSwitcherDragHandler createTabSwitcherDragHandler(
             Activity activity, TabModelSelector tabModelSelector) {
         if (sTabSwitcherDragHandlerSupplierForTesting != null) {
-            TabSwitcherDragHandler dragHandler = sTabSwitcherDragHandlerSupplierForTesting.get();
-            mTabSwitcherDragHandlers.add(dragHandler);
-            return dragHandler;
+            return sTabSwitcherDragHandlerSupplierForTesting.get();
         }
 
         Supplier<@Nullable Activity> activitySupplier = () -> activity;
@@ -984,87 +1503,579 @@ public class VerticalTabListCoordinator {
                         activitySupplier,
                         mMultiInstanceManager,
                         dragDropDelegate,
-                        // TODO(crbug.com/518307037): Provide back press handler manager?
-                        new TabSwitcherBackPressHandlerManager());
+                        mBackPressHandlerManager,
+                        /* fadeDragShadow= */ false);
         dragHandler.setTabModelSelector(tabModelSelector);
-        mTabSwitcherDragHandlers.add(dragHandler);
         return dragHandler;
     }
 
-    private DragHandlerDelegate createDragHandlerDelegate(
-            ItemTouchHelper2 itemTouchHelper, @Nullable PropertyModel model) {
+    /**
+     * Installs a relay on the window's decor view that forwards {@code ACTION_DRAG_ENDED} to {@code
+     * dragHandler} when the rail is unable to receive it.
+     *
+     * <p>The rail's only drag listener lives on the rail container, which sits in the subtree that
+     * {@code SideUiCoordinatorImpl} removes from the anchor container ({@code
+     * anchorContainer.removeView(sideUiContainerView)}) when the window is resized below the width
+     * that shows vertical tabs. {@code ViewGroup#removeViewInternal()} drops the removed child from
+     * {@code mChildrenInterestedInDrag} and {@code ViewGroup#dispatchDetachedFromWindow()} clears
+     * the detached subtree's own drag bookkeeping, so from then on the container is not sent {@code
+     * ACTION_DRAG_ENDED}: {@link TabSwitcherDragHandler} never reaches {@code finishDrag()}, the
+     * process-wide {@link DragDropGlobalState} is never released, and the tabbed activity's drag
+     * touch observer ({@code e -> DragDropGlobalState.hasValue()}) then swallows every touch in
+     * every Chrome window of the process.
+     *
+     * <p>The decor view outlives the rail, so it is used purely as a delivery point. The relay
+     * claims {@code ACTION_DRAG_STARTED}, because only views that claim it are sent {@code
+     * ACTION_DRAG_ENDED}, and forwards nothing but that end event. Forwarding the event rather than
+     * open-coding a teardown is deliberate: the handler's normal end path both releases the drag
+     * state and restores the rail through {@code handleExternalDragEnd()} - dragged item, single
+     * item min height, drag shadow, drop indicators, delegate reset - so the rail is intact when
+     * the window is widened again.
+     *
+     * <p>A view has a single {@code OnDragListener} slot. Nothing else in Chrome sets one on a
+     * decor view; do not add a second one without merging it with this.
+     *
+     * <p>Not installed with {@link ChromeFeatureList#SIDE_UI_ALLOW_PAUSE}: the rail's Side UI
+     * container is then frozen for the duration of a drag started from the rail (see {@link
+     * VerticalTabsSideUiCoordinator}), so the rail's listener is never detached mid-drag and {@code
+     * ACTION_DRAG_ENDED} reaches it on its normal path. TODO(crbug.com/556140903): Remove the relay
+     * once the flag ships.
+     *
+     * @param dragHandler The drag handler to forward {@code ACTION_DRAG_ENDED} to.
+     */
+    private void installDragEndRelay(TabSwitcherDragHandler dragHandler) {
+        removeDragEndRelay();
+        if (ChromeFeatureList.sSideUiAllowPause.isEnabled()) return;
+
+        Activity activity = mWindowAndroid.getActivity().get();
+        if (activity == null) return;
+        Window window = activity.getWindow();
+        if (window == null) return;
+        // peekDecorView() rather than getDecorView(), so that starting a drag never inflates one.
+        View decorView = window.peekDecorView();
+        if (decorView == null) return;
+
+        mDragEndRelayView = decorView;
+        decorView.setOnDragListener(
+                (view, dragEvent) -> {
+                    switch (dragEvent.getAction()) {
+                        case DragEvent.ACTION_DRAG_STARTED:
+                            // Claiming is what makes ACTION_DRAG_ENDED get delivered here. Never
+                            // claim a drop: the real drop targets are descendants of the decor
+                            // view and beat it in ViewGroup#findFrontmostDroppableChildAt.
+                            return true;
+                        case DragEvent.ACTION_DRAG_ENDED:
+                            removeDragEndRelay();
+                            // False once an attached rail listener has already handled this same
+                            // event: a ViewGroup runs its own drag listener after its children's,
+                            // and finishDrag() has cleared the handler's drag source by then.
+                            if (dragHandler.isDragSource()) {
+                                dragHandler.onDrag(view, dragEvent);
+                            }
+                            return false;
+                        default:
+                            return false;
+                    }
+                });
+    }
+
+    /** Uninstalls the drag-end relay. No-op when it is not installed. */
+    private void removeDragEndRelay() {
+        if (mDragEndRelayView == null) return;
+
+        mDragEndRelayView.setOnDragListener(null);
+        mDragEndRelayView = null;
+    }
+
+    /**
+     * Returns the drag surface whose {@link ItemTouchHelper2} is running an internal, in-list drag,
+     * or null if none is. At most one can be: an internal drag follows a single pointer.
+     */
+    private @Nullable DragSurface getDragSurfaceWithInternalDrag() {
+        for (DragSurface surface : mDragSurfaces) {
+            if (surface.itemTouchHelper.isDragInProcess()) {
+                return surface;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The rail container's drag listener. The hover controller observes each event before the drag
+     * handler; see {@link VerticalTabRailHoverController#onDragEvent}.
+     */
+    private boolean onRailDrag(View view, DragEvent event) {
+        mRailHoverController.onDragEvent(
+                event, /* isExternalDrag= */ !mTabSwitcherDragHandler.isDragSourceInstance());
+        return mTabSwitcherDragHandler.onDrag(view, event);
+    }
+
+    /**
+     * Records where on the rail a drop landed.
+     *
+     * <p>Split intra- vs cross-window because the two are different interactions with different
+     * aim: an intra-window drop is a reorder the user is watching indicators for, a cross-window
+     * drop is a reparent aimed at a rail in another window. Averaging them hides whichever is
+     * rarer.
+     *
+     * @param view The view the drop event was dispatched to, which the coordinates are relative to.
+     * @param isCrossWindow Whether the drag started in a different window.
+     */
+    private void recordRailDropRegion(View view, float xPx, float yPx, boolean isCrossWindow) {
+        @DropRegion int region;
+        if (VerticalTabDragUtils.isPointInsideView(view, xPx, yPx, mRecyclerView)) {
+            region = DropRegion.MAIN_LIST;
+        } else if (VerticalTabDragUtils.isPointInsideView(
+                view, xPx, yPx, mPinnedTabsRecyclerView)) {
+            region = DropRegion.PINNED_GRID;
+        } else {
+            region = DropRegion.OUTSIDE_BOTH_LISTS;
+        }
+        RecordHistogram.recordEnumeratedHistogram(
+                isCrossWindow
+                        ? "Android.VerticalTabs.DropRegion.CrossWindow"
+                        : "Android.VerticalTabs.DropRegion.IntraWindow",
+                region,
+                DropRegion.COUNT);
+    }
+
+    private void clearDropIndicators() {
+        mReorderStrategy.clear();
+        mDropIndicatorDecoration.clear();
+        mPinnedDropIndicatorDecoration.clear();
+        mRecyclerView.invalidate();
+        if (mPinnedTabsRecyclerView != null) {
+            mPinnedTabsRecyclerView.invalidate();
+        }
+    }
+
+    /**
+     * Creates the delegate used whenever this window is not the drag's source: it covers both lists
+     * and the rail's non-list views, resolving the list a point belongs to by hit test rather than
+     * by which view the event arrived on.
+     */
+    private DragHandlerDelegate createNonOriginatingDragHandlerDelegate(
+            TabSwitcherDragHandler dragHandler) {
         return new DragHandlerDelegate() {
+
+            @Override
+            public boolean isDragInProcess() {
+                return getDragSurfaceWithInternalDrag() != null;
+            }
+
+            @Override
+            public int handleInternalDragEnd() {
+                DragSurface surface = getDragSurfaceWithInternalDrag();
+                if (surface == null) {
+                    return BackPressHandler.BackPressResult.FAILURE;
+                }
+                surface.touchHelperCallback.markDragAbortedByEsc();
+                surface.itemTouchHelper.stopInternalDrag();
+                return BackPressHandler.BackPressResult.SUCCESS;
+            }
+
             @Override
             public boolean handleDragStart(float xPx, float yPx) {
-                mTabHoverCardController.hideHoverCard();
-                itemTouchHelper.onExternalDragStart(xPx, yPx, /* hideItemWhileDragging= */ true);
-
-                moveDraggedPinnedTabToEndIfNeeded(model);
-                // Keep a minimum height during external drag so a single-item list does not
-                // collapse to 0px.
-                updateSingleTabListMinHeight(model, /* useMinHeight= */ true);
-
-                // Since the OS-level drag-and-drop only initiates after the cursor has moved
-                // outside the bounds of the RecyclerView, we will never receive an
-                // ACTION_DRAG_EXITED event. Therefore, we must explicitly trigger the collapse of
-                // the drag gap right away.
-                itemTouchHelper.clearExternalDragItemVisibility();
+                mTabItemHoverController.resetHoverState();
                 return true;
             }
 
             @Override
-            public boolean handleDragLocation(float xPx, float yPx) {
-                itemTouchHelper.onExternalDragLocation(xPx, yPx);
+            public boolean handleDragEnter(View view) {
+                if (!dragHandler.isDragSourceInstance()) {
+                    dragHandler.showDragShadow(view, /* show= */ false);
+                }
                 return true;
             }
 
             @Override
-            public boolean handleDragEnter() {
-                updateSingleTabListMinHeight(model, /* useMinHeight= */ false);
-                itemTouchHelper.restoreExternalDragItemVisibility(/* isOSNewWindowDrop= */ false);
-                return true;
-            }
-
-            @Override
-            public boolean handleDragExit() {
-                moveDraggedPinnedTabToEndIfNeeded(model);
-                // Keep a minimum height during external drag so a single-item list does not
-                // collapse to 0px.
-                updateSingleTabListMinHeight(model, /* useMinHeight= */ true);
-                itemTouchHelper.clearExternalDragItemVisibility();
-                return true;
-            }
-
-            @Override
-            public boolean handleExternalDragEnd(float xPx, float yPx, boolean isOSNewWindowDrop) {
-                updateSingleTabListMinHeight(model, /* useMinHeight= */ false);
-                itemTouchHelper.restoreExternalDragItemVisibility(isOSNewWindowDrop);
-                itemTouchHelper.onExternalDragStop(/* recoverItem= */ false);
-
-                if (mLastDraggedGroupId != null) {
-                    Token groupId = mLastDraggedGroupId;
-                    mLastDraggedGroupId = null;
-                    TabModel tabModel = mTabModelSelector.getCurrentModel();
-                    if (tabModel != null) {
-                        // Always expand tab group on drop.
-                        tabModel.setTabGroupCollapsed(
-                                groupId, /* isCollapsed= */ false, /* animate= */ false);
+            public boolean handleDragLocation(View view, float xPx, float yPx) {
+                if (!dragHandler.isDragSourceInstance()) {
+                    DropTargetResult result = mReorderStrategy.calculateDropTarget(view, xPx, yPx);
+                    mDropIndicatorDecoration.setDropTargetResult(result);
+                    mPinnedDropIndicatorDecoration.setDropTargetResult(result);
+                    mRecyclerView.invalidate();
+                    if (mPinnedTabsRecyclerView != null) {
+                        mPinnedTabsRecyclerView.invalidate();
                     }
                 }
                 return true;
             }
 
             @Override
-            public int handleInternalDragEnd() {
-                updateSingleTabListMinHeight(model, /* useMinHeight= */ false);
-                itemTouchHelper.stopInternalDrag();
-                mLastDraggedGroupId = null;
-                return BackPressHandler.BackPressResult.SUCCESS;
+            public boolean handleDragExit(View view) {
+                clearDropIndicators();
+                if (!dragHandler.isDragSourceInstance()) {
+                    dragHandler.showDragShadow(view, /* show= */ true);
+                }
+                return true;
             }
 
             @Override
-            public boolean isDragInProcess() {
-                return itemTouchHelper.isDragInProcess();
+            public boolean handleExternalDragEnd(
+                    View view, float xPx, float yPx, boolean isOSNewWindowDrop) {
+                clearDropIndicators();
+                return true;
+            }
+
+            @Override
+            public boolean handleDrop(View view, float xPx, float yPx) {
+                recordRailDropRegion(
+                        view, xPx, yPx, /* isCrossWindow= */ !dragHandler.isDragSourceInstance());
+                boolean result = handleDropInternal(view, xPx, yPx);
+                clearDropIndicators();
+                return result;
+            }
+
+            private boolean handleDropInternal(View view, float xPx, float yPx) {
+                if (dragHandler.isDragSourceInstance()) {
+                    return true;
+                }
+
+                DragDropGlobalState globalState = TabDragHandlerBase.getDragDropGlobalState(null);
+                if (globalState == null) {
+                    return false;
+                }
+
+                TabModel tabModel = mTabModelSelector.getCurrentModel();
+                if (tabModel == null) {
+                    return false;
+                }
+
+                DropTargetResult dropTarget = mReorderStrategy.getLastDropTargetResult();
+                if (dropTarget == null) {
+                    dropTarget = mReorderStrategy.calculateDropTarget(view, xPx, yPx);
+                }
+                if (dropTarget == null) {
+                    return false;
+                }
+
+                int destWindowId = mMultiInstanceManager.getCurrentInstanceId();
+
+                if (globalState.getData() instanceof ChromeTabGroupDropDataAndroid) {
+                    TabGroupMetadata tabGroupMetadata =
+                            ChromeDragDropUtils.getTabGroupMetadataFromGlobalState(globalState);
+                    if (tabGroupMetadata == null) {
+                        return false;
+                    }
+                    if (tabGroupMetadata.isIncognito != tabModel.isIncognitoBranded()) {
+                        return false;
+                    }
+
+                    MultiInstanceOrchestratorFactory.getInstance()
+                            .moveTabGroupToWindowByIdChecked(
+                                    destWindowId,
+                                    tabGroupMetadata,
+                                    dropTarget.destTabIndex,
+                                    /* bringToFront= */ true);
+                    DragDropMetricUtils.recordDragDropType(
+                            DragDropType.TAB_STRIP_TO_TAB_STRIP,
+                            /* isTabGroup= */ true,
+                            /* isMultiTab= */ false);
+                    return true;
+                } else if (globalState.getData() instanceof ChromeMultiTabDropDataAndroid) {
+                    // TODO(crbug.com/550564967): Support multi-tab drop reparenting in Vertical
+                    // Tabs.
+                    return false;
+                } else if (globalState.getData() instanceof ChromeTabDropDataAndroid) {
+                    Tab tab = ChromeDragDropUtils.getTabFromGlobalState(globalState);
+                    if (tab == null) {
+                        return false;
+                    }
+                    if (tab.isIncognitoBranded() != tabModel.isIncognitoBranded()) {
+                        return false;
+                    }
+
+                    maybeUngroupTab(tab, (ChromeTabDropDataAndroid) globalState.getData());
+
+                    int destGroupTabId = dropTarget.destGroupTabId;
+                    int destTabIndex = dropTarget.destTabIndex;
+                    int indexInGroup = TabList.INVALID_TAB_INDEX;
+
+                    if (destGroupTabId != TabList.INVALID_TAB_INDEX) {
+                        Tab destGroupTab = tabModel.getTabById(destGroupTabId);
+                        if (destGroupTab != null) {
+                            Token groupId = destGroupTab.getTabGroupId();
+                            List<Tab> groupTabs =
+                                    groupId != null
+                                            ? tabModel.getTabsInGroup(groupId)
+                                            : Collections.emptyList();
+                            int firstGroupModelIndex =
+                                    !groupTabs.isEmpty()
+                                            ? tabModel.indexOf(groupTabs.get(0))
+                                            : destTabIndex;
+                            indexInGroup =
+                                    MathUtils.clamp(
+                                            destTabIndex - firstGroupModelIndex,
+                                            0,
+                                            groupTabs.size());
+                        }
+                    }
+
+                    MultiInstanceOrchestratorFactory.getInstance()
+                            .moveTabsToWindowByIdChecked(
+                                    destWindowId,
+                                    Collections.singletonList(tab),
+                                    destTabIndex,
+                                    /* destGroupTabId= */ TabList.INVALID_TAB_INDEX,
+                                    /* bringToFront= */ true);
+
+                    if (destGroupTabId != TabList.INVALID_TAB_INDEX) {
+                        Tab destGroupTab = tabModel.getTabById(destGroupTabId);
+                        if (destGroupTab != null && indexInGroup != TabList.INVALID_TAB_INDEX) {
+                            tabModel.mergeListOfTabsToGroup(
+                                    Collections.singletonList(tab),
+                                    destGroupTab,
+                                    indexInGroup,
+                                    TabGroupMergeNotificationType.DONT_NOTIFY);
+                        }
+                    }
+
+                    DragDropMetricUtils.recordDragDropType(
+                            DragDropType.TAB_STRIP_TO_TAB_STRIP,
+                            /* isTabGroup= */ false,
+                            /* isMultiTab= */ false);
+                    return true;
+                }
+
+                return false;
+            }
+
+            private void maybeUngroupTab(Tab tab, ChromeTabDropDataAndroid dropData) {
+                if (tab.getTabGroupId() == null && !dropData.isTabInGroup) {
+                    return;
+                }
+                TabModel sourceTabModel = null;
+                if (dropData.windowId != TabWindowManager.INVALID_WINDOW_ID) {
+                    TabModelSelector sourceSelector =
+                            TabWindowManagerSingleton.getInstance()
+                                    .getTabModelSelectorById(dropData.windowId);
+                    if (sourceSelector != null) {
+                        sourceTabModel = sourceSelector.getModel(tab.isIncognitoBranded());
+                    }
+                }
+                if (sourceTabModel == null) {
+                    sourceTabModel = TabWindowManagerSingleton.getInstance().getTabModelForTab(tab);
+                }
+                if (sourceTabModel != null && sourceTabModel.isTabInTabGroup(tab)) {
+                    sourceTabModel
+                            .getTabUngrouper()
+                            .ungroupTabs(
+                                    Collections.singletonList(tab),
+                                    /* trailing= */ true,
+                                    /* allowDialog= */ false);
+                }
+            }
+        };
+    }
+
+    /**
+     * Creates a {@link DragHandlerDelegate} to handle drag events when an external drag originates
+     * from this vertical tab list.
+     */
+    private DragHandlerDelegate createDragHandlerDelegate(
+            RecyclerView recyclerView,
+            ItemTouchHelper2 itemTouchHelper,
+            VerticalTabListItemTouchHelperCallback touchHelperCallback,
+            TabSwitcherDragHandler dragHandler,
+            DragHandlerDelegate nonOriginatingDelegate,
+            RecyclerView.ViewHolder viewHolder,
+            @Nullable PropertyModel model) {
+        TabModel tabModel = mTabModelSelector.getCurrentModel();
+        List<Tab> draggedTabs = new ArrayList<>();
+        int originallySelectedTabId = Tab.INVALID_TAB_ID;
+        if (tabModel != null && model != null) {
+            if (TabProperties.isTabGroupHeader(model)) {
+                Token groupId = model.get(TabProperties.TAB_GROUP_HEADER_ID);
+                if (groupId != null) {
+                    draggedTabs.addAll(tabModel.getTabsInGroup(groupId));
+                }
+            } else {
+                int tabId = model.get(TabProperties.TAB_ID);
+                Tab tab = tabModel.getTabById(tabId);
+                if (tab != null) {
+                    draggedTabs.add(tab);
+                }
+            }
+            Tab currentSelectedTab = TabModelUtils.getCurrentTab(tabModel);
+            if (currentSelectedTab != null && draggedTabs.contains(currentSelectedTab)) {
+                originallySelectedTabId = currentSelectedTab.getId();
+            }
+        }
+        final int selectedDraggedTabId = originallySelectedTabId;
+
+        // The list this drag did not come from. The region predicate is expressed relative to the
+        // origin, because what it selects is where this delegate's ItemTouchHelper2 is the
+        // authority on coordinates.
+        final RecyclerView otherRecyclerView =
+                recyclerView == mRecyclerView ? mPinnedTabsRecyclerView : mRecyclerView;
+        final boolean originIsMainList = recyclerView == mRecyclerView;
+
+        return new DragHandlerDelegate() {
+            private final float[] mTempCoords = new float[2];
+
+            private final VerticalTabDragRegionTracker mRegionTracker =
+                    new VerticalTabDragRegionTracker(
+                            this::onEnterOriginatingList, this::onExitOriginatingList);
+
+            /**
+             * Whether this drag session's start has already been handled. Every view registered
+             * with this handler receives its own ACTION_DRAG_STARTED, so without this the
+             * drag-start effects run once per registered view.
+             *
+             * <p>This is a per-session flag, not a test for "a drag is in progress": the drag token
+             * is set by startDrag() before ACTION_DRAG_STARTED is delivered, so any check against
+             * it would suppress every originating drag. It needs no explicit clearing, because a
+             * fresh delegate is created for each drag-out and discarded when the drag ends or fails
+             * to start.
+             */
+            private boolean mDragStartHandled;
+
+            private void deselectDraggedTabIfNeeded() {
+                if (tabModel == null || selectedDraggedTabId == Tab.INVALID_TAB_ID) return;
+                if (tabModel.getCurrentTabSupplier() == null
+                        || tabModel.getNextTabPolicySupplier() == null) {
+                    return;
+                }
+                Tab nextTab =
+                        NextTabSelectionUtil.getNextTabIfClosed(
+                                tabModel,
+                                /* modelDelegate= */ null,
+                                draggedTabs,
+                                /* uponExit= */ false);
+                if (nextTab != null) {
+                    int nextIndex = tabModel.indexOf(nextTab);
+                    if (nextIndex != TabModel.INVALID_TAB_INDEX && nextIndex != tabModel.index()) {
+                        tabModel.setIndex(nextIndex, TabSelectionType.FROM_DRAG);
+                    }
+                }
+            }
+
+            private void reselectDraggedTabIfNeeded() {
+                if (tabModel == null || selectedDraggedTabId == Tab.INVALID_TAB_ID) return;
+                Tab tab = tabModel.getTabById(selectedDraggedTabId);
+                if (tab != null) {
+                    int index = tabModel.indexOf(tab);
+                    if (index != TabModel.INVALID_TAB_INDEX && index != tabModel.index()) {
+                        tabModel.setIndex(index, TabSelectionType.FROM_DRAG);
+                    }
+                }
+            }
+
+            private boolean computeIsInsideOriginatingRegion(View view, float xPx, float yPx) {
+                if (recyclerView.getWidth() <= 0 || recyclerView.getHeight() <= 0) {
+                    VerticalTabDragUtils.mapCoordinatesToView(
+                            view, xPx, yPx, recyclerView, mTempCoords);
+                    return false;
+                }
+                boolean insideListBounds =
+                        VerticalTabDragUtils.mapCoordinatesAndCheckBounds(
+                                view, xPx, yPx, recyclerView, mTempCoords);
+                // Precondition: mRecyclerView and mPinnedTabsRecyclerView are spatially disjoint in
+                // layout. For a main-list drag, points within the outer rail container but not
+                // inside otherRecyclerView (rail margin, header, new-tab button) remain inside the
+                // region with coordinates clamped to [0, size - 1].
+                return insideListBounds
+                        || (originIsMainList
+                                && VerticalTabDragUtils.isPointInsideView(
+                                        view, xPx, yPx, mContainerView)
+                                && !VerticalTabDragUtils.isPointInsideView(
+                                        view, xPx, yPx, otherRecyclerView));
+            }
+
+            private float clampX(float x) {
+                return MathUtils.clamp(x, 0f, Math.max(0f, recyclerView.getWidth() - 1f));
+            }
+
+            private float clampY(float y) {
+                return MathUtils.clamp(y, 0f, Math.max(0f, recyclerView.getHeight() - 1f));
+            }
+
+            @Override
+            public boolean handleDragStart(View view, float xPx, float yPx) {
+                if (mDragStartHandled) return true;
+                mDragStartHandled = true;
+
+                boolean isInsideRegion = computeIsInsideOriginatingRegion(view, xPx, yPx);
+                mRegionTracker.onDragStarted(isInsideRegion);
+
+                mTabItemHoverController.resetHoverState();
+                float startX = isInsideRegion ? clampX(mTempCoords[0]) : mTempCoords[0];
+                float startY = isInsideRegion ? clampY(mTempCoords[1]) : mTempCoords[1];
+                itemTouchHelper.onExternalDragStart(
+                        startX, startY, /* hideItemWhileDragging= */ true);
+
+                if (isInsideRegion) {
+                    dragHandler.showDragShadow(recyclerView, false);
+                } else {
+                    onExitOriginatingList();
+                }
+                return true;
+            }
+
+            @Override
+            public boolean handleDragLocation(View view, float xPx, float yPx) {
+                boolean isInsideRegion = computeIsInsideOriginatingRegion(view, xPx, yPx);
+                mRegionTracker.onLocation(isInsideRegion);
+
+                if (isInsideRegion) {
+                    itemTouchHelper.onExternalDragLocation(
+                            clampX(mTempCoords[0]), clampY(mTempCoords[1]));
+                }
+                return true;
+            }
+
+            private void onEnterOriginatingList() {
+                dragHandler.showDragShadow(recyclerView, false);
+                reselectDraggedTabIfNeeded();
+                updateSingleTabListMinHeight(model, /* useMinHeight= */ false);
+                touchHelperCallback.restoreDraggedItem(/* isOSNewWindowDrop= */ false);
+            }
+
+            private void onExitOriginatingList() {
+                dragHandler.showDragShadow(recyclerView, true);
+                deselectDraggedTabIfNeeded();
+                moveDraggedPinnedTabToEndIfNeeded(model);
+                // Keep a minimum height during external drag so a single-item list does not
+                // collapse to 0px.
+                updateSingleTabListMinHeight(model, /* useMinHeight= */ true);
+                touchHelperCallback.collapseDraggedItem(viewHolder);
+            }
+
+            @Override
+            public boolean handleDragExit(View view) {
+                // Unlike ACTION_DRAG_ENTERED, this edge cannot be recovered from a later
+                // ACTION_DRAG_LOCATION: when the pointer leaves the window there is no later
+                // location. It is taken on faith and forces the outside state.
+                mRegionTracker.onExitedContainer();
+                return true;
+            }
+
+            @Override
+            public boolean handleExternalDragEnd(
+                    View view, float xPx, float yPx, boolean isOSNewWindowDrop) {
+                mRegionTracker.onDragEnded();
+                if (!isOSNewWindowDrop) {
+                    reselectDraggedTabIfNeeded();
+                }
+                updateSingleTabListMinHeight(model, /* useMinHeight= */ false);
+                touchHelperCallback.restoreDraggedItem(isOSNewWindowDrop);
+                itemTouchHelper.onExternalDragStop(/* recoverItem= */ false);
+                if (mDragShadowView != null) {
+                    mDragShadowView.clear();
+                }
+
+                dragHandler.setDragHandlerDelegate(nonOriginatingDelegate);
+                notifyExternalDragEnded();
+                return true;
+            }
+
+            @Override
+            public boolean handleDrop(View view, float xPx, float yPx) {
+                // Always intra-window: this delegate is only installed while a drag that started
+                // from this rail is in flight.
+                recordRailDropRegion(view, xPx, yPx, /* isCrossWindow= */ false);
+                return true;
             }
         };
     }
@@ -1108,36 +2119,38 @@ public class VerticalTabListCoordinator {
         }
     }
 
-    /** Returns the grid column span count for the Left Rail based on measured width. */
-    private int getSpanCount() {
-        int containerWidth = mContainerView.getWidth();
-        if (containerWidth <= 0) return DEFAULT_GRID_SPAN_COUNT;
-
-        int paddingStart = mContainerView.getPaddingStart();
-        int paddingEnd = mContainerView.getPaddingEnd();
-        int availableWidth = containerWidth - paddingStart - paddingEnd;
-
-        Resources res = mContainerView.getContext().getResources();
-        int itemWidth = res.getDimensionPixelSize(R.dimen.vertical_tab_pinned_item_width);
-        int minHorizontalGap = res.getDimensionPixelSize(R.dimen.vertical_tab_item_margin_bottom);
-        if (itemWidth <= 0) return DEFAULT_GRID_SPAN_COUNT;
-
-        int calculatedSpans =
-                Math.max(
-                        COLLAPSED_GRID_SPAN_COUNT,
-                        (availableWidth + minHorizontalGap) / (itemWidth + minHorizontalGap));
-        return Math.min(DEFAULT_GRID_SPAN_COUNT, calculatedSpans);
+    private @RailCollapseState int getRailCollapseState() {
+        // mContainerModel may not be initialized yet when called from early listeners.
+        return mContainerModel != null
+                ? mContainerModel.get(VerticalTabListProperties.COLLAPSE_STATE)
+                : RailCollapseState.EXPANDED;
     }
 
     private void updatePinnedLayoutSpanCount() {
-        if (mPinnedLayoutManager == null || mContainerModel == null) return;
-        @RailCollapseState
-        int collapseState = mContainerModel.get(VerticalTabListProperties.COLLAPSE_STATE);
-        if (collapseState == RailCollapseState.COLLAPSED) {
-            mPinnedLayoutManager.setSpanCount(COLLAPSED_GRID_SPAN_COUNT);
-        } else {
-            mPinnedLayoutManager.setSpanCount(getSpanCount());
+        mPinnedTabsRecyclerView.updateSpanCount(getRailCollapseState());
+    }
+
+    private boolean openContextMenuForFocusedItem(RecyclerView recyclerView) {
+        View focusedChild = recyclerView.findFocus();
+        if (focusedChild == null) return false;
+
+        View itemView = recyclerView.findContainingItemView(focusedChild);
+        if (itemView == null) return false;
+
+        boolean menuShown = showMenuForItemView(getItemViewAnchorRectProvider(itemView), itemView);
+        if (menuShown) {
+            itemView.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
         }
+        return menuShown;
+    }
+
+    private boolean showMenuForItemView(RectProvider rectProvider, View itemView) {
+        if (!(itemView.getParent() instanceof RecyclerView recyclerView)) return false;
+        int position = recyclerView.getChildAdapterPosition(itemView);
+        if (position == RecyclerView.NO_POSITION) return false;
+        Activity activity = mWindowAndroid.getActivity().get();
+        if (activity == null) return false;
+        return showMenuForAdapterPosition(rectProvider, activity, recyclerView, position);
     }
 
     /**
@@ -1154,22 +2167,22 @@ public class VerticalTabListCoordinator {
     private boolean handleContextMenuInteraction(
             Activity activity, RecyclerView recyclerView, float localX, float localY) {
         View childView = recyclerView.findChildViewUnder(localX, localY);
+        RectProvider rectProvider = calculateTouchAnchor(recyclerView, localX, localY);
 
         // If childView is null, the coordinates landed on an empty space. Launch empty space menu.
         if (childView == null) {
-            showEmptySpaceContextMenu(activity, recyclerView, localX, localY);
+            showEmptySpaceContextMenu(rectProvider, activity);
             return true;
         }
         int position = recyclerView.getChildAdapterPosition(childView);
-        return showMenuForAdapterPosition(activity, recyclerView, childView, position);
+        return showMenuForAdapterPosition(rectProvider, activity, recyclerView, position);
     }
 
     private boolean showMenuForAdapterPosition(
-            Activity activity, RecyclerView recyclerView, View childView, int position) {
-        if (position == RecyclerView.NO_POSITION) return false;
-
+            RectProvider rectProvider, Activity activity, RecyclerView recyclerView, int position) {
         TabListModel modelList =
                 (recyclerView == mPinnedTabsRecyclerView) ? mPinnedTabsModelList : mModelList;
+        if (!modelList.isValidIndex(position)) return false;
 
         ListItem item = modelList.get(position);
         int resolvedItemViewType =
@@ -1177,20 +2190,63 @@ public class VerticalTabListCoordinator {
         if (resolvedItemViewType == UiType.TAB || resolvedItemViewType == UiType.PINNED_TAB) {
             // The user clicked directly on a tab item (regular tab, pinned tab, or child tab).
             int tabId = TabProperties.getTabId(item.model);
-            showTabItemContextMenu(activity, recyclerView, childView, tabId);
-            return true;
+            return showTabItemContextMenu(rectProvider, activity, tabId);
         } else if (resolvedItemViewType == UiType.TAB_GROUP) {
             Token tabGroupId = item.model.get(TabProperties.TAB_GROUP_HEADER_ID);
             if (tabGroupId != null) {
-                showTabGroupHeaderContextMenu(childView, tabGroupId);
-                return true;
+                return showTabGroupHeaderContextMenu(rectProvider, tabGroupId);
             }
         }
         return false;
     }
 
-    private void showTabGroupHeaderContextMenu(View itemView, Token tabGroupId) {
-        RectProvider rectProvider = getAnchorRectProvider(mRecyclerView, itemView);
+    /**
+     * Shows the context menu for a newly created tab group header by resolving its current view
+     * from the recycler view. This avoids capturing a stale tab item view across the asynchronous
+     * group creation callback.
+     */
+    private void showTabGroupHeaderContextMenuForGroupId(Token tabGroupId) {
+        mRecyclerView.post(
+                () -> {
+                    TabModel currentModel = mTabModelSelector.getCurrentModel();
+                    if (currentModel == null || !currentModel.containsTabGroup(tabGroupId)) {
+                        return;
+                    }
+
+                    int index = mModelList.indexFromTabGroupId(tabGroupId);
+                    if (index == TabModel.INVALID_TAB_INDEX) return;
+
+                    mRecyclerView.findOrScrollToViewHolder(
+                            index,
+                            holder ->
+                                    showTabGroupHeaderContextMenu(
+                                            getItemViewAnchorRectProvider(holder.itemView),
+                                            tabGroupId));
+                });
+    }
+
+    private boolean showTabGroupHeaderContextMenu(RectProvider rectProvider, Token tabGroupId) {
+        if (tabGroupId == null) return false;
+
+        TabModel currentModel = mTabModelSelector.getCurrentModel();
+        if (currentModel == null || !currentModel.containsTabGroup(tabGroupId)) {
+            return false;
+        }
+        List<Tab> tabsInGroup = currentModel.getTabsInGroup(tabGroupId);
+        if (tabsInGroup.isEmpty()) {
+            return false;
+        }
+        boolean hasNonClosingTab = false;
+        for (Tab tab : tabsInGroup) {
+            if (!tab.isClosing()) {
+                hasNonClosingTab = true;
+                break;
+            }
+        }
+        if (!hasNonClosingTab) {
+            return false;
+        }
+
         if (mTabGroupContextMenuCoordinator == null) {
             mTabGroupContextMenuCoordinator =
                     TabGroupContextMenuCoordinator.createContextMenuCoordinator(
@@ -1198,27 +2254,46 @@ public class VerticalTabListCoordinator {
                             mMultiInstanceManager,
                             mWindowAndroid,
                             mDataSharingTabManager,
-                            /* reorderFunction= */ (info, toLeft) -> {
-                                // TODO(crbug.com/521982129): Implement tab reordering for a11y.
-                            },
+                            /* reorderFunction= */ (groupId, toPrevious) ->
+                                    TabUiUtils.reorderTabGroup(
+                                            mTabModelSelector.getCurrentModel(),
+                                            groupId,
+                                            toPrevious),
                             TabClosingSource.VERTICAL_TAB_STRIP,
-                            TabStripLayoutType.VERTICAL);
+                            TabStripLayoutType.VERTICAL,
+                            this::onContextMenuDismissed);
         }
-        mTabHoverCardController.hideHoverCard();
+        mTabItemHoverController.hideHoverCard();
+        dismissActiveContextMenus();
         mTabGroupContextMenuCoordinator.showMenu(rectProvider, tabGroupId);
+        return true;
     }
 
-    private void showTabItemContextMenu(
-            Activity activity, RecyclerView recyclerView, View itemView, int tabId) {
-        RectProvider rectProvider = getAnchorRectProvider(recyclerView, itemView);
-        List<Integer> allTabIds = List.of(tabId);
-        var anchorInfo = new TabContextMenuCoordinator.AnchorInfo(tabId, allTabIds);
+    private boolean showTabItemContextMenu(
+            RectProvider rectProvider, Activity activity, int tabId) {
+        if (tabId == Tab.INVALID_TAB_ID) return false;
+
+        TabModel tabModel = mTabModelSelector.getCurrentModel();
+        if (tabModel == null) return false;
+
+        Tab tab = tabModel.getTabById(tabId);
+        if (tab == null || tab.isClosing()) return false;
+
+        List<Integer> allTabIds;
+        if (TabMultiSelectHelper.hasMultipleTabsSelected(tabModel)
+                && tabModel.isTabMultiSelected(tabId)) {
+            allTabIds = tabModel.getOrderedMultiSelectedTabIds();
+        } else {
+            allTabIds = List.of(tabId);
+        }
+
+        var anchorInfo = new AnchorInfo(tabId, allTabIds);
 
         if (mTabContextMenuCoordinator == null) {
             TabGroupCreationCallback tabGroupCreationCallback =
                     (newTabGroupId) -> {
                         if (newTabGroupId != null) {
-                            showTabGroupHeaderContextMenu(itemView, newTabGroupId);
+                            showTabGroupHeaderContextMenuForGroupId(newTabGroupId);
                         }
                     };
 
@@ -1232,23 +2307,29 @@ public class VerticalTabListCoordinator {
                             mWindowAndroid,
                             activity,
                             /* tabBookmarkerSupplier= */ null,
-                            /* reorderFunction= */ (info, toLeft) -> {
-                                // TODO(crbug.com/521982129): Implement tab reordering for a11y.
-                            },
+                            /* reorderFunction= */ (info, toPrevious) ->
+                                    NestedTabReorderUtils.reorderTabById(
+                                            mTabModelSelector.getCurrentModel(),
+                                            mPinnedTabsModelList,
+                                            mModelList,
+                                            info.getAnchorTabId(),
+                                            toPrevious),
                             mSnackbarManager,
                             mActivityResultTracker,
                             /* modalDialogManager= */ mWindowAndroid.getModalDialogManager(),
                             TabClosingSource.VERTICAL_TAB_STRIP,
                             mCanActivateTabLayoutToggleMenuSupplier,
-                            TabStripLayoutType.VERTICAL);
+                            TabStripLayoutType.VERTICAL,
+                            mDataSharingTabManager.getTabGroupUiActionHandler(),
+                            this::onContextMenuDismissed);
         }
-        mTabHoverCardController.hideHoverCard();
+        mTabItemHoverController.hideHoverCard();
+        dismissActiveContextMenus();
         mTabContextMenuCoordinator.showMenu(rectProvider, anchorInfo);
+        return true;
     }
 
-    private void showEmptySpaceContextMenu(
-            Activity activity, View targetView, float localX, float localY) {
-        RectProvider rectProvider = calculateTouchAnchor(targetView, localX, localY);
+    private void showEmptySpaceContextMenu(RectProvider rectProvider, Activity activity) {
         if (mTabStripContextMenuCoordinator == null) {
             mTabStripContextMenuCoordinator =
                     TabStripContextMenuCoordinator.createContextMenuCoordinator(
@@ -1258,20 +2339,39 @@ public class VerticalTabListCoordinator {
                             mSnackbarManager,
                             this::handleNewTabButtonClick,
                             mCanActivateTabLayoutToggleMenuSupplier,
-                            TabStripLayoutType.VERTICAL);
+                            TabStripLayoutType.VERTICAL,
+                            this::onContextMenuDismissed);
         }
 
         boolean isIncognito = mTabModelSelector.getCurrentModel().isIncognitoBranded();
-        mTabHoverCardController.hideHoverCard();
+        mTabItemHoverController.hideHoverCard();
+        dismissActiveContextMenus();
         mTabStripContextMenuCoordinator.showMenu(rectProvider, isIncognito, activity);
     }
 
-    private RectProvider getAnchorRectProvider(RecyclerView recyclerView, View itemView) {
-        if (mLastTouchPoint.x != 0 || mLastTouchPoint.y != 0) {
-            return calculateTouchAnchor(recyclerView, mLastTouchPoint.x, mLastTouchPoint.y);
+    private void showCollapseButtonContextMenu(RectProvider rectProvider, Activity activity) {
+        if (mCollapseButtonContextMenuCoordinator == null) {
+            mCollapseButtonContextMenuCoordinator =
+                    new VerticalTabCollapseButtonContextMenuCoordinator(
+                            activity, this::onContextMenuDismissed);
         }
 
-        // Fallback: Create a precise bounding box wrapped around the tab item.
+        boolean isIncognito = mTabModelSelector.getCurrentModel().isIncognitoBranded();
+        mTabItemHoverController.hideHoverCard();
+        dismissActiveContextMenus();
+        mCollapseButtonContextMenuCoordinator.showMenu(rectProvider, isIncognito);
+    }
+
+    /** Called when any of the rail's context menus is dismissed. */
+    private void onContextMenuDismissed() {
+        mTabItemHoverController.resetHoverState();
+        // Ignore if another context menu replaced the dismissed one.
+        if (!isAnyContextMenuShowing()) {
+            mRailHoverController.onContextMenuDismissed();
+        }
+    }
+
+    private RectProvider getItemViewAnchorRectProvider(View itemView) {
         int[] viewPos = new int[2];
         itemView.getLocationInWindow(viewPos);
         Rect anchorRect =
@@ -1317,16 +2417,12 @@ public class VerticalTabListCoordinator {
                     mLastTouchPoint.set((int) e.getX(), (int) e.getY());
                 }
 
-                // Intercept mouse right-clicks. While setOnContextClickListener works for
-                // empty background space (where no child views capture the event), actual
-                // tab row child views swallow right-clicks internally without bubbling them
-                // up to the parent (recyclerView), causing
-                // recyclerView.setOnContextClickListener to be skipped.
+                // Intercept mouse right-clicks directly on child tab items before interactive
+                // sub-views (like buttons or click listeners) consume the touch sequence.
                 if ((e.getButtonState() & MotionEvent.BUTTON_SECONDARY) != 0) {
                     View childView = rv.findChildViewUnder(e.getX(), e.getY());
                     if (childView != null) {
-                        handleContextMenuInteraction(activity, rv, e.getX(), e.getY());
-                        return true;
+                        return handleContextMenuInteraction(activity, rv, e.getX(), e.getY());
                     }
                     // For empty space context menus, we let
                     // recyclerView.setOnContextClickListener call
@@ -1386,7 +2482,8 @@ public class VerticalTabListCoordinator {
                     handleContextMenuInteraction(activity, targetRecyclerView, e.getX(), e.getY());
                 } else {
                     // For the header view (or non-lists), directly show the empty space menu.
-                    showEmptySpaceContextMenu(activity, targetView, e.getX(), e.getY());
+                    showEmptySpaceContextMenu(
+                            calculateTouchAnchor(targetView, e.getX(), e.getY()), activity);
                 }
             }
         };
@@ -1401,14 +2498,19 @@ public class VerticalTabListCoordinator {
     private View.OnContextClickListener createEmptySpaceContextClickListener(
             Activity activity, View targetView) {
         return v -> {
+            // If the click landed on an actual child item, onInterceptTouchEvent already
+            // handled it. Only show the empty space menu if there is no child view under the
+            // cursor.
             if (targetView instanceof RecyclerView rv) {
-                return handleContextMenuInteraction(
-                        activity, rv, mLastTouchPoint.x, mLastTouchPoint.y);
-            } else {
-                showEmptySpaceContextMenu(
-                        activity, targetView, mLastTouchPoint.x, mLastTouchPoint.y);
-                return true;
+                View childView = rv.findChildViewUnder(mLastTouchPoint.x, mLastTouchPoint.y);
+                if (childView != null) {
+                    return true;
+                }
             }
+            showEmptySpaceContextMenu(
+                    calculateTouchAnchor(targetView, mLastTouchPoint.x, mLastTouchPoint.y),
+                    activity);
+            return true;
         };
     }
 
@@ -1432,6 +2534,9 @@ public class VerticalTabListCoordinator {
         if (mTabStripContextMenuCoordinator != null) mTabStripContextMenuCoordinator.dismiss();
         if (mTabContextMenuCoordinator != null) mTabContextMenuCoordinator.dismiss();
         if (mTabGroupContextMenuCoordinator != null) mTabGroupContextMenuCoordinator.dismiss();
+        if (mCollapseButtonContextMenuCoordinator != null) {
+            mCollapseButtonContextMenuCoordinator.dismiss();
+        }
     }
 
     private boolean isAnyContextMenuShowing() {
@@ -1440,66 +2545,44 @@ public class VerticalTabListCoordinator {
                 || (mTabContextMenuCoordinator != null
                         && mTabContextMenuCoordinator.isMenuShowing())
                 || (mTabGroupContextMenuCoordinator != null
-                        && mTabGroupContextMenuCoordinator.isMenuShowing());
+                        && mTabGroupContextMenuCoordinator.isMenuShowing())
+                || (mCollapseButtonContextMenuCoordinator != null
+                        && mCollapseButtonContextMenuCoordinator.isMenuShowing());
     }
 
-    private void updateSpacerVisibility(@Nullable AppHeaderState appHeaderState) {
-        boolean isInDesktopWindow = appHeaderState != null && appHeaderState.isInDesktopWindow();
-        mContainerView.setDesktopWindowSpacerVisible(isInDesktopWindow);
+    private void updateSpacerHeight(@Nullable AppHeaderState appHeaderState) {
+        int spacerHeight =
+                appHeaderState != null && appHeaderState.isInDesktopWindow()
+                        ? appHeaderState.getAppHeaderHeight()
+                        : 0;
+        mContainerView.setDesktopWindowSpacerHeight(spacerHeight);
     }
 
-    private View buildGridCardDragShadow(Activity activity, PropertyModel model) {
-        ViewGroup gridCardView =
-                (ViewGroup)
-                        LayoutInflater.from(activity).inflate(R.layout.tab_grid_card_item, null);
+    // Only show the separator if 1. The rail uses collapsed positioning (collapsed or expanded for
+    // hovering), 2. The rail contains pinned tabs, and 3. The rail contains regular tabs (a tab
+    // group cannot exist without at least one regular tab).
+    private void updatePinnedTabsSeparatorVisibility() {
+        boolean isCollapsed =
+                mContainerModel != null
+                        && VerticalTabRailCollapseController.shouldUseCollapsedPositioning(
+                                mContainerModel.get(VerticalTabListProperties.COLLAPSE_STATE));
 
-        for (PropertyKey key : model.getAllSetProperties()) {
-            TabGridViewBinder.bindTab(model, gridCardView, key);
-        }
+        TabModel model = mTabModelSelector.getCurrentModel();
+        int pinnedCount = model != null ? model.getPinnedTabsCount() : 0;
+        int totalCount = model != null ? model.getCount() : 0;
+        int regularCount = totalCount - pinnedCount;
+        boolean shouldShow = isCollapsed && pinnedCount > 0 && regularCount > 0;
 
-        // Force layout the grid card at standard phone width/height ratios
-        Resources res = activity.getResources();
-        float maxTabWidthDp = TabUiThemeUtil.getMaxTabStripTabWidthDp();
-        int width = (int) (maxTabWidthDp * res.getDisplayMetrics().density);
-        int height = (int) (maxTabWidthDp * res.getDisplayMetrics().density);
-        // TODO(crbug.com/518307037): @jthiesen to update comment explaining why this manual layout
-        // is necessary.
-        gridCardView.setLayoutParams(new ViewGroup.MarginLayoutParams(width, height));
-        gridCardView.measure(
-                View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY));
-        gridCardView.layout(0, 0, width, height);
-
-        return gridCardView;
-    }
-
-    private View buildGroupHeaderDragShadow(Activity activity, PropertyModel model) {
-        ViewGroup groupHeaderView =
-                (ViewGroup)
-                        LayoutInflater.from(activity)
-                                .inflate(R.layout.vertical_tab_group_header, null);
-
-        for (PropertyKey key : model.getAllSetProperties()) {
-            TabVerticalViewBinder.bindTabGroupHeader(model, groupHeaderView, key);
-        }
-
-        Resources res = activity.getResources();
-        float maxTabWidthDp = TabUiThemeUtil.getMaxTabStripTabWidthDp();
-        int width = (int) (maxTabWidthDp * res.getDisplayMetrics().density);
-        int height =
-                res.getDimensionPixelSize(R.dimen.vertical_tab_action_button_touch_target_height);
-
-        groupHeaderView.setLayoutParams(new ViewGroup.MarginLayoutParams(width, height));
-        groupHeaderView.measure(
-                View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY));
-        groupHeaderView.layout(0, 0, width, height);
-
-        return groupHeaderView;
+        mContainerView.setPinnedTabsSeparatorVisible(shouldShow);
     }
 
     @Nullable TabStripContextMenuCoordinator getTabStripContextMenuCoordinatorForTesting() {
         return mTabStripContextMenuCoordinator;
+    }
+
+    @Nullable VerticalTabCollapseButtonContextMenuCoordinator
+            getCollapseButtonContextMenuCoordinatorForTesting() {
+        return mCollapseButtonContextMenuCoordinator;
     }
 
     PropertyModel getContainerModelForTesting() {
@@ -1536,8 +2619,21 @@ public class VerticalTabListCoordinator {
         return handleContextMenuInteraction(activity, recyclerView, localX, localY);
     }
 
+    void showTabGroupHeaderContextMenuForGroupIdForTesting(Token tabGroupId) {
+        showTabGroupHeaderContextMenuForGroupId(tabGroupId);
+    }
+
+    View.OnContextClickListener createEmptySpaceContextClickListenerForTesting(
+            Activity activity, View targetView) {
+        return createEmptySpaceContextClickListener(activity, targetView);
+    }
+
     GridLayoutManager getPinnedLayoutManagerForTesting() {
-        return mPinnedLayoutManager;
+        return (GridLayoutManager) assumeNonNull(mPinnedTabsRecyclerView.getLayoutManager());
+    }
+
+    TabListModel getPinnedTabsModelListForTesting() {
+        return mPinnedTabsModelList;
     }
 
     /** Sets the tab switcher drag handler supplier override for testing. */
@@ -1547,21 +2643,61 @@ public class VerticalTabListCoordinator {
         ResettersForTesting.register(() -> sTabSwitcherDragHandlerSupplierForTesting = null);
     }
 
+    /**
+     * Returns the drag surfaces for testing, in setup order: the main list first, then the pinned
+     * grid.
+     */
+    List<DragSurface> getDragSurfacesForTesting() {
+        return mDragSurfaces;
+    }
+
+    /** Returns the drag surface for the given {@link RecyclerView} for testing. */
+    @Nullable DragSurface getDragSurfaceForTesting(RecyclerView recyclerView) {
+        for (DragSurface surface : mDragSurfaces) {
+            if (surface.recyclerView == recyclerView) {
+                return surface;
+            }
+        }
+        return null;
+    }
+
     /** Returns the main touch helper callback for testing. */
     @Nullable VerticalTabListItemTouchHelperCallback getMainTouchHelperCallbackForTesting() {
-        return mMainTouchHelperCallback;
+        DragSurface surface = getDragSurfaceForTesting(mRecyclerView);
+        return surface != null ? surface.touchHelperCallback : null;
     }
 
-    /** Returns the active tab switcher drag handlers for testing. */
-    List<TabSwitcherDragHandler> getTabSwitcherDragHandlersForTesting() {
-        return mTabSwitcherDragHandlers;
+    /** Returns the pinned touch helper callback for testing. */
+    @Nullable VerticalTabListItemTouchHelperCallback getPinnedTouchHelperCallbackForTesting() {
+        DragSurface surface = getDragSurfaceForTesting(mPinnedTabsRecyclerView);
+        return surface != null ? surface.touchHelperCallback : null;
     }
 
-    TabHoverCardListener getTabHoverCardListenerForTesting() {
-        return mTabHoverCardController.getTabHoverCardListener();
+    /** Returns the rail's tab switcher drag handler for testing. */
+    TabSwitcherDragHandler getTabSwitcherDragHandlerForTesting() {
+        return mTabSwitcherDragHandler;
+    }
+
+    TabHoverListener getTabHoverListenerForTesting() {
+        return mTabItemHoverController.getTabHoverListener();
     }
 
     RecyclerView.OnScrollListener getOnScrollListenerForTesting() {
         return mOnScrollListener;
+    }
+
+    /** Returns the {@link VerticalTabKeyboardHandler} instance for testing. */
+    VerticalTabKeyboardHandler getKeyboardHandlerForTesting() {
+        return mKeyboardHandler;
+    }
+
+    /** Returns the {@link TabListMediator} instance for testing. */
+    TabListMediator getMediatorForTesting() {
+        return mMediator;
+    }
+
+    /** Returns the {@link VerticalTabListRecyclerView} instance for testing. */
+    VerticalTabListRecyclerView getRecyclerViewForTesting() {
+        return mRecyclerView;
     }
 }

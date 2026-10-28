@@ -15,14 +15,19 @@
 #include "third_party/blink/public/mojom/web_install/web_install.mojom-blink.h"
 #include "third_party/blink/public/strings/grit/permission_element_strings.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_install_result.h"
+#include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/dom/document_encoding_data.h"
 #include "third_party/blink/renderer/core/dom/document_init.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
+#include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/frame/frame_test_helpers.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
+#include "third_party/blink/renderer/core/geometry/dom_rect.h"
 #include "third_party/blink/renderer/core/html/html_permission_element_test_helper.h"
 #include "third_party/blink/renderer/core/html/install_result_event.h"
+#include "third_party/blink/renderer/core/html/shadow/shadow_element_names.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_request.h"
@@ -48,11 +53,14 @@ namespace {
 constexpr char kInstallString[] = "Install";
 constexpr char kLaunchString[] = "Launch";
 constexpr char kExampleSite[] = "https://site.example/app.manifest";
+constexpr double kInitialFontSizePx = 16;
+constexpr double kScaleFactor = 2;
+constexpr double kGeometryTolerance = 0.01;
 
 // Result strings for InstallResultEvent.
 constexpr char kResultSuccess[] = "success";
 constexpr char kResultAborted[] = "aborted";
-constexpr char kResultInvalidData[] = "invalid_data";
+constexpr char kResultInvalidData[] = "invalid-data";
 
 String ResourceIdToString(int resource_id) {
   switch (resource_id) {
@@ -85,24 +93,10 @@ class MockWebInstallService : public mojom::blink::WebInstallService {
                              std::move(handle)));
   }
 
-  void IsInstalled(mojom::blink::InstallOptionsPtr options,
-                   IsInstalledCallback callback) override {
-    std::move(callback).Run(is_installed_);
-  }
-
   // mojom::blink::WebInstallService impl:
-  void Install(mojom::blink::InstallOptionsPtr options,
-               InstallCallback callback) override {
-    // Only for installs from the JS API. Use InstallFromElement() instead.
-    NOTIMPLEMENTED();
-  }
-
-  void InstallFromElement(mojom::blink::InstallOptionsPtr options,
-                          InstallCallback callback) override {
-    CHECK(!callback_) << "Keep the tests simple: one call at a time.";
-    options_ = std::move(options);
-    callback_ = std::move(callback);
-    called_.SetValue();
+  void IsInstalled(mojom::blink::ManifestInstallOptionsPtr options,
+                   IsInstalledCallback callback) override {
+    std::move(callback).Run(false);
   }
 
   void InstallFromManifest(mojom::blink::ManifestInstallOptionsPtr options,
@@ -121,29 +115,7 @@ class MockWebInstallService : public mojom::blink::WebInstallService {
 
   // Test helpers:
   void WaitForCall() { EXPECT_TRUE(called_.Wait()); }
-
-  void SetInstalledState(bool is_installed) { is_installed_ = is_installed; }
-
-  void RespondWithSuccess() {
-    CHECK(callback_);
-    std::move(callback_).Run(mojom::blink::WebInstallServiceResult::kSuccess,
-                             KURL());
-    called_.Clear();
-  }
-
-  void RespondWithAbortError() {
-    CHECK(callback_);
-    std::move(callback_).Run(mojom::blink::WebInstallServiceResult::kAbortError,
-                             KURL());
-    called_.Clear();
-  }
-
-  void RespondWithDataError() {
-    CHECK(callback_);
-    std::move(callback_).Run(mojom::blink::WebInstallServiceResult::kDataError,
-                             KURL());
-    called_.Clear();
-  }
+  bool WasCalled() const { return !manifest_callback_.is_null(); }
 
   void RespondManifestWithSuccess() {
     CHECK(manifest_callback_);
@@ -166,18 +138,14 @@ class MockWebInstallService : public mojom::blink::WebInstallService {
     called_.Clear();
   }
 
-  const mojom::blink::InstallOptionsPtr& options() const { return options_; }
   const mojom::blink::ManifestInstallOptionsPtr& manifest_options() const {
     return manifest_options_;
   }
 
  private:
   mojo::ReceiverSet<mojom::blink::WebInstallService> receivers_;
-  mojom::blink::InstallOptionsPtr options_;
   mojom::blink::ManifestInstallOptionsPtr manifest_options_;
-  InstallCallback callback_;
   InstallFromManifestCallback manifest_callback_;
-  bool is_installed_ = false;
   base::test::TestFuture<void> called_;
 };
 
@@ -267,82 +235,161 @@ TEST_F(HTMLInstallElementTestBase, Type) {
   EXPECT_EQ(AtomicString("install"), element->GetType());
 }
 
-TEST_F(HTMLInstallElementTestBase, InstallUrl) {
-  HTMLInstallElement* element =
-      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
-  EXPECT_TRUE(element->InstallUrl().empty());
-
-  element->setAttribute(html_names::kInstallurlAttr,
-                        AtomicString(kExampleSite));
-  EXPECT_EQ(kExampleSite, element->InstallUrl());
-}
-
-TEST_F(HTMLInstallElementTestBase, ManifestId) {
-  HTMLInstallElement* element =
-      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
-  EXPECT_TRUE(element->ManifestId().empty());
-
-  constexpr char kManifestId[] = "https://site.example/manifest.json";
-  element->setAttribute(html_names::kManifestidAttr, AtomicString(kManifestId));
-  EXPECT_EQ(kManifestId, element->ManifestId());
-}
-
 TEST_F(HTMLInstallElementTestBase, RenderedText) {
-  {
-    HTMLInstallElement* element =
-        MakeGarbageCollected<HTMLInstallElement>(GetDocument());
+  HTMLInstallElement* element =
+      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
 
-    WaitForElementRegistration(element);
+  WaitForElementRegistration(element);
 
-    CheckInnerText(element, kInstallString);
-  }
-
-  {
-    HTMLInstallElement* element =
-        MakeGarbageCollected<HTMLInstallElement>(GetDocument());
-
-    element->setAttribute(html_names::kInstallurlAttr,
-                          AtomicString(kExampleSite));
-
-    WaitForElementRegistration(element);
-
-    // TODO(crbug.com/467103133): Update when site-specific information is
-    // rendered.
-    CheckInnerText(element, kInstallString);
-  }
+  CheckInnerText(element, kInstallString);
 }
 
-TEST_F(HTMLInstallElementTestBase, RenderedTextWhenInstalled) {
-  web_install_service_.SetInstalledState(true);
+TEST_F(HTMLInstallElementTestBase, InstallIconScalesWithFontSize) {
+  // Configure the element with an initial font size.
+  HTMLInstallElement* element =
+      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
+  element->SetInlineStyleProperty(CSSPropertyID::kFontSize, kInitialFontSizePx,
+                                  CSSPrimitiveValue::UnitType::kPixels);
+  WaitForElementRegistration(element);
 
-  {
-    HTMLInstallElement* element =
-        MakeGarbageCollected<HTMLInstallElement>(GetDocument());
+  // Grab the shadow root and permission icon elements.
+  ShadowRoot* shadow_root = element->UserAgentShadowRoot();
+  ASSERT_TRUE(shadow_root);
+  Element* permission_icon =
+      shadow_root->getElementById(shadow_element_names::kIdPermissionIcon);
+  ASSERT_TRUE(permission_icon);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return permission_icon->firstElementChild(); }));
+  Element* svg = permission_icon->firstElementChild();
 
-    WaitForElementRegistration(element);
+  // Verify the initial dimensions.
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  DOMRect* initial_icon_rect = permission_icon->GetBoundingClientRect();
+  DOMRect* initial_svg_rect = svg->GetBoundingClientRect();
+  EXPECT_GT(initial_svg_rect->width(), 0);
+  EXPECT_GT(initial_svg_rect->height(), 0);
+  EXPECT_NEAR(initial_icon_rect->width(), initial_svg_rect->width(),
+              kGeometryTolerance);
+  EXPECT_NEAR(initial_icon_rect->height(), initial_svg_rect->height(),
+              kGeometryTolerance);
 
-    // TODO(crbug.com/485281836): Update expectations once a mitigation is in
-    // place for width-based side channel attacks.
-    CheckInnerText(element, kInstallString);
-    EXPECT_FALSE(element->show_as_launch());
-  }
+  // Scale the font size and verify that the icon scales accordingly.
+  element->SetInlineStyleProperty(CSSPropertyID::kFontSize,
+                                  kInitialFontSizePx * kScaleFactor,
+                                  CSSPrimitiveValue::UnitType::kPixels);
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  DOMRect* scaled_icon_rect = permission_icon->GetBoundingClientRect();
+  DOMRect* scaled_svg_rect = svg->GetBoundingClientRect();
+  EXPECT_NEAR(scaled_icon_rect->width(), scaled_svg_rect->width(),
+              kGeometryTolerance);
+  EXPECT_NEAR(scaled_icon_rect->height(), scaled_svg_rect->height(),
+              kGeometryTolerance);
+  EXPECT_NEAR(initial_svg_rect->width() * kScaleFactor,
+              scaled_svg_rect->width(), kGeometryTolerance);
+  EXPECT_NEAR(initial_svg_rect->height() * kScaleFactor,
+              scaled_svg_rect->height(), kGeometryTolerance);
+}
 
-  {
-    HTMLInstallElement* element =
-        MakeGarbageCollected<HTMLInstallElement>(GetDocument());
+TEST_F(HTMLInstallElementTestBase, LaunchIconScalesWithFontSize) {
+  // Configure the element with an initial font size.
+  HTMLInstallElement* element =
+      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
+  element->SetInlineStyleProperty(CSSPropertyID::kFontSize, kInitialFontSizePx,
+                                  CSSPrimitiveValue::UnitType::kPixels);
+  WaitForElementRegistration(element);
 
-    element->setAttribute(html_names::kInstallurlAttr,
-                          AtomicString(kExampleSite));
+  // Grab the shadow root and permission icon elements.
+  ShadowRoot* shadow_root = element->UserAgentShadowRoot();
+  ASSERT_TRUE(shadow_root);
+  Element* permission_icon =
+      shadow_root->getElementById(shadow_element_names::kIdPermissionIcon);
+  ASSERT_TRUE(permission_icon);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return permission_icon->firstElementChild(); }));
+  Element* install_svg = permission_icon->firstElementChild();
 
-    WaitForElementRegistration(element);
+  // Trigger the installed state and wait for the launch icon.
+  element->OnIsInstalledResult(true);
+  CheckInnerText(element, kLaunchString);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return permission_icon->firstElementChild() != install_svg; }));
+  ASSERT_TRUE(element->show_as_launch());
 
-    // TODO(crbug.com/467103133): Update when site-specific information is
-    // rendered.
-    // TODO(crbug.com/485281836): Update expectations once a mitigation is in
-    // place for width-based side channel attacks.
-    CheckInnerText(element, kInstallString);
-    EXPECT_FALSE(element->show_as_launch());
-  }
+  // Verify the initial dimensions of the launch icon.
+  Element* launch_svg = permission_icon->firstElementChild();
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  DOMRect* initial_icon_rect = permission_icon->GetBoundingClientRect();
+  DOMRect* initial_svg_rect = launch_svg->GetBoundingClientRect();
+  EXPECT_GT(initial_svg_rect->width(), 0);
+  EXPECT_GT(initial_svg_rect->height(), 0);
+  EXPECT_NEAR(initial_icon_rect->width(), initial_svg_rect->width(),
+              kGeometryTolerance);
+  EXPECT_NEAR(initial_icon_rect->height(), initial_svg_rect->height(),
+              kGeometryTolerance);
+
+  // Scale the font size and verify that the launch icon scales accordingly.
+  element->SetInlineStyleProperty(CSSPropertyID::kFontSize,
+                                  kInitialFontSizePx * kScaleFactor,
+                                  CSSPrimitiveValue::UnitType::kPixels);
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  DOMRect* scaled_icon_rect = permission_icon->GetBoundingClientRect();
+  DOMRect* scaled_svg_rect = launch_svg->GetBoundingClientRect();
+  EXPECT_NEAR(scaled_icon_rect->width(), scaled_svg_rect->width(),
+              kGeometryTolerance);
+  EXPECT_NEAR(scaled_icon_rect->height(), scaled_svg_rect->height(),
+              kGeometryTolerance);
+  EXPECT_NEAR(initial_svg_rect->width() * kScaleFactor,
+              scaled_svg_rect->width(), kGeometryTolerance);
+  EXPECT_NEAR(initial_svg_rect->height() * kScaleFactor,
+              scaled_svg_rect->height(), kGeometryTolerance);
+}
+
+TEST_F(HTMLInstallElementTestBase, InstalledStateHiddenInCanvasSubtree) {
+  ScopedCanvasDrawElementForTest canvas_draw_element_enabled(true);
+
+  auto* canvas = GetDocument().CreateRawElement(html_names::kCanvasTag);
+  canvas->setAttribute(html_names::kContentAttr, AtomicString("drawable"));
+  HTMLInstallElement* element =
+      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
+  canvas->AppendChild(element);
+  GetDocument().body()->AppendChild(canvas);
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  WaitForPermissionElementRegistration(element);
+  ASSERT_TRUE(element->IsInCanvasSubtree());
+  CheckInnerText(element, kInstallString);
+
+  element->OnIsInstalledResult(true);
+
+  CheckInnerText(element, kInstallString);
+  EXPECT_FALSE(element->show_as_launch());
+
+  // A queued appearance task may have captured the installed state before the
+  // element entered the canvas subtree.
+  element->UpdateAppearanceTask(true);
+  CheckInnerText(element, kInstallString);
+  EXPECT_FALSE(element->show_as_launch());
+}
+
+TEST_F(HTMLInstallElementTestBase,
+       InstalledStateClearedWhenMovedIntoCanvasSubtree) {
+  ScopedCanvasDrawElementForTest canvas_draw_element_enabled(true);
+
+  HTMLInstallElement* element =
+      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
+  WaitForElementRegistration(element);
+  element->OnIsInstalledResult(true);
+  CheckInnerText(element, kLaunchString);
+  ASSERT_TRUE(element->show_as_launch());
+
+  auto* canvas = GetDocument().CreateRawElement(html_names::kCanvasTag);
+  canvas->setAttribute(html_names::kContentAttr, AtomicString("drawable"));
+  GetDocument().body()->AppendChild(canvas);
+  canvas->AppendChild(element);
+
+  ASSERT_TRUE(element->IsInCanvasSubtree());
+  CheckInnerText(element, kInstallString);
+  EXPECT_FALSE(element->show_as_launch());
 }
 
 TEST_F(HTMLInstallElementTestBase, ActivationSuccess) {
@@ -350,68 +397,16 @@ TEST_F(HTMLInstallElementTestBase, ActivationSuccess) {
       MakeGarbageCollected<HTMLInstallElement>(GetDocument());
   WaitForElementRegistration(element);
 
-  element->DispatchEvent(*Event::Create(event_type_names::kDOMActivate));
+  element->DispatchSimulatedClick(nullptr);
 
-  // The `Install` method should be called.
+  // The manifest install method should be called.
   web_install_service_.WaitForCall();
 
-  // No `installurl` was specified, so no options were sent to the service.
-  EXPECT_TRUE(web_install_service_.options().is_null());
+  // No install target was specified, so no options were sent to the service.
+  EXPECT_TRUE(web_install_service_.manifest_options().is_null());
 
   // Success should trigger an `installresult` event with result "success".
-  web_install_service_.RespondWithSuccess();
-  InstallResultEvent* event = WaitForInstallResultEvent(element);
-  ASSERT_TRUE(event);
-  EXPECT_EQ(kResultSuccess, event->result().AsString());
-}
-
-TEST_F(HTMLInstallElementTestBase, ActivationSuccessWithInstallUrl) {
-  // Create the element with installurl only.
-  HTMLInstallElement* element =
-      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
-  element->setAttribute(html_names::kInstallurlAttr,
-                        AtomicString(kExampleSite));
-  WaitForElementRegistration(element);
-
-  element->DispatchEvent(*Event::Create(event_type_names::kDOMActivate));
-
-  // The `Install` method should be called.
-  web_install_service_.WaitForCall();
-
-  // `installurl` was specified, so options were sent to the service.
-  EXPECT_FALSE(web_install_service_.options().is_null());
-  EXPECT_EQ(web_install_service_.options()->install_url, KURL(kExampleSite));
-
-  // Success should trigger an `installresult` event with result "success".
-  web_install_service_.RespondWithSuccess();
-  InstallResultEvent* event = WaitForInstallResultEvent(element);
-  ASSERT_TRUE(event);
-  EXPECT_EQ(kResultSuccess, event->result().AsString());
-}
-
-TEST_F(HTMLInstallElementTestBase,
-       ActivationSuccessWithInstallUrlAndManifestId) {
-  // Create the element with installurl and manifestid.
-  HTMLInstallElement* element =
-      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
-  element->setAttribute(html_names::kInstallurlAttr,
-                        AtomicString(kExampleSite));
-  constexpr char kManifestId[] = "https://site.example/manifest.json";
-  element->setAttribute(html_names::kManifestidAttr, AtomicString(kManifestId));
-  WaitForElementRegistration(element);
-
-  element->DispatchEvent(*Event::Create(event_type_names::kDOMActivate));
-
-  // The `Install` method should be called.
-  web_install_service_.WaitForCall();
-
-  // Both `installurl` and `manifestid` were specified.
-  EXPECT_FALSE(web_install_service_.options().is_null());
-  EXPECT_EQ(web_install_service_.options()->install_url, KURL(kExampleSite));
-  EXPECT_EQ(web_install_service_.options()->manifest_id, KURL(kManifestId));
-
-  // Success should trigger an `installresult` event with result "success".
-  web_install_service_.RespondWithSuccess();
+  web_install_service_.RespondManifestWithSuccess();
   InstallResultEvent* event = WaitForInstallResultEvent(element);
   ASSERT_TRUE(event);
   EXPECT_EQ(kResultSuccess, event->result().AsString());
@@ -422,81 +417,42 @@ TEST_F(HTMLInstallElementTestBase, ActivationAborted) {
       MakeGarbageCollected<HTMLInstallElement>(GetDocument());
   WaitForElementRegistration(element);
 
-  element->DispatchEvent(*Event::Create(event_type_names::kDOMActivate));
+  element->DispatchSimulatedClick(nullptr);
 
-  // The `Install` method should be called.
+  // The manifest install method should be called.
   web_install_service_.WaitForCall();
 
-  // No `installurl` was specified, so no options were sent to the service.
-  EXPECT_TRUE(web_install_service_.options().is_null());
+  // No install target was specified, so no options were sent to the service.
+  EXPECT_TRUE(web_install_service_.manifest_options().is_null());
 
   // AbortError should trigger an `installresult` event with result "aborted".
-  web_install_service_.RespondWithAbortError();
+  web_install_service_.RespondManifestWithAbortError();
   InstallResultEvent* event = WaitForInstallResultEvent(element);
   ASSERT_TRUE(event);
   EXPECT_EQ(kResultAborted, event->result().AsString());
 }
 
-TEST_F(HTMLInstallElementTestBase, DataErrorReturnsInvalidData) {
+// installurl has been removed but still need to be handled gracefully.
+TEST_F(HTMLInstallElementTestBase, InstallurlWithManifestReturnsInvalidData) {
   HTMLInstallElement* element =
       MakeGarbageCollected<HTMLInstallElement>(GetDocument());
-  // Use an installurl that has no manifest.
-  element->setAttribute(html_names::kInstallurlAttr,
-                        AtomicString("https://site.example/"));
-  WaitForElementRegistration(element);
-
-  element->DispatchEvent(*Event::Create(event_type_names::kDOMActivate));
-
-  // The `Install` method should be called.
-  web_install_service_.WaitForCall();
-
-  // DataError should trigger an `installresult` event with result
-  // "invalid_data".
-  web_install_service_.RespondWithDataError();
-  InstallResultEvent* event = WaitForInstallResultEvent(element);
-  ASSERT_TRUE(event);
-  EXPECT_EQ(kResultInvalidData, event->result().AsString());
-}
-
-// Invalid URLs are validated client-side before calling the service.
-TEST_F(HTMLInstallElementTestBase, InvalidUrlReturnsInvalidData) {
-  HTMLInstallElement* element =
-      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
-  // Use an invalid installurl.
-  element->setAttribute(html_names::kInstallurlAttr,
-                        AtomicString("invalid url"));
-  WaitForElementRegistration(element);
-
-  element->DispatchEvent(*Event::Create(event_type_names::kDOMActivate));
-
-  // Invalid URL should trigger an `installresult` event with result
-  // "invalid_data" without calling the service.
-  InstallResultEvent* event = WaitForInstallResultEvent(element);
-  ASSERT_TRUE(event);
-  EXPECT_EQ(kResultInvalidData, event->result().AsString());
-}
-
-TEST_F(HTMLInstallElementTestBase, InvalidManifestIdReturnsInvalidData) {
-  HTMLInstallElement* element =
-      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
-  // Use a valid installurl but an invalid manifestid.
   element->setAttribute(html_names::kInstallurlAttr,
                         AtomicString(kExampleSite));
+  element->setAttribute(html_names::kManifestAttr, AtomicString(kExampleSite));
   element->setAttribute(html_names::kManifestidAttr,
-                        AtomicString("not a valid url"));
+                        AtomicString(kExampleSite));
   WaitForElementRegistration(element);
 
-  element->DispatchEvent(*Event::Create(event_type_names::kDOMActivate));
+  element->DispatchSimulatedClick(nullptr);
 
-  // Invalid manifestid should trigger an `installresult` event with result
-  // "invalid_data" without calling the service.
   InstallResultEvent* event = WaitForInstallResultEvent(element);
   ASSERT_TRUE(event);
   EXPECT_EQ(kResultInvalidData, event->result().AsString());
+  EXPECT_FALSE(web_install_service_.WasCalled());
 }
 
 // The `oninstallresult` content attribute should map to the `installresult`
-// event, matching the `oninstallresult` IDL attribute.
+// event.
 TEST_F(HTMLInstallElementTestBase, OnInstallResultContentAttribute) {
   EXPECT_EQ(
       event_type_names::kInstallresult,
@@ -566,22 +522,49 @@ TEST_F(HTMLInstallElementFiringSimTest, OnInstallResultContentAttributeFires) {
   GetDocument().View()->UpdateAllLifecyclePhasesForTest();
   WaitForPermissionElementRegistration(element);
 
-  element->DispatchEvent(*Event::Create(event_type_names::kDOMActivate));
+  element->DispatchSimulatedClick(nullptr);
   web_install_service_.WaitForCall();
-  web_install_service_.RespondWithSuccess();
+  web_install_service_.RespondManifestWithSuccess();
 
   EXPECT_TRUE(
       base::test::RunUntil([&]() { return !ConsoleMessages().empty(); }));
   EXPECT_TRUE(ConsoleMessages()[0].contains("installresult: success"));
 }
 
-TEST_F(HTMLInstallElementTestBase, ManifestAttribute) {
-  HTMLInstallElement* element =
-      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
-  EXPECT_TRUE(element->Manifest().empty());
+TEST_F(HTMLInstallElementFiringSimTest, OnInstallResultAncestorHandlerFires) {
+  SimRequest resource("https://example.test", "text/html");
+  LoadURL("https://example.test");
+  resource.Complete(R"HTML(
+    <body>
+      <div id="ancestor">
+        <install id="i"
+          manifestid="https://site.example/manifest.json"
+          style="display:inline-block; width:100px; height:30px">
+        </install>
+      </div>
+      <script>
+        ancestor.oninstallresult = event => {
+          console.log(event.currentTarget.id + ':' + event.target.id + ':' +
+                      event.result);
+        };
+      </script>
+    </body>
+  )HTML");
 
-  element->setAttribute(html_names::kManifestAttr, AtomicString(kExampleSite));
-  EXPECT_EQ(kExampleSite, element->Manifest());
+  Compositor().BeginFrame();
+  auto* element = To<HTMLInstallElement>(
+      GetDocument().QuerySelector(AtomicString("install")));
+  ASSERT_TRUE(element);
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  WaitForPermissionElementRegistration(element);
+
+  element->DispatchSimulatedClick(nullptr);
+
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return !ConsoleMessages().empty(); }));
+  const String expected_message = String("ancestor:i:") + kResultInvalidData;
+  EXPECT_TRUE(ConsoleMessages()[0].contains(expected_message));
+  EXPECT_FALSE(web_install_service_.WasCalled());
 }
 
 TEST_F(HTMLInstallElementTestBase, ActivationWithManifestAttribute) {
@@ -590,7 +573,7 @@ TEST_F(HTMLInstallElementTestBase, ActivationWithManifestAttribute) {
   element->setAttribute(html_names::kManifestAttr, AtomicString(kExampleSite));
   WaitForElementRegistration(element);
 
-  element->DispatchEvent(*Event::Create(event_type_names::kDOMActivate));
+  element->DispatchSimulatedClick(nullptr);
 
   web_install_service_.WaitForCall();
 
@@ -616,7 +599,7 @@ TEST_F(HTMLInstallElementTestBase, ActivationWithManifestAndManifestId) {
   element->setAttribute(html_names::kManifestidAttr, AtomicString(kManifestId));
   WaitForElementRegistration(element);
 
-  element->DispatchEvent(*Event::Create(event_type_names::kDOMActivate));
+  element->DispatchSimulatedClick(nullptr);
 
   web_install_service_.WaitForCall();
 
@@ -632,13 +615,116 @@ TEST_F(HTMLInstallElementTestBase, ActivationWithManifestAndManifestId) {
   EXPECT_EQ(kResultSuccess, event->result().AsString());
 }
 
+TEST_F(HTMLInstallElementTestBase, ActivationWithRelativeManifest) {
+  GetDocument().SetURL(KURL("https://site.example/store/page.html"));
+  GetDocument().SetBaseURLOverride(KURL("https://app.example/resources/"));
+  HTMLInstallElement* element =
+      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
+  element->setAttribute(html_names::kManifestAttr,
+                        AtomicString("manifest.json"));
+  WaitForElementRegistration(element);
+
+  element->DispatchSimulatedClick(nullptr);
+
+  web_install_service_.WaitForCall();
+
+  ASSERT_FALSE(web_install_service_.manifest_options().is_null());
+  EXPECT_EQ(web_install_service_.manifest_options()->manifest_url,
+            KURL("https://app.example/resources/manifest.json"));
+  EXPECT_FALSE(
+      web_install_service_.manifest_options()->manifest_id.has_value());
+
+  web_install_service_.RespondManifestWithSuccess();
+  InstallResultEvent* event = WaitForInstallResultEvent(element);
+  ASSERT_TRUE(event);
+  EXPECT_EQ(kResultSuccess, event->result().AsString());
+}
+
+TEST_F(HTMLInstallElementTestBase,
+       ActivationWithManifestAndRelativeManifestId) {
+  GetDocument().SetURL(KURL("https://app.example/page/index.html"));
+  GetDocument().SetBaseURLOverride(KURL("https://app.example/catalog/"));
+  HTMLInstallElement* element =
+      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
+  element->setAttribute(html_names::kManifestAttr,
+                        AtomicString("https://app.example/manifests/app.json"));
+  element->setAttribute(html_names::kManifestidAttr,
+                        AtomicString(" \t\n app-id \r\f "));
+  WaitForElementRegistration(element);
+
+  element->DispatchSimulatedClick(nullptr);
+
+  web_install_service_.WaitForCall();
+
+  ASSERT_FALSE(web_install_service_.manifest_options().is_null());
+  EXPECT_EQ(web_install_service_.manifest_options()->manifest_url,
+            KURL("https://app.example/manifests/app.json"));
+  EXPECT_EQ(web_install_service_.manifest_options()->manifest_id,
+            KURL("https://app.example/catalog/app-id"));
+
+  web_install_service_.RespondManifestWithSuccess();
+  InstallResultEvent* event = WaitForInstallResultEvent(element);
+  ASSERT_TRUE(event);
+  EXPECT_EQ(kResultSuccess, event->result().AsString());
+}
+
+TEST_F(HTMLInstallElementTestBase,
+       ActivationWithManifestIdUsesUtf8OnLegacyEncodedDocument) {
+  DocumentEncodingData encoding_data;
+  encoding_data.SetEncoding(TextEncoding("windows-1252"));
+  GetDocument().SetEncodingData(encoding_data);
+  HTMLInstallElement* element =
+      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
+  element->setAttribute(html_names::kManifestAttr,
+                        AtomicString("https://app.example/manifest.json"));
+  element->setAttribute(
+      html_names::kManifestidAttr,
+      AtomicString(String(u"https://app.example/?id=\u00E9")));
+  WaitForElementRegistration(element);
+
+  element->DispatchSimulatedClick(nullptr);
+
+  web_install_service_.WaitForCall();
+
+  ASSERT_FALSE(web_install_service_.manifest_options().is_null());
+  EXPECT_EQ(web_install_service_.manifest_options()->manifest_id,
+            KURL("https://app.example/?id=%C3%A9"));
+
+  web_install_service_.RespondManifestWithSuccess();
+  InstallResultEvent* event = WaitForInstallResultEvent(element);
+  ASSERT_TRUE(event);
+  EXPECT_EQ(kResultSuccess, event->result().AsString());
+}
+
+TEST_F(HTMLInstallElementTestBase,
+       ActivationWithManifestAttributeWithSurroundingWhitespace) {
+  HTMLInstallElement* element =
+      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
+  String manifest = String(" \t\n ") + kExampleSite + " \r\f ";
+  element->setAttribute(html_names::kManifestAttr, AtomicString(manifest));
+  WaitForElementRegistration(element);
+
+  element->DispatchSimulatedClick(nullptr);
+
+  web_install_service_.WaitForCall();
+
+  ASSERT_FALSE(web_install_service_.manifest_options().is_null());
+  EXPECT_EQ(web_install_service_.manifest_options()->manifest_url,
+            KURL(kExampleSite));
+
+  web_install_service_.RespondManifestWithSuccess();
+  InstallResultEvent* event = WaitForInstallResultEvent(element);
+  ASSERT_TRUE(event);
+  EXPECT_EQ(kResultSuccess, event->result().AsString());
+}
+
 TEST_F(HTMLInstallElementTestBase, ActivationWithManifestAbortError) {
   HTMLInstallElement* element =
       MakeGarbageCollected<HTMLInstallElement>(GetDocument());
   element->setAttribute(html_names::kManifestAttr, AtomicString(kExampleSite));
   WaitForElementRegistration(element);
 
-  element->DispatchEvent(*Event::Create(event_type_names::kDOMActivate));
+  element->DispatchSimulatedClick(nullptr);
 
   web_install_service_.WaitForCall();
 
@@ -655,85 +741,28 @@ TEST_F(HTMLInstallElementTestBase, ActivationWithManifestDataError) {
   element->setAttribute(html_names::kManifestAttr, AtomicString(kExampleSite));
   WaitForElementRegistration(element);
 
-  element->DispatchEvent(*Event::Create(event_type_names::kDOMActivate));
+  element->DispatchSimulatedClick(nullptr);
 
   web_install_service_.WaitForCall();
 
   // DataError should trigger an `installresult` event with result
-  // "invalid_data".
+  // "invalid-data".
   web_install_service_.RespondManifestWithDataError();
   InstallResultEvent* event = WaitForInstallResultEvent(element);
   ASSERT_TRUE(event);
   EXPECT_EQ(kResultInvalidData, event->result().AsString());
 }
 
-// TODO(crbug.com/520025525): Remove install url code.
-TEST_F(HTMLInstallElementTestBase, InstallUrlTakesPriorityOverManifest) {
-  // When both installurl and manifest are set, installurl wins.
-  HTMLInstallElement* element =
-      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
-  element->setAttribute(html_names::kInstallurlAttr,
-                        AtomicString(kExampleSite));
-  element->setAttribute(html_names::kManifestAttr,
-                        AtomicString("https://other.example/manifest.json"));
-  WaitForElementRegistration(element);
-
-  element->DispatchEvent(*Event::Create(event_type_names::kDOMActivate));
-
-  web_install_service_.WaitForCall();
-
-  // Should have used InstallFromElement with install_url, not
-  // InstallFromManifest.
-  EXPECT_FALSE(web_install_service_.options().is_null());
-  EXPECT_EQ(web_install_service_.options()->install_url, KURL(kExampleSite));
-  EXPECT_TRUE(web_install_service_.manifest_options().is_null());
-
-  web_install_service_.RespondWithSuccess();
-  InstallResultEvent* event = WaitForInstallResultEvent(element);
-  ASSERT_TRUE(event);
-  EXPECT_EQ(kResultSuccess, event->result().AsString());
-}
-
-// TODO(crbug.com/520025525): Remove install url code.
-TEST_F(HTMLInstallElementTestBase, AllThreeAttributesUsesInstallUrl) {
-  // When installurl, manifest, and manifestid are all set, installurl wins
-  // and manifestid is passed through to the installurl path.
-  HTMLInstallElement* element =
-      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
-  element->setAttribute(html_names::kInstallurlAttr,
-                        AtomicString(kExampleSite));
-  element->setAttribute(html_names::kManifestAttr,
-                        AtomicString("https://other.example/manifest.json"));
-  constexpr char kManifestId[] = "https://site.example/my-app-id";
-  element->setAttribute(html_names::kManifestidAttr, AtomicString(kManifestId));
-  WaitForElementRegistration(element);
-
-  element->DispatchEvent(*Event::Create(event_type_names::kDOMActivate));
-
-  web_install_service_.WaitForCall();
-
-  // Should use InstallFromElement (installurl path), not InstallFromManifest.
-  EXPECT_FALSE(web_install_service_.options().is_null());
-  EXPECT_EQ(web_install_service_.options()->install_url, KURL(kExampleSite));
-  EXPECT_EQ(web_install_service_.options()->manifest_id, KURL(kManifestId));
-  EXPECT_TRUE(web_install_service_.manifest_options().is_null());
-
-  web_install_service_.RespondWithSuccess();
-  InstallResultEvent* event = WaitForInstallResultEvent(element);
-  ASSERT_TRUE(event);
-  EXPECT_EQ(kResultSuccess, event->result().AsString());
-}
-
 TEST_F(HTMLInstallElementTestBase, ManifestIdOnlyReturnsInvalidData) {
   // manifestid alone is not supported and should trigger an `installresult`
-  // event with result "invalid_data" without calling the service.
+  // event with result "invalid-data" without calling the service.
   HTMLInstallElement* element =
       MakeGarbageCollected<HTMLInstallElement>(GetDocument());
   element->setAttribute(html_names::kManifestidAttr,
                         AtomicString("https://site.example/manifest.json"));
   WaitForElementRegistration(element);
 
-  element->DispatchEvent(*Event::Create(event_type_names::kDOMActivate));
+  element->DispatchSimulatedClick(nullptr);
 
   InstallResultEvent* event = WaitForInstallResultEvent(element);
   ASSERT_TRUE(event);
@@ -746,15 +775,116 @@ TEST_F(HTMLInstallElementTestBase, ManifestIdOnlyReturnsInvalidData) {
 TEST_F(HTMLInstallElementTestBase, InvalidManifestUrlReturnsInvalidData) {
   HTMLInstallElement* element =
       MakeGarbageCollected<HTMLInstallElement>(GetDocument());
-  element->setAttribute(html_names::kManifestAttr,
-                        AtomicString("not a valid url"));
+  element->setAttribute(html_names::kManifestAttr, AtomicString("https://["));
   WaitForElementRegistration(element);
 
-  element->DispatchEvent(*Event::Create(event_type_names::kDOMActivate));
+  element->DispatchSimulatedClick(nullptr);
 
   InstallResultEvent* event = WaitForInstallResultEvent(element);
   ASSERT_TRUE(event);
   EXPECT_EQ(kResultInvalidData, event->result().AsString());
+  EXPECT_FALSE(web_install_service_.WasCalled());
+}
+
+TEST_F(HTMLInstallElementTestBase, PrefixedElementRegistration) {
+  auto* element = To<HTMLInstallElement>(GetDocument().createElementNS(
+      html_names::xhtmlNamespaceURI, AtomicString("x:install"),
+      ASSERT_NO_EXCEPTION));
+  WaitForElementRegistration(element);
+  EXPECT_TRUE(element->isValid());
+}
+
+TEST_F(HTMLInstallElementTestBase, PrefixedElementActivationSuccess) {
+  auto* element = To<HTMLInstallElement>(GetDocument().createElementNS(
+      html_names::xhtmlNamespaceURI, AtomicString("x:install"),
+      ASSERT_NO_EXCEPTION));
+  WaitForElementRegistration(element);
+
+  element->DispatchSimulatedClick(nullptr);
+  web_install_service_.WaitForCall();
+  web_install_service_.RespondManifestWithSuccess();
+
+  InstallResultEvent* event = WaitForInstallResultEvent(element);
+  EXPECT_NE(event, nullptr);
+  if (event) {
+    EXPECT_EQ(kResultSuccess, event->result().AsString());
+  }
+}
+
+TEST_F(HTMLInstallElementTestBase,
+       ActivationWithEmptyManifestReturnsInvalidData) {
+  HTMLInstallElement* element =
+      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
+  element->setAttribute(html_names::kManifestAttr, g_empty_atom);
+  WaitForElementRegistration(element);
+
+  element->DispatchSimulatedClick(nullptr);
+
+  InstallResultEvent* event = WaitForInstallResultEvent(element);
+  ASSERT_TRUE(event);
+  EXPECT_EQ(kResultInvalidData, event->result().AsString());
+  EXPECT_FALSE(web_install_service_.WasCalled());
+}
+
+TEST_F(HTMLInstallElementTestBase,
+       ActivationWithWhitespaceOnlyManifestReturnsInvalidData) {
+  HTMLInstallElement* element =
+      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
+  element->setAttribute(html_names::kManifestAttr, AtomicString(" \t\n "));
+  WaitForElementRegistration(element);
+
+  element->DispatchSimulatedClick(nullptr);
+
+  InstallResultEvent* event = WaitForInstallResultEvent(element);
+  ASSERT_TRUE(event);
+  EXPECT_EQ(kResultInvalidData, event->result().AsString());
+  EXPECT_FALSE(web_install_service_.WasCalled());
+}
+
+TEST_F(HTMLInstallElementTestBase,
+       ActivationWithEmptyManifestIdReturnsInvalidData) {
+  HTMLInstallElement* element =
+      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
+  element->setAttribute(html_names::kManifestAttr, AtomicString(kExampleSite));
+  element->setAttribute(html_names::kManifestidAttr, g_empty_atom);
+  WaitForElementRegistration(element);
+
+  element->DispatchSimulatedClick(nullptr);
+
+  InstallResultEvent* event = WaitForInstallResultEvent(element);
+  ASSERT_TRUE(event);
+  EXPECT_EQ(kResultInvalidData, event->result().AsString());
+  EXPECT_FALSE(web_install_service_.WasCalled());
+}
+
+TEST_F(HTMLInstallElementTestBase,
+       ActivationWithWhitespaceOnlyManifestIdReturnsInvalidData) {
+  HTMLInstallElement* element =
+      MakeGarbageCollected<HTMLInstallElement>(GetDocument());
+  element->setAttribute(html_names::kManifestAttr, AtomicString(kExampleSite));
+  element->setAttribute(html_names::kManifestidAttr,
+                        AtomicString(" \t\n \r\f "));
+  WaitForElementRegistration(element);
+
+  element->DispatchSimulatedClick(nullptr);
+
+  InstallResultEvent* event = WaitForInstallResultEvent(element);
+  ASSERT_TRUE(event);
+  EXPECT_EQ(kResultInvalidData, event->result().AsString());
+  EXPECT_FALSE(web_install_service_.WasCalled());
+}
+
+TEST_F(HTMLInstallElementTestBase, DisplayModeIconOnlyNotSupported) {
+  ScopedCapabilityElementIconOnlyModeForTest scoped_feature(true);
+  auto* element = MakeGarbageCollected<HTMLInstallElement>(GetDocument());
+  WaitForElementRegistration(element);
+  EXPECT_FALSE(element->IsIconOnly());
+  CheckInnerText(element, kInstallString);
+
+  element->setAttribute(html_names::kDisplaymodeAttr,
+                        AtomicString("icon-only"));
+  EXPECT_FALSE(element->IsIconOnly());
+  CheckInnerText(element, kInstallString);
 }
 
 }  // namespace blink

@@ -34,14 +34,30 @@ export interface LensSearchboxElement {
   };
 }
 
-const LensSearchboxElementBase =
-    SearchboxMixin(I18nMixinLit(WebUiListenerMixinLit(CrLitElement)));
+import {SearchboxSelectionMixin} from '//resources/cr_components/searchbox/searchbox_selection_mixin.js';
+
+const LensSearchboxElementBase = SearchboxMixin(
+    SearchboxSelectionMixin(I18nMixinLit(WebUiListenerMixinLit(CrLitElement))));
 
 export class LensSearchboxElement extends LensSearchboxElementBase implements
     SearchboxMixinInterface {
   static get is() {
     return 'cr-lens-searchbox';
   }
+
+  override get isAimButtonVisible(): boolean {
+    return false;
+  }
+
+  override get showContextEntrypoint(): boolean {
+    return false;
+  }
+
+  override get virtualFocusEnabled(): boolean {
+    return loadTimeData.valueExists('lensOverlayVirtualFocusNavigation') &&
+        loadTimeData.getBoolean('lensOverlayVirtualFocusNavigation');
+  }
+
 
   static override get styles() {
     return getCss();
@@ -124,6 +140,7 @@ export class LensSearchboxElement extends LensSearchboxElementBase implements
       this.showThumbnail = !!this.thumbnailUrl_;
     }
     if (changedPrivateProperties.has('result') ||
+        changedPrivateProperties.has('selection') ||
         changedPrivateProperties.has('selectedMatchIndex')) {
       this.selectedMatch = this.computeSelectedMatch_();
     }
@@ -254,20 +271,11 @@ export class LensSearchboxElement extends LensSearchboxElementBase implements
         /*isOnFocus=*/ !input);
   }
 
-  isInputEmpty(): boolean {
-    // If this is called before first render, the input element will not exist.
-    if (!this.shadowRoot?.querySelector('#input') || !this.$.input ||
-        !this.$.input.lastInput()) {
-      return true;
-    }
-    return !this.$.input.lastInput()!.text.trim();
-  }
-
   private computeSelectedMatch_(): AutocompleteMatch|null {
     if (!this.result || !this.result.matches) {
       return null;
     }
-    return this.result.matches[this.selectedMatchIndex] || null;
+    return this.result.matches[this.matchIndex] || null;
   }
 
   //============================================================================

@@ -10,6 +10,7 @@
 
 #include "base/auto_reset.h"
 #include "base/command_line.h"
+#include "base/dcheck_is_on.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
@@ -35,6 +36,7 @@
 #include "chrome/browser/chrome_browser_main_extra_parts.h"
 #include "chrome/browser/chrome_content_browser_client.h"
 #include "chrome/browser/devtools/devtools_window.h"
+#include "chrome/browser/ui/omnibox/omnibox_popup_webui_creation.h"
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/actor/ui/actor_task_unload_handler.h"
 #endif
@@ -45,21 +47,23 @@
 #include "chrome/browser/navigation_predictor/search_engine_preconnector.h"
 #include "chrome/browser/net/chrome_network_delegate.h"
 #include "chrome/browser/net/net_error_tab_helper.h"
+#include "chrome/browser/net/stub_resolver_config_reader.h"
 #include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/notifications/notification_display_service_tester.h"
 #include "chrome/browser/predictors/loading_predictor_config.h"
+#include "chrome/browser/preloading/preloading_features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_test_util.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
@@ -75,9 +79,10 @@
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/renderer/chrome_content_renderer_client.h"
+#include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/chrome_test_suite.h"
-#include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/test_launcher_utils.h"
+#include "chrome/test/base/test_switches.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/captive_portal/core/buildflags.h"
 #include "components/feature_engagement/public/feature_list.h"
@@ -89,25 +94,29 @@
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_main_parts.h"
 #include "content/public/browser/devtools_agent_host.h"
+#include "content/public/common/content_features.h"
 #include "content/public/common/content_paths.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_launcher.h"
 #include "content/public/test/test_navigation_observer.h"
+#include "content/public/test/test_utils.h"
 #include "extensions/buildflags/buildflags.h"
-#include "extensions/common/extension_features.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "services/device/public/cpp/device_features.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/test/test_network_connection_tracker.h"
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/test/ui_controls.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/base/window_open_disposition.h"
 
 #if BUILDFLAG(IS_MAC)
 #include "base/apple/scoped_nsautorelease_pool.h"
 #include "chrome/test/base/scoped_bundle_swizzler_mac.h"
 #include "components/os_crypt/common/os_crypt_switches.h"
+#include "ui/base/test/scoped_fake_nswindow_focus.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -126,6 +135,10 @@
 #include "components/captive_portal/content/captive_portal_service.h"
 #endif
 
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+#include "chrome/browser/extensions/extension_management.h"
+#endif
+
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/search_engine_choice/search_engine_choice_dialog_service.h"
 #include "chrome/browser/ui/webui/whats_new/whats_new_util.h"
@@ -139,10 +152,15 @@
 #include "base/system/sys_info.h"
 #include "chrome/browser/ash/app_restore/full_restore_app_launch_handler.h"
 #include "chrome/browser/ash/input_method/input_method_configuration.h"
+#include "chrome/browser/ash/ownership/owner_settings_service_ash_factory.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
 #include "chromeos/ash/services/device_sync/device_sync_impl.h"
 #include "chromeos/ash/services/device_sync/fake_device_sync.h"
+#include "chromeos/dbus/constants/dbus_paths.h"
+#include "components/ownership/mock_owner_key_util.h"
+#include "components/ownership/owner_key_util.h"
+#include "components/ownership/owner_key_util_impl.h"
 #include "components/user_manager/user_names.h"
 #include "ui/display/display_switches.h"
 #include "ui/events/test/event_generator.h"
@@ -194,6 +212,53 @@ FakeDeviceSyncImplFactory* GetFakeDeviceSyncImplFactory() {
   static base::NoDestructor<FakeDeviceSyncImplFactory> factory;
   return factory.get();
 }
+
+// OwnerKeyUtil implementation for browser tests that delegates file and slot
+// lookups to OwnerKeyUtilImpl while importing a pre-generated RSA key in
+// GenerateKeyPair() to avoid expensive runtime prime generation.
+class TestOwnerKeyUtil : public ownership::OwnerKeyUtil {
+ public:
+  TestOwnerKeyUtil() = default;
+  TestOwnerKeyUtil(const TestOwnerKeyUtil&) = delete;
+  TestOwnerKeyUtil& operator=(const TestOwnerKeyUtil&) = delete;
+
+  // ownership::OwnerKeyUtil:
+  scoped_refptr<ownership::PublicKey> ImportPublicKey() override {
+    scoped_refptr<ownership::OwnerKeyUtil> impl = GetImpl();
+    return impl ? impl->ImportPublicKey() : nullptr;
+  }
+
+  crypto::ScopedSECKEYPrivateKey GenerateKeyPair(PK11SlotInfo* slot) override {
+    return mock_->GenerateKeyPair(slot);
+  }
+
+  crypto::ScopedSECKEYPrivateKey FindPrivateKeyInSlot(
+      const std::vector<uint8_t>& key,
+      PK11SlotInfo* slot) override {
+    scoped_refptr<ownership::OwnerKeyUtil> impl = GetImpl();
+    return impl ? impl->FindPrivateKeyInSlot(key, slot) : nullptr;
+  }
+
+  bool IsPublicKeyPresent() override {
+    scoped_refptr<ownership::OwnerKeyUtil> impl = GetImpl();
+    return impl && impl->IsPublicKeyPresent();
+  }
+
+ private:
+  ~TestOwnerKeyUtil() override = default;
+
+  scoped_refptr<ownership::OwnerKeyUtil> GetImpl() const {
+    base::FilePath public_key_path;
+    if (!base::PathService::Get(chromeos::dbus_paths::FILE_OWNER_KEY,
+                                &public_key_path)) {
+      return nullptr;
+    }
+    return base::MakeRefCounted<ownership::OwnerKeyUtilImpl>(public_key_path);
+  }
+
+  scoped_refptr<ownership::MockOwnerKeyUtil> mock_ =
+      base::MakeRefCounted<ownership::MockOwnerKeyUtil>();
+};
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
@@ -361,6 +426,18 @@ void InProcessBrowserTest::Initialize() {
   // Force all buttons not overflow to prevent test flakiness.
   ToolbarControllerUtil::SetPreventOverflowForTesting(true);
 
+  // The classic and AI Mode omnibox popups, which are built with each browser
+  // window, would otherwise add hidden WebContents and a renderer to every
+  // test, though most tests never show them. Create their content only when it
+  // is needed. Tests that depend on when it is created, or that need it to
+  // exist before the popup is shown, turn this off.
+  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kDisableOmniboxPopupOnDemandCreation)) {
+    create_popup_webui_on_demand_.emplace(
+        omnibox::SetCreatePopupWebUIOnDemandForTesting(true));
+  }
+
+  std::vector<base::test::FeatureRef> enabled_features;
   std::vector<base::test::FeatureRef> disabled_features;
 
   // Preconnecting can cause non-deterministic test behavior especially with
@@ -372,9 +449,6 @@ void InProcessBrowserTest::Initialize() {
   disabled_features.push_back(
       features::kRestartNetworkServiceUnsandboxedForFailedLaunch);
 
-  // Allow unpacked extensions without developer mode for testing.
-  disabled_features.push_back(
-      extensions_features::kExtensionDisableUnsupportedDeveloper);
 
   // Disable TransientKeepAlivePolicy in tests by default since it delays
   // renderer process cleanup, breaking tests checking process counts or
@@ -386,11 +460,25 @@ void InProcessBrowserTest::Initialize() {
   // Disable session restore infobar the experiment as it causes test failures.
   disabled_features.push_back(features::kSessionRestoreInfobar);
 #endif
+  // Prewarming the default search engine background page spawns an extra
+  // prerender renderer process and warms up a compositor during browser
+  // startup, causing unnecessary overhead in browser_tests
+  // (crbug.com/563340729). Dedicated prewarm tests explicitly enable it via
+  // ScopedPrewarmFeatureList.
+  disabled_features.push_back(features::kPrewarm);
+#if !EXPENSIVE_TEST_LOGIC_IS_ON() && !BUILDFLAG(IS_ANDROID) && \
+    !BUILDFLAG(IS_MAC)
+  // Running VideoCaptureService in the browser process avoids spawning a
+  // dedicated utility process on every test startup (e.g. via Ash Privacy Hub
+  // CameraPresenceNotifier or MediaDevicesManager). Excluded on macOS where
+  // the service requires a CFRunLoop (https://crbug.com/40572495).
+  enabled_features.push_back(features::kRunVideoCaptureServiceInBrowserProcess);
+#endif
   // In-product help can conflict with tests' expected window activation and
   // focus. Individual tests can re-enable IPH.
   block_all_iph_feature_list_.InitWithNoFeaturesAllowed();
 
-  scoped_feature_list_.InitWithFeatures({}, disabled_features);
+  scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
 
   create_services_subscription_ =
       BrowserContextDependencyManager::GetInstance()
@@ -401,6 +489,10 @@ void InProcessBrowserTest::Initialize() {
 #if BUILDFLAG(IS_CHROMEOS)
   launch_browser_for_testing_ =
       std::make_unique<ash::full_restore::ScopedLaunchBrowserForTesting>();
+#endif
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  allow_unpacked_without_developer_mode_ = extensions::ExtensionManagement::
+      AllowUnpackedWithoutDeveloperModeForTesting();
 #endif
 #if BUILDFLAG(IS_WIN)
   base::GetPathsAllowedToLeak() = {L"\\Sync Data", L"\\Local Storage\\leveldb",
@@ -455,7 +547,7 @@ void InProcessBrowserTest::SetUp() {
 
 #if BUILDFLAG(IS_CHROMEOS)
   // No need to redirect log for test.
-  command_line->AppendSwitch(switches::kDisableLoggingRedirect);
+  command_line->AppendSwitch(ash::switches::kDisableLoggingRedirect);
 
   // Disable IME extension loading to avoid many browser tests failures.
   ash::input_method::DisableExtensionLoading();
@@ -499,6 +591,9 @@ void InProcessBrowserTest::SetUp() {
   // block.
 #if BUILDFLAG(IS_MAC)
   command_line->AppendSwitch(os_crypt::switches::kUseMockKeychain);
+  if (!ui_controls::IsUIControlsEnabled()) {
+    fake_window_focus_ = std::make_unique<ui::test::ScopedFakeNSWindowFocus>();
+  }
 #endif
 #if BUILDFLAG(IS_LINUX)
   // On Linux, verify that a password store backend is specified - it's either
@@ -536,6 +631,9 @@ void InProcessBrowserTest::SetUp() {
   // On CrOS, we need to use ash::Shell to get all root windows.
   views::test::WidgetTest::SetRootWindowProvider(
       base::BindRepeating(&ash::Shell::GetAllRootWindows));
+
+  ash::OwnerSettingsServiceAshFactory::GetInstance()->SetOwnerKeyUtilForTesting(
+      base::MakeRefCounted<TestOwnerKeyUtil>());
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   // Redirect the default download directory to a temporary directory.
@@ -564,6 +662,14 @@ void InProcessBrowserTest::SetUp() {
 
   EnsureBrowserContextKeyedServiceFactoriesForTestingBuilt();
 
+#if !EXPENSIVE_TEST_LOGIC_IS_ON() && !BUILDFLAG(IS_ANDROID)
+  // Run the StorageService in-process on the IO thread instead of spawning a
+  // separate utility process per test in fast test builds.
+  if (force_in_process_storage_service_) {
+    content::ForceInProcessStorageServiceForTesting();
+  }
+#endif
+
   BrowserTestBase::SetUp();
 }
 
@@ -573,11 +679,12 @@ void InProcessBrowserTest::SetUpDefaultCommandLine(
   test_launcher_utils::PrepareBrowserCommandLineForBrowserTests(
       command_line, open_about_blank_on_browser_launch_);
 
+#if BUILDFLAG(IS_CHROMEOS)
   // TODO(pkotwicz): Investigate if we can remove this switch.
   if (exit_when_last_browser_closes_) {
-    command_line->AppendSwitch(switches::kDisableZeroBrowsersOpenForTests);
+    command_line->AppendSwitch(ash::switches::kDisableZeroBrowsersOpenForTests);
   }
-#if BUILDFLAG(IS_CHROMEOS)
+
   // Do not automaximize in browser tests.
   command_line->AppendSwitch(switches::kDisableAutoMaximizeForTests);
 #endif
@@ -593,11 +700,19 @@ void InProcessBrowserTest::TearDown() {
 #endif
   BrowserTestBase::TearDown();
 
+  StubResolverConfigReader::SetDnsOverriddenForTesting(false);
+
+#if BUILDFLAG(IS_MAC)
+  fake_window_focus_.reset();
+#endif
+
   if (embedded_https_test_server().Started()) {
     ASSERT_TRUE(embedded_https_test_server().ShutdownAndWaitUntilComplete());
   }
 
 #if BUILDFLAG(IS_CHROMEOS)
+  ash::OwnerSettingsServiceAshFactory::GetInstance()->SetOwnerKeyUtilForTesting(
+      nullptr);
   ash::device_sync::DeviceSyncImpl::Factory::SetCustomFactory(nullptr);
   launch_browser_for_testing_ = nullptr;
   views::test::WidgetTest::SetRootWindowProvider(base::NullCallback());
@@ -620,6 +735,9 @@ size_t InProcessBrowserTest::GetTestPreCount() {
 void InProcessBrowserTest::CreatedBrowserMainParts(
     content::BrowserMainParts* parts) {
   BrowserTestBase::CreatedBrowserMainParts(parts);
+  if (host_resolver()) {
+    StubResolverConfigReader::SetDnsOverriddenForTesting(true);
+  }
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   static_cast<ChromeBrowserMainParts*>(parts)->AddParts(
       std::make_unique<ChromeBrowserMainExtraPartsBrowserProcessInjection>());
@@ -629,7 +747,7 @@ void InProcessBrowserTest::CreatedBrowserMainParts(
 }
 
 void InProcessBrowserTest::SetBrowser(BrowserWindowInterface* browser) {
-  browser_ = browser ? browser->GetBrowserForMigrationOnly() : nullptr;
+  browser_ = browser;
 }
 
 void InProcessBrowserTest::RecordPropertyFromMap(
@@ -654,10 +772,11 @@ void InProcessBrowserTest::RecordPropertyFromMap(
 void InProcessBrowserTest::SetUpLocalStatePrefService(
     PrefService* local_state) {
 #if BUILDFLAG(IS_WIN)
-  // Put the current build version number in the prefs, so that pinned taskbar
-  // icons aren't migrated.
+  // Put the current build version number and time in the prefs, so that pinned
+  // taskbar icons aren't migrated.
   local_state->SetString(prefs::kShortcutMigrationVersion,
                          std::string(version_info::GetVersionNumber()));
+  local_state->SetTime(prefs::kShortcutMigrationTime, base::Time::Now());
 #endif  // BUILDFLAG(IS_WIN);
 }
 
@@ -718,7 +837,7 @@ bool InProcessBrowserTest::AddTabAtIndexToBrowser(
     ui::PageTransition transition) {
   NavigateParams params(browser, url, transition);
   params.tabstrip_index = index;
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = WindowOpenDisposition::kNewForegroundTab;
   params.web_app_navigation_data.emplace();
   params.web_app_navigation_data->SetNavigationCapturingForceOff(true);
   Navigate(&params);
@@ -762,8 +881,9 @@ void InProcessBrowserTest::OpenDevToolsWindow(
   ASSERT_TRUE(content::DevToolsAgentHost::HasFor(web_contents));
 }
 
-Browser* InProcessBrowserTest::OpenURLOffTheRecord(Profile* profile,
-                                                   const GURL& url) {
+BrowserWindowInterface* InProcessBrowserTest::OpenURLOffTheRecord(
+    Profile* profile,
+    const GURL& url) {
   chrome::OpenURLOffTheRecord(profile, url);
   BrowserWindowInterface* browser_window_interface =
       ProfileBrowserCollection::GetForProfile(
@@ -772,47 +892,56 @@ Browser* InProcessBrowserTest::OpenURLOffTheRecord(Profile* profile,
   content::TestNavigationObserver observer(
       browser_window_interface->GetTabStripModel()->GetActiveWebContents());
   observer.Wait();
-  return browser_window_interface->GetBrowserForMigrationOnly();
+  return browser_window_interface;
 }
 
 // Creates a browser with a single tab (about:blank), waits for the tab to
 // finish loading and shows the browser.
-Browser* InProcessBrowserTest::CreateBrowser(Profile* profile) {
-  Browser* browser = Browser::Create(Browser::CreateParams(profile, true));
+BrowserWindowInterface* InProcessBrowserTest::CreateBrowser(Profile* profile) {
+  BrowserWindowInterface* browser = CreateBrowserWindow(
+      BrowserWindowCreateParams(profile, /*from_user_gesture=*/true));
   AddBlankTabAndShow(browser);
   return browser;
 }
 
-Browser* InProcessBrowserTest::CreateIncognitoBrowser(Profile* profile) {
+BrowserWindowInterface* InProcessBrowserTest::CreateIncognitoBrowser(
+    Profile* profile) {
   // Use active profile if default nullptr was passed.
   if (!profile) {
     profile = browser()->GetProfile();
   }
   // Create a new browser with using the incognito profile.
-  Browser* incognito = Browser::Create(Browser::CreateParams(
-      profile->GetPrimaryOTRProfile(/*create_if_needed=*/true), true));
+  BrowserWindowInterface* incognito = CreateBrowserWindow(
+      BrowserWindowCreateParams(profile->GetPrimaryOTRProfile(
+                                    /*create_if_needed=*/true),
+                                /*from_user_gesture=*/true));
   AddBlankTabAndShow(incognito);
   return incognito;
 }
 
-Browser* InProcessBrowserTest::CreateBrowserForPopup(Profile* profile) {
-  Browser* browser = Browser::Create(
-      Browser::CreateParams(Browser::TYPE_POPUP, profile, true));
+BrowserWindowInterface* InProcessBrowserTest::CreateBrowserForPopup(
+    Profile* profile) {
+  BrowserWindowInterface* browser = CreateBrowserWindow(
+      BrowserWindowCreateParams(BrowserWindowInterface::TYPE_POPUP, profile,
+                                /*from_user_gesture=*/true));
   AddBlankTabAndShow(browser);
   return browser;
 }
 
-Browser* InProcessBrowserTest::CreateBrowserForApp(const std::string& app_name,
-                                                   Profile* profile) {
-  Browser* browser = Browser::Create(Browser::CreateParams::CreateForApp(
-      app_name, false /* trusted_source */, gfx::Rect(), profile, true));
+BrowserWindowInterface* InProcessBrowserTest::CreateBrowserForApp(
+    const std::string& app_name,
+    Profile* profile) {
+  BrowserWindowInterface* browser =
+      CreateBrowserWindow(BrowserWindowCreateParams::CreateForApp(
+          app_name, /*trusted_source=*/false, gfx::Rect(), profile,
+          /*user_gesture=*/true));
   AddBlankTabAndShow(browser);
   return browser;
 }
 #endif  // !BUILDFLAG(IS_MAC)
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
-Browser* InProcessBrowserTest::CreateGuestBrowser() {
+BrowserWindowInterface* InProcessBrowserTest::CreateGuestBrowser() {
   // Get Guest profile.
   ProfileManager* profile_manager = g_browser_process->profile_manager();
   base::FilePath guest_path = profile_manager->GetGuestProfilePath();
@@ -823,14 +952,15 @@ Browser* InProcessBrowserTest::CreateGuestBrowser() {
       guest_profile.GetPrimaryOTRProfile(/*create_if_needed=*/true);
 
   // Create browser and add tab.
-  Browser* browser =
-      Browser::Create(Browser::CreateParams(guest_profile_otr, true));
+  BrowserWindowInterface* browser = CreateBrowserWindow(
+      BrowserWindowCreateParams(guest_profile_otr,
+                                /*from_user_gesture=*/true));
   AddBlankTabAndShow(browser);
   return browser;
 }
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
 
-void InProcessBrowserTest::AddBlankTabAndShow(Browser* browser,
+void InProcessBrowserTest::AddBlankTabAndShow(BrowserWindowInterface* browser,
                                               bool wait_for_activation) {
   content::WebContents* blank_tab = chrome::AddSelectedTabWithURL(
       browser, GURL(url::kAboutBlankURL), ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
@@ -882,7 +1012,7 @@ void InProcessBrowserTest::PreRunTestOnMainThread() {
 
   SetBrowser(GetLastActiveBrowserWindowInterfaceWithAnyProfile());
 
-  auto ensure_browser_visible = [](Browser* browser) {
+  auto ensure_browser_visible = [](BrowserWindowInterface* browser) {
 #if defined(TOOLKIT_VIEWS)
     if (browser &&
         browser->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL) {
@@ -901,15 +1031,12 @@ void InProcessBrowserTest::PreRunTestOnMainThread() {
   // "active" yet.
   if (!browser_ && GlobalBrowserCollection::GetInstance()->GetSize() > 0) {
     auto browsers = GetAllBrowserWindowInterfaces();
-    BrowserWindowInterface* normal_window_interface = nullptr;
-    Browser* normal_browser = nullptr;
+    BrowserWindowInterface* normal_browser = nullptr;
     for (auto* window_interface : browsers) {
-      if (Browser* browser = window_interface->GetBrowserForMigrationOnly()) {
-        if (browser->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL) {
-          normal_window_interface = window_interface;
-          normal_browser = browser;
-          break;
-        }
+      if (window_interface->GetType() ==
+          BrowserWindowInterface::Type::TYPE_NORMAL) {
+        normal_browser = window_interface;
+        break;
       }
     }
 
@@ -922,8 +1049,8 @@ void InProcessBrowserTest::PreRunTestOnMainThread() {
     // first normal one available, or the first available if none are normal,
     // so tests like WebUIMochaBrowserTest that rely on browser() don't crash.
     if (!browser_) {
-      if (normal_window_interface) {
-        SetBrowser(normal_window_interface);
+      if (normal_browser) {
+        SetBrowser(normal_browser);
       } else if (!browsers.empty()) {
         SetBrowser(browsers[0]);
       }
@@ -940,7 +1067,7 @@ void InProcessBrowserTest::PreRunTestOnMainThread() {
   }
 
   if (browser_) {
-    ensure_browser_visible(browser_->GetBrowserForMigrationOnly());
+    ensure_browser_visible(browser_);
   }
 
 #if !BUILDFLAG(IS_ANDROID)

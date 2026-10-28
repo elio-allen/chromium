@@ -208,9 +208,6 @@ class SSLClientSocketImpl::SSLContext {
     SSL_CTX_set_timeout(ssl_ctx_.get(), 1 * 60 * 60 /* one hour */);
 
     SSL_CTX_set_grease_enabled(ssl_ctx_.get(), 1);
-    if (base::FeatureList::IsEnabled(features::kTlsGreaseSigalgs)) {
-      SSL_CTX_set_grease_sigalgs_enabled(ssl_ctx_.get(), 1);
-    }
 
     // Deduplicate all certificates minted from the SSL_CTX in memory.
     SSL_CTX_set0_buffer_pool(ssl_ctx_.get(), x509_util::GetBufferPool());
@@ -1819,22 +1816,17 @@ int SSLClientSocketImpl::MapLastOpenSSLError(
 }
 
 int SSLClientSocketImpl::ConfigureEch() {
-  EchMode ech_mode = EchMode::kOpportunistic;
-  if (!context_->config().ech_enabled) {
-    DCHECK(ssl_config_.ech_config_list.empty());
-    ech_mode = EchMode::kDisabled;
-  } else if (context_->ssl_config_service()) {
-    ech_mode =
-        context_->ssl_config_service()->GetEchMode(host_and_port_.host());
-  }
+  EchMode ech_mode = context_->GetEchMode(host_and_port_.host());
 
   switch (ech_mode) {
     case EchMode::kDisabled:
+      DCHECK(ssl_config_.ech_config_list.empty());
       return OK;
     case EchMode::kStrict:
       if (ssl_config_.ech_config_list.empty()) {
         return ERR_STRICT_ECH_REQUIRED;
       }
+      SSL_set_reject_unusable_ech_config(ssl_.get(), 1);
       [[fallthrough]];
     case EchMode::kOpportunistic:
       // TODO(crbug.com/41482204): Enable this unconditionally.

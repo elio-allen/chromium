@@ -199,6 +199,13 @@ NSString* DisplayDescriptionForSuggestion(FormSuggestion* suggestion,
 
   _isCompact = isCompact;
   self.stackView.layoutMargins = [self adjustedLayoutMargins];
+  for (UIView* view in self.stackView.arrangedSubviews) {
+    if ([view isKindOfClass:[FormSuggestionLabel class]]) {
+      FormSuggestionLabel* label =
+          base::apple::ObjCCastStrict<FormSuggestionLabel>(view);
+      [label setIsCompact:isCompact];
+    }
+  }
   if (self.window) {
     [self layoutIfNeeded];
   }
@@ -272,6 +279,24 @@ NSString* DisplayDescriptionForSuggestion(FormSuggestion* suggestion,
   [self.formSuggestionViewDelegate openEditForSuggestion:suggestion];
 }
 
+- (void)openSourcesForSuggestion:(FormSuggestion*)suggestion {
+  [self.formSuggestionViewDelegate openSourcesForSuggestion:suggestion];
+}
+
+- (void)suppressPersonalContextSuggestion:(FormSuggestion*)suggestion {
+  [self.formSuggestionViewDelegate
+      suppressPersonalContextSuggestion:suggestion];
+}
+
+- (BOOL)hasSourcesForSuggestion:(FormSuggestion*)suggestion {
+  return [self.formSuggestionViewDelegate hasSourcesForSuggestion:suggestion];
+}
+
+- (BOOL)canSuppressPersonalContextSuggestion:(FormSuggestion*)suggestion {
+  return [self.formSuggestionViewDelegate
+      canSuppressPersonalContextSuggestion:suggestion];
+}
+
 - (BOOL)isPersonalContextSuggestion:(FormSuggestion*)suggestion {
   return
       [self.formSuggestionViewDelegate isPersonalContextSuggestion:suggestion];
@@ -294,14 +319,15 @@ NSString* DisplayDescriptionForSuggestion(FormSuggestion* suggestion,
   stackView.translatesAutoresizingMaskIntoConstraints = NO;
   [self addSubview:stackView];
   if (IsLiquidGlassEffectEnabled()) {
-    AddSameConstraintsToSides(
-        stackView, self,
-        LayoutSides::kTop | LayoutSides::kLeading | LayoutSides::kTrailing);
+    AddSameConstraintsToSides(stackView, self,
+                              LayoutSides::kTop | LayoutSides::kHorizontal);
   } else {
     AddSameConstraints(stackView, self);
   }
-  [stackView.heightAnchor constraintEqualToAnchor:self.heightAnchor].active =
-      YES;
+  NSLayoutConstraint* heightConstraint =
+      [stackView.heightAnchor constraintEqualToAnchor:self.heightAnchor];
+  heightConstraint.priority = UILayoutPriorityDefaultHigh;
+  heightConstraint.active = YES;
 
   // Rotate the UIScrollView and its UIStackView subview 180 degrees so that the
   // first suggestion actually shows up first.
@@ -382,6 +408,7 @@ NSString* DisplayDescriptionForSuggestion(FormSuggestion* suggestion,
           numberOfSuggestions:[self.suggestions count]
         accessoryTrailingView:self.accessoryTrailingView
          isContextMenuEnabled:self.isContextMenuEnabled
+                    isCompact:self->_isCompact
                      delegate:self];
     [self addFormSuggestionLabel:label atIndex:idx];
     if (idx == 0 &&

@@ -7,13 +7,11 @@
 #include <limits>
 #include <utility>
 
-#include "base/feature_list.h"
+#include "base/containers/to_vector.h"
 #include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram_functions.h"
 #include "components/device_event_log/device_event_log.h"
-#include "device/fido/fido_parsing_utils.h"
 #include "device/fido/network_context_factory.h"
-#include "device/fido/public/features.h"
 #include "device/fido/public/fido_constants.h"
 #include "net/http/http_request_headers.h"
 #include "net/storage_access_api/status.h"
@@ -114,7 +112,7 @@ void EnclaveWebSocketClient::Write(base::span<const uint8_t> data) {
   }
 
   if (state_ != State::kOpen) {
-    pending_write_data_ = fido_parsing_utils::Materialize(data);
+    pending_write_data_ = base::ToVector(data);
     return;
   }
 
@@ -139,10 +137,8 @@ void EnclaveWebSocketClient::Connect() {
         "Reauthentication", *reauthentication_token_));
   }
 
-  uint32_t options = network::mojom::kWebSocketOptionBlockAllCookies;
-  if (base::FeatureList::IsEnabled(kWebAuthnSocketMaxPriorityMode)) {
-    options |= network::mojom::kWebSocketOptionMaximumPriority;
-  }
+  const uint32_t options = network::mojom::kWebSocketOptionBlockAllCookies |
+                           network::mojom::kWebSocketOptionMaximumPriority;
 
   network_context_factory_.Run()->CreateWebSocket(
       service_url_, {kEnclaveWebSocketProtocol},
@@ -160,7 +156,9 @@ void EnclaveWebSocketClient::Connect() {
       /*throttling_profile_id=*/std::nullopt,
       // This is a browser-internal connection to the passkey enclave service.
       // It does not belong to any webpage, so we bypass connection allowlists.
-      network::GetNoOpNetworkRestrictionsId());
+      network::GetNoOpNetworkRestrictionsId(),
+      /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown,
+      /*target_network=*/std::nullopt);
 }
 
 void EnclaveWebSocketClient::InternalWrite(base::span<const uint8_t> data) {

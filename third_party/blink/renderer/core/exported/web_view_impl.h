@@ -37,6 +37,8 @@
 #include <vector>
 
 #include "base/gtest_prod_util.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/observer_list.h"
 #include "build/build_config.h"
@@ -542,6 +544,11 @@ class CORE_EXPORT WebViewImpl final : public WebView,
   void DidEnterFullscreen();
   void DidExitFullscreen();
 
+  // Called when a pending fullscreen request was not granted by the browser
+  // (e.g. if an entry and exit coalesced while visual property updates were
+  // being throttled). Rejects any pending request and resets state to kInitial.
+  void DidFailToEnterFullscreen();
+
   // Called when some JS code has instructed the window associated to the main
   // frame to close, which will result in a request to the browser to close the
   // Widget associated to it.
@@ -808,7 +815,8 @@ class CORE_EXPORT WebViewImpl final : public WebView,
   const bool widgets_never_composited_;
 
   // Can be null (e.g. unittests, shared workers, etc).
-  WebViewClient* web_view_client_;
+  raw_ptr<WebViewClient, UnprotectedInRelease | DanglingUntriaged>
+      web_view_client_;
   Persistent<ChromeClient> chrome_client_;
   Persistent<Page> page_;
 
@@ -819,6 +827,9 @@ class CORE_EXPORT WebViewImpl final : public WebView,
   // contents [e.g. to accomodate a keyboard] without forcing the web page to
   // relayout. For more details, see the header for the VisualViewport class.
   gfx::Size size_;
+  // Size before internal scroll-width autosize measurements, used to report
+  // only a stable size change.
+  std::optional<gfx::Size> size_before_suppressed_autosize_;
   // If true, automatically resize the layout view around its content.
   bool should_auto_resize_ = false;
   // The lower bound on the size when auto-resizing.
@@ -1005,7 +1016,9 @@ class CORE_EXPORT WebViewImpl final : public WebView,
   ui::mojom::blink::VirtualKeyboardMode virtual_keyboard_mode_ =
       ui::mojom::blink::VirtualKeyboardMode::kUnset;
 
-  scheduler::WebAgentGroupScheduler& web_agent_group_scheduler_;
+  const raw_ref<scheduler::WebAgentGroupScheduler,
+                UnprotectedInRelease | DanglingUntriaged>
+      web_agent_group_scheduler_;
 
   // Indicates whether the page supports draggable regions via the app-region
   // CSS property.

@@ -28,7 +28,8 @@ class MODULES_EXPORT AIMetrics {
     kProofreader = 6,
     // kClassifier = 7,  // Classifier API is deprecated.
     kSemanticEmbedder = 8,
-    kMaxValue = kSemanticEmbedder,
+    kDecisionModel = 9,
+    kMaxValue = kDecisionModel,
   };
   // LINT.ThenChange(//tools/metrics/histograms/metadata/ai/histograms.xml:SessionType)
 
@@ -76,6 +77,8 @@ class MODULES_EXPORT AIMetrics {
   static std::string GetAISessionResponseCompleteTimeMetricName(
       AISessionType session_type);
   static std::string GetAISessionContextTokensMetricName(
+      AISessionType session_type);
+  static std::string GetAISessionResponseTokensMetricName(
       AISessionType session_type);
   static std::string GetAISessionCrashedMetricName(AISessionType session_type);
 

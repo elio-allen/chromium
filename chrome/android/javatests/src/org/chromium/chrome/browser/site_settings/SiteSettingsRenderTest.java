@@ -20,6 +20,7 @@ import org.mockito.junit.MockitoRule;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
@@ -41,6 +42,7 @@ import org.chromium.components.browser_ui.site_settings.WebsiteGroup;
 import org.chromium.components.permissions.PermissionsAndroidFeatureList;
 import org.chromium.components.policy.test.annotations.Policies;
 import org.chromium.content_public.common.ContentSwitches;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.test.util.RenderTestRule;
 import org.chromium.ui.test.util.RenderTestRule.Component;
 
@@ -59,9 +61,9 @@ import java.util.concurrent.TimeoutException;
 })
 @DisableFeatures({
     ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE,
-    ChromeFeatureList.SETTINGS_MULTI_COLUMN,
     ChromeFeatureList.ANDROID_ANIMATED_PROGRESS_BAR_IN_BROWSER
 })
+@DisableIf.Device(DeviceFormFactor.PHONE) // https://crbug.com/562626005
 public class SiteSettingsRenderTest {
 
     private static void createAndSetRwsCookieInfo(Website owner, List<Website> websiteList) {
@@ -83,7 +85,7 @@ public class SiteSettingsRenderTest {
         return new WebsiteGroup(origin1.getAddress().getOrigin(), Arrays.asList(origin1, origin2));
     }
 
-    private static final int RENDER_TEST_REVISION = 6;
+    private static final int RENDER_TEST_REVISION = 7;
 
     public AutoResetCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.autoResetCtaActivityRule();

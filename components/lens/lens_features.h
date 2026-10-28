@@ -149,10 +149,6 @@ BASE_DECLARE_FEATURE(kLensOverlayTextSelectionContextMenuEntrypoint);
 COMPONENT_EXPORT(LENS_FEATURES)
 BASE_DECLARE_FEATURE(kLensOverlayForceEmptyCsbQuery);
 
-// Enables using a webview for the results frame instead of an iframe.
-COMPONENT_EXPORT(LENS_FEATURES)
-BASE_DECLARE_FEATURE(kLensSidePanelEnableWebviewResults);
-
 // Enables AIM suggestions in the composebox.
 COMPONENT_EXPORT(LENS_FEATURES)
 BASE_DECLARE_FEATURE(kLensAimSuggestions);
@@ -186,6 +182,10 @@ BASE_DECLARE_FEATURE(kLensOverlayNonBlockingPrivacyNotice);
 COMPONENT_EXPORT(LENS_FEATURES)
 BASE_DECLARE_FEATURE(kLensOverlayNonBlockingPrivacyNoticeForImageSearch);
 
+// Enables WebP encoding unconditionally.
+COMPONENT_EXPORT(LENS_FEATURES)
+BASE_DECLARE_FEATURE(kLensEnableWebpForImageUpload);
+
 // Enables using separate request ids for page contents vs page viewport
 // uploads.
 // TODO(crbug.com/479292553): Make this flag apply to the legacy CSB flow.
@@ -212,6 +212,11 @@ BASE_DECLARE_FEATURE(kLensSendQuerySubmissionTime);
 COMPONENT_EXPORT(LENS_FEATURES)
 BASE_DECLARE_FEATURE(kLensSendUrlsInComposeboxes);
 
+// Enables sending Google Drive / Docs tab URLs as unresolved URLs from the
+// Query Contextualizer in composeboxes.
+COMPONENT_EXPORT(LENS_FEATURES)
+BASE_DECLARE_FEATURE(kLensSendDriveTabUrlsInComposeboxes);
+
 // Enables skipping unresolved urls and Lens files, and only sending AAI for
 // modality chips in composebox queries.
 COMPONENT_EXPORT(LENS_FEATURES)
@@ -222,6 +227,14 @@ BASE_DECLARE_FEATURE(kLensOnlySendAaiForModalityChips);
 COMPONENT_EXPORT(LENS_FEATURES)
 BASE_DECLARE_FEATURE(
     kLensRestrictAnnotatedPageContentToSameSiteFramesForNextQueries);
+
+// Enables temporarily marking a hidden tab as visible to its renderer while
+// extracting its annotated page content. Hidden pages may be frozen by the
+// renderer scheduler (e.g. after being backgrounded for a while on Android), in
+// which case extraction would otherwise stall until it times out. Enabled by
+// default only on Android, where background page freezing is on by default.
+COMPONENT_EXPORT(LENS_FEATURES)
+BASE_DECLARE_FEATURE(kLensWakeHiddenTabForPageContentExtraction);
 
 // Enables deletion of context if a previously uploaded context is associated
 // with a page that was navigated away from or tab that was closed.
@@ -1052,11 +1065,6 @@ extern bool IsLensOverlayTextSelectionContextMenuEntrypointContextualized();
 COMPONENT_EXPORT(LENS_FEATURES)
 extern bool IsLensOverlayForceEmptyCsbQueryEnabled();
 
-// Whether to use a webview for the results frame instead of an iframe.
-COMPONENT_EXPORT(LENS_FEATURES)
-extern bool IsLensSidePanelWebviewResultsEnabled();
-
-
 // Whether the feature to enable the special handling for video citations is
 // enabled.
 COMPONENT_EXPORT(LENS_FEATURES)
@@ -1113,6 +1121,11 @@ extern bool IsLensSendRawFileMediaTypesEnabled();
 COMPONENT_EXPORT(LENS_FEATURES)
 extern bool IsLensSendUrlsInComposeboxesEnabled();
 
+// Enables sending Google Drive / Docs tab URLs as unresolved URLs from the
+// Query Contextualizer in composeboxes.
+COMPONENT_EXPORT(LENS_FEATURES)
+extern bool IsLensSendDriveTabUrlsInComposeboxesEnabled();
+
 COMPONENT_EXPORT(LENS_FEATURES)
 extern bool IsLensOnlySendAaiForModalityChipsEnabled();
 
@@ -1123,6 +1136,39 @@ extern const base::FeatureParam<bool> kLensOnlySendAaiExcludeRawAndDriveFiles;
 
 COMPONENT_EXPORT(LENS_FEATURES)
 extern bool IsLensOnlySendAaiExcludeRawAndDriveFilesEnabled();
+
+// Enables Identity Delegation for Lens Composebox requests.
+COMPONENT_EXPORT(LENS_FEATURES)
+BASE_DECLARE_FEATURE(kLensComposeboxIdentityDelegation);
+
+COMPONENT_EXPORT(LENS_FEATURES)
+extern const base::FeatureParam<std::string>
+    kLensComposeboxIdentityDelegationClusterInfoEndpointUrl;
+
+COMPONENT_EXPORT(LENS_FEATURES)
+extern const base::FeatureParam<std::string>
+    kLensComposeboxIdentityDelegationEndpointUrl;
+
+COMPONENT_EXPORT(LENS_FEATURES)
+extern const base::FeatureParam<std::string>
+    kLensComposeboxIdentityDelegationUploadChunkEndpointUrl;
+
+COMPONENT_EXPORT(LENS_FEATURES)
+bool UseIdentityDelegationForLensComposeboxRequests();
+
+// Returns the finch configured endpoint URL for the cluster info request for
+// composebox.
+COMPONENT_EXPORT(LENS_FEATURES)
+extern std::string GetLensComposeboxClusterInfoEndpointUrl();
+
+// Returns the finch configured endpoint URL for the Lens composebox.
+COMPONENT_EXPORT(LENS_FEATURES)
+extern std::string GetLensComposeboxEndpointUrl();
+
+// Returns the finch configured upload chunk endpoint URL for the Lens
+// composebox.
+COMPONENT_EXPORT(LENS_FEATURES)
+extern std::string GetLensComposeboxUploadChunkEndpointUrl();
 
 }  // namespace lens::features
 #endif  // COMPONENTS_LENS_LENS_FEATURES_H_

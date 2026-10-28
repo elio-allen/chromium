@@ -29,7 +29,10 @@
 #import "ios/chrome/browser/enterprise/data_controls/model/ios_rules_service_factory.h"
 #import "ios/chrome/browser/enterprise/data_protection/model/data_protection_tab_helper_observer.h"
 #import "ios/chrome/browser/enterprise/data_protection/model/data_protection_url_lookup_service_factory.h"
+#import "ios/chrome/browser/enterprise/data_protection/model/watermark_request_config.h"
 #import "ios/chrome/browser/enterprise/data_protection/public/features.h"
+#import "ios/chrome/browser/overlays/model/public/overlay_request.h"
+#import "ios/chrome/browser/overlays/model/public/overlay_request_queue.h"
 #import "ios/chrome/browser/safe_browsing/model/chrome_enterprise_url_lookup_service_factory.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
@@ -191,6 +194,7 @@ class DataProtectionTabHelperTest : public PlatformTest {
         std::make_unique<web::FakeWebState>(web::WebStateID::NewUnique());
     web_state_->SetBrowserState(profile_.get());
 
+    OverlayRequestQueue::CreateForWebState(web_state_.get());
     DataProtectionTabHelper::CreateForWebState(web_state_.get());
     tab_helper()->AddObserver(&observer_);
 
@@ -228,12 +232,19 @@ class DataProtectionTabHelperTest : public PlatformTest {
     web_state->SetBrowserState(profile_.get());
     web_state->SetVisibleURL(url);
 
+    OverlayRequestQueue::CreateForWebState(web_state.get());
     DataProtectionTabHelper::CreateForWebState(web_state.get());
     DataProtectionTabHelper* helper =
         DataProtectionTabHelper::FromWebState(web_state.get());
 
     EXPECT_EQ(helper->IsScreenshotProtectionEnabled(), expected_enabled);
     EXPECT_EQ(fake_rt_lookup_service_->start_lookup_count(), 0u);
+  }
+
+  void SetCommittedProtectionState(
+      DataProtectionTabHelper::ProtectionState state,
+      const std::string& watermark_text) {
+    tab_helper()->SetCommittedProtectionState(state, watermark_text);
   }
 
   void SetScreenshotBlockRule(const std::string& url_pattern) {
@@ -360,6 +371,19 @@ TEST_F(DataProtectionTabHelperTest, RealTimeLookupWatermark) {
   // response.
   EXPECT_THAT(tab_helper()->GetWatermarkText(),
               ::testing::HasSubstr("Test Watermark"));
+
+  // Verify that the watermark request is placed in the OverlayRequestQueue.
+  OverlayRequestQueue* queue = OverlayRequestQueue::FromWebState(
+      web_state_.get(), OverlayModality::kWatermark);
+  ASSERT_EQ(queue->size(), 1u);
+  OverlayRequest* overlay_request = queue->GetRequest(0);
+  ASSERT_TRUE(overlay_request);
+  WatermarkRequestConfig* config =
+      overlay_request->GetConfig<WatermarkRequestConfig>();
+  ASSERT_TRUE(config);
+  EXPECT_THAT(config->watermark_text(), ::testing::HasSubstr("Test Watermark"));
+
+  // Verify that the observer was notified with the watermark text.
   EXPECT_THAT(observer_.watermark_text(),
               ::testing::HasSubstr("Test Watermark"));
 }
@@ -391,7 +415,17 @@ TEST_F(DataProtectionTabHelperTest,
 
   EXPECT_THAT(tab_helper()->GetWatermarkText(),
               ::testing::HasSubstr("Expected Watermark"));
-  EXPECT_THAT(observer_.watermark_text(),
+
+  // Verify that the watermark request is placed in the OverlayRequestQueue.
+  OverlayRequestQueue* queue = OverlayRequestQueue::FromWebState(
+      web_state_.get(), OverlayModality::kWatermark);
+  ASSERT_EQ(queue->size(), 1u);
+  OverlayRequest* overlay_request = queue->GetRequest(0);
+  ASSERT_TRUE(overlay_request);
+  WatermarkRequestConfig* config =
+      overlay_request->GetConfig<WatermarkRequestConfig>();
+  ASSERT_TRUE(config);
+  EXPECT_THAT(config->watermark_text(),
               ::testing::HasSubstr("Expected Watermark"));
   EXPECT_EQ(fake_rt_lookup_service_->start_lookup_count(), 1u);
 }
@@ -538,7 +572,17 @@ TEST_F(DataProtectionTabHelperTest, NoDmTokenSkipsRealTimeLookup) {
 TEST_F(DataProtectionTabHelperTest, NTPUrlSkipped) {
   SetScreenshotBlockRule("*");
 
-  VerifyInitialProtection(GURL(kChromeUINewTabURL), /*expected_enabled=*/false);
+  for (const char* url : {kChromeUINewTabURL, kChromeUIAboutNewTabURL}) {
+    VerifyInitialProtection(GURL(url), /*expected_enabled=*/false);
+    EXPECT_EQ(fake_rt_lookup_service_->start_lookup_count(), 0u);
+  }
+}
+
+// Tests that internal URLs are not skipped.
+TEST_F(DataProtectionTabHelperTest, InternalUrlBlocked) {
+  SetScreenshotBlockRule("*");
+
+  VerifyInitialProtection(GURL(kChromeUIVersionURL), /*expected_enabled=*/true);
   EXPECT_EQ(fake_rt_lookup_service_->start_lookup_count(), 0u);
 }
 
@@ -736,4 +780,62 @@ TEST_F(DataProtectionTabHelperTest, LocalhostSkipped) {
     EXPECT_FALSE(tab_helper()->IsScreenshotProtectionEnabled());
     EXPECT_EQ(fake_rt_lookup_service_->start_lookup_count(), 0u);
   }
+}
+
+// Tests that SetCommittedProtectionState correctly manages the watermark
+// OverlayRequestQueue, including adding, replacing, and clearing requests.
+TEST_F(DataProtectionTabHelperTest, WatermarkOverlayRequest) {
+  OverlayRequestQueue* queue = OverlayRequestQueue::FromWebState(
+      web_state_.get(), OverlayModality::kWatermark);
+  EXPECT_EQ(queue->size(), 0u);
+
+  SetCommittedProtectionState(DataProtectionTabHelper::ProtectionState(
+                                  DataProtectionTabHelper::Enabled{}),
+                              "Confidential");
+  ASSERT_EQ(queue->size(), 1u);
+  OverlayRequest* request = queue->GetRequest(0);
+  ASSERT_TRUE(request);
+
+  WatermarkRequestConfig* config = request->GetConfig<WatermarkRequestConfig>();
+  ASSERT_TRUE(config);
+  EXPECT_EQ(config->watermark_text(), "Confidential");
+
+  // Change the watermark text to verify it replaces the old request.
+  SetCommittedProtectionState(DataProtectionTabHelper::ProtectionState(
+                                  DataProtectionTabHelper::Enabled{}),
+                              "Top Secret");
+
+  ASSERT_EQ(queue->size(), 1u);
+  request = queue->GetRequest(0);
+  ASSERT_TRUE(request);
+  config = request->GetConfig<WatermarkRequestConfig>();
+  ASSERT_TRUE(config);
+  EXPECT_EQ(config->watermark_text(), "Top Secret");
+
+  SetCommittedProtectionState(DataProtectionTabHelper::ProtectionState(
+                                  DataProtectionTabHelper::Enabled{}),
+                              "");
+  EXPECT_EQ(queue->size(), 0u);
+}
+
+// Tests that SetCommittedProtectionState notifies observers when the watermark
+// text changes.
+TEST_F(DataProtectionTabHelperTest, WatermarkObserverNotifiedOnStateChange) {
+  EXPECT_TRUE(observer_.watermark_text().empty());
+
+  SetCommittedProtectionState(DataProtectionTabHelper::ProtectionState(
+                                  DataProtectionTabHelper::Enabled{}),
+                              "Confidential");
+  EXPECT_EQ(observer_.watermark_text(), "Confidential");
+
+  // Change the watermark text to verify observer is notified with new text.
+  SetCommittedProtectionState(DataProtectionTabHelper::ProtectionState(
+                                  DataProtectionTabHelper::Enabled{}),
+                              "Top Secret");
+  EXPECT_EQ(observer_.watermark_text(), "Top Secret");
+
+  SetCommittedProtectionState(DataProtectionTabHelper::ProtectionState(
+                                  DataProtectionTabHelper::Enabled{}),
+                              "");
+  EXPECT_TRUE(observer_.watermark_text().empty());
 }

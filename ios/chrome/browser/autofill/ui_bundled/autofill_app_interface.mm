@@ -7,7 +7,7 @@
 #import "base/apple/foundation_util.h"
 #import "base/check.h"
 #import "base/functional/callback_helpers.h"
-#import "base/memory/singleton.h"
+#import "base/no_destructor.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/strings/utf_string_conversions.h"
 #import "base/test/ios/wait_util.h"
@@ -29,8 +29,8 @@
 #import "components/autofill/core/browser/payments/payments_autofill_client.h"
 #import "components/autofill/core/browser/payments/payments_network_interface.h"
 #import "components/autofill/core/browser/payments/virtual_card_enrollment_manager.h"
-#import "components/autofill/core/browser/test_utils/autofill_test_utils.h"
-#import "components/autofill/core/browser/test_utils/entity_data_test_utils.h"
+#import "components/autofill/core/browser/test_utils/autofill_test_util.h"
+#import "components/autofill/core/browser/test_utils/entity_data_test_util.h"
 #import "components/autofill/core/common/autofill_prefs.h"
 #import "components/autofill/ios/browser/autofill_driver_ios.h"
 #import "components/autofill/ios/browser/autofill_java_script_feature.h"
@@ -42,7 +42,7 @@
 #import "components/password_manager/core/browser/password_store/password_form_converters.h"
 #import "components/password_manager/core/browser/password_store/password_store_consumer.h"
 #import "components/password_manager/core/browser/password_store/password_store_interface.h"
-#import "ios/chrome/browser/autofill/atmemory/public/at_memory_commands.h"
+#import "components/password_manager/core/browser/password_string.h"
 #import "ios/chrome/browser/autofill/model/personal_data_manager_factory.h"
 #import "ios/chrome/browser/autofill/ui_bundled/chrome_autofill_client_ios.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_profile_password_store_factory.h"
@@ -50,12 +50,13 @@
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
-#import "ios/chrome/common/ui/reauthentication/mock_reauthentication_module.h"
+#import "ios/chrome/common/ui/reauthentication/fake_reauthentication_module.h"
 #import "ios/chrome/test/app/chrome_test_util.h"
 #import "ios/chrome/test/app/tab_test_util.h"
 #import "ios/public/provider/chrome/browser/risk_data/risk_data_api.h"
 #import "ios/web/public/js_messaging/web_frames_manager.h"
 #import "ios/web/public/web_state.h"
+#import "net/base/mock_network_change_notifier.h"
 #import "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #import "services/network/test/test_url_loader_factory.h"
 
@@ -85,15 +86,11 @@ class TestStoreConsumer : public password_manager::PasswordStoreConsumer {
  public:
   void OnGetPasswordStoreResultsOrErrorFrom(
       password_manager::PasswordStoreInterface* store,
-      password_manager::LoginsResultOrError results_or_error) override {
-    if (std::holds_alternative<password_manager::PasswordStoreBackendError>(
-            results_or_error)) {
-      obtained_ = std::vector<password_manager::PasswordForm>();
-    } else {
-      obtained_ = password_manager::ToPasswordForms(
-          std::get<password_manager::LoginsResult>(
-              std::move(results_or_error)));
-    }
+      base::expected<std::vector<password_manager::StoredCredential>,
+                     password_manager::PasswordStoreBackendError>
+          results_or_error) override {
+    obtained_ = password_manager::ToPasswordForms(
+        std::move(results_or_error).value_or({}));
   }
 
   const std::vector<password_manager::PasswordForm>& GetStoreResults() {
@@ -145,7 +142,8 @@ password_manager::PasswordForm CreateExamplePasswordForm(
     const GURL& url = GURL("https://example.com/")) {
   password_manager::PasswordForm password_form;
   password_form.username_value = kExampleUsername;
-  password_form.password_value = kExamplePassword;
+  password_form.password_value =
+      password_manager::PasswordString(kExamplePassword);
   password_form.url = url;
   password_form.signon_realm =
       password_manager_util::GetSignonRealm(password_form.url);
@@ -220,7 +218,8 @@ class VirtualCardEnrollmentManager;
 class FakeCreditCardServer : public CreditCardSaveManager::ObserverForTest {
  public:
   static FakeCreditCardServer* SharedInstance() {
-    return base::Singleton<FakeCreditCardServer>::get();
+    static base::NoDestructor<FakeCreditCardServer> kInstance;
+    return kInstance.get();
   }
 
   FakeCreditCardServer() {}
@@ -464,10 +463,52 @@ class FakeCreditCardServer : public CreditCardSaveManager::ObserverForTest {
 
 + (NSString*)exampleProfileName {
   autofill::AutofillProfile profile = autofill::test::GetFullProfile();
-  std::u16string name = profile.GetInfo(
-      autofill::AutofillType(autofill::NAME_FULL),
-      GetApplicationContext()->GetApplicationLocaleStorage()->Get());
+  std::u16string name =
+      profile.GetInfo(autofill::NAME_FULL, GetApplicationContext()
+                                               ->GetApplicationLocaleStorage()
+                                               ->GetTag()
+                                               .tag_string());
   return base::SysUTF16ToNSString(name);
+}
+
++ (NSString*)exampleProfileAddress {
+  autofill::AutofillProfile profile = autofill::test::GetFullProfile();
+  std::u16string address = profile.GetInfo(autofill::ADDRESS_HOME_LINE1,
+                                           GetApplicationContext()
+                                               ->GetApplicationLocaleStorage()
+                                               ->GetTag()
+                                               .tag_string());
+  return base::SysUTF16ToNSString(address);
+}
+
++ (NSString*)exampleProfileCity {
+  autofill::AutofillProfile profile = autofill::test::GetFullProfile();
+  std::u16string city = profile.GetInfo(autofill::ADDRESS_HOME_CITY,
+                                        GetApplicationContext()
+                                            ->GetApplicationLocaleStorage()
+                                            ->GetTag()
+                                            .tag_string());
+  return base::SysUTF16ToNSString(city);
+}
+
++ (NSString*)exampleProfileState {
+  autofill::AutofillProfile profile = autofill::test::GetFullProfile();
+  std::u16string state = profile.GetInfo(autofill::ADDRESS_HOME_STATE,
+                                         GetApplicationContext()
+                                             ->GetApplicationLocaleStorage()
+                                             ->GetTag()
+                                             .tag_string());
+  return base::SysUTF16ToNSString(state);
+}
+
++ (NSString*)exampleProfileZip {
+  autofill::AutofillProfile profile = autofill::test::GetFullProfile();
+  std::u16string zip = profile.GetInfo(autofill::ADDRESS_HOME_ZIP,
+                                       GetApplicationContext()
+                                           ->GetApplicationLocaleStorage()
+                                           ->GetTag()
+                                           .tag_string());
+  return base::SysUTF16ToNSString(zip);
 }
 
 + (void)clearCreditCardStore {
@@ -532,15 +573,16 @@ class FakeCreditCardServer : public CreditCardSaveManager::ObserverForTest {
       .size();
 }
 
-+ (NSString*)firstLocalCreditCardCvc {
-  autofill::PaymentsDataManager& paymentsDataManager =
-      [self personalDataManager]->payments_data_manager();
-  const std::vector<const autofill::CreditCard*>& cards =
-      paymentsDataManager.GetLocalCreditCards();
-  if (cards.empty()) {
-    return nil;
-  }
-  return autofill::GetCreditCardCvcString(*cards[0]);
++ (NSString*)exampleCreditCardName {
+  autofill::CreditCard card = autofill::test::GetCreditCard();
+  return base::SysUTF16ToNSString(
+      card.GetRawInfo(autofill::CREDIT_CARD_NAME_FULL));
+}
+
++ (NSString*)exampleCreditCardNumber {
+  autofill::CreditCard card = autofill::test::GetCreditCard();
+  return base::SysUTF16ToNSString(
+      card.GetRawInfo(autofill::CREDIT_CARD_NUMBER));
 }
 
 + (NSString*)saveMaskedCreditCard {
@@ -709,15 +751,6 @@ class FakeCreditCardServer : public CreditCardSaveManager::ObserverForTest {
       autofill::EntityInstance::EntityId(base::SysNSStringToUTF8(uuid)));
 }
 
-+ (void)removeEntityModifiedSince:(NSDate*)time {
-  autofill::EntityDataManager* entityDataManager = [self entityDataManager];
-  if (!entityDataManager) {
-    return;
-  }
-  entityDataManager->RemoveEntityInstancesModifiedBetween(
-      base::Time::FromNSDate(time), base::Time::Now());
-}
-
 + (BOOL)savePassportEntity {
   autofill::EntityDataManager* entityDataManager = [self entityDataManager];
   if (!entityDataManager) {
@@ -788,16 +821,11 @@ class FakeCreditCardServer : public CreditCardSaveManager::ObserverForTest {
   if (client) {
     client->ShowEntityImportBubble(std::move(entity), std::nullopt,
                                    /*save_is_synchronous=*/true,
+                                   /*public_passes_notice=*/{},
                                    base::DoNothing());
   }
 }
 
-+ (void)showAtMemoryUI {
-  id<AtMemoryCommands> atMemoryHandler = HandlerForProtocol(
-      chrome_test_util::GetMainBrowser()->GetCommandDispatcher(),
-      AtMemoryCommands);
-  [atMemoryHandler showAtMemory];
-}
 
 + (autofill::EntityDataManager*)entityDataManager {
   return autofill::FakeCreditCardServer::GetAutofillClient()
@@ -825,6 +853,14 @@ autofill::AutofillDriverIOS* GetMainFrameAutofillDriver() {
                                                               main_frame);
 }
 
+std::unique_ptr<net::test::ScopedMockNetworkChangeNotifier>&
+GetScopedMockNetworkChangeNotifier() {
+  static base::NoDestructor<
+      std::unique_ptr<net::test::ScopedMockNetworkChangeNotifier>>
+      notifier;
+  return *notifier;
+}
+
 }  // namespace
 
 + (BOOL)isFormCachedInMainFrame {
@@ -849,6 +885,21 @@ autofill::AutofillDriverIOS* GetMainFrameAutofillDriver() {
   };
   return base::test::ios::WaitUntilConditionOrTimeout(
       base::test::ios::kWaitForPageLoadTimeout, condition);
+}
+
++ (void)setNetworkConnectionOffline:(BOOL)offline {
+  std::unique_ptr<net::test::ScopedMockNetworkChangeNotifier>& notifier =
+      GetScopedMockNetworkChangeNotifier();
+  if (!offline) {
+    notifier.reset();
+    return;
+  }
+
+  if (!notifier) {
+    notifier = std::make_unique<net::test::ScopedMockNetworkChangeNotifier>();
+  }
+  notifier->mock_network_change_notifier()->SetConnectionType(
+      net::NetworkChangeNotifier::CONNECTION_NONE);
 }
 
 @end

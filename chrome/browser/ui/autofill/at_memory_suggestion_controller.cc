@@ -10,7 +10,6 @@
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/android/autofill/at_memory_bottom_sheet_bridge.h"
-#include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
 #include "components/autofill/core/browser/ui/autofill_suggestion_delegate.h"
 #include "components/autofill/core/common/autofill_util.h"
@@ -81,7 +80,8 @@ void AtMemorySuggestionController::OnSuggestionsChanged() {
 
 void AtMemorySuggestionController::AcceptSuggestion(
     int index,
-    AutofillMetrics::SuggestionAcceptedMethod accept_method) {
+    AutofillMetrics::SuggestionAcceptedMethod accept_method,
+    bool was_obscured) {
   if (base::checked_cast<size_t>(index) >= suggestions_.size()) {
     return;
   }
@@ -92,14 +92,23 @@ void AtMemorySuggestionController::AcceptSuggestion(
   Suggestion suggestion = suggestions_[index];
   if (delegate_) {
     delegate_->DidAcceptSuggestion(
-        suggestion, AutofillSuggestionDelegate::SuggestionMetadata{
-                        .multi_index = {static_cast<size_t>(index)}});
+        suggestion,
+        AutofillSuggestionDelegate::SuggestionMetadata{
+            .multi_index = {static_cast<size_t>(index)},
+            .was_obscured = was_obscured},
+        controller_common_.form_id, controller_common_.field_id);
   }
 }
 
-bool AtMemorySuggestionController::RemoveSuggestion(
-    int index,
-    AutofillMetrics::SingleEntryRemovalMethod removal_method) {
+void AtMemorySuggestionController::SelectSuggestion(int index) {
+  NOTREACHED();
+}
+
+void AtMemorySuggestionController::UnselectSuggestion() {
+  NOTREACHED();
+}
+
+bool AtMemorySuggestionController::RemoveSuggestion(int index) {
   NOTREACHED();
 }
 
@@ -125,10 +134,10 @@ void AtMemorySuggestionController::Show(
     std::vector<Suggestion> suggestions,
     AutofillSuggestionTriggerSource trigger_source,
     AutoselectFirstSuggestion autoselect_first_suggestion,
-    AutofillSuggestionsIgnoreFocusLoss ignore_focus_loss) {
+    AutofillSuggestionsIgnoreFocusLoss ignore_focus_loss,
+    std::u16string search_bar_initial_value) {
   ui_session_id_ = session_id;
   suggestions_ = std::move(suggestions);
-  trigger_source_ = trigger_source;
 
   if (!bridge_) {
     if (!web_contents_ || !web_contents_->GetTopLevelNativeWindow()) {
@@ -138,10 +147,10 @@ void AtMemorySuggestionController::Show(
         web_contents_->GetTopLevelNativeWindow(),
         Profile::FromBrowserContext(web_contents_->GetBrowserContext()), this);
   }
-  bridge_->RequestShowContent(suggestions_);
+  bridge_->RequestShowContent(suggestions_, search_bar_initial_value);
 
   if (delegate_) {
-    delegate_->OnSuggestionsShown(suggestions_, std::nullopt);
+    delegate_->OnSuggestionsShown(suggestions_, /*metadata=*/{});
   }
 }
 
@@ -158,6 +167,11 @@ void AtMemorySuggestionController::SetKeepPopupOpenForTesting(
 void AtMemorySuggestionController::UpdateDataListValues(
     base::span<const SelectOption> options) {
   NOTREACHED();
+}
+
+const LocalFrameToken& AtMemorySuggestionController::GetAnchorFrameToken()
+    const {
+  return controller_common_.field_id.frame_token;
 }
 
 void AtMemorySuggestionController::HideViewAndDie() {
@@ -193,9 +207,11 @@ void AtMemorySuggestionController::HideViewAndDie() {
 bool AtMemorySuggestionController::MayRecycle(
     base::WeakPtr<AutofillSuggestionDelegate> delegate,
     content::WebContents* web_contents,
+    const LocalFrameToken& anchor_frame_token,
     AutofillSuggestionTriggerSource trigger_source) const {
   return delegate_.get() == delegate.get() &&
          container_view() == web_contents->GetNativeView() &&
+         GetAnchorFrameToken() == anchor_frame_token &&
          IsAtMemoryTriggerSource(trigger_source);
 }
 
@@ -223,8 +239,10 @@ void AtMemorySuggestionController::OnQueryTextChanged(
   }
 }
 
-void AtMemorySuggestionController::OnSuggestionSelected(int position) {
-  AcceptSuggestion(position, AutofillMetrics::SuggestionAcceptedMethod::kTap);
+void AtMemorySuggestionController::OnSuggestionAccepted(int position) {
+  // TODO(crbug.com/561395976): Pass the `was_obscured` flag from Java.
+  AcceptSuggestion(position, AutofillMetrics::SuggestionAcceptedMethod::kTap,
+                   /*was_obscured=*/false);
 }
 
 void AtMemorySuggestionController::OnSuggestionDismissed(int position) {
@@ -236,7 +254,7 @@ void AtMemorySuggestionController::OnSuggestionDismissed(int position) {
   if (delegate_ && delegate_->RemoveSuggestion(suggestions_[position])) {
     suggestions_.erase(suggestions_.begin() + position);
     if (bridge_) {
-      bridge_->RequestShowContent(suggestions_);
+      bridge_->RequestShowContent(suggestions_, std::nullopt);
     }
   }
 }
@@ -252,12 +270,12 @@ void AtMemorySuggestionController::OnChildSuggestionsShown(
   if (delegate_) {
     delegate_->OnSuggestionsShown(
         parent_suggestion.children,
-        AutofillSuggestionDelegate::SuggestionMetadata{
+        AutofillSuggestionDelegate::SuggestionUiMetadata{
             .multi_index = {static_cast<size_t>(parent_position)}});
   }
 }
 
-void AtMemorySuggestionController::OnChildSuggestionSelected(
+void AtMemorySuggestionController::OnChildSuggestionAccepted(
     int parent_position,
     int child_position) {
   if (parent_position < 0 ||
@@ -273,10 +291,13 @@ void AtMemorySuggestionController::OnChildSuggestionSelected(
 
   Suggestion suggestion = parent_suggestion.children[child_position];
   if (delegate_) {
+    // TODO(crbug.com/561395976): Populate the `was_obscured` flag.
     delegate_->DidAcceptSuggestion(
-        suggestion, AutofillSuggestionDelegate::SuggestionMetadata{
-                        .multi_index = {static_cast<size_t>(parent_position),
-                                        static_cast<size_t>(child_position)}});
+        suggestion,
+        AutofillSuggestionDelegate::SuggestionMetadata{
+            .multi_index = {static_cast<size_t>(parent_position),
+                            static_cast<size_t>(child_position)}},
+        controller_common_.form_id, controller_common_.field_id);
   }
 }
 

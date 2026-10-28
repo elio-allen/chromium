@@ -99,8 +99,6 @@ class PageSchedulerImpl;
 class WebRenderWidgetSchedulingState;
 class WidgetSchedulerImpl;
 
-
-
 class PLATFORM_EXPORT MainThreadSchedulerImpl
     : public ThreadSchedulerBase,
       public MainThreadScheduler,
@@ -221,6 +219,8 @@ class PLATFORM_EXPORT MainThreadSchedulerImpl
   void RemoveRAILModeObserver(RAILModeObserver const* observer) override;
   void ForEachMainThreadIsolate(
       base::FunctionRef<void(v8::Isolate* isolate)>) override;
+  void SetBatterySaverEnabled(bool enabled) override;
+  bool IsBatterySaverEnabled() const override;
   Vector<WebInputEventAttribution> GetPendingUserInputInfo(
       bool include_continuous) const override;
   void ExecuteAfterCurrentTaskForTesting(
@@ -526,11 +526,6 @@ class PLATFORM_EXPORT MainThreadSchedulerImpl
 
   void EndIdlePeriod();
 
-  // Update a policy which increases priority for the next beginMainFrame after
-  // an input event.
-  void UpdatePrioritizeCompositingAfterInputAfterTaskCompleted(
-      MainThreadTaskQueue* queue);
-
   // Returns the serialized scheduler state for tracing.
   void WriteIntoTraceLocked(perfetto::TracedValue context,
                             base::TimeTicks optional_now) const
@@ -742,10 +737,9 @@ class PLATFORM_EXPORT MainThreadSchedulerImpl
   // We have decided to improve thread safety at the cost of some boilerplate
   // (the accessors) for the following data members.
   struct MainThreadOnly {
-    MainThreadOnly(
-        MainThreadSchedulerImpl* main_thread_scheduler_impl,
-        const base::TickClock* time_source,
-        base::TimeTicks now);
+    MainThreadOnly(MainThreadSchedulerImpl* main_thread_scheduler_impl,
+                   const base::TickClock* time_source,
+                   base::TimeTicks now);
     ~MainThreadOnly();
 
     IdleTimeEstimator idle_time_estimator;
@@ -763,6 +757,10 @@ class PLATFORM_EXPORT MainThreadSchedulerImpl
     std::optional<base::ScopedSampleMetadata> renderer_hidden_metadata;
     std::optional<base::ScopedSampleMetadata> renderer_frozen_metadata;
     bool renderer_backgrounded = kLaunchingProcessIsBackgrounded;
+    // Whether the browser is in energy saver (battery saver) mode. Pushed from
+    // the browser via `SetBatterySaverEnabled()` and used to gate fullscreen
+    // video timer throttling.
+    bool battery_saver_enabled = false;
     TraceableState<bool, "renderer.scheduler.status">
         blocking_input_expected_soon;
     TraceableState<bool, "renderer.scheduler.status">
@@ -873,8 +871,9 @@ class PLATFORM_EXPORT MainThreadSchedulerImpl
 #if DCHECK_IS_ON()
       // We don't actually care which thread this called from, just so long as
       // its consistent.
-      if (!compositor_thread_checker)
-        compositor_thread_checker.reset(new base::ThreadChecker());
+      if (!compositor_thread_checker) {
+        compositor_thread_checker = std::make_unique<base::ThreadChecker>();
+      }
       DCHECK(compositor_thread_checker->CalledOnValidThread());
 #endif
     }

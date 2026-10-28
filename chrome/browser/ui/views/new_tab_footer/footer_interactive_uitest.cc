@@ -14,10 +14,12 @@
 #include "chrome/browser/search/background/ntp_custom_background_service_factory.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/extensions/settings_api_bubble_helpers.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/side_panel/side_panel_action_callback.h"
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/contents_container_view.h"
 #include "chrome/browser/ui/views/frame/multi_contents_view.h"
@@ -44,8 +46,9 @@ DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewTabElementId);
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kFooterLocalElementId);
 
 using DeepQuery = WebContentsInteractionTestUtil::DeepQuery;
-const DeepQuery kFooterCustomizeChromeButton{
-    "new-tab-footer-app", "ntp-customize-buttons", "#customizeButton"};
+DeepQuery FooterCustomizeChromeButton() {
+  return {"new-tab-footer-app", "ntp-customize-buttons", "#customizeButton"};
+}
 
 }  // namespace
 
@@ -104,7 +107,7 @@ class FooterInteractiveTestBase
   InteractiveTestApi::MultiStep OpenSidePanel(
       const ui::ElementIdentifier& contents_id) {
     return Steps(EnsureNotPresent(kSidePanelElementId),
-                 ExecuteJsAt(contents_id, kFooterCustomizeChromeButton,
+                 ExecuteJsAt(contents_id, FooterCustomizeChromeButton(),
                              "el => el.click()"),
                  WaitForShow(kSidePanelElementId));
   }
@@ -112,7 +115,7 @@ class FooterInteractiveTestBase
   InteractiveTestApi::MultiStep CloseSidePanel(
       const ui::ElementIdentifier& contents_id) {
     return Steps(EnsurePresent(kSidePanelElementId),
-                 ExecuteJsAt(contents_id, kFooterCustomizeChromeButton,
+                 ExecuteJsAt(contents_id, FooterCustomizeChromeButton(),
                              "el => el.click()"),
                  WaitForHide(kSidePanelElementId));
   }
@@ -187,7 +190,7 @@ IN_PROC_BROWSER_TEST_F(FooterInteractiveTest, FooterHiddenOnNonExtensionNtp) {
 #if !BUILDFLAG(IS_CHROMEOS)
 IN_PROC_BROWSER_TEST_F(FooterInteractiveTest, FooterHidesInGuestProfile) {
   LoadNtpOverridingExtension();
-  Browser* const guest_browser = CreateGuestBrowser();
+  BrowserWindowInterface* const guest_browser = CreateGuestBrowser();
   ui_test_utils::BrowserActivationWaiter(guest_browser).WaitForActivation();
 
   RunTestSequenceInContext(
@@ -202,7 +205,7 @@ IN_PROC_BROWSER_TEST_F(FooterInteractiveTest, FooterHidesInGuestProfile) {
 
 IN_PROC_BROWSER_TEST_F(FooterInteractiveTest, FooterHidesInIncognito) {
   LoadNtpOverridingExtension();
-  Browser* const incognito_browser = CreateIncognitoBrowser();
+  BrowserWindowInterface* const incognito_browser = CreateIncognitoBrowser();
   ui_test_utils::BrowserActivationWaiter(incognito_browser).WaitForActivation();
 
   RunTestSequenceInContext(
@@ -351,7 +354,7 @@ class FooterEnterpriseInteractiveTest : public FooterInteractiveTestBase {
         /*collection_id=*/"");
   }
 
-  Browser* CreateManagedGuestBrowser() {
+  BrowserWindowInterface* CreateManagedGuestBrowser() {
     ProfileManager* profile_manager = g_browser_process->profile_manager();
     base::FilePath guest_path = profile_manager->GetGuestProfilePath();
     Profile& guest_profile =
@@ -364,18 +367,19 @@ class FooterEnterpriseInteractiveTest : public FooterInteractiveTestBase {
             policy::EnterpriseManagementAuthority::DOMAIN_LOCAL);
 
     // Create browser and add tab.
-    Browser* guest_browser =
-        Browser::Create(Browser::CreateParams(guest_profile_otr, true));
+    BrowserWindowInterface* guest_browser = CreateBrowserWindow(
+        BrowserWindowCreateParams(guest_profile_otr,
+                                  /*from_user_gesture=*/true));
     AddBlankTabAndShow(guest_browser);
     ui_test_utils::BrowserActivationWaiter(guest_browser).WaitForActivation();
     return guest_browser;
   }
 
-  Browser* CreateManagedIncognitoBrowser() {
-    Browser* incognito_browser = Browser::Create(
-        Browser::CreateParams(browser()->GetProfile()->GetPrimaryOTRProfile(
-                                  /*create_if_needed=*/true),
-                              true));
+  BrowserWindowInterface* CreateManagedIncognitoBrowser() {
+    BrowserWindowInterface* incognito_browser = CreateBrowserWindow(
+        BrowserWindowCreateParams(browser()->GetProfile()->GetPrimaryOTRProfile(
+                                      /*create_if_needed=*/true),
+                                  /*from_user_gesture=*/true));
     incognito_scoped_browser_management_ =
         std::make_unique<policy::ScopedManagementServiceOverrideForTesting>(
             policy::ManagementServiceFactory::GetForProfile(
@@ -463,7 +467,7 @@ IN_PROC_BROWSER_TEST_F(FooterEnterpriseInteractiveTest,
 IN_PROC_BROWSER_TEST_F(FooterEnterpriseInteractiveTest,
                        FooterShowsInGuestProfile) {
   // Create browser and add tab.
-  Browser* guest_browser = CreateManagedGuestBrowser();
+  BrowserWindowInterface* guest_browser = CreateManagedGuestBrowser();
   RunTestSequenceInContext(
       // Run the following steps with the guest browser as the default context.
       BrowserElements::From(guest_browser)->GetContext(),
@@ -475,7 +479,7 @@ IN_PROC_BROWSER_TEST_F(FooterEnterpriseInteractiveTest,
 
 IN_PROC_BROWSER_TEST_F(FooterEnterpriseInteractiveTest,
                        FooterShowsInIncognito) {
-  Browser* incognito_browser = CreateManagedIncognitoBrowser();
+  BrowserWindowInterface* incognito_browser = CreateManagedIncognitoBrowser();
   RunTestSequenceInContext(
       // Run the following steps with the incognito browser as the default
       // context.
@@ -494,7 +498,7 @@ IN_PROC_BROWSER_TEST_F(FooterEnterpriseInteractiveTest,
       // Open 1P WebUI NTP and wait for footer to show.
       OpenNewTabAndWaitForFooter(chrome::ChromeUINewTabPageURLAsGURL()),
       // Ensure customize chrome button only shows in footer and not on NTP.
-      Steps(EnsurePresent(kFooterLocalElementId, kFooterCustomizeChromeButton),
+      Steps(EnsurePresent(kFooterLocalElementId, FooterCustomizeChromeButton()),
             EnsureNotPresent(kNewTabElementId, kNtpCustomizeChromeButton)),
       Do([=]() {
         // Disable management notice to hide footer.
@@ -514,7 +518,7 @@ IN_PROC_BROWSER_TEST_F(FooterEnterpriseInteractiveTest,
       OpenNewTabAndWaitForFooter(
           GURL(chrome::kChromeUINewTabPageThirdPartyURL)),
       // Ensure customize chrome button hides in footer.
-      EnsureNotPresent(kFooterLocalElementId, kFooterCustomizeChromeButton));
+      EnsureNotPresent(kFooterLocalElementId, FooterCustomizeChromeButton()));
 }
 
 IN_PROC_BROWSER_TEST_F(FooterEnterpriseInteractiveTest,
@@ -600,7 +604,7 @@ IN_PROC_BROWSER_TEST_P(FooterSideBySideInteractiveTest, SplitNewTabPage) {
       // Navigate to the first tab and create a new split tab, so that the tab
       // picker screen is showing on the other tab in the split.
       Do([=, this]() {
-        browser()->tab_strip_model()->ExecuteContextMenuCommand(
+        browser()->GetTabStripModel()->ExecuteContextMenuCommand(
             0, TabStripModel::ContextMenuCommand::CommandAddToSplit);
       }),
       WaitForShow(kNtpFooterViewElementId, true),

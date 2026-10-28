@@ -33,8 +33,6 @@
 NavigationPredictorPreconnectClient::NavigationPredictorPreconnectClient(
     content::WebContents* web_contents)
     : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<NavigationPredictorPreconnectClient>(
-          *web_contents),
       browser_context_(web_contents->GetBrowserContext()),
       current_visibility_(web_contents->GetVisibility()) {}
 
@@ -122,7 +120,7 @@ void NavigationPredictorPreconnectClient::OnVisibilityChanged(
   auto* search_engine_preconnector = GetSearchEnginePreconnector();
   if (search_engine_preconnector) {
     search_engine_preconnector->OnWebContentsVisibilityChanged(
-        web_contents(), current_visibility_ == content::Visibility::VISIBLE);
+        web_contents(), visibility == content::Visibility::VISIBLE);
   }
 
   // Check for same state.
@@ -199,7 +197,7 @@ void NavigationPredictorPreconnectClient::MaybePreconnectNow(
   auto* loading_predictor = predictors::LoadingPredictorFactory::GetForProfile(
       Profile::FromBrowserContext(browser_context_));
   GURL preconnect_url_serialized(preconnect_origin.Serialize());
-  DCHECK(preconnect_url_serialized.is_valid());
+  CHECK(preconnect_url_serialized.is_valid(), base::NotFatalUntil::M161);
 
   if (!loading_predictor)
     return;
@@ -264,5 +262,3 @@ bool NavigationPredictorPreconnectClient::
 std::optional<int>
     NavigationPredictorPreconnectClient::preconnect_interval_for_testing_ =
         std::nullopt;
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(NavigationPredictorPreconnectClient);

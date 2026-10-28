@@ -28,6 +28,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.robolectric.annotation.Config;
 
+import org.chromium.base.Token;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -200,10 +201,12 @@ public class MultiTabReorderStrategyTest extends ReorderStrategyTestBase {
         verify(mModel).setIndex(eq(2), anyInt());
 
         // Verify the ungrouped tab is merged into the primary tab's group.
-        Tab expectedPrimaryTab = mModel.getTabById(mGroupedTab2.getTabId());
         verify(mModel)
-                .mergeListOfTabsToGroup(
-                        mTabListCaptor.capture(), eq(expectedPrimaryTab), anyInt(), anyInt());
+                .mergeListOfTabsToExistingGroup(
+                        mTabListCaptor.capture(),
+                        eq(GROUP_ID1),
+                        /* indexInGroup= */ eq(1),
+                        eq(TabGroupMergeNotificationType.DONT_NOTIFY));
         assertEquals("Should merge 2 tabs.", 2, mTabListCaptor.getValue().size());
 
         // Verify no reorder operations took place.
@@ -218,15 +221,15 @@ public class MultiTabReorderStrategyTest extends ReorderStrategyTestBase {
     @Test
     @SuppressWarnings("DirectInvocationOnMock")
     public void testStartReorder_ungroupAndGather_ungroupedPrimaryTab() {
-        // Select a grouped tab and an ungrouped tab
-        selectTabs(mGroupedTab1, mUngroupedTab2);
+        // Select an ungrouped tab, a grouped tab, and a later ungrouped primary tab.
+        selectTabs(mUngroupedTab1, mGroupedTab1, mUngroupedTab2);
 
-        // Start reorder on the grouped tab
+        // Start reorder on the later ungrouped tab.
         startReorder(mUngroupedTab2);
 
         verify(mModel).setIndex(eq(4), anyInt());
 
-        // Verify ungroup is called for the selected tabs
+        // Verify ungroup is called only for the grouped tab.
         verify(mModel.getTabUngrouper())
                 .ungroupTabs(mTabListCaptor.capture(), anyBoolean(), anyBoolean(), any());
         assertEquals("Should ungroup 1 tabs.", 1, mTabListCaptor.getValue().size());
@@ -235,9 +238,12 @@ public class MultiTabReorderStrategyTest extends ReorderStrategyTestBase {
                 mGroupedTab1.getTabId(),
                 mTabListCaptor.getValue().get(0).getId());
 
-        // Verify tabs are gathered. After ungrouping, mGroupedTab1 (model index 1) should move
-        // next to mUngroupedTab2 (model index 4), so to index 4.
-        verify(mModel).moveTab(mUngroupedTab2.getTabId(), 4);
+        // Verify tabs before the primary tab are gathered right-to-left adjacent to mUngroupedTab2
+        // (model index 4): mGroupedTab1 (index 1) moves to index 3, then mUngroupedTab1 (index 0)
+        // moves to index 2, and the primary tab itself is not moved.
+        verify(mModel).moveTab(mGroupedTab1.getTabId(), 3);
+        verify(mModel).moveTab(mUngroupedTab1.getTabId(), 2);
+        verify(mModel, never()).moveTab(eq(mUngroupedTab2.getTabId()), anyInt());
     }
 
     @Test
@@ -324,10 +330,10 @@ public class MultiTabReorderStrategyTest extends ReorderStrategyTestBase {
         drag(DRAG_INTO_GROUP_SUCCESS);
 
         verify(mModel)
-                .mergeListOfTabsToGroup(
+                .mergeListOfTabsToExistingGroup(
                         anyList(),
-                        any(Tab.class),
-                        eq(0),
+                        eq(GROUP_ID1),
+                        /* indexInGroup= */ eq(0),
                         eq(TabGroupMergeNotificationType.DONT_NOTIFY));
         verify(mAnimationHost, times(2)).startAnimations(anyList(), isNull());
     }
@@ -572,7 +578,10 @@ public class MultiTabReorderStrategyTest extends ReorderStrategyTestBase {
             verify(mModel)
                     .moveTab(eq(((StripLayoutTab) viewToMove).getTabId()), eq(expectedModelIndex));
         } else if (viewToMove instanceof StripLayoutGroupTitle) {
-            verify(mModel).moveRelatedTabs(anyInt(), eq(expectedModelIndex));
+            verify(mModel)
+                    .moveGroupToIndex(
+                            eq(((StripLayoutGroupTitle) viewToMove).getTabGroupId()),
+                            eq(expectedModelIndex));
         }
     }
 
@@ -603,25 +612,26 @@ public class MultiTabReorderStrategyTest extends ReorderStrategyTestBase {
                                 for (StripLayoutTab tab : mSelectedTabs) {
                                     tab.setIdealX(tab.getIdealX() + deltaX);
                                 }
-                                int id = invocation.getArgument(0);
+                                Token tabGroupId = invocation.getArgument(0);
+                                int id = mModel.getTabsInGroup(tabGroupId).get(0).getId();
                                 int index =
                                         Math.min(mStripTabs.length - 1, invocation.getArgument(1));
                                 mStripTabs[index] = StripLayoutUtils.findTabById(mStripTabs, id);
                                 return null;
                             })
                     .when(mModel)
-                    .moveRelatedTabs(anyInt(), anyInt());
+                    .moveGroupToIndex(any(), anyInt());
         }
     }
 
     // Verification Helpers
     private void verifyBlockMovedPastGroup() {
-        verify(mModel, times(1)).moveRelatedTabs(anyInt(), anyInt());
+        verify(mModel, times(1)).moveGroupToIndex(any(), anyInt());
     }
 
     @SuppressWarnings("DirectInvocationOnMock")
     private void verifyFailedDrag(float expectedOffset) {
-        verify(mModel, never()).moveRelatedTabs(anyInt(), anyInt());
+        verify(mModel, never()).moveGroupToIndex(any(), anyInt());
         verify(mModel.getTabUngrouper(), times(1))
                 .ungroupTabs(anyList(), anyBoolean(), anyBoolean(), any());
 

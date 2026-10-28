@@ -9,6 +9,7 @@
 #include "third_party/blink/renderer/core/css/parser/css_parser_context.h"
 #include "third_party/blink/renderer/core/css/style_rule.h"
 #include "third_party/blink/renderer/core/css/style_sheet_contents.h"
+#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/execution_context/security_context.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
@@ -88,6 +89,73 @@ TEST_F(CSSPropertyValueSetTest, ConflictingLonghandAndShorthand) {
       "offset-rotate: reverse 2turn; offset-anchor: auto; "
       "offset-path: initial;",
       rule->Properties().AsText());
+}
+
+TEST_F(CSSPropertyValueSetTest, TimelineShorthandWithMismatchedListLengths) {
+  auto* properties =
+      MakeGarbageCollected<MutableCSSPropertyValueSet>(kHTMLStandardMode);
+
+  auto set_property = [&](CSSPropertyID property, const String& value) {
+    return properties->ParseAndSetProperty(property, value, /*important=*/false,
+                                           SecureContextMode::kInsecureContext,
+                                           /*context_style_sheet=*/nullptr);
+  };
+
+  ASSERT_NE(MutableCSSPropertyValueSet::kParseError,
+            set_property(CSSPropertyID::kScrollTimelineName, "--a, --b, --c"));
+  ASSERT_NE(MutableCSSPropertyValueSet::kParseError,
+            set_property(CSSPropertyID::kScrollTimelineAxis, "inline, inline"));
+  EXPECT_EQ("", properties->GetPropertyValue(CSSPropertyID::kScrollTimeline));
+
+  ASSERT_NE(MutableCSSPropertyValueSet::kParseError,
+            set_property(CSSPropertyID::kScrollTimelineName, "--a, --b"));
+  ASSERT_NE(MutableCSSPropertyValueSet::kParseError,
+            set_property(CSSPropertyID::kScrollTimelineAxis,
+                         "inline, inline, inline"));
+  EXPECT_EQ("", properties->GetPropertyValue(CSSPropertyID::kScrollTimeline));
+
+  ASSERT_NE(MutableCSSPropertyValueSet::kParseError,
+            set_property(CSSPropertyID::kViewTimelineName, "--a, --b"));
+  ASSERT_NE(MutableCSSPropertyValueSet::kParseError,
+            set_property(CSSPropertyID::kViewTimelineAxis, "inline, inline"));
+  ASSERT_NE(
+      MutableCSSPropertyValueSet::kParseError,
+      set_property(CSSPropertyID::kViewTimelineInset, "auto, auto, auto"));
+  EXPECT_EQ("", properties->GetPropertyValue(CSSPropertyID::kViewTimeline));
+}
+
+TEST_F(CSSPropertyValueSetTest, TimelineShorthandWithInitialLonghands) {
+  auto* properties =
+      MakeGarbageCollected<MutableCSSPropertyValueSet>(kHTMLStandardMode);
+
+  auto set_property = [&](CSSPropertyID property, const String& value) {
+    return properties->ParseAndSetProperty(property, value, /*important=*/false,
+                                           SecureContextMode::kInsecureContext,
+                                           /*context_style_sheet=*/nullptr);
+  };
+
+  ASSERT_NE(MutableCSSPropertyValueSet::kParseError,
+            set_property(CSSPropertyID::kScrollTimelineName, "--a, --b"));
+  ASSERT_NE(MutableCSSPropertyValueSet::kParseError,
+            set_property(CSSPropertyID::kScrollTimelineAxis, "block"));
+  EXPECT_EQ("--a, --b",
+            properties->GetPropertyValue(CSSPropertyID::kScrollTimeline));
+
+  ASSERT_NE(MutableCSSPropertyValueSet::kParseError,
+            set_property(CSSPropertyID::kViewTimelineName, "--a, --b"));
+  ASSERT_NE(MutableCSSPropertyValueSet::kParseError,
+            set_property(CSSPropertyID::kViewTimelineAxis, "block"));
+  ASSERT_NE(MutableCSSPropertyValueSet::kParseError,
+            set_property(CSSPropertyID::kViewTimelineInset, "1px, 2px"));
+  EXPECT_EQ("--a 1px, --b 2px",
+            properties->GetPropertyValue(CSSPropertyID::kViewTimeline));
+
+  ASSERT_NE(MutableCSSPropertyValueSet::kParseError,
+            set_property(CSSPropertyID::kViewTimelineAxis, "inline, inline"));
+  ASSERT_NE(MutableCSSPropertyValueSet::kParseError,
+            set_property(CSSPropertyID::kViewTimelineInset, "auto"));
+  EXPECT_EQ("--a inline, --b inline",
+            properties->GetPropertyValue(CSSPropertyID::kViewTimeline));
 }
 
 TEST_F(CSSPropertyValueSetTest, SetPropertyReturnValue) {
@@ -226,6 +294,85 @@ TEST_F(CSSPropertyValueSetTest, RemoveEquivalentPropertiesWithAll) {
   // The HasAll bit must be cleared, not just the entry in the property vector.
   EXPECT_FALSE(set0.HasAllProperty());
   EXPECT_EQ("10px", set0.GetPropertyValue(CSSPropertyID::kWidth));
+}
+
+// https://crbug.com/483903178
+TEST_F(CSSPropertyValueSetTest,
+       RemoveEquivalentPropertiesPreservingShorthands) {
+  SetBodyInnerHTML(R"HTML(<div id="target" style="margin: 10px"></div>)HTML");
+  auto* target_style = GetElementById("target")->style();
+
+  auto* properties =
+      MakeGarbageCollected<MutableCSSPropertyValueSet>(kHTMLStandardMode);
+  properties->ParseAndSetProperty(CSSPropertyID::kMargin, "10px",
+                                  /*important=*/false,
+                                  SecureContextMode::kInsecureContext,
+                                  /*context_style_sheet=*/nullptr);
+  properties->ParseAndSetProperty(CSSPropertyID::kWidth, "20px",
+                                  /*important=*/false,
+                                  SecureContextMode::kInsecureContext,
+                                  /*context_style_sheet=*/nullptr);
+
+  // 'margin' was set via the shorthand and serializes the same as target's,
+  // so all four longhands should be removed; 'width' has no equivalent on
+  // target and should be kept.
+  properties->RemoveEquivalentPropertiesPreservingShorthands(target_style);
+
+  EXPECT_EQ(1u, properties->PropertyCount());
+  EXPECT_FALSE(properties->HasProperty(CSSPropertyID::kMarginTop));
+  EXPECT_EQ("20px", properties->GetPropertyValue(CSSPropertyID::kWidth));
+}
+
+TEST_F(CSSPropertyValueSetTest,
+       RemoveEquivalentPropertiesPreservingShorthandsCustomProperty) {
+  SetBodyInnerHTML(R"HTML(<div id="target" style="--x: foo"></div>)HTML");
+  auto* target_style = GetElementById("target")->style();
+
+  auto* properties =
+      MakeGarbageCollected<MutableCSSPropertyValueSet>(kHTMLStandardMode);
+  properties->ParseAndSetCustomProperty(
+      AtomicString("--x"), "foo", /*important=*/false,
+      SecureContextMode::kInsecureContext, /*context_style_sheet=*/nullptr,
+      /*is_animation_tainted=*/false);
+  properties->ParseAndSetCustomProperty(
+      AtomicString("--y"), "foo", /*important=*/false,
+      SecureContextMode::kInsecureContext, /*context_style_sheet=*/nullptr,
+      /*is_animation_tainted=*/false);
+
+  properties->RemoveEquivalentPropertiesPreservingShorthands(target_style);
+
+  EXPECT_EQ(2u, properties->PropertyCount());
+  EXPECT_EQ("foo", properties->GetPropertyValue(AtomicString("--x")));
+  EXPECT_EQ("foo", properties->GetPropertyValue(AtomicString("--y")));
+}
+
+TEST_F(CSSPropertyValueSetTest,
+       RemoveEquivalentPropertiesPreservingShorthandsWithAll) {
+  SetBodyInnerHTML(R"HTML(<div id="target" style="all: revert"></div>)HTML");
+  auto* target_style = GetElementById("target")->style();
+
+  auto* properties =
+      MakeGarbageCollected<MutableCSSPropertyValueSet>(kHTMLStandardMode);
+  properties->ParseAndSetProperty(CSSPropertyID::kAll, "revert",
+                                  /*important=*/false,
+                                  SecureContextMode::kInsecureContext,
+                                  /*context_style_sheet=*/nullptr);
+  properties->ParseAndSetProperty(CSSPropertyID::kWidth, "20px",
+                                  /*important=*/false,
+                                  SecureContextMode::kInsecureContext,
+                                  /*context_style_sheet=*/nullptr);
+  properties->ParseAndSetCustomProperty(
+      AtomicString("--x"), "foo", /*important=*/false,
+      SecureContextMode::kInsecureContext, /*context_style_sheet=*/nullptr,
+      /*is_animation_tainted=*/false);
+
+  ASSERT_TRUE(properties->HasAllProperty());
+  properties->RemoveEquivalentPropertiesPreservingShorthands(target_style);
+
+  EXPECT_FALSE(properties->HasAllProperty());
+  EXPECT_FALSE(properties->HasProperty(CSSPropertyID::kAll));
+  EXPECT_FALSE(properties->HasProperty(CSSPropertyID::kWidth));
+  EXPECT_EQ("foo", properties->GetPropertyValue(AtomicString("--x")));
 }
 
 }  // namespace blink

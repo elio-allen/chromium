@@ -16,6 +16,7 @@
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/read_anything/read_anything_immersive_overlay_view.h"
 #include "chrome/browser/ui/sad_tab_helper.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/contents_container_view.h"
@@ -28,6 +29,7 @@
 #include "chrome/browser/ui/views/frame/multi_contents_view_delegate.h"
 #include "chrome/browser/ui/views/frame/multi_contents_view_drop_target_controller.h"
 #include "chrome/browser/ui/views/frame/multi_contents_view_mini_toolbar.h"
+#include "chrome/browser/ui/views/frame/safe_invoke/safe_invoke.h"
 #include "chrome/browser/ui/views/frame/scrim_view.h"
 #include "chrome/browser/ui/views/frame/themed_background.h"
 #include "chrome/browser/ui/views/new_tab_footer/footer_web_view.h"
@@ -36,6 +38,7 @@
 #include "chrome/common/webui_url_constants.h"
 #include "components/prefs/pref_service.h"
 #include "components/split_tabs/split_tab_visual_data.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/url_constants.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -93,7 +96,7 @@ MultiContentsView::MultiContentsView(
   drop_target_controller_ =
       std::make_unique<MultiContentsViewDropTargetController>(
           *drop_target_view_, *delegate_, g_browser_process->local_state(),
-          browser_view_->browser()->tab_strip_model());
+          browser_view_->browser()->GetTabStripModel());
 
   contents_separators_.top_separator =
       AddChildView(ContentsSeparator::CreateLayerBasedContentsSeparator());
@@ -269,11 +272,11 @@ void MultiContentsView::SetWebContentsAtIndex(
     UpdateContentsBorderAndOverlay();
   }
 
-  if (web_contents) {
-    if (auto* sad_tab_helper = SadTabHelper::FromWebContents(web_contents)) {
-      sad_tab_helper->ReinstallInWebView();
-    }
-  }
+  SafeInvoke(web_contents)
+      .Then(Overload<content::WebContents*>(
+          &tabs::TabInterface::MaybeGetFromContents))
+      .Then(&SadTabHelper::From)
+      .Then(&SadTabHelper::ReinstallInWebView);
 }
 
 void MultiContentsView::ShowSplitView(
@@ -305,11 +308,11 @@ void MultiContentsView::CloseSplitView() {
   resize_area_->SetVisible(false);
   UpdateContentsBorderAndOverlay();
 
-  if (auto* active_contents = GetActiveContentsView()->web_contents()) {
-    if (auto* sad_tab_helper = SadTabHelper::FromWebContents(active_contents)) {
-      sad_tab_helper->ReinstallInWebView();
-    }
-  }
+  SafeInvoke(GetActiveContentsView()->web_contents())
+      .Then(Overload<content::WebContents*>(
+          &tabs::TabInterface::MaybeGetFromContents))
+      .Then(&SadTabHelper::From)
+      .Then(&SadTabHelper::ReinstallInWebView);
 }
 
 void MultiContentsView::SwapContentsInSplitView() {
@@ -381,10 +384,11 @@ void MultiContentsView::SetTargetContentBounds(
   InvalidateLayout(/*avoid_propagate_during_layout=*/true);
 }
 
-void MultiContentsView::SetIsAnimatingContent(bool is_animating) {
+void MultiContentsView::SetIsAnimatingContent(bool is_animating,
+                                              bool is_origin_changing) {
   for (auto& contents_container_view : contents_container_views_) {
     contents_container_view->contents_view()->SetIsAnimatingBounds(
-        is_animating);
+        is_animating, is_origin_changing);
   }
 }
 
@@ -617,7 +621,7 @@ void MultiContentsView::BeforeApplyLayout(const views::ProposedLayout& layout) {
 
 gfx::Rect MultiContentsView::CalculateDropTargetLayout(
     const gfx::Rect& available_space,
-    std::vector<views::ChildLayout>& child_layouts) const {
+    views::ProposedLayout::ChildLayoutList& child_layouts) const {
   CHECK(IsDragAndDropEnabled());
   if (!drop_target_view_->GetVisible()) {
     child_layouts.emplace_back(drop_target_view_.get(), false, gfx::Rect());
@@ -653,7 +657,7 @@ gfx::Rect MultiContentsView::CalculateDropTargetLayout(
 
 gfx::Rect MultiContentsView::CalculateSeparatorLayouts(
     const gfx::Rect& available_space,
-    std::vector<views::ChildLayout>& child_layouts) const {
+    views::ProposedLayout::ChildLayoutList& child_layouts) const {
   if (IsInSplitView()) {
     child_layouts.emplace_back(contents_separators_.top_separator.get(), false,
                                gfx::Rect());

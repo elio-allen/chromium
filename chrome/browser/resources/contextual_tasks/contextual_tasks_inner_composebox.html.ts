@@ -19,8 +19,6 @@ export function getHtml(this: ContextualTasksInnerComposeboxElement) {
         .transcript="${this.transcript}"
         .receivedSpeech="${this.receivedSpeech}"
         .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}"
-        .entrypointName="${this.entrypointName}"
-        .isZeroState="${this.isZeroState}"
         .darkThemeColorsEnabled="${true}"
         .showingOnlyCarouselOnTopOfInput="${this.showFileCarousel &&
             !this.inToolMode && this.carouselOnTop_ &&
@@ -89,7 +87,8 @@ export function getHtml(this: ContextualTasksInnerComposeboxElement) {
             .cancelButtonTitle="${this.computeCancelButtonTitle()}"
             @input-input="${this.onInputInput}"
             @input-focusin="${this.onInputFocusin}"
-            @cancel-click="${this.onCancelClick}">
+            @cancel-click="${this.onCancelClick}"
+            @clear-smart-compose="${this.onClearSmartCompose}">
         </cr-composebox-input>
         <cr-composebox-file-inputs id="fileInputs"
             @file-change="${this.onFileChange}"
@@ -119,7 +118,7 @@ export function getHtml(this: ContextualTasksInnerComposeboxElement) {
               .maxSuggestions="${this.maxSuggestions}"
               .toolMode="${this.inputState?.activeTool || ToolMode.kUnspecified}"
               .lastQueriedInput="${this.lastQueriedInput}"
-              ?hidden="${!this.showDropdown || !this.dropdownNeeded}"
+              ?hidden="${this.shouldHideDropdown()}"
               @selected-match-index-changed="${this.onSelectedMatchIndexChanged}"
               @match-focusin="${this.onMatchFocusin}"
               @match-click="${this.onMatchClick}">

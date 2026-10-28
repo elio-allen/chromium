@@ -19,11 +19,12 @@
 #include "base/containers/span.h"
 #include "base/time/time.h"
 #include "build/buildflag.h"
-#include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_model/addresses/address.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component.h"
-#include "components/autofill/core/browser/data_model/addresses/contact_info.h"
+#include "components/autofill/core/browser/data_model/addresses/company_info.h"
+#include "components/autofill/core/browser/data_model/addresses/email_info.h"
+#include "components/autofill/core/browser/data_model/addresses/name_info.h"
 #include "components/autofill/core/browser/data_model/addresses/phone_number.h"
 #include "components/autofill/core/browser/data_model/form_group.h"
 #include "components/autofill/core/browser/data_model/usage_history_information.h"
@@ -93,6 +94,19 @@ class AutofillProfile : public FormGroup {
     // are synced via syncable (priority) prefs in `AccountNameEmailStore`.
     kAccountNameEmail = 4,
     kMaxValue = kAccountNameEmail,
+  };
+
+  // Result of merging another profile into this profile via `MergeDataFrom()`.
+  enum class ProfileMergeResult {
+    // The merge failed, either because profiles are not mergeable or
+    // because merging one of the sub-components failed. The target profile is
+    // unchanged.
+    kMergeFailed = 0,
+    // The merge succeeded and the target profile was modified.
+    kMergeSucceededWithModification = 1,
+    // The merge succeeded and the target profile was not modified.
+    kMergeSucceededWithoutModification = 2,
+    kMaxValue = kMergeSucceededWithoutModification,
   };
 
   // These fields are, by default, the only candidates for being added to the
@@ -171,22 +185,16 @@ class AutofillProfile : public FormGroup {
   void GetMatchingTypes(std::u16string_view text,
                         std::string_view app_locale,
                         FieldTypeSet* matching_types) const override;
-  using FormGroup::GetInfo;
-  std::u16string GetInfo(const AutofillType& type,
+  std::u16string GetInfo(FieldType type,
                          std::string_view app_locale) const override;
   std::u16string GetRawInfo(FieldType type) const override;
   void SetRawInfoWithVerificationStatus(FieldType type,
                                         std::u16string_view value,
                                         VerificationStatus status) override;
-  // TODO(crbug.com/40264633): Change `AutofillType` into `FieldType`.
-  bool SetInfoWithVerificationStatus(const AutofillType& type,
-                                     std::u16string_view value,
-                                     std::string_view app_locale,
-                                     VerificationStatus status) override;
   bool SetInfoWithVerificationStatus(FieldType type,
                                      std::u16string_view value,
                                      std::string_view app_locale,
-                                     VerificationStatus status);
+                                     VerificationStatus status) override;
   VerificationStatus GetVerificationStatus(const FieldType type) const override;
   FieldTypeSet GetSupportedTypes() const override;
 
@@ -258,11 +266,13 @@ class AutofillProfile : public FormGroup {
   // Expects that the profiles have the same guid.
   void OverwriteDataFromForLegacySync(const AutofillProfile& profile);
 
-  // Merges the data from `this` profile and the given `profile` into `this`
-  // profile. Expects that `this` and `profile` have already been deemed
-  // mergeable by an AutofillProfileComparator.
-  bool MergeDataFrom(const AutofillProfile& profile,
-                     std::string_view app_locale);
+  // Merges the data from `profile` into `this` profile if they are mergeable.
+  // Returns a `ProfileMergeResult` indicating whether the merge succeeded and
+  // whether `this` was modified. If mergeable, modifies `this` in-place.
+  // Merging two `kAccountNameEmail` profiles will never happen, since there can
+  // be at most one of them at any given time.
+  [[nodiscard]] ProfileMergeResult MergeDataFrom(const AutofillProfile& profile,
+                                                 std::string_view app_locale);
 
   // Creates a differentiating label for each of the `profiles`.
   // Labels consist of the minimal differentiating combination of:
@@ -374,13 +384,6 @@ class AutofillProfile : public FormGroup {
 
   // Clears all specified `fields` from the profile.
   void ClearFields(const FieldTypeSet& fields);
-
-  // If a regular name is written in phonetic spelling, the contents
-  // of the regular name tree should be moved to the phonetic name tree and the
-  // regular name tree should be cleared. The incorrect assignment happened in
-  // the past when we did not have proper support for phonetic names.
-  // TODO(crbug.com/359768803): Remove this method once the migration is done.
-  void MigrateRegularNameToPhoneticName();
 
   const ProfileTokenQuality& token_quality() const { return token_quality_; }
   ProfileTokenQuality& token_quality() { return token_quality_; }

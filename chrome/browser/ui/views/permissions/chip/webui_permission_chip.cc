@@ -4,10 +4,13 @@
 
 #include "chrome/browser/ui/views/permissions/chip/webui_permission_chip.h"
 
-#include "chrome/browser/ui/browser_window.h"
+#include "base/logging.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/views/location_bar/webui_location_bar.h"
+#include "chrome/browser/ui/views/permissions/chip/permission_chip_view.h"
+#include "ui/base/base_window.h"
+#include "ui/base/interaction/element_tracker.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/views/widget/widget.h"
 
@@ -74,8 +77,11 @@ toolbar_ui_api::mojom::PermissionAction GetMojoPermissionAction(
 
 }  // namespace
 
-WebUIPermissionChip::WebUIPermissionChip(LocationBar* location_bar)
-    : location_bar_(location_bar) {}
+WebUIPermissionChip::WebUIPermissionChip(LocationBar* location_bar,
+                                         ui::ElementIdentifier element_id)
+    : location_bar_(location_bar), element_id_(element_id) {
+  CHECK(element_id_);
+}
 
 WebUIPermissionChip::~WebUIPermissionChip() = default;
 
@@ -83,13 +89,21 @@ void WebUIPermissionChip::SetVisible(bool visible) {
   if (is_visible_ == visible) {
     return;
   }
+  ++state_token_;
   is_visible_ = visible;
+  if (!is_visible_) {
+    RunPendingAnchorCallback();
+  }
   NotifyVisibilityChanged();
   UpdateState();
 }
 
 bool WebUIPermissionChip::GetVisible() const {
   return is_visible_;
+}
+
+std::u16string WebUIPermissionChip::GetTooltipText() const {
+  return tooltip_;
 }
 
 void WebUIPermissionChip::SetChipIcon(const gfx::VectorIcon& icon) {
@@ -144,9 +158,16 @@ void WebUIPermissionChip::AnimateCollapse(base::TimeDelta duration) {
   if (should_collapse_) {
     return;
   }
-  is_animating_ = true;
   should_collapse_ = true;
   UpdateState();
+  // CSS transitions and Web Animations with a 0s duration often do not fire
+  // transitionend or animationend events, so complete the collapse
+  // synchronously.
+  if (duration.is_zero()) {
+    FinishAnimation(AnimationState::kCollapsed);
+    return;
+  }
+  is_animating_ = true;
 }
 
 void WebUIPermissionChip::AnimateExpand(base::TimeDelta duration) {
@@ -157,10 +178,16 @@ void WebUIPermissionChip::AnimateExpand(base::TimeDelta duration) {
   if (!should_collapse_) {
     return;
   }
-  is_animating_ = true;
   is_fully_collapsed_ = false;
   should_collapse_ = false;
   UpdateState();
+  // CSS transitions and Web Animations with a 0s duration often do not fire
+  // transitionend or animationend events, so complete the expand synchronously.
+  if (duration.is_zero()) {
+    FinishAnimation(AnimationState::kExpanded);
+    return;
+  }
+  is_animating_ = true;
 }
 
 void WebUIPermissionChip::AnimateToFit(base::TimeDelta duration) {
@@ -168,6 +195,7 @@ void WebUIPermissionChip::AnimateToFit(base::TimeDelta duration) {
 }
 
 void WebUIPermissionChip::ResetAnimation(AnimationState state) {
+  ++state_token_;
   bool was_animating = is_animating_;
   is_animating_ = false;
 
@@ -240,22 +268,33 @@ bool WebUIPermissionChip::IsMouseHovered() const {
   return is_mouse_hovered_;
 }
 
-void WebUIPermissionChip::SetPressedCallback(base::RepeatingClosure callback) {
+void WebUIPermissionChip::SetPressedCallback(
+    base::RepeatingCallback<void(bool)> callback) {
   pressed_callback_ = std::move(callback);
 }
 
 views::BubbleAnchor WebUIPermissionChip::GetAnchor() {
-  // The WebUI element tracker registration happens asynchronously over Mojo.
-  // If a permission is requested during browser startup, we might attempt to
-  // anchor the bubble before the WebUI has finished registering the tracked
-  // element, causing GetAnchorOrNull() to return nullptr. We fallback to the
-  // main window contents view to prevent a crash during this sub-millisecond
-  // race condition.
+  // 1. Anchor to the element registered for `element_id_` in the current
+  // context. It may not be registered yet (WebUI registration is async), in
+  // which case fall back below.
+  if (ui::ElementContext context = location_bar_->GetElementContext()) {
+    if (ui::TrackedElement* element =
+            ui::ElementTracker::GetElementTracker()->GetFirstMatchingElement(
+                element_id_, context)) {
+      return views::BubbleAnchor(element);
+    }
+  }
+
+  // 2. The WebUI element tracker registration happens asynchronously over Mojo.
+  // If a permission is requested before the WebUI has finished registering the
+  // chip element, fallback to the location bar container to prevent a crash.
   if (ui::TrackedElement* element = location_bar_->GetAnchorOrNull()) {
     return views::BubbleAnchor(element);
   }
-  BrowserWindow* window =
-      BrowserWindow::FromBrowser(location_bar_->GetBrowser());
+
+  // 3. Fallback to the main window contents view if the location bar is also
+  // not yet tracked.
+  ui::BaseWindow* window = location_bar_->GetBrowser()->GetWindow();
   CHECK(window);
   views::Widget* widget =
       views::Widget::GetWidgetForNativeWindow(window->GetNativeWindow());
@@ -263,8 +302,85 @@ views::BubbleAnchor WebUIPermissionChip::GetAnchor() {
   return views::BubbleAnchor(widget->GetContentsView());
 }
 
+void WebUIPermissionChip::WaitForAnchor(base::OnceClosure callback) {
+  CHECK(!pending_anchor_callback_);
+  // Look for the element in the same context `GetAnchor()` uses.
+  const ui::ElementContext context = location_bar_->GetElementContext();
+
+  // 1. If the element is already tracked, run the callback immediately and let
+  // `GetAnchor()` pick the anchor.
+  if (context &&
+      ui::ElementTracker::GetElementTracker()->GetFirstMatchingElement(
+          element_id_, context)) {
+    std::move(callback).Run();
+    return;
+  }
+
+  // 2. Otherwise, subscribe to the ElementTracker and wait for the element to
+  // appear. The context may not be available yet (e.g. the WebUI hasn't
+  // finished loading), so listen in all contexts and check the context once
+  // the element is shown.
+  pending_anchor_callback_ = std::move(callback);
+  element_shown_subscription_ =
+      ui::ElementTracker::GetElementTracker()
+          ->AddElementShownInAnyContextCallback(
+              element_id_,
+              base::BindRepeating(&WebUIPermissionChip::OnAnchorElementShown,
+                                  weak_factory_.GetWeakPtr()));
+  anchor_fallback_timer_.Start(
+      FROM_HERE, kAnchorFallbackTimeout,
+      base::BindOnce(&WebUIPermissionChip::RunPendingAnchorCallback,
+                     weak_factory_.GetWeakPtr()));
+}
+
+void WebUIPermissionChip::OnAnchorElementShown(ui::TrackedElement* element) {
+  // Like `GetAnchor()`, only consider the element in the location bar's
+  // context, so that e.g. a chip with the same ID in another window doesn't
+  // count.
+  if (element->context() != location_bar_->GetElementContext()) {
+    return;
+  }
+  RunPendingAnchorCallback();
+}
+
+void WebUIPermissionChip::RunPendingAnchorCallback() {
+  element_shown_subscription_ = {};
+  anchor_fallback_timer_.Stop();
+  if (pending_anchor_callback_) {
+    std::move(pending_anchor_callback_).Run();
+  }
+}
+
 void WebUIPermissionChip::SetBubbleOwner(BubbleOwnerDelegate* owner) {
   bubble_owner_ = owner;
+}
+
+void WebUIPermissionChip::ExecuteForTesting() {
+  if (pressed_callback_) {
+    pressed_callback_.Run(/*is_pointer_interaction=*/false);
+  }
+}
+
+void WebUIPermissionChip::EndAnimationForTesting() {
+  FinishAnimation(should_collapse_ ? AnimationState::kCollapsed
+                                   : AnimationState::kExpanded);
+}
+
+void WebUIPermissionChip::FinishAnimation(AnimationState state) {
+  is_animating_ = false;
+  is_fully_collapsed_ = (state == AnimationState::kCollapsed);
+  if (state == AnimationState::kExpanded) {
+    // Do not announce the chip here. `ChipController` owns the decision of
+    // whether the chip should be announced: the announcement is suppressed
+    // when the prompt bubble starts open, because the bubble fires its own
+    // `ax::mojom::Event::kAlert`. Announcing unconditionally here would make
+    // screen readers speak the permission request twice. See
+    // `ChipController::ShowPermissionUi()` and
+    // `ChipController::AnnouncePermissionRequestForAccessibility()`.
+    observers_.Notify(&Observer::OnExpandAnimationEnded);
+  } else {
+    observers_.Notify(&Observer::OnCollapseAnimationEnded);
+  }
 }
 
 void WebUIPermissionChip::OnExpandAnimationEnded() {
@@ -278,10 +394,7 @@ void WebUIPermissionChip::OnExpandAnimationEnded() {
   if (should_collapse_) {
     return;
   }
-  is_animating_ = false;
-  is_fully_collapsed_ = false;
-  AnnounceAlert(message_);
-  observers_.Notify(&Observer::OnExpandAnimationEnded);
+  FinishAnimation(AnimationState::kExpanded);
 }
 
 void WebUIPermissionChip::OnCollapseAnimationEnded() {
@@ -295,19 +408,29 @@ void WebUIPermissionChip::OnCollapseAnimationEnded() {
   if (!should_collapse_) {
     return;
   }
-  is_animating_ = false;
-  is_fully_collapsed_ = true;
-  observers_.Notify(&Observer::OnCollapseAnimationEnded);
+  FinishAnimation(AnimationState::kCollapsed);
 }
 
 void WebUIPermissionChip::OnMousePressed() {
   observers_.Notify(&Observer::OnMousePressed);
 }
 
-void WebUIPermissionChip::OnClicked() {
-  if (pressed_callback_) {
-    pressed_callback_.Run();
+bool WebUIPermissionChip::OnClickedIfCurrent(bool is_pointer_interaction,
+                                             uint32_t state_token) {
+  // Drop stale clicks: the WebUI echoes the token it rendered with, so a
+  // mismatch means the chip's backing model changed while the click IPC was
+  // in flight (e.g. across a tab switch or same-tab navigation). See
+  // crbug.com/557279024.
+  if (state_token_ != state_token) {
+    VLOG(1) << "Dropped stale chip click for " << element_id_
+            << ": received token " << state_token << " != current token "
+            << state_token_;
+    return false;
   }
+  if (pressed_callback_) {
+    pressed_callback_.Run(is_pointer_interaction);
+  }
+  return true;
 }
 
 void WebUIPermissionChip::OnMouseEntered() {
@@ -343,6 +466,7 @@ toolbar_ui_api::mojom::PermissionChipStatePtr WebUIPermissionChip::GetState()
   // the frontend to begin its CSS transition.
   state->is_fully_collapsed = should_collapse_;
   state->accessibility_name = accessibility_name_;
+  state->state_token = state_token_;
   return state;
 }
 
@@ -353,4 +477,24 @@ void WebUIPermissionChip::NotifyVisibilityChanged() {
 
 void WebUIPermissionChip::UpdateState() {
   location_bar_->OnChanged();
+}
+
+std::u16string WebUIPermissionChip::GetTextForTesting() const {
+  return message_;
+}
+
+PermissionChipTheme WebUIPermissionChip::GetThemeForTesting() const {
+  return theme_;
+}
+
+bool WebUIPermissionChip::GetIsRequestForTesting() const {
+  switch (theme_) {
+    case PermissionChipTheme::kNormalVisibility:
+    case PermissionChipTheme::kLowVisibility:
+      return true;
+    case PermissionChipTheme::kBlockedActivityIndicator:
+    case PermissionChipTheme::kOnSystemBlockedActivityIndicator:
+    case PermissionChipTheme::kInUseActivityIndicator:
+      return false;
+  }
 }

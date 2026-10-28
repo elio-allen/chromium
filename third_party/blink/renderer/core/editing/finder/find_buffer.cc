@@ -35,6 +35,7 @@
 #include "third_party/blink/renderer/core/layout/layout_block_flow.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/unicode_utilities.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
 #include "third_party/blink/renderer/platform/wtf/text/unicode.h"
@@ -49,7 +50,7 @@ const LayoutBlockFlow* GetInlineFormattingContext(const Node& node) {
   // For <textarea>, ignore internal anonymous IFCs for backward compatibility.
   if (block_flow && block_flow->IsAnonymous() &&
       node.IsInUserAgentShadowRoot()) {
-    for (const LayoutBlock* parent = block_flow->ContainingBlock(); parent;
+    for (const LayoutBox* parent = block_flow->ContainingBlock(); parent;
          parent = parent->ContainingBlock()) {
       if (!parent->IsAnonymous() && parent->IsLayoutBlockFlow()) {
         return To<LayoutBlockFlow>(parent);
@@ -70,10 +71,29 @@ bool FindBuffer::ShouldIgnoreContents(const Node& node) {
   const auto* element = DynamicTo<HTMLElement>(node);
   if (!element)
     return false;
+
+  // Skip elements showing autofill-preview.
+  if (IsA<TextControlElement>(*element) &&
+      !To<TextControlElement>(*element).SuggestedValue().empty()) {
+    return true;
+  }
+  if (RuntimeEnabledFeatures::FindIgnoreSuggestionFixEnabled()) {
+    if (const auto* control = DynamicTo<HTMLFormControlElement>(element)) {
+      if (control->IsPreviewed()) {
+        return true;
+      }
+    }
+    // The autofill popover should not be showing, otherwise it would be
+    // possible for the page to figure out what the suggested option is.
+    if (const auto* select = DynamicTo<HTMLSelectElement>(element)) {
+      HTMLSelectElement::SelectAutofillPreviewElement* preview =
+          select->GetAutofillPreviewElement();
+      CHECK(!preview || !preview->popoverOpen());
+    }
+  }
+
   return (!element->ShouldSerializeEndTag() &&
           !IsA<HTMLInputElement>(*element)) ||
-         (IsA<TextControlElement>(*element) &&
-          !To<TextControlElement>(*element).SuggestedValue().empty()) ||
          IsA<HTMLIFrameElement>(*element) || IsA<HTMLImageElement>(*element) ||
          IsA<HTMLMeterElement>(*element) || IsA<HTMLObjectElement>(*element) ||
          IsA<HTMLProgressElement>(*element) ||
@@ -230,7 +250,9 @@ bool IsIfcWithRuby(const Node& block_ancestor) {
 
 // FindBuffer implementation.
 FindBuffer::FindBuffer(const EphemeralRangeInFlatTree& range,
-                       RubySupport ruby_support) {
+                       RubySupport ruby_support,
+                       FindOptions find_options)
+    : buffer_options_(find_options) {
   DCHECK(range.IsNotNull() && !range.IsCollapsed()) << range;
   CollectTextUntilBlockBoundary(range, ruby_support);
 }
@@ -300,7 +322,8 @@ EphemeralRangeInFlatTree FindBuffer::FindMatchInRange(
     FindBuffer buffer(
         EphemeralRangeInFlatTree(start_position, range.EndPosition()),
         options.IsRubySupported() ? RubySupport::kEnabledIfNecessary
-                                  : RubySupport::kDisabled);
+                                  : RubySupport::kDisabled,
+        options);
     FindResults match_results = buffer.FindMatches(search_text, options);
     if (!match_results.IsEmpty()) {
       if (!options.IsBackwards()) {
@@ -359,11 +382,14 @@ bool FindBuffer::IsInSameUninterruptedBlock(const Node& start_node,
 
   // It's possible that 2 nodes are in the same block flow but there is a node
   // in between that has a separate block flow. An example is an input field.
-  for (const Node* node = &start_node; !node->isSameNode(&end_node);
-       node = FlatTreeTraversal::Next(*node)) {
+  const Node* node = &start_node;
+  while (node && !node->isSameNode(&end_node)) {
     const ComputedStyle* style = ComputedStyle::NullifyEnsured(
         GetComputedStyleForElementOrLayoutObject(*node));
     if (ShouldIgnoreContents(*node) || !VisibleForStyle(style)) {
+      node = RuntimeEnabledFeatures::FindBufferSkipIgnoredSubtreesEnabled()
+                 ? FlatTreeTraversal::NextSkippingChildren(*node)
+                 : FlatTreeTraversal::Next(*node);
       continue;
     }
 
@@ -371,6 +397,7 @@ bool FindBuffer::IsInSameUninterruptedBlock(const Node& start_node,
         GetInlineFormattingContext(*node) != start_block_flow) {
       return false;
     }
+    node = FlatTreeTraversal::Next(*node);
   }
 
   return true;
@@ -405,6 +432,11 @@ Node* FindBuffer::BackwardVisibleTextNode(Node& start_node) {
 
 FindResults FindBuffer::FindMatches(const String& search_text,
                                     const blink::FindOptions options) {
+  // MatchAcrossIgnoredNodes is determined by buffer construction. Checked here
+  // to catch caller mismatches.
+  DCHECK_EQ(buffer_options_.MatchAcrossIgnoredNodes(),
+            options.MatchAcrossIgnoredNodes());
+
   // We should return empty result if it's impossible to get a match (buffer is
   // empty), or when something went wrong in layout, in which case
   // |offset_mapping_| is null.
@@ -476,8 +508,12 @@ void FindBuffer::CollectTextUntilBlockBoundary(
     return;
   }
 
+  bool skipped_laid_out_content = false;
   while (node && node != just_after_block) {
     if (ShouldIgnoreContents(*node)) {
+      if (node->GetLayoutObject()) {
+        skipped_laid_out_content = true;
+      }
       if (end_node && (end_node == node ||
                        FlatTreeTraversal::IsDescendantOf(*end_node, *node))) {
         // For setting |node_after_block| later.
@@ -486,7 +522,7 @@ void FindBuffer::CollectTextUntilBlockBoundary(
       }
       // Replace the node with char constants so we wouldn't encounter this node
       // or its descendants later.
-      ReplaceNodeWithCharConstants(*node, buffer_);
+      ReplaceNodeWithCharConstants(*node);
       node = FlatTreeTraversal::NextSkippingChildren(*node);
       continue;
     }
@@ -516,8 +552,21 @@ void FindBuffer::CollectTextUntilBlockBoundary(
       const auto* text_node = DynamicTo<Text>(node);
       if (text_node) {
         last_added_text_node = node;
-        AddTextToBuffer(*text_node, range, buffer_, &buffer_node_mappings_);
+
+        // Skipping nodes (eg. visibility:hidden) can leave a space on each side
+        // of the skipped node. Without the node in between, the double space
+        // prevents matching across skipped content, so drop one of them. Only
+        // ' ' is checked because other whitespace is already collapsed.
+        const bool ignore_leading_space =
+            RuntimeEnabledFeatures::FindBufferCollapseSkippedSpaceEnabled() &&
+            skipped_laid_out_content && style->ShouldCollapseWhiteSpaces() &&
+            !buffer_.empty() && buffer_.back() == ' ';
+        AddTextToBuffer(*text_node, range, ignore_leading_space, buffer_,
+                        &buffer_node_mappings_);
+        skipped_laid_out_content = false;
       }
+    } else if (node->GetLayoutObject()) {
+      skipped_laid_out_content = true;
     }
     if (node == end_node) {
       node = FlatTreeTraversal::Next(*node);
@@ -529,10 +578,14 @@ void FindBuffer::CollectTextUntilBlockBoundary(
   FoldQuoteMarksAndSoftHyphens(base::span(buffer_));
 }
 
-void FindBuffer::ReplaceNodeWithCharConstants(const Node& node,
-                                              Vector<UChar>& buffer) {
+void FindBuffer::ReplaceNodeWithCharConstants(const Node& node) {
   if (std::optional<UChar> ch = CharConstantForNode(node)) {
-    buffer.push_back(*ch);
+    if (RuntimeEnabledFeatures::FindBufferMatchAcrossIgnoredNodesEnabled() &&
+        *ch == uchar::kNonCharacter &&
+        buffer_options_.MatchAcrossIgnoredNodes()) {
+      return;
+    }
+    buffer_.push_back(*ch);
   }
 }
 
@@ -597,7 +650,8 @@ Vector<UChar> FindBuffer::SerializeLevelInGraph(
       for (const auto& text_or_char : chunk_list[index]->TextList()) {
         if (text_or_char.text) {
           wtf_size_t start = buffer.size();
-          AddTextToBuffer(*text_or_char.text, range, buffer, mappings);
+          AddTextToBuffer(*text_or_char.text, range,
+                          /*ignore_leading_space=*/false, buffer, mappings);
           for (wtf_size_t i = start; i < buffer.size(); ++i) {
             buffer[i] = kSkippedChar;
           }
@@ -609,7 +663,8 @@ Vector<UChar> FindBuffer::SerializeLevelInGraph(
     }
     for (const auto& text_or_char : chunk->TextList()) {
       if (text_or_char.text) {
-        AddTextToBuffer(*text_or_char.text, range, buffer, mappings);
+        AddTextToBuffer(*text_or_char.text, range,
+                        /*ignore_leading_space=*/false, buffer, mappings);
       } else {
         buffer.push_back(text_or_char.code_point);
       }
@@ -621,6 +676,7 @@ Vector<UChar> FindBuffer::SerializeLevelInGraph(
 
 void FindBuffer::AddTextToBuffer(const Text& text_node,
                                  const EphemeralRangeInFlatTree& range,
+                                 bool ignore_leading_space,
                                  Vector<UChar>& buffer,
                                  HeapVector<BufferNodeMapping>* mappings) {
   LayoutBlockFlow& block_flow = *OffsetMapping::GetInlineFormattingContextOf(
@@ -650,18 +706,23 @@ void FindBuffer::AddTextToBuffer(const Text& text_node,
   for (const OffsetMappingUnit& unit :
        offset_mapping_->GetMappingUnitsForDOMRange(
            EphemeralRange(node_start, node_end))) {
+    unsigned content_start = unit.TextContentStart();
+    if (ignore_leading_space && first_unit &&
+        content_start < unit.TextContentEnd() &&
+        mapped_text[content_start] == ' ') {
+      ++content_start;
+    }
     if (first_unit || last_unit_end != unit.TextContentStart()) {
       if (mappings) {
         // This is the first unit, or the units are not consecutive, so we need
         // to insert a new BufferNodeMapping.
-        mappings->push_back(BufferNodeMapping(
-            {offset_mapping_, buffer.size(), unit.TextContentStart()}));
+        mappings->push_back(
+            BufferNodeMapping({offset_mapping_, buffer.size(), content_start}));
       }
       first_unit = false;
     }
-    String text_for_unit =
-        mapped_text.substr(unit.TextContentStart(),
-                           unit.TextContentEnd() - unit.TextContentStart());
+    String text_for_unit = mapped_text.substr(
+        content_start, unit.TextContentEnd() - content_start);
     text_for_unit.Ensure16Bit();
     buffer.append_range(text_for_unit.Span16());
     last_unit_end = unit.TextContentEnd();

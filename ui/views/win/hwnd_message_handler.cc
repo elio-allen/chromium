@@ -29,7 +29,6 @@
 #include "base/strings/string_util_win.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/current_thread.h"
-#include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
@@ -536,6 +535,22 @@ void HWNDMessageHandler::CloseNow() {
   // switch which will have reactivated the browser window and closed us, so
   // we need to check to see if we're still a window before trying to destroy
   // ourself.
+  if (::IsWindow(hwnd())) {
+    if (auto& ax_platform = ui::AXPlatform::GetInstance();
+        ax_platform.HasServicedUiaClients() &&
+        ax_platform.IsUiaProviderEnabled() &&
+        base::FeatureList::IsEnabled(::features::kUiaDisconnectRootProviders)) {
+      // Clean up UIA resources associated with this window's fragment root
+      // before destroying the window; see
+      // https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcoreapi/nf-uiautomationcoreapi-uiadisconnectprovider.
+      auto ref = msg_handler_weak_factory_.GetWeakPtr();
+      ::UiaDisconnectProvider(ax_fragment_root_->GetProvider());
+      if (!ref) {
+        return;
+      }
+    }
+  }
+
   waiting_for_close_now_ = false;
   if (::IsWindow(hwnd())) {
     ::DestroyWindow(hwnd());
@@ -643,6 +658,7 @@ void HWNDMessageHandler::GetWindowPlacement(
 
 void HWNDMessageHandler::SetBounds(const gfx::Rect& bounds_in_pixels,
                                    bool force_size_changed) {
+  StopIgnoringPosChanges();
   background_fullscreen_hack_ = false;
   SetBoundsInternal(bounds_in_pixels, force_size_changed);
 }
@@ -716,6 +732,7 @@ void HWNDMessageHandler::SetDwmFrameExtension(DwmFrameState state) {
 }
 
 void HWNDMessageHandler::SetSize(const gfx::Size& size) {
+  StopIgnoringPosChanges();
   ::SetWindowPos(hwnd(), nullptr, 0, 0, size.width(), size.height(),
                  SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOMOVE);
 }
@@ -725,6 +742,7 @@ void HWNDMessageHandler::CenterWindow(const gfx::Size& size) {
   if (!::IsWindow(parent)) {
     parent = ::GetWindow(hwnd(), GW_OWNER);
   }
+  StopIgnoringPosChanges();
   gfx::CenterAndSizeWindow(parent, hwnd(), size);
 }
 
@@ -762,6 +780,7 @@ void HWNDMessageHandler::Show(ui::mojom::WindowShowState show_state,
       !pixel_restore_bounds.IsEmpty()) {
     WINDOWPLACEMENT placement = {0};
     placement.length = sizeof(WINDOWPLACEMENT);
+    ::GetWindowPlacement(hwnd(), &placement);
     placement.showCmd = SW_SHOWMAXIMIZED;
     placement.rcNormalPosition = pixel_restore_bounds.ToRECT();
     ::SetWindowPlacement(hwnd(), &placement);
@@ -849,10 +868,12 @@ void HWNDMessageHandler::Maximize() {
   if (IsFullscreen()) {
     SetFullscreen(false, display::kInvalidDisplayId);
   }
+  StopIgnoringPosChanges();
   ExecuteSystemMenuCommand(SC_MAXIMIZE);
 }
 
 void HWNDMessageHandler::Minimize() {
+  StopIgnoringPosChanges();
   ExecuteSystemMenuCommand(SC_MINIMIZE);
   delegate_->HandleNativeBlur(nullptr);
 }
@@ -861,6 +882,7 @@ void HWNDMessageHandler::Restore() {
   if (IsFullscreen()) {
     SetFullscreen(false, display::kInvalidDisplayId);
   } else {
+    StopIgnoringPosChanges();
     ExecuteSystemMenuCommand(SC_RESTORE);
   }
 }
@@ -1083,6 +1105,7 @@ void HWNDMessageHandler::SetFullscreen(bool fullscreen,
   RemoveCurrentWindowFromFullscreenMonitorMap();
 
   background_fullscreen_hack_ = false;
+  StopIgnoringPosChanges();
   fullscreen_handler()->SetFullscreen(fullscreen, target_display_id);
   if (IsDestroyed()) {
     return;
@@ -1116,6 +1139,7 @@ void HWNDMessageHandler::SetAspectRatio(float aspect_ratio,
     gfx::Rect rect(window_rect);
 
     SizeWindowToAspectRatio(WMSZ_BOTTOMRIGHT, &rect);
+    StopIgnoringPosChanges();
     SetBoundsInternal(rect, false);
   }
 }
@@ -1986,15 +2010,6 @@ LRESULT HWNDMessageHandler::OnCreate(CREATESTRUCT* create_struct) {
   return 0;
 }
 
-namespace {
-
-void UiaDisconnectProviderInTask(
-    Microsoft::WRL::ComPtr<IRawElementProviderSimple> provider) {
-  ::UiaDisconnectProvider(provider.Get());
-}
-
-}  // namespace
-
 void HWNDMessageHandler::OnDestroy() {
   // The window will no longer service WM_GETOBJECT messages from this point
   // onward; see
@@ -2010,21 +2025,6 @@ void HWNDMessageHandler::OnDestroy() {
 
   if (auto& ax_platform = ui::AXPlatform::GetInstance();
       ax_platform.HasServicedUiaClients()) {
-    // Clean up UIA resources associated with this window's fragment root if all
-    // providers have not previously been disconnected; see
-    // https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcoreapi/nf-uiautomationcoreapi-uiadisconnectprovider.
-    if (ax_platform.IsUiaProviderEnabled() &&
-        base::FeatureList::IsEnabled(::features::kUiaDisconnectRootProviders)) {
-      // Post a task to disconnect the provider to avoid a potential re-entrancy
-      // issue -- UiaDisconnectProvider may make COM calls, which could result
-      // in a call to PeekMessage.
-      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-          FROM_HERE,
-          base::BindOnce(&UiaDisconnectProviderInTask,
-                         Microsoft::WRL::ComPtr<IRawElementProviderSimple>(
-                             ax_fragment_root_->GetProvider())));
-    }
-
     // Disassociate this window from MSAA clients that are observing events; see
     // https://docs.microsoft.com/en-us/windows/win32/api/uiautomationcoreapi/nf-uiautomationcoreapi-uiareturnrawelementprovider#remarks
     ::UiaReturnRawElementProvider(hwnd(), 0, 0, nullptr);

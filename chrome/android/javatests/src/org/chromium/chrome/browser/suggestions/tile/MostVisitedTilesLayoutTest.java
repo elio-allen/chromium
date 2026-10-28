@@ -44,7 +44,6 @@ import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
@@ -67,6 +66,7 @@ import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.chrome.test.util.browser.offlinepages.FakeOfflinePageBridge;
 import org.chromium.chrome.test.util.browser.suggestions.SuggestionsDependenciesRule;
 import org.chromium.chrome.test.util.browser.suggestions.mostvisited.FakeMostVisitedSites;
+import org.chromium.components.browser_ui.widget.displaystyle.UiConfig;
 import org.chromium.net.test.EmbeddedTestServerRule;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.test.util.NightModeTestUtils;
@@ -83,6 +83,8 @@ import java.util.concurrent.TimeoutException;
 @ParameterAnnotations.UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
 @CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
 @DoNotBatch(reason = "AI automated batching was unsuccessful.")
+// TODO(b/555414915): Update Android tests with WebUI NTP enabled on AL.
+@DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID)
 public class MostVisitedTilesLayoutTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -155,26 +157,12 @@ public class MostVisitedTilesLayoutTest {
     @MediumTest
     @Feature({"NewTabPage", "RenderTest"})
     @ParameterAnnotations.UseMethodParameter(NightModeTestUtils.NightModeParams.class)
-    @DisableFeatures({ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION})
     @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511288662
-    public void testTilesLayoutAppearance_DisableMvtCustomization(boolean nightModeEnabled)
-            throws Exception {
-        doTilesLayoutAppearanceTest(nightModeEnabled, "_v1");
+    public void testTilesLayoutAppearance(boolean nightModeEnabled) throws Exception {
+        doTilesLayoutAppearanceTest("_with_add_new_button_v1");
     }
 
-    @Test
-    @MediumTest
-    @Feature({"NewTabPage", "RenderTest"})
-    @ParameterAnnotations.UseMethodParameter(NightModeTestUtils.NightModeParams.class)
-    @EnableFeatures({ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION})
-    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511288662
-    public void testTilesLayoutAppearance_EnableMvtCustomization(boolean nightModeEnabled)
-            throws Exception {
-        doTilesLayoutAppearanceTest(nightModeEnabled, "_with_add_new_button_v1");
-    }
-
-    private void doTilesLayoutAppearanceTest(boolean nightModeEnabled, String suffix)
-            throws Exception {
+    private void doTilesLayoutAppearanceTest(String suffix) throws Exception {
         List<SiteSuggestion> siteSuggestions =
                 makeAndSetUpFakeSuggestions(FAKE_MOST_VISITED_URLS.length);
 
@@ -185,20 +173,8 @@ public class MostVisitedTilesLayoutTest {
     @Test
     @MediumTest
     @Feature({"NewTabPage", "RenderTest"})
-    @DisableFeatures({ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION})
     @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511288662
-    public void testModernTilesLayoutAppearance_Full_DisableMvtCustomization()
-            throws IOException, InterruptedException {
-        doModernTilesLayoutAppearanceTest_Full("_v1");
-    }
-
-    @Test
-    @MediumTest
-    @Feature({"NewTabPage", "RenderTest"})
-    @EnableFeatures({ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION})
-    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511288662
-    public void testModernTilesLayoutAppearance_Full_EnableMvtCustomization()
-            throws IOException, InterruptedException {
+    public void testModernTilesLayoutAppearance_Full() throws IOException, InterruptedException {
         doModernTilesLayoutAppearanceTest_Full("_with_add_new_button_v1");
     }
 
@@ -373,7 +349,12 @@ public class MostVisitedTilesLayoutTest {
 
         mCoordinator =
                 new MostVisitedTilesCoordinator(
-                        activity, mActivityLifecycleDispatcher, containerLayout, null, null);
+                        activity,
+                        mActivityLifecycleDispatcher,
+                        containerLayout,
+                        new UiConfig(containerLayout),
+                        null,
+                        null);
         mCoordinator.initWithNative(profile, uiDelegate, delegate, mTouchEnabledDelegate);
     }
 }

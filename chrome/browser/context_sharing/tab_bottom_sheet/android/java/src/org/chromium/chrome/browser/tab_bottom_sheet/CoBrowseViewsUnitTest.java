@@ -9,6 +9,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -28,32 +29,32 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNullableObservableSupplier;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.chrome.browser.context_sharing.R;
-import org.chromium.chrome.browser.contextual_tasks.fusebox.ContextualTasksFusebox;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.EventForwarder;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
 /** Unit tests for {@link CoBrowseViews}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class CoBrowseViewsUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private TabBottomSheetWebUi mWebUi;
-    @Mock private ContextualTasksFusebox mFusebox;
-    @Mock private View mWebUiView;
-    @Mock private View mFuseboxView;
-    @Mock private View mPeekView;
     @Mock private WebContents mWebContents;
     @Mock private EventForwarder mEventForwarder;
     @Mock private CoBrowseComponentProvider mMockContentProvider;
 
+    private final View mWebUiView = new View(ApplicationProvider.getApplicationContext());
+    private final View mPeekView = new View(ApplicationProvider.getApplicationContext());
     private Context mContext;
     private CoBrowseViews mCoBrowseViews;
 
@@ -61,7 +62,6 @@ public class CoBrowseViewsUnitTest {
     public void setUp() {
         mContext = ApplicationProvider.getApplicationContext();
         when(mWebUi.getWebUiView()).thenReturn(mWebUiView);
-        when(mFusebox.getFuseboxView()).thenReturn(mFuseboxView);
         when(mWebContents.getEventForwarder()).thenReturn(mEventForwarder);
 
         View rootView = LayoutInflater.from(mContext).inflate(R.layout.tab_bottom_sheet, null);
@@ -71,10 +71,9 @@ public class CoBrowseViewsUnitTest {
                         TabBottomSheetClientType.CONTEXTUAL_TASKS,
                         CoBrowseContainerType.BOTTOM_SHEET,
                         mWebUi,
-                        mFusebox,
                         Color.WHITE,
                         null,
-                        () -> null);
+                        SupplierUtils.ofNull());
     }
 
     @Test
@@ -83,21 +82,13 @@ public class CoBrowseViewsUnitTest {
         assertNotNull(view);
 
         ViewGroup webUiContainer = view.findViewById(R.id.web_ui_container);
-        ViewGroup fuseboxContainer = view.findViewById(R.id.fusebox_container);
-        View handleBar = view.findViewById(R.id.handle_bar);
 
         assertEquals(1, webUiContainer.getChildCount());
         assertEquals(mWebUiView, webUiContainer.getChildAt(0));
-
-        assertEquals(1, fuseboxContainer.getChildCount());
-        assertEquals(mFuseboxView, fuseboxContainer.getChildAt(0));
-
-        assertEquals(View.VISIBLE, handleBar.getVisibility());
-        assertTrue(((ViewGroup.MarginLayoutParams) webUiContainer.getLayoutParams()).topMargin > 0);
     }
 
     @Test
-    public void testConstructor_SidePanel_HidesHandleBarAndRemovesMargin() {
+    public void testConstructor_SidePanel_RemovesMargin() {
         // Create a new CoBrowseViews object with the desired container type (SIDE_PANEL).
         View rootView = LayoutInflater.from(mContext).inflate(R.layout.tab_bottom_sheet, null);
         CoBrowseViews coBrowseViews =
@@ -106,16 +97,13 @@ public class CoBrowseViewsUnitTest {
                         TabBottomSheetClientType.CONTEXTUAL_TASKS,
                         CoBrowseContainerType.SIDE_PANEL,
                         mWebUi,
-                        mFusebox,
                         Color.WHITE,
                         mMockContentProvider,
-                        () -> null);
+                        SupplierUtils.ofNull());
 
         View view = coBrowseViews.getView();
-        View handleBar = view.findViewById(R.id.handle_bar);
         ViewGroup webUiContainer = view.findViewById(R.id.web_ui_container);
 
-        assertEquals(View.GONE, handleBar.getVisibility());
         assertEquals(0, ((MarginLayoutParams) webUiContainer.getLayoutParams()).topMargin);
     }
 
@@ -124,14 +112,11 @@ public class CoBrowseViewsUnitTest {
         mCoBrowseViews.destroy();
 
         verify(mWebUi).destroy();
-        verify(mFusebox).destroy();
 
         View view = mCoBrowseViews.getView();
         ViewGroup webUiContainer = view.findViewById(R.id.web_ui_container);
-        ViewGroup fuseboxContainer = view.findViewById(R.id.fusebox_container);
 
         assertEquals(0, webUiContainer.getChildCount());
-        assertEquals(0, fuseboxContainer.getChildCount());
     }
 
     @Test
@@ -178,10 +163,9 @@ public class CoBrowseViewsUnitTest {
                         TabBottomSheetClientType.CONTEXTUAL_TASKS,
                         CoBrowseContainerType.BOTTOM_SHEET,
                         mWebUi,
-                        mFusebox,
                         Color.WHITE,
                         mMockContentProvider,
-                        () -> null);
+                        SupplierUtils.ofNull());
         assertEquals(mMockContentProvider, coBrowseViews.getContentProvider());
     }
 
@@ -208,10 +192,9 @@ public class CoBrowseViewsUnitTest {
                         TabBottomSheetClientType.CONTEXTUAL_TASKS,
                         CoBrowseContainerType.BOTTOM_SHEET,
                         mWebUi,
-                        mFusebox,
                         Color.WHITE,
                         mMockContentProvider,
-                        () -> null);
+                        SupplierUtils.ofNull());
         assertTrue(coBrowseViews.isPlaceholderSetUp());
         verify(mMockContentProvider).setupPlaceholderView(any());
     }
@@ -226,10 +209,9 @@ public class CoBrowseViewsUnitTest {
                         TabBottomSheetClientType.CONTEXTUAL_TASKS,
                         CoBrowseContainerType.BOTTOM_SHEET,
                         mWebUi,
-                        mFusebox,
                         Color.WHITE,
                         mMockContentProvider,
-                        () -> null);
+                        SupplierUtils.ofNull());
         assertTrue(!coBrowseViews.isPlaceholderSetUp());
         verify(mMockContentProvider).setupPlaceholderView(any());
     }
@@ -245,10 +227,9 @@ public class CoBrowseViewsUnitTest {
                         TabBottomSheetClientType.CONTEXTUAL_TASKS,
                         CoBrowseContainerType.BOTTOM_SHEET,
                         mWebUi,
-                        mFusebox,
                         Color.WHITE,
                         mMockContentProvider,
-                        () -> null);
+                        SupplierUtils.ofNull());
 
         View placeholderView = rootView.findViewById(R.id.empty_placeholder_container);
         assertEquals(View.VISIBLE, placeholderView.getVisibility());
@@ -263,5 +244,68 @@ public class CoBrowseViewsUnitTest {
 
         coBrowseViews.setPlaceholderAllowedSupplier(null);
         assertEquals(View.VISIBLE, placeholderView.getVisibility());
+    }
+
+    @Test
+    public void testGetOrCreatePeekViewManager_CachesInstance() {
+        PeekViewManager manager = mock(PeekViewManager.class);
+        CoBrowseViews coBrowseViews = createCoBrowseViewsWithPeekViewManagers(manager);
+
+        assertEquals(manager, coBrowseViews.getOrCreatePeekViewManager());
+        assertEquals(manager, coBrowseViews.getOrCreatePeekViewManager());
+    }
+
+    @Test
+    public void testDestroyPeekViewManager_DestroysAndClearsCache() {
+        PeekViewManager firstManager = mock(PeekViewManager.class);
+        PeekViewManager secondManager = mock(PeekViewManager.class);
+        CoBrowseViews coBrowseViews =
+                createCoBrowseViewsWithPeekViewManagers(firstManager, secondManager);
+        assertEquals(firstManager, coBrowseViews.getOrCreatePeekViewManager());
+
+        coBrowseViews.destroyPeekViewManager();
+
+        verify(firstManager).destroy();
+        // A destroyed manager has unregistered its observers, so it must not be handed out again.
+        assertEquals(secondManager, coBrowseViews.getOrCreatePeekViewManager());
+    }
+
+    @Test
+    public void testDestroyPeekViewManager_ManagerNeverCreated_IsNoOp() {
+        PeekViewManager manager = mock(PeekViewManager.class);
+        // getOrCreatePeekViewManager() is deliberately not called, so nothing is cached yet.
+        CoBrowseViews coBrowseViews = createCoBrowseViewsWithPeekViewManagers(manager);
+
+        coBrowseViews.destroyPeekViewManager();
+
+        verify(manager, never()).destroy();
+    }
+
+    @Test
+    public void testDestroy_DestroysPeekViewManager() {
+        PeekViewManager manager = mock(PeekViewManager.class);
+        CoBrowseViews coBrowseViews = createCoBrowseViewsWithPeekViewManagers(manager);
+        assertEquals(manager, coBrowseViews.getOrCreatePeekViewManager());
+
+        coBrowseViews.destroy();
+
+        verify(manager).destroy();
+    }
+
+    /**
+     * Creates a {@link CoBrowseViews} whose peek view manager supplier returns the given managers,
+     * one per call, so that tests can tell a cached instance apart from a freshly created one.
+     */
+    private CoBrowseViews createCoBrowseViewsWithPeekViewManagers(PeekViewManager... managers) {
+        List<PeekViewManager> remaining = new ArrayList<>(Arrays.asList(managers));
+        View rootView = LayoutInflater.from(mContext).inflate(R.layout.tab_bottom_sheet, null);
+        return new CoBrowseViews(
+                rootView,
+                TabBottomSheetClientType.CONTEXTUAL_TASKS,
+                CoBrowseContainerType.BOTTOM_SHEET,
+                mWebUi,
+                Color.WHITE,
+                null,
+                () -> remaining.isEmpty() ? null : remaining.remove(0));
     }
 }

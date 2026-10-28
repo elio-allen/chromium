@@ -24,12 +24,14 @@ import org.junit.runner.RunWith;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.FeatureOverrides;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.ntp.NewTabPageUtils.LayoutType;
 import org.chromium.chrome.browser.ntp.NewTabPageUtils.PaddingStyle;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
 import org.chromium.components.browser_ui.widget.displaystyle.HorizontalDisplayStyle;
@@ -41,7 +43,6 @@ import org.chromium.components.browser_ui.widget.displaystyle.VerticalDisplaySty
  * Unit tests for helper functions in {@link NewTabPage} and {@link NewTabPageCoordinator} classes.
  */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class NewTabPageUtilUnitTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -139,6 +140,8 @@ public class NewTabPageUtilUnitTest {
     @Test
     public void testGetPaddingStyleForAurora() {
         // Default should be DEFAULT.
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.NTP_AURORA, PADDING_STYLE_PARAM, PaddingStyle.DEFAULT);
         assertEquals(PaddingStyle.DEFAULT, NewTabPageUtils.getPaddingStyleForAurora());
 
         FeatureOverrides.overrideParam(
@@ -162,6 +165,8 @@ public class NewTabPageUtilUnitTest {
                 resources.getDimensionPixelSize(R.dimen.ntp_section_top_margin_small);
 
         // Default should be ntp_section_top_margin.
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.NTP_AURORA, PADDING_STYLE_PARAM, PaddingStyle.DEFAULT);
         assertEquals(expectedDefaultMargin, NewTabPageUtils.getNtpSectionPaddingPx(resources));
 
         FeatureOverrides.overrideParam(
@@ -175,6 +180,50 @@ public class NewTabPageUtilUnitTest {
         FeatureOverrides.overrideParam(
                 ChromeFeatureList.NTP_AURORA, PADDING_STYLE_PARAM, PaddingStyle.LARGE);
         assertEquals(expectedSmallMargin, NewTabPageUtils.getNtpSectionPaddingPx(resources));
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.NTP_AURORA_V2)
+    public void testIsComposeplateRemovedInAuroraV2_Disabled() {
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.NTP_AURORA_V2,
+                ChromeFeatureList.NTP_AURORA_V2_LAYOUT_TYPE,
+                LayoutType.INSIDE_MVT);
+        assertFalse(NewTabPageUtils.isComposeplateRemovedInAuroraV2());
+
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.NTP_AURORA_V2,
+                ChromeFeatureList.NTP_AURORA_V2_LAYOUT_TYPE,
+                LayoutType.REMOVE);
+        assertFalse(NewTabPageUtils.isComposeplateRemovedInAuroraV2());
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.NTP_AURORA, ChromeFeatureList.NTP_AURORA_V2})
+    public void testIsComposeplateRemovedInAuroraV2() {
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.NTP_AURORA_V2,
+                ChromeFeatureList.NTP_AURORA_V2_LAYOUT_TYPE,
+                LayoutType.DEFAULT);
+        assertFalse(NewTabPageUtils.isComposeplateRemovedInAuroraV2());
+
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.NTP_AURORA_V2,
+                ChromeFeatureList.NTP_AURORA_V2_LAYOUT_TYPE,
+                LayoutType.BESIDE_MVT);
+        assertFalse(NewTabPageUtils.isComposeplateRemovedInAuroraV2());
+
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.NTP_AURORA_V2,
+                ChromeFeatureList.NTP_AURORA_V2_LAYOUT_TYPE,
+                LayoutType.INSIDE_MVT);
+        assertTrue(NewTabPageUtils.isComposeplateRemovedInAuroraV2());
+
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.NTP_AURORA_V2,
+                ChromeFeatureList.NTP_AURORA_V2_LAYOUT_TYPE,
+                LayoutType.REMOVE);
+        assertTrue(NewTabPageUtils.isComposeplateRemovedInAuroraV2());
     }
 
     private void testUpdateTilesLayoutTopMargin_shouldNotShowLogoImpl(

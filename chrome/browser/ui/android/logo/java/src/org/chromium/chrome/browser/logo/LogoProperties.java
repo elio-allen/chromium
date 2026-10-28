@@ -4,14 +4,17 @@
 
 package org.chromium.chrome.browser.logo;
 
+import android.graphics.drawable.AnimatedImageDrawable;
 import android.graphics.drawable.Drawable;
 
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.logo.LogoBridge.Logo;
+import org.chromium.chrome.browser.logo.LogoUtils.DoodleSize;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableBooleanPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableFloatPropertyKey;
+import org.chromium.ui.modelutil.PropertyModel.WritableIntDefPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableIntPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
 
@@ -24,6 +27,7 @@ interface LogoProperties {
     //  if we're not going to read the value out of this in the ViewBinder.
     WritableFloatPropertyKey ALPHA = new WritableFloatPropertyKey();
     WritableIntPropertyKey LOGO_TOP_MARGIN = new WritableIntPropertyKey();
+    WritableIntPropertyKey LOGO_TOP_PADDING = new WritableIntPropertyKey();
     WritableIntPropertyKey LOGO_BOTTOM_MARGIN = new WritableIntPropertyKey();
     WritableIntPropertyKey LOGO_HEIGHT = new WritableIntPropertyKey();
     WritableObjectPropertyKey<Boolean> SET_END_FADE_ANIMATION =
@@ -44,12 +48,12 @@ interface LogoProperties {
             new WritableObjectPropertyKey<>();
     WritableObjectPropertyKey<Boolean> SHOW_LOADING_VIEW =
             new WritableObjectPropertyKey<>(/* skipEquality= */ true);
-    // TODO(crbug.com/434200490): Replace Object reference with AnimatedImageDrawable when the
-    // refactoring is fully rolled out.
-    WritableObjectPropertyKey<Object> ANIMATED_LOGO = new WritableObjectPropertyKey<>();
+    WritableObjectPropertyKey<AnimatedImageDrawable> ANIMATED_LOGO =
+            new WritableObjectPropertyKey<>();
     WritableObjectPropertyKey<Callback<Logo>> LOGO_AVAILABLE_CALLBACK =
             new WritableObjectPropertyKey<>();
-    WritableIntPropertyKey DOODLE_SIZE = new WritableIntPropertyKey();
+    WritableIntDefPropertyKey<DoodleSize> DOODLE_SIZE =
+            new WritableIntDefPropertyKey<>(DoodleSize.REGULAR);
     WritableObjectPropertyKey<Boolean> SHOW_DEFAULT_GOOGLE_LOGO =
             new WritableObjectPropertyKey<>(/* skipEquality= */ true);
     WritableBooleanPropertyKey IS_NIGHT_MODE = new WritableBooleanPropertyKey();
@@ -58,6 +62,7 @@ interface LogoProperties {
             new PropertyKey[] {
                 ALPHA,
                 LOGO_TOP_MARGIN,
+                LOGO_TOP_PADDING,
                 LOGO_BOTTOM_MARGIN,
                 LOGO_HEIGHT,
                 SET_END_FADE_ANIMATION,

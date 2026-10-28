@@ -8,7 +8,7 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
-#import "components/autofill/core/browser/test_utils/entity_data_test_utils.h"
+#import "components/autofill/core/browser/test_utils/entity_data_test_util.h"
 #import "components/autofill/core/common/autofill_debug_features.h"
 #import "components/autofill/core/common/autofill_features.h"
 #import "components/autofill/ios/common/features.h"
@@ -42,6 +42,7 @@
 using chrome_test_util::ButtonWithAccessibilityLabel;
 using chrome_test_util::ButtonWithAccessibilityLabelId;
 using chrome_test_util::NavigationBarDoneButton;
+using chrome_test_util::NavigationBarEditButton;
 using chrome_test_util::SearchBar;
 using chrome_test_util::SettingsDoneButton;
 using chrome_test_util::SettingsMenuBackButton;
@@ -89,13 +90,6 @@ NSString* ProfilesSectionTitle() {
 // Helper function to get the title for the travels section.
 NSString* TravelSectionTitle() {
   return l10n_util::GetNSString(IDS_AUTOFILL_TRAVEL_TITLE);
-}
-
-// Return the edit button from the navigation bar.
-id<GREYMatcher> NavigationBarEditButton() {
-  return grey_allOf(
-      ButtonWithAccessibilityLabelId(IDS_IOS_NAVIGATION_BAR_EDIT_BUTTON),
-      grey_not(grey_accessibilityTrait(UIAccessibilityTraitNotEnabled)), nil);
 }
 
 // Matcher for a country entry with the given accessibility label.
@@ -197,16 +191,14 @@ id<GREYMatcher> TextFieldWithLabel(NSString* textFieldLabel) {
   }
 
   if ([self isRunningTest:@selector(testToggleSuggestionsFromGeminiSwitch)]) {
-    config.features_enabled_and_params.push_back(
-        {autofill::features::kAutofillAmbientAutofill,
-         {{"ambient_autofill_eligible_tiers", "1"}}});
+    config.features_enabled.push_back(
+        autofill::features::kAutofillAmbientAutofill);
     config.features_enabled.push_back(
         autofill::features::kAutofillAiAvailableByDefault);
     config.features_enabled_and_params.push_back(
         {personal_context::features::debug::
              kPersonalContextForceEnablementState,
          {{"state", "2"}}});
-    config.additional_args.push_back("--force-ai-subscription-tier=1");
   }
 
   return config;
@@ -222,6 +214,10 @@ id<GREYMatcher> TextFieldWithLabel(NSString* textFieldLabel) {
   [ChromeEarlGreyUI openSettingsMenu];
   [ChromeEarlGreyUI
       tapSettingsMenuButton:chrome_test_util::AddressesAndMoreButton()];
+  // The Addresses page can be pushed after EarlGrey already reports the app as
+  // idle, so wait for it explicitly before interacting with it.
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      grey_accessibilityID(kAutofillProfileTableViewID)];
 }
 
 // Helper to open the settings page for the Autofill profile with `label`.
@@ -235,12 +231,16 @@ id<GREYMatcher> TextFieldWithLabel(NSString* textFieldLabel) {
 
   [[EarlGrey selectElementWithMatcher:grey_accessibilityLabel(label)]
       performAction:grey_tap()];
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      grey_accessibilityID(kAutofillProfileEditTableViewId)];
 }
 
 // Close the settings.
 - (void)exitSettingsMenu {
   [[EarlGrey selectElementWithMatcher:SettingsMenuBackButton(0)]
       performAction:grey_tap()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:SettingsDoneButton()];
   [[EarlGrey selectElementWithMatcher:SettingsDoneButton()]
       performAction:grey_tap()];
   // Wait for UI components to finish loading.
@@ -393,8 +393,7 @@ id<GREYMatcher> TextFieldWithLabel(NSString* textFieldLabel) {
 }
 
 // Test that the page for viewing Autofill profile details is accessible.
-// TODO(crbug.com/413107639): Test is flaky.
-- (void)FLAKY_testAccessibilityOnAutofillProfileViewPage {
+- (void)testAccessibilityOnAutofillProfileViewPage {
   [AutofillAppInterface saveExampleProfile];
   [self openEditProfile:kProfileLabel];
 
@@ -404,6 +403,8 @@ id<GREYMatcher> TextFieldWithLabel(NSString* textFieldLabel) {
   [[EarlGrey selectElementWithMatcher:SettingsMenuBackButton(0)]
       performAction:grey_tap()];
 
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      grey_accessibilityID(kAutofillProfileTableViewID)];
   [self exitSettingsMenu];
 }
 
@@ -1067,8 +1068,7 @@ id<GREYMatcher> TextFieldWithLabel(NSString* textFieldLabel) {
 }
 
 // Tests that the local profile is migrated to account.
-// TODO(crbug.com/435334012): Reenable this test.
-- (void)FLAKY_testMigrateToAccount {
+- (void)testMigrateToAccount {
   [SigninEarlGrey signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
   [AutofillAppInterface saveExampleProfile];
   [self
@@ -1096,9 +1096,19 @@ id<GREYMatcher> TextFieldWithLabel(NSString* textFieldLabel) {
   // Go back to the list view page.
   [[EarlGrey selectElementWithMatcher:SettingsMenuBackButton(0)]
       performAction:grey_tap()];
+
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:grey_accessibilityID(
+                                              kAutofillProfileTableViewID)];
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:grey_accessibilityLabel(
+                                                          kProfileLabel)];
   // Open the profile view.
   [[EarlGrey selectElementWithMatcher:grey_accessibilityLabel(kProfileLabel)]
       performAction:grey_tap()];
+
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:grey_accessibilityID(
+                                              kAutofillProfileEditTableViewId)];
 
   id<GREYMatcher> accountProfileFooterMatcher =
       grey_text(l10n_util::GetNSStringF(
@@ -1135,6 +1145,8 @@ id<GREYMatcher> TextFieldWithLabel(NSString* textFieldLabel) {
       performAction:grey_replaceText(@"")];
 
   // Save the profile.
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:NavigationBarDoneButton()];
   [[EarlGrey selectElementWithMatcher:NavigationBarDoneButton()]
       performAction:grey_tap()];
 
@@ -1152,6 +1164,8 @@ id<GREYMatcher> TextFieldWithLabel(NSString* textFieldLabel) {
       performAction:grey_replaceText(@"New York")];
 
   // Save the profile.
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:NavigationBarDoneButton()];
   [[EarlGrey selectElementWithMatcher:NavigationBarDoneButton()]
       performAction:grey_tap()];
 
@@ -1256,14 +1270,6 @@ id<GREYMatcher> TextFieldWithLabel(NSString* textFieldLabel) {
 
 // Tests that the Enhanced Autofill switch can be toggled.
 - (void)testToggleEnhancedAutofillSwitch {
-#if TARGET_OS_SIMULATOR
-  // TODO(crbug.com/516484560): Re-enable this flaky test on iOS below 26 on
-  // simulator.
-  if (!base::ios::IsRunningOnIOS26OrLater()) {
-    EARL_GREY_TEST_DISABLED(@"Flaky on iOS below 26 on simulator.");
-  }
-#endif
-
   [SigninEarlGrey signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
 
   [self openAutofillProfilesSettings];
@@ -1275,8 +1281,7 @@ id<GREYMatcher> TextFieldWithLabel(NSString* textFieldLabel) {
 
   id<GREYMatcher> switchMatcher =
       grey_accessibilityID(kEnhancedAutofillSwitchViewId);
-  [[EarlGrey selectElementWithMatcher:switchMatcher]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:switchMatcher];
 
   // Verify initially OFF.
   [[EarlGrey
@@ -1302,16 +1307,17 @@ id<GREYMatcher> TextFieldWithLabel(NSString* textFieldLabel) {
           : IDS_SETTINGS_AUTOFILL_AI_PAGE_TITLE));
   id<GREYMatcher> valueOnMatcher =
       grey_accessibilityValue(l10n_util::GetNSString(IDS_IOS_SETTING_ON));
-  [[EarlGrey
-      selectElementWithMatcher:grey_allOf(grey_accessibilityID(
-                                              kEnhancedAutofillTableViewId),
-                                          labelMatcher, valueOnMatcher, nil)]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:
+          grey_allOf(grey_accessibilityID(kEnhancedAutofillTableViewId),
+                     labelMatcher, valueOnMatcher, nil)];
 
   // Tap again to enter sub-page.
   [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
                                           kEnhancedAutofillTableViewId)]
       performAction:grey_tap()];
+
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:switchMatcher];
 
   // Toggle OFF.
   [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
@@ -1325,11 +1331,10 @@ id<GREYMatcher> TextFieldWithLabel(NSString* textFieldLabel) {
   // Verify that the detail text is "Off".
   id<GREYMatcher> valueOffMatcher =
       grey_accessibilityValue(l10n_util::GetNSString(IDS_IOS_SETTING_OFF));
-  [[EarlGrey
-      selectElementWithMatcher:grey_allOf(grey_accessibilityID(
-                                              kEnhancedAutofillTableViewId),
-                                          labelMatcher, valueOffMatcher, nil)]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:
+          grey_allOf(grey_accessibilityID(kEnhancedAutofillTableViewId),
+                     labelMatcher, valueOffMatcher, nil)];
 
   [self exitSettingsMenu];
   [SigninEarlGrey signOut];
@@ -1345,7 +1350,6 @@ id<GREYMatcher> TextFieldWithLabel(NSString* textFieldLabel) {
                    @(kCanContextuallyUseGeminiInChromeCapabilityName) : @YES,
                  }];
   [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
-  [ChromeEarlGrey setIntegerValue:1 forUserPref:"sync.ai_subscription_tier"];
 
   [self openAutofillProfilesSettings];
 

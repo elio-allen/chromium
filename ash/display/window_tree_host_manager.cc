@@ -92,7 +92,7 @@ constexpr int kUICompositorMemoryLimitDisplaySizeThreshold = 3500;
 // The RAM capacity threshold. When the device has 16GB+ of memory,
 // configure the compositor to use a higher memory limit.
 constexpr base::ByteSize kUICompositorMemoryLimitRamCapacityThreshold =
-    base::GiBU(16);
+    base::GiB(16);
 
 // An UMA signal for the current effective resolution/dpi is sent at this rate.
 // This keeps track of the effective resolution/dpi most used on
@@ -353,6 +353,10 @@ void WindowTreeHostManager::ShutdownRoundedDisplays() {
 
 void WindowTreeHostManager::Shutdown() {
   effective_resolution_UMA_timer_->Reset();
+
+  for (auto& [display_id, host] : window_tree_hosts_) {
+    host->PrepareForShutdown();
+  }
 
   cursor_window_controller_.reset();
   mirror_window_controller_.reset();
@@ -820,6 +824,7 @@ void WindowTreeHostManager::CloseMirroringDisplayIfNotNecessary() {
 }
 
 void WindowTreeHostManager::PreDisplayConfigurationChange(bool clear_focus) {
+  in_display_configuration_change_ = true;
   // Pause occlusion tracking during display configuration updates.
   scoped_pause_ = std::make_unique<aura::WindowOcclusionTracker::ScopedPause>();
 
@@ -859,6 +864,7 @@ void WindowTreeHostManager::PostDisplayConfigurationChange() {
       PropagateFontRenderParamsChange(root);
     }
   }
+  in_display_configuration_change_ = false;
 }
 
 void WindowTreeHostManager::SetPrimaryDisplayId(int64_t id) {

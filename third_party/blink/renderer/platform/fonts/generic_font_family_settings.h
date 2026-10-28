@@ -31,7 +31,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_GENERIC_FONT_FAMILY_SETTINGS_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_GENERIC_FONT_FAMILY_SETTINGS_H_
 
-#include "base/feature_list.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
@@ -84,9 +83,10 @@ class PLATFORM_EXPORT GenericFontFamilySettings {
   // We need to use -2 and -3 for empty value and deleted value.
   using UScriptCodeHashTraits = IntHashTraits<int, -1, -3>;
 
-  typedef HashMap<int, AtomicString, UScriptCodeHashTraits> ScriptFontFamilyMap;
+  using ScriptFontFamilyMap = HashMap<int, AtomicString, UScriptCodeHashTraits>;
 
-  void SetGenericFontFamilyMap(ScriptFontFamilyMap&,
+  // Returns true if the font map was modified.
+  bool SetGenericFontFamilyMap(ScriptFontFamilyMap&,
                                const AtomicString&,
                                UScriptCode);
 
@@ -97,8 +97,8 @@ class PLATFORM_EXPORT GenericFontFamilySettings {
                                                  UScriptCode) const;
 
   // Returns true if the first available font of `new_family` could be different
-  // from `old_first_available_family`.
-  bool ShouldUpdateFontFamily(const AtomicString& old_first_available_family,
+  // from `old_family`.
+  bool ShouldUpdateFontFamily(const AtomicString& old_family,
                               const AtomicString& new_family) const;
 
   ScriptFontFamilyMap standard_font_family_map_;

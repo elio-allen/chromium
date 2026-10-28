@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -18,6 +19,7 @@
 #include "base/i18n/time_formatting.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
+#include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/values.h"
@@ -236,12 +238,10 @@ const PageInfo::ChooserUIInfo kChooserUIInfo[] = {
      IDS_PAGE_INFO_USB_DEVICE_SECONDARY_LABEL,
      IDS_PAGE_INFO_USB_DEVICE_ALLOWED_BY_POLICY_LABEL,
      IDS_PAGE_INFO_DELETE_USB_DEVICE_WITH_NAME},
-#if !BUILDFLAG(IS_ANDROID)
     {ContentSettingsType::HID_CHOOSER_DATA,
      IDS_PAGE_INFO_HID_DEVICE_SECONDARY_LABEL,
      IDS_PAGE_INFO_HID_DEVICE_ALLOWED_BY_POLICY_LABEL,
      IDS_PAGE_INFO_DELETE_HID_DEVICE_WITH_NAME},
-#endif
     {ContentSettingsType::SERIAL_CHOOSER_DATA,
      IDS_PAGE_INFO_SERIAL_PORT_SECONDARY_LABEL,
      IDS_PAGE_INFO_SERIAL_PORT_ALLOWED_BY_POLICY_LABEL,
@@ -284,7 +284,7 @@ void LogTimeOpenHistogram(const std::string& name, base::TimeTicks start_time) {
 }
 
 bool HasSiteSpecificDecision(const PageInfo::PermissionInfo& permission,
-                             bool is_incognito) {
+                             bool is_off_the_record) {
   auto* info = content_settings::PermissionSettingsRegistry::GetInstance()->Get(
       permission.type);
 
@@ -293,16 +293,16 @@ bool HasSiteSpecificDecision(const PageInfo::PermissionInfo& permission,
           ->Get(permission.type)
           ->GetInitialDefaultSetting();
 
-  // Settings that are granted in regular mode get reduced to ASK in incognito
-  // mode. In this case, the site should trigger a permission prompt if/when
-  // appropriate to change the setting, and until then, the capability cannot be
-  // used, so no need to show it in page info.
-  const bool is_incognito_default =
-      is_incognito && permission.setting &&
+  // Settings that are granted in regular mode get reduced to ASK in
+  // off-the-record mode. In this case, the site should trigger a permission
+  // prompt if/when appropriate to change the setting, and until then, the
+  // capability cannot be used, so no need to show it in page info.
+  const bool is_off_the_record_default =
+      is_off_the_record && permission.setting &&
       info->delegate().IsUndecided(*permission.setting) &&
       info->delegate().IsUndecided(factory_default_setting);
 
-  return permission.setting && !is_incognito_default;
+  return permission.setting && !is_off_the_record_default;
 }
 
 bool IsDefaultSameAsFactoryDefault(const PageInfo::PermissionInfo& permission) {
@@ -319,6 +319,35 @@ const char kPageInfoTimeActionPrefix[] = "Security.PageInfo.TimeOpen.Action";
 const char kPageInfoTimeNoActionPrefix[] =
     "Security.PageInfo.TimeOpen.NoAction";
 const base::TimeDelta kRecordPageInfoPermissionChangeWindow = base::Minutes(1);
+
+std::string_view GetSurfaceHistogramSuffix(PageInfo::Surface surface) {
+  switch (surface) {
+    case PageInfo::Surface::kContextualTasks:
+      return ".ContextualTasks";
+    case PageInfo::Surface::kDefault:
+      return ".Default";
+  }
+}
+
+template <typename T>
+void RecordSlicedHistogramEnumeration(std::string_view base_histogram,
+                                      PageInfo::Surface surface,
+                                      T sample) {
+  base::UmaHistogramEnumeration(base_histogram, sample);
+  base::UmaHistogramEnumeration(
+      base::StrCat({base_histogram, GetSurfaceHistogramSuffix(surface)}),
+      sample);
+}
+
+void RecordSlicedContentSettingsHistogram(std::string_view base_histogram,
+                                          PageInfo::Surface surface,
+                                          ContentSettingsType type) {
+  content_settings_uma_util::RecordContentSettingsHistogram(
+      std::string(base_histogram), type);
+  content_settings_uma_util::RecordContentSettingsHistogram(
+      base::StrCat({base_histogram, GetSurfaceHistogramSuffix(surface)}), type);
+}
+
 }  // namespace
 
 using PermissionInfo = PageInfo::PermissionInfo;
@@ -330,7 +359,8 @@ PermissionInfo::~PermissionInfo() = default;
 
 PageInfo::PageInfo(std::unique_ptr<PageInfoDelegate> delegate,
                    content::WebContents* web_contents,
-                   const GURL& url)
+                   const GURL& url,
+                   Surface surface)
     : web_contents_(web_contents->GetWeakPtr()),
       delegate_(std::move(delegate)),
       show_info_bar_(false),
@@ -342,7 +372,8 @@ PageInfo::PageInfo(std::unique_ptr<PageInfoDelegate> delegate,
       show_ssl_decision_revoke_button_(false),
       did_revoke_user_ssl_decisions_(false),
       show_change_password_buttons_(false),
-      did_perform_action_(false) {
+      did_perform_action_(false),
+      surface_(surface) {
   DCHECK(delegate_);
   security_level_ = delegate_->GetSecurityLevel();
   visible_security_state_for_metrics_ = delegate_->GetVisibleSecurityState();
@@ -365,7 +396,7 @@ PageInfo::PageInfo(std::unique_ptr<PageInfoDelegate> delegate,
 
     // TODO(crbug.com/40901748): SetCookieInfo is called twice, once from here
     // and once from InitializeUiState. This should be cleaned up.
-    cookie_controller_->Update(web_contents);
+    cookie_controller_->Update(web_contents, site_url_);
 
     auto* pscs = GetPageSpecificContentSettings();
     if (pscs) {
@@ -478,8 +509,8 @@ void PageInfo::RecordPageInfoAction(page_info::PageInfoAction action) {
   delegate_->OnPageInfoActionOccurred(action);
 #endif
 
-  base::UmaHistogramEnumeration(page_info::kWebsiteSettingsActionHistogram,
-                                action);
+  RecordSlicedHistogramEnumeration(page_info::kWebsiteSettingsActionHistogram,
+                                   surface_, action);
 
   if (web_contents_) {
     ukm::builders::PageInfoBubble(
@@ -611,6 +642,10 @@ void PageInfo::RecordPageInfoAction(page_info::PageInfoAction action) {
       base::RecordAction(base::UserMetricsAction(
           "PageInfo.CookiesSubpage.SyncSettingsLinkClicked"));
       break;
+    case page_info::PAGE_INFO_EXTENSIONS_MENU_OPENED:
+      base::RecordAction(
+          base::UserMetricsAction("PageInfo.ExtensionsMenu.Opened"));
+      break;
   }
 }
 
@@ -633,15 +668,15 @@ void PageInfo::OnSitePermissionChanged(
 
   // Count how often a permission for a specific content type is changed using
   // the Page Info UI.
-  content_settings_uma_util::RecordContentSettingsHistogram(
-      "WebsiteSettings.OriginInfo.PermissionChanged", type);
+  RecordSlicedContentSettingsHistogram(
+      "WebsiteSettings.OriginInfo.PermissionChanged", surface_, type);
 
   if (setting && info->delegate().IsAnyPermissionAllowed(*setting)) {
-    content_settings_uma_util::RecordContentSettingsHistogram(
-        "WebsiteSettings.OriginInfo.PermissionChanged.Allowed", type);
+    RecordSlicedContentSettingsHistogram(
+        "WebsiteSettings.OriginInfo.PermissionChanged.Allowed", surface_, type);
   } else if (setting && info->delegate().IsBlocked(*setting)) {
-    content_settings_uma_util::RecordContentSettingsHistogram(
-        "WebsiteSettings.OriginInfo.PermissionChanged.Blocked", type);
+    RecordSlicedContentSettingsHistogram(
+        "WebsiteSettings.OriginInfo.PermissionChanged.Blocked", surface_, type);
   }
 
   // This is technically redundant given the histogram above, but putting the
@@ -812,8 +847,10 @@ void PageInfo::OnSitePermissionChanged(
         permissions::PermissionRecoverySuccessRateTracker::FromWebContents(
             web_contents_.get());
 
-    permission_tracker->PermissionStatusChanged(
-        type, ToContentSettingForMetrics(info, setting), show_info_bar_);
+    if (permission_tracker) {
+      permission_tracker->PermissionStatusChanged(
+          type, ToContentSettingForMetrics(info, setting), show_info_bar_);
+    }
   }
 
   // Refresh the UI to reflect the new setting.
@@ -1468,14 +1505,14 @@ bool PageInfo::ShouldShowPermission(
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-  const bool is_incognito =
+  const bool is_off_the_record =
       web_contents_->GetBrowserContext()->IsOffTheRecord();
 #if BUILDFLAG(IS_ANDROID)
   // Special geolocation DSE settings apply only on Android, so make sure it
   // gets checked there regardless of default setting on Desktop.
   // DSE settings don't apply to incognito mode.
   if (info.type == permissions::PermissionUtil::GetGeolocationType() &&
-      !is_incognito) {
+      !is_off_the_record) {
     return true;
   }
 #else
@@ -1526,7 +1563,7 @@ bool PageInfo::ShouldShowPermission(
   //   default to a setting that prevents sites from prompting, so users must
   //   resort to making per-site decisions using page info.
 
-  if (HasSiteSpecificDecision(info, is_incognito)) {
+  if (HasSiteSpecificDecision(info, is_off_the_record)) {
     return true;
   }
 
@@ -1578,9 +1615,7 @@ void PageInfo::PresentSitePermissions() {
       ContentSetting setting = content_settings->GetContentSetting(
           requester.GetURL(), site_url_, permission_info.type, &info);
 
-      if (info.metadata.decided_by_related_website_sets() &&
-          !base::FeatureList::IsEnabled(
-              permissions::features::kShowRelatedWebsiteSetsPermissionGrants)) {
+      if (info.metadata.decided_by_related_website_sets()) {
         continue;
       }
 
@@ -1642,9 +1677,7 @@ std::set<net::SchemefulSite> PageInfo::GetTwoSitePermissionRequesters(
       if (setting.primary_pattern.Matches(site_url_)) {
         continue;  // Skip first-party settings.
       }
-      if (setting.metadata.decided_by_related_website_sets() &&
-          !base::FeatureList::IsEnabled(
-              permissions::features::kShowRelatedWebsiteSetsPermissionGrants)) {
+      if (setting.metadata.decided_by_related_website_sets()) {
         continue;
       }
     }
@@ -1679,7 +1712,6 @@ void PageInfo::PresentSiteDataInternal(base::OnceClosure done) {
   cookies_info.controls_state = cookie_controls_state_;
   cookies_info.enforcement = cookie_enforcement_;
   cookies_info.expiration = cookie_exception_expiration_;
-  cookies_info.is_incognito = delegate_->IsIncognitoProfile();
   ui_->SetCookieInfo(cookies_info);
 
   std::move(done).Run();

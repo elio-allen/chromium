@@ -9,6 +9,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/logging.h"
+#include "base/memory/raw_span.h"
 #include "media/base/test_helpers.h"
 #include "media/base/video_frame.h"
 #include "media/base/video_util.h"
@@ -24,6 +25,21 @@ namespace {
 constexpr gfx::Size kCodedSize(128, 128);
 constexpr gfx::Rect kVisibleRect(64, 64, 64, 64);
 constexpr gfx::Rect kOddRect(0, 0, 63, 63);
+
+constexpr gfx::Size kDirectCodedSize(96, 96);
+constexpr gfx::Rect kDirectSourceRect(4, 6, 63, 65);
+constexpr gfx::Rect kDirectDestRect(8, 10, 63, 65);
+
+struct Biplanar10BitTestFormat {
+  VideoPixelFormat planar;
+  VideoPixelFormat biplanar;
+};
+
+constexpr Biplanar10BitTestFormat kBiplanar10BitTestFormats[] = {
+    {PIXEL_FORMAT_YUV420P10, PIXEL_FORMAT_P010LE},
+    {PIXEL_FORMAT_YUV422P10, PIXEL_FORMAT_P210LE},
+    {PIXEL_FORMAT_YUV444P10, PIXEL_FORMAT_P410LE},
+};
 
 enum class TestConversionType {
   kNormal,
@@ -82,10 +98,14 @@ bool IsConversionSupported(VideoPixelFormat src, VideoPixelFormat dest) {
   switch (src) {
     case PIXEL_FORMAT_I420:
     case PIXEL_FORMAT_I420A:
+    case PIXEL_FORMAT_I422:
+    case PIXEL_FORMAT_I422A:
     case PIXEL_FORMAT_I444:
     case PIXEL_FORMAT_I444A:
     case PIXEL_FORMAT_NV12:
     case PIXEL_FORMAT_NV12A:
+    case PIXEL_FORMAT_NV16:
+    case PIXEL_FORMAT_NV24:
     case PIXEL_FORMAT_XBGR:
     case PIXEL_FORMAT_XRGB:
     case PIXEL_FORMAT_ABGR:
@@ -99,6 +119,9 @@ bool IsConversionSupported(VideoPixelFormat src, VideoPixelFormat dest) {
     case PIXEL_FORMAT_YUV420AP10:
     case PIXEL_FORMAT_YUV422AP10:
     case PIXEL_FORMAT_YUV444AP10:
+    case PIXEL_FORMAT_P010LE:
+    case PIXEL_FORMAT_P210LE:
+    case PIXEL_FORMAT_P410LE:
       break;
 
     default:
@@ -108,11 +131,17 @@ bool IsConversionSupported(VideoPixelFormat src, VideoPixelFormat dest) {
   switch (dest) {
     case PIXEL_FORMAT_I420:
     case PIXEL_FORMAT_I420A:
+    case PIXEL_FORMAT_I422:
+    case PIXEL_FORMAT_I422A:
     case PIXEL_FORMAT_I444:
     case PIXEL_FORMAT_I444A:
     case PIXEL_FORMAT_NV12:
     case PIXEL_FORMAT_NV12A:
+    case PIXEL_FORMAT_NV16:
+    case PIXEL_FORMAT_NV24:
     case PIXEL_FORMAT_P010LE:
+    case PIXEL_FORMAT_P210LE:
+    case PIXEL_FORMAT_P410LE:
     case PIXEL_FORMAT_YUV420P10:
     case PIXEL_FORMAT_YUV444P10:
       break;
@@ -163,6 +192,81 @@ void FillPlane(base::span<T> data,
   fclose(f);
 }
 
+uint16_t ReadVisibleSample(const VideoFrame& frame,
+                           size_t plane,
+                           int x,
+                           int y) {
+  if (BitDepth(frame.format()) == 8) {
+    return frame.GetVisiblePlaneData(plane)[y * frame.stride(plane) + x];
+  }
+  return base::subtle::reinterpret_span<const uint16_t>(
+      frame.GetVisiblePlaneData(
+          plane))[y * (frame.stride(plane) / sizeof(uint16_t)) + x];
+}
+
+void WriteVisibleSample(VideoFrame& frame,
+                        size_t plane,
+                        int x,
+                        int y,
+                        uint16_t value) {
+  if (BitDepth(frame.format()) == 8) {
+    frame.GetWritableVisiblePlaneData(plane)[y * frame.stride(plane) + x] =
+        static_cast<uint8_t>(value);
+  } else {
+    base::subtle::reinterpret_span<uint16_t>(frame.GetWritableVisiblePlaneData(
+        plane))[y * (frame.stride(plane) / sizeof(uint16_t)) + x] = value;
+  }
+}
+
+void FillVisibleSamplesWithPattern(VideoFrame& frame) {
+  const int bytes_per_sample = BitDepth(frame.format()) > 8 ? 2 : 1;
+  const int mask = (1 << BitDepth(frame.format())) - 1;
+  for (size_t plane = 0; plane < VideoFrame::NumPlanes(frame.format());
+       ++plane) {
+    for (int y = 0; y < frame.GetVisibleRows(plane); ++y) {
+      for (int x = 0; x < frame.GetVisibleRowBytes(plane) / bytes_per_sample;
+           ++x) {
+        WriteVisibleSample(frame, plane, x, y,
+                           (x * 37 + y * 73 + plane * 113 + x * y) & mask);
+      }
+    }
+  }
+}
+
+// Build the MSB-aligned input independently of libyuv's packing functions.
+void PackPlanar10BitFrame(const VideoFrame& planar, VideoFrame& biplanar) {
+  for (size_t plane = 0; plane < 3; ++plane) {
+    for (int y = 0; y < planar.GetVisibleRows(plane); ++y) {
+      for (int x = 0; x < planar.GetVisibleColumns(plane); ++x) {
+        WriteVisibleSample(biplanar, plane == 0 ? 0 : 1,
+                           plane == 0 ? x : x * 2 + plane - 1, y,
+                           ReadVisibleSample(planar, plane, x, y) << 6);
+      }
+    }
+  }
+}
+
+void ExpectBiplanarSamplesMatch(const VideoFrame& planar,
+                                const VideoFrame& biplanar) {
+  ASSERT_EQ(planar.visible_rect().size(), biplanar.visible_rect().size());
+  for (size_t plane = 0; plane < 3; ++plane) {
+    for (int y = 0; y < planar.GetVisibleRows(plane); ++y) {
+      for (int x = 0; x < planar.GetVisibleColumns(plane); ++x) {
+        uint16_t expected = ReadVisibleSample(planar, plane, x, y);
+        if (BitDepth(biplanar.format()) == 10) {
+          // Expand all 8 bits to 10 bits, including the two replicated bits.
+          expected = BitDepth(planar.format()) == 8 ? (expected * 257) & 0xffc0
+                                                    : expected << 6;
+        }
+        ASSERT_EQ(ReadVisibleSample(biplanar, plane == 0 ? 0 : 1,
+                                    plane == 0 ? x : x * 2 + plane - 1, y),
+                  expected)
+            << "plane=" << plane << ", x=" << x << ", y=" << y;
+      }
+    }
+  }
+}
+
 }  // namespace
 
 using TestParams =
@@ -198,44 +302,67 @@ TEST_P(VideoFrameConverterTest, ConvertAndScale) {
       dest_format_, dest_coded_size_, dest_visible_rect_,
       dest_visible_rect_.size(), base::TimeDelta());
 
-  FillFourColors(*src_frame);
-
   if (!IsConversionSupported(src_format_, dest_format_)) {
+    src_frame->set_color_space(gfx::ColorSpace::CreateREC601());
     EXPECT_FALSE(converter_.ConvertAndScale(*src_frame, *dest_frame).is_ok());
     return;
   }
 
-  ASSERT_TRUE(converter_.ConvertAndScale(*src_frame, *dest_frame).is_ok());
+  std::vector<gfx::ColorSpace> color_spaces_to_test;
+  if (IsRGB(src_format_)) {
+    for (auto p : {gfx::ColorSpace::PrimaryID::BT709,
+                   gfx::ColorSpace::PrimaryID::SMPTE170M,
+                   gfx::ColorSpace::PrimaryID::BT2020}) {
+      for (auto r : {gfx::ColorSpace::RangeID::FULL,
+                     gfx::ColorSpace::RangeID::LIMITED}) {
+        color_spaces_to_test.emplace_back(p, gfx::ColorSpace::TransferID::SRGB,
+                                          gfx::ColorSpace::MatrixID::RGB, r);
+      }
+    }
+  } else {
+    color_spaces_to_test.push_back(gfx::ColorSpace::CreateREC709());
+  }
 
-  // Recreate the ideal frame at the destination size.
-  DCHECK(IsYuvPlanar(dest_format_));
   auto expected_dest_frame = VideoFrame::CreateZeroInitializedFrame(
       dest_format_, dest_coded_size_, dest_visible_rect_,
       dest_visible_rect_.size(), base::TimeDelta());
-  FillFourColors(*expected_dest_frame);
 
-  auto dest_visible_size = expected_dest_frame->visible_rect().size();
-  for (size_t i = 0; i < VideoFrame::NumPlanes(expected_dest_frame->format());
-       ++i) {
-    SCOPED_TRACE(base::StringPrintf(
-        "%s -> %s, plane=%d, (%s -> %s)",
-        VideoPixelFormatToString(src_format_).c_str(),
-        VideoPixelFormatToString(dest_format_).c_str(), static_cast<int>(i),
-        src_frame->visible_rect().size().ToString().c_str(),
-        expected_dest_frame->visible_rect().size().ToString().c_str()));
+  for (const auto& cs : color_spaces_to_test) {
+    src_frame->set_color_space(cs);
+    FillFourColors(*src_frame);
 
-    auto plane_size = VideoFrame::PlaneSize(expected_dest_frame->format(), i,
-                                            dest_visible_size);
-    auto ssim = libyuv::CalcFrameSsim(
-        dest_frame->visible_data(i), dest_frame->stride(i),
-        expected_dest_frame->visible_data(i), expected_dest_frame->stride(i),
-        plane_size.width(), plane_size.height());
-    auto psnr = libyuv::CalcFramePsnr(
-        dest_frame->visible_data(i), dest_frame->stride(i),
-        expected_dest_frame->visible_data(i), expected_dest_frame->stride(i),
-        plane_size.width(), plane_size.height());
-    EXPECT_DOUBLE_EQ(ssim, 1.0);
-    EXPECT_EQ(psnr, libyuv::kMaxPsnr);
+    ASSERT_TRUE(converter_.ConvertAndScale(*src_frame, *dest_frame).is_ok());
+
+    // Recreate the ideal frame at the destination size.
+    DCHECK(IsYuvPlanar(dest_format_));
+    expected_dest_frame->set_color_space(
+        VideoFrameConverter::GetDestinationColorSpace(*src_frame));
+    FillFourColors(*expected_dest_frame);
+
+    auto dest_visible_size = expected_dest_frame->visible_rect().size();
+    for (size_t i = 0; i < VideoFrame::NumPlanes(expected_dest_frame->format());
+         ++i) {
+      SCOPED_TRACE(base::StringPrintf(
+          "%s -> %s, cs=%s, plane=%d, (%s -> %s)",
+          VideoPixelFormatToString(src_format_).c_str(),
+          VideoPixelFormatToString(dest_format_).c_str(), cs.ToString().c_str(),
+          static_cast<int>(i),
+          src_frame->visible_rect().size().ToString().c_str(),
+          expected_dest_frame->visible_rect().size().ToString().c_str()));
+
+      auto plane_size = VideoFrame::PlaneSize(expected_dest_frame->format(), i,
+                                              dest_visible_size);
+      auto ssim = libyuv::CalcFrameSsim(
+          dest_frame->visible_data(i), dest_frame->stride(i),
+          expected_dest_frame->visible_data(i), expected_dest_frame->stride(i),
+          plane_size.width(), plane_size.height());
+      auto psnr = libyuv::CalcFramePsnr(
+          dest_frame->visible_data(i), dest_frame->stride(i),
+          expected_dest_frame->visible_data(i), expected_dest_frame->stride(i),
+          plane_size.width(), plane_size.height());
+      EXPECT_DOUBLE_EQ(ssim, 1.0);
+      EXPECT_EQ(psnr, libyuv::kMaxPsnr);
+    }
   }
 
   // Ensure memory pool is functioning correctly by running conversions which
@@ -262,6 +389,302 @@ TEST(VideoFrameConverterRegressionTest, WeirdScaling) {
 
   VideoFrameConverter converter;
   ASSERT_TRUE(converter.ConvertAndScale(*src_frame, *dest_frame).is_ok());
+}
+
+TEST(VideoFrameConverterFastPathTest, ConversionsAvoidScratch) {
+  constexpr gfx::Size kSize(64, 64);
+  struct Conversion {
+    VideoPixelFormat src;
+    VideoPixelFormat dest;
+  };
+
+  struct ConversionGroup {
+    const char* name;
+    base::raw_span<const Conversion> cases;
+  };
+
+  constexpr Conversion kBiplanarToBiplanarDirect[] = {
+      {PIXEL_FORMAT_NV12, PIXEL_FORMAT_NV12},
+      {PIXEL_FORMAT_NV12, PIXEL_FORMAT_NV16},
+      {PIXEL_FORMAT_NV12, PIXEL_FORMAT_NV24},
+      {PIXEL_FORMAT_NV12A, PIXEL_FORMAT_NV12},
+      {PIXEL_FORMAT_NV12A, PIXEL_FORMAT_NV12A},
+      {PIXEL_FORMAT_NV12A, PIXEL_FORMAT_NV16},
+      {PIXEL_FORMAT_NV12A, PIXEL_FORMAT_NV24},
+      {PIXEL_FORMAT_NV16, PIXEL_FORMAT_NV12},
+      {PIXEL_FORMAT_NV16, PIXEL_FORMAT_NV16},
+      {PIXEL_FORMAT_NV16, PIXEL_FORMAT_NV24},
+      {PIXEL_FORMAT_NV24, PIXEL_FORMAT_NV12},
+      {PIXEL_FORMAT_NV24, PIXEL_FORMAT_NV16},
+      {PIXEL_FORMAT_NV24, PIXEL_FORMAT_NV24},
+  };
+
+  constexpr Conversion kPlanarToBiplanarDirect[] = {
+      {PIXEL_FORMAT_I420, PIXEL_FORMAT_NV12},
+      {PIXEL_FORMAT_I422, PIXEL_FORMAT_NV16},
+      {PIXEL_FORMAT_I444, PIXEL_FORMAT_NV12},
+      {PIXEL_FORMAT_I444, PIXEL_FORMAT_NV24},
+  };
+
+  constexpr Conversion kBiplanarToPlanarSameSampling[] = {
+      {PIXEL_FORMAT_NV12, PIXEL_FORMAT_I420},
+      {PIXEL_FORMAT_NV12A, PIXEL_FORMAT_I420},
+      {PIXEL_FORMAT_NV12A, PIXEL_FORMAT_I420A},
+      {PIXEL_FORMAT_NV16, PIXEL_FORMAT_I422},
+      {PIXEL_FORMAT_NV24, PIXEL_FORMAT_I444},
+  };
+
+  constexpr Conversion kPlanarAlphaToBiplanarDirect[] = {
+      {PIXEL_FORMAT_I420A, PIXEL_FORMAT_NV12},
+      {PIXEL_FORMAT_I420A, PIXEL_FORMAT_NV12A},
+      {PIXEL_FORMAT_I422A, PIXEL_FORMAT_NV16},
+      {PIXEL_FORMAT_I444A, PIXEL_FORMAT_NV12},
+      {PIXEL_FORMAT_I444A, PIXEL_FORMAT_NV12A},
+      {PIXEL_FORMAT_I444A, PIXEL_FORMAT_NV24},
+  };
+
+  constexpr Conversion kRGBToBiplanarDirect[] = {
+      {PIXEL_FORMAT_ARGB, PIXEL_FORMAT_NV16},
+      {PIXEL_FORMAT_ARGB, PIXEL_FORMAT_NV24},
+      {PIXEL_FORMAT_ARGB, PIXEL_FORMAT_P010LE},
+      {PIXEL_FORMAT_ARGB, PIXEL_FORMAT_P210LE},
+      {PIXEL_FORMAT_ARGB, PIXEL_FORMAT_P410LE},
+  };
+
+  constexpr Conversion kBiplanar10BitDirect[] = {
+      {PIXEL_FORMAT_P010LE, PIXEL_FORMAT_P010LE},
+      {PIXEL_FORMAT_P210LE, PIXEL_FORMAT_P210LE},
+      {PIXEL_FORMAT_P410LE, PIXEL_FORMAT_P410LE},
+      {PIXEL_FORMAT_I420, PIXEL_FORMAT_P010LE},
+      {PIXEL_FORMAT_I420A, PIXEL_FORMAT_P010LE},
+      {PIXEL_FORMAT_I422, PIXEL_FORMAT_P210LE},
+      {PIXEL_FORMAT_I422A, PIXEL_FORMAT_P210LE},
+      {PIXEL_FORMAT_I444, PIXEL_FORMAT_P410LE},
+      {PIXEL_FORMAT_I444A, PIXEL_FORMAT_P410LE},
+      {PIXEL_FORMAT_NV12, PIXEL_FORMAT_P010LE},
+      {PIXEL_FORMAT_NV12A, PIXEL_FORMAT_P010LE},
+      {PIXEL_FORMAT_NV16, PIXEL_FORMAT_P210LE},
+      {PIXEL_FORMAT_NV24, PIXEL_FORMAT_P410LE},
+      {PIXEL_FORMAT_P010LE, PIXEL_FORMAT_NV12},
+      {PIXEL_FORMAT_P210LE, PIXEL_FORMAT_NV16},
+      {PIXEL_FORMAT_P410LE, PIXEL_FORMAT_NV24},
+      {PIXEL_FORMAT_P010LE, PIXEL_FORMAT_I420},
+      {PIXEL_FORMAT_P210LE, PIXEL_FORMAT_I420},
+      {PIXEL_FORMAT_P410LE, PIXEL_FORMAT_I420},
+      {PIXEL_FORMAT_P010LE, PIXEL_FORMAT_YUV420P10},
+      {PIXEL_FORMAT_P410LE, PIXEL_FORMAT_YUV444P10},
+      {PIXEL_FORMAT_YUV420AP10, PIXEL_FORMAT_P010LE},
+      {PIXEL_FORMAT_YUV422AP10, PIXEL_FORMAT_P210LE},
+      {PIXEL_FORMAT_YUV444AP10, PIXEL_FORMAT_P410LE},
+  };
+
+  const ConversionGroup kGroups[] = {
+      {"biplanar to biplanar direct", kBiplanarToBiplanarDirect},
+      {"planar to biplanar direct", kPlanarToBiplanarDirect},
+      {"biplanar to same-sampling planar", kBiplanarToPlanarSameSampling},
+      {"planar alpha to biplanar direct", kPlanarAlphaToBiplanarDirect},
+      {"RGB to biplanar direct", kRGBToBiplanarDirect},
+      {"biplanar 10-bit direct", kBiplanar10BitDirect},
+  };
+
+  for (const auto& group : kGroups) {
+    SCOPED_TRACE(group.name);
+    for (const auto& test_case : group.cases) {
+      SCOPED_TRACE(base::StringPrintf(
+          "%s -> %s", VideoPixelFormatToString(test_case.src).c_str(),
+          VideoPixelFormatToString(test_case.dest).c_str()));
+      auto src_frame = VideoFrame::CreateZeroInitializedFrame(
+          test_case.src, kSize, gfx::Rect(kSize), kSize, base::TimeDelta());
+      auto dest_frame = VideoFrame::CreateZeroInitializedFrame(
+          test_case.dest, kSize, gfx::Rect(kSize), kSize, base::TimeDelta());
+      ASSERT_TRUE(src_frame);
+      ASSERT_TRUE(dest_frame);
+      FillFourColors(*src_frame);
+
+      VideoFrameConverter converter;
+      ASSERT_TRUE(converter.ConvertAndScale(*src_frame, *dest_frame).is_ok());
+      EXPECT_EQ(converter.get_pool_size_for_testing(), 0u);
+    }
+  }
+}
+
+TEST(VideoFrameConverterDirectTest, RGBMatchesPlanarConversion) {
+  struct Conversion {
+    VideoPixelFormat planar;
+    VideoPixelFormat biplanar;
+  };
+  constexpr Conversion kConversions[] = {
+      {PIXEL_FORMAT_I422, PIXEL_FORMAT_NV16},
+      {PIXEL_FORMAT_I444, PIXEL_FORMAT_NV24},
+      {PIXEL_FORMAT_I420, PIXEL_FORMAT_P010LE},
+      {PIXEL_FORMAT_I422, PIXEL_FORMAT_P210LE},
+      {PIXEL_FORMAT_I444, PIXEL_FORMAT_P410LE},
+  };
+  // Existing parameterized tests cover the matrices, scaling and XRGB/XBGR.
+  // Here exercise textured input in each byte order and the new output paths.
+  for (auto source_format : {PIXEL_FORMAT_ARGB, PIXEL_FORMAT_ABGR}) {
+    auto source = VideoFrame::CreateZeroInitializedFrame(
+        source_format, kDirectCodedSize, kDirectSourceRect,
+        kDirectSourceRect.size(), base::TimeDelta());
+    ASSERT_TRUE(source);
+    source->set_color_space(gfx::ColorSpace::CreateSRGB());
+    FillVisibleSamplesWithPattern(*source);
+    for (const auto& conversion : kConversions) {
+      SCOPED_TRACE(testing::Message()
+                   << source_format << " -> " << conversion.biplanar);
+      auto dest = VideoFrame::CreateZeroInitializedFrame(
+          conversion.biplanar, kDirectCodedSize, kDirectDestRect,
+          kDirectDestRect.size(), base::TimeDelta());
+      auto reference = VideoFrame::CreateZeroInitializedFrame(
+          conversion.planar, kDirectCodedSize, kDirectDestRect,
+          kDirectDestRect.size(), base::TimeDelta());
+      ASSERT_TRUE(dest);
+      ASSERT_TRUE(reference);
+      VideoFrameConverter converter;
+      ASSERT_TRUE(converter.ConvertAndScale(*source, *dest).is_ok());
+      ASSERT_TRUE(converter.ConvertAndScale(*source, *reference).is_ok());
+      ExpectBiplanarSamplesMatch(*reference, *dest);
+    }
+  }
+}
+
+TEST(VideoFrameConverterDirectTest, Px10ScalingPreservesTenBitSamples) {
+  for (const auto& format : kBiplanar10BitTestFormats) {
+    auto planar = VideoFrame::CreateZeroInitializedFrame(
+        format.planar, kDirectCodedSize, kDirectSourceRect,
+        kDirectSourceRect.size(), base::TimeDelta());
+    auto source = VideoFrame::CreateZeroInitializedFrame(
+        format.biplanar, kDirectCodedSize, kDirectSourceRect,
+        kDirectSourceRect.size(), base::TimeDelta());
+    ASSERT_TRUE(planar);
+    ASSERT_TRUE(source);
+    FillVisibleSamplesWithPattern(*planar);
+    PackPlanar10BitFrame(*planar, *source);
+    for (const auto& size : {gfx::Size(23, 19), gfx::Size(126, 130)}) {
+      SCOPED_TRACE(testing::Message()
+                   << format.biplanar << ", " << size.ToString());
+      const gfx::Rect dest_rect(gfx::Point(8, 10), size);
+      const gfx::Size coded_size(size.width() + 32, size.height() + 32);
+      auto dest = VideoFrame::CreateZeroInitializedFrame(
+          format.biplanar, coded_size, dest_rect, size, base::TimeDelta());
+      auto reference = VideoFrame::CreateZeroInitializedFrame(
+          format.planar, coded_size, dest_rect, size, base::TimeDelta());
+      ASSERT_TRUE(dest);
+      ASSERT_TRUE(reference);
+      for (size_t plane = 0; plane < 3; ++plane) {
+        ASSERT_EQ(
+            libyuv::ScalePlane_16(
+                base::subtle::reinterpret_span<const uint16_t>(
+                    planar->GetVisiblePlaneData(plane))
+                    .data(),
+                planar->stride(plane) / sizeof(uint16_t),
+                planar->GetVisibleColumns(plane), planar->GetVisibleRows(plane),
+                base::subtle::reinterpret_span<uint16_t>(
+                    reference->GetWritableVisiblePlaneData(plane))
+                    .data(),
+                reference->stride(plane) / sizeof(uint16_t),
+                reference->GetVisibleColumns(plane),
+                reference->GetVisibleRows(plane), libyuv::kFilterBox),
+            0);
+      }
+      VideoFrameConverter converter;
+      ASSERT_TRUE(converter.ConvertAndScale(*source, *dest).is_ok());
+      ExpectBiplanarSamplesMatch(*reference, *dest);
+      // libyuv has workspace, but the converter no longer needs scratch frames.
+      EXPECT_EQ(converter.get_pool_size_for_testing(), 0u);
+    }
+  }
+}
+
+TEST(VideoFrameConverterDirectTest, Planar8ToPx10PreservesAllSamples) {
+  struct Conversion {
+    VideoPixelFormat source;
+    VideoPixelFormat dest;
+  };
+  constexpr Conversion kConversions[] = {
+      {PIXEL_FORMAT_I420, PIXEL_FORMAT_P010LE},
+      {PIXEL_FORMAT_I422, PIXEL_FORMAT_P210LE},
+      {PIXEL_FORMAT_I444, PIXEL_FORMAT_P410LE},
+  };
+  for (const auto& conversion : kConversions) {
+    SCOPED_TRACE(testing::Message()
+                 << conversion.source << " -> " << conversion.dest);
+    auto source = VideoFrame::CreateZeroInitializedFrame(
+        conversion.source, kDirectCodedSize, kDirectSourceRect,
+        kDirectSourceRect.size(), base::TimeDelta());
+    auto dest = VideoFrame::CreateZeroInitializedFrame(
+        conversion.dest, kDirectCodedSize, kDirectDestRect,
+        kDirectDestRect.size(), base::TimeDelta());
+    ASSERT_TRUE(source);
+    ASSERT_TRUE(dest);
+    FillVisibleSamplesWithPattern(*source);
+    VideoFrameConverter converter;
+    ASSERT_TRUE(converter.ConvertAndScale(*source, *dest).is_ok());
+    ExpectBiplanarSamplesMatch(*source, *dest);
+    EXPECT_EQ(converter.get_pool_size_for_testing(), 0u);
+  }
+}
+
+TEST(VideoFrameConverterDirectTest, Px10ToI420MatchesPlanarConversion) {
+  for (const auto& format : kBiplanar10BitTestFormats) {
+    SCOPED_TRACE(format.biplanar);
+    auto planar = VideoFrame::CreateZeroInitializedFrame(
+        format.planar, kDirectCodedSize, kDirectSourceRect,
+        kDirectSourceRect.size(), base::TimeDelta());
+    auto source = VideoFrame::CreateZeroInitializedFrame(
+        format.biplanar, kDirectCodedSize, kDirectSourceRect,
+        kDirectSourceRect.size(), base::TimeDelta());
+    auto dest = VideoFrame::CreateZeroInitializedFrame(
+        PIXEL_FORMAT_I420, kDirectCodedSize, kDirectDestRect,
+        kDirectDestRect.size(), base::TimeDelta());
+    auto reference = VideoFrame::CreateZeroInitializedFrame(
+        PIXEL_FORMAT_I420, kDirectCodedSize, kDirectDestRect,
+        kDirectDestRect.size(), base::TimeDelta());
+    ASSERT_TRUE(planar);
+    ASSERT_TRUE(source);
+    ASSERT_TRUE(dest);
+    ASSERT_TRUE(reference);
+    FillVisibleSamplesWithPattern(*planar);
+    PackPlanar10BitFrame(*planar, *source);
+    auto convert = libyuv::I010ToI420;
+    if (format.biplanar == PIXEL_FORMAT_P210LE) {
+      convert = libyuv::I210ToI420;
+    } else if (format.biplanar == PIXEL_FORMAT_P410LE) {
+      convert = libyuv::I410ToI420;
+    }
+    ASSERT_EQ(convert(base::subtle::reinterpret_span<const uint16_t>(
+                          planar->GetVisiblePlaneData(VideoFrame::Plane::kY))
+                          .data(),
+                      planar->stride(VideoFrame::Plane::kY) / sizeof(uint16_t),
+                      base::subtle::reinterpret_span<const uint16_t>(
+                          planar->GetVisiblePlaneData(VideoFrame::Plane::kU))
+                          .data(),
+                      planar->stride(VideoFrame::Plane::kU) / sizeof(uint16_t),
+                      base::subtle::reinterpret_span<const uint16_t>(
+                          planar->GetVisiblePlaneData(VideoFrame::Plane::kV))
+                          .data(),
+                      planar->stride(VideoFrame::Plane::kV) / sizeof(uint16_t),
+                      reference->GetWritableVisibleData(VideoFrame::Plane::kY),
+                      reference->stride(VideoFrame::Plane::kY),
+                      reference->GetWritableVisibleData(VideoFrame::Plane::kU),
+                      reference->stride(VideoFrame::Plane::kU),
+                      reference->GetWritableVisibleData(VideoFrame::Plane::kV),
+                      reference->stride(VideoFrame::Plane::kV),
+                      kDirectDestRect.width(), kDirectDestRect.height()),
+              0);
+    VideoFrameConverter converter;
+    ASSERT_TRUE(converter.ConvertAndScale(*source, *dest).is_ok());
+    for (size_t plane = 0; plane < 3; ++plane) {
+      for (int y = 0; y < dest->GetVisibleRows(plane); ++y) {
+        for (int x = 0; x < dest->GetVisibleColumns(plane); ++x) {
+          ASSERT_EQ(ReadVisibleSample(*dest, plane, x, y),
+                    ReadVisibleSample(*reference, plane, x, y))
+              << "plane=" << plane << ", x=" << x << ", y=" << y;
+        }
+      }
+    }
+    EXPECT_EQ(converter.get_pool_size_for_testing(), 0u);
+  }
 }
 
 TEST(VideoFrameConverterUnsupportedTest, UnsupportedConversions) {
@@ -339,6 +762,8 @@ TEST_P(VideoFrameConverterExtentsTest, ConvertAndScaleExtents) {
       case PIXEL_FORMAT_YUV444AP10:
         return 1023;
       case PIXEL_FORMAT_P010LE:
+      case PIXEL_FORMAT_P210LE:
+      case PIXEL_FORMAT_P410LE:
         return 1023 << 6;  // MSB aligned in 16-bit
       case PIXEL_FORMAT_YUV420P12:
       case PIXEL_FORMAT_YUV422P12:
@@ -399,11 +824,123 @@ TEST_P(VideoFrameConverterExtentsTest, ConvertAndScaleExtents) {
   }
 }
 
+TEST(VideoFrameConverterColorSpaceTest, ColorSpaceConversion) {
+  constexpr gfx::Size kTestSize(64, 64);
+  auto src_frame = VideoFrame::CreateZeroInitializedFrame(
+      PIXEL_FORMAT_ARGB, kTestSize, gfx::Rect(kTestSize), kTestSize,
+      base::TimeDelta());
+  auto dest_frame = VideoFrame::CreateZeroInitializedFrame(
+      PIXEL_FORMAT_I420, kTestSize, gfx::Rect(kTestSize), kTestSize,
+      base::TimeDelta());
+
+  // sRGB source (Full Range BT.709)
+  src_frame->set_color_space(gfx::ColorSpace::CreateSRGB());
+  VideoFrameConverter converter;
+  ASSERT_TRUE(converter.ConvertAndScale(*src_frame, *dest_frame).is_ok());
+  EXPECT_EQ(dest_frame->ColorSpace(),
+            gfx::ColorSpace(gfx::ColorSpace::PrimaryID::BT709,
+                            gfx::ColorSpace::TransferID::SRGB,
+                            gfx::ColorSpace::MatrixID::BT709,
+                            gfx::ColorSpace::RangeID::FULL));
+
+  // Limited Range BT.709 source
+  src_frame->set_color_space(gfx::ColorSpace::CreateREC709());
+  ASSERT_TRUE(converter.ConvertAndScale(*src_frame, *dest_frame).is_ok());
+  EXPECT_EQ(dest_frame->ColorSpace(), gfx::ColorSpace::CreateREC709());
+
+  // Limited Range BT.601 source
+  src_frame->set_color_space(gfx::ColorSpace::CreateREC601());
+  ASSERT_TRUE(converter.ConvertAndScale(*src_frame, *dest_frame).is_ok());
+  EXPECT_EQ(dest_frame->ColorSpace(), gfx::ColorSpace::CreateREC601());
+
+  // BT.2020 Limited Range source
+  auto bt2020_limited = gfx::ColorSpace(gfx::ColorSpace::PrimaryID::BT2020,
+                                        gfx::ColorSpace::TransferID::BT2020_10,
+                                        gfx::ColorSpace::MatrixID::BT2020_NCL,
+                                        gfx::ColorSpace::RangeID::LIMITED);
+  src_frame->set_color_space(bt2020_limited);
+  ASSERT_TRUE(converter.ConvertAndScale(*src_frame, *dest_frame).is_ok());
+  EXPECT_EQ(dest_frame->ColorSpace(), bt2020_limited);
+
+  // BT.2020 Full Range source
+  auto bt2020_full = gfx::ColorSpace(gfx::ColorSpace::PrimaryID::BT2020,
+                                     gfx::ColorSpace::TransferID::BT2020_10,
+                                     gfx::ColorSpace::MatrixID::BT2020_NCL,
+                                     gfx::ColorSpace::RangeID::FULL);
+  src_frame->set_color_space(bt2020_full);
+  ASSERT_TRUE(converter.ConvertAndScale(*src_frame, *dest_frame).is_ok());
+  EXPECT_EQ(dest_frame->ColorSpace(), bt2020_full);
+
+  // HDR10 (BT.2020 with PQ transfer function) source
+  src_frame->set_color_space(gfx::ColorSpace::CreateHDR10());
+  ASSERT_TRUE(converter.ConvertAndScale(*src_frame, *dest_frame).is_ok());
+  EXPECT_EQ(dest_frame->ColorSpace(),
+            gfx::ColorSpace(gfx::ColorSpace::PrimaryID::BT2020,
+                            gfx::ColorSpace::TransferID::PQ,
+                            gfx::ColorSpace::MatrixID::BT2020_NCL,
+                            gfx::ColorSpace::RangeID::FULL));
+
+  // HLG (BT.2020 with HLG transfer function) source
+  src_frame->set_color_space(gfx::ColorSpace::CreateHLG());
+  ASSERT_TRUE(converter.ConvertAndScale(*src_frame, *dest_frame).is_ok());
+  EXPECT_EQ(dest_frame->ColorSpace(),
+            gfx::ColorSpace(gfx::ColorSpace::PrimaryID::BT2020,
+                            gfx::ColorSpace::TransferID::HLG,
+                            gfx::ColorSpace::MatrixID::BT2020_NCL,
+                            gfx::ColorSpace::RangeID::FULL));
+
+  // Display P3 SDR source
+  src_frame->set_color_space(gfx::ColorSpace::CreateDisplayP3D65());
+  ASSERT_TRUE(converter.ConvertAndScale(*src_frame, *dest_frame).is_ok());
+  EXPECT_EQ(dest_frame->ColorSpace(),
+            gfx::ColorSpace(gfx::ColorSpace::PrimaryID::P3,
+                            gfx::ColorSpace::TransferID::SRGB,
+                            gfx::ColorSpace::MatrixID::BT709,
+                            gfx::ColorSpace::RangeID::FULL));
+
+  // Display P3 with PQ transfer function source
+  src_frame->set_color_space(gfx::ColorSpace(
+      gfx::ColorSpace::PrimaryID::P3, gfx::ColorSpace::TransferID::PQ,
+      gfx::ColorSpace::MatrixID::RGB, gfx::ColorSpace::RangeID::FULL));
+  ASSERT_TRUE(converter.ConvertAndScale(*src_frame, *dest_frame).is_ok());
+  EXPECT_EQ(dest_frame->ColorSpace(),
+            gfx::ColorSpace(gfx::ColorSpace::PrimaryID::P3,
+                            gfx::ColorSpace::TransferID::PQ,
+                            gfx::ColorSpace::MatrixID::BT2020_NCL,
+                            gfx::ColorSpace::RangeID::FULL));
+
+  // BT.601 source
+  src_frame->set_color_space(gfx::ColorSpace::CreateREC601());
+  ASSERT_TRUE(converter.ConvertAndScale(*src_frame, *dest_frame).is_ok());
+  EXPECT_EQ(dest_frame->ColorSpace(), gfx::ColorSpace::CreateREC601());
+
+  // HDR metadata propagation for HDR sources
+  skhdr::ContentLightLevelInformation clli;
+  clli.fMaxCLL = 1000.f;
+  clli.fMaxFALL = 400.f;
+  gfx::HDRMetadata hdr_metadata(clli);
+  src_frame->set_color_space(gfx::ColorSpace::CreateHDR10());
+  src_frame->set_hdr_metadata(hdr_metadata);
+  ASSERT_TRUE(converter.ConvertAndScale(*src_frame, *dest_frame).is_ok());
+  EXPECT_EQ(dest_frame->hdr_metadata(), hdr_metadata);
+
+  // HDR metadata is not propagated to SDR destinations
+  src_frame->set_color_space(gfx::ColorSpace::CreateSRGB());
+  src_frame->set_hdr_metadata(hdr_metadata);
+  ASSERT_TRUE(converter.ConvertAndScale(*src_frame, *dest_frame).is_ok());
+  EXPECT_EQ(dest_frame->hdr_metadata(), gfx::HDRMetadata());
+
+  // Invalid color space
+  src_frame->set_color_space(gfx::ColorSpace());
+  ASSERT_TRUE(converter.ConvertAndScale(*src_frame, *dest_frame).is_ok());
+  EXPECT_EQ(dest_frame->ColorSpace(), gfx::ColorSpace::CreateREC709());
+}
+
 std::string PrintTestParams(const testing::TestParamInfo<TestParams>& info) {
   auto format_to_string = [](VideoPixelFormat format) {
     std::string name = VideoPixelFormatToString(format);
     const std::string prefix = "PIXEL_FORMAT_";
-    if (name.find(prefix) == 0) {
+    if (name.starts_with(prefix)) {
       name = name.substr(prefix.length());
     }
     return name;
@@ -428,21 +965,29 @@ std::string PrintTestParams(const testing::TestParamInfo<TestParams>& info) {
 constexpr auto kInputFormats = std::to_array<VideoPixelFormat>({
     PIXEL_FORMAT_XBGR,       PIXEL_FORMAT_XRGB,       PIXEL_FORMAT_ABGR,
     PIXEL_FORMAT_ARGB,       PIXEL_FORMAT_I420,       PIXEL_FORMAT_I420A,
-    PIXEL_FORMAT_I444,       PIXEL_FORMAT_I444A,      PIXEL_FORMAT_NV12,
-    PIXEL_FORMAT_NV12A,      PIXEL_FORMAT_YUV420P10,  PIXEL_FORMAT_YUV422P10,
-    PIXEL_FORMAT_YUV444P10,  PIXEL_FORMAT_YUV420P12,  PIXEL_FORMAT_YUV422P12,
-    PIXEL_FORMAT_YUV444P12,  PIXEL_FORMAT_YUV420AP10, PIXEL_FORMAT_YUV422AP10,
-    PIXEL_FORMAT_YUV444AP10,
+    PIXEL_FORMAT_I422,       PIXEL_FORMAT_I422A,      PIXEL_FORMAT_I444,
+    PIXEL_FORMAT_I444A,      PIXEL_FORMAT_NV12,       PIXEL_FORMAT_NV12A,
+    PIXEL_FORMAT_NV16,       PIXEL_FORMAT_NV24,       PIXEL_FORMAT_YUV420P10,
+    PIXEL_FORMAT_YUV422P10,  PIXEL_FORMAT_YUV444P10,  PIXEL_FORMAT_YUV420P12,
+    PIXEL_FORMAT_YUV422P12,  PIXEL_FORMAT_YUV444P12,  PIXEL_FORMAT_YUV420AP10,
+    PIXEL_FORMAT_YUV422AP10, PIXEL_FORMAT_YUV444AP10, PIXEL_FORMAT_P010LE,
+    PIXEL_FORMAT_P210LE,     PIXEL_FORMAT_P410LE,
 });
 
 constexpr auto kOutputFormats = std::to_array<VideoPixelFormat>({
     PIXEL_FORMAT_I420,
     PIXEL_FORMAT_I420A,
+    PIXEL_FORMAT_I422,
+    PIXEL_FORMAT_I422A,
     PIXEL_FORMAT_I444,
     PIXEL_FORMAT_I444A,
     PIXEL_FORMAT_NV12,
     PIXEL_FORMAT_NV12A,
+    PIXEL_FORMAT_NV16,
+    PIXEL_FORMAT_NV24,
     PIXEL_FORMAT_P010LE,
+    PIXEL_FORMAT_P210LE,
+    PIXEL_FORMAT_P410LE,
     PIXEL_FORMAT_YUV420P10,
     PIXEL_FORMAT_YUV444P10,
 });

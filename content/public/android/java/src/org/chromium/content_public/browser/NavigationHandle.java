@@ -6,6 +6,7 @@ package org.chromium.content_public.browser;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
 
+import androidx.annotation.AnyThread;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
@@ -26,7 +27,11 @@ import org.chromium.url.Origin;
 import java.util.HashMap;
 import java.util.Map;
 
-/** JNI bridge with content::NavigationHandle */
+/**
+ * JNI bridge with content::NavigationHandle
+ *
+ * <p>All methods must be called on the UI Thread with exception to getMostRecentNavigationState
+ */
 @JNINamespace("content")
 @NullMarked
 public class NavigationHandle {
@@ -66,10 +71,14 @@ public class NavigationHandle {
     private @Nullable Page mCommittedPage;
     private boolean mIsSameOrigin;
     private @Nullable Map<String, String> mResponseHeaders;
+    private @Nullable Map<String, String> mRedirectResponseHeaders;
+    private int mRedirectHttpStatusCode;
     private int mIgnoredDuplicateNavigationCount;
 
     private long mNavigationStartMs;
     private boolean mStarted;
+
+    private volatile NavigationState mMostRecentNavigationState;
 
     public static NavigationHandle createForTesting(
             GURL url,
@@ -144,6 +153,8 @@ public class NavigationHandle {
         mIsForward = isForward;
         mIsRestore = isRestore;
         mResponseHeaders = null;
+
+        takeNavigationStateSnapshot();
     }
 
     @CalledByNative
@@ -184,6 +195,8 @@ public class NavigationHandle {
         mWebContents = webContents;
 
         mStarted = true;
+
+        takeNavigationStateSnapshot();
     }
 
     /** Returns the navigation start time in milliseconds. */
@@ -196,13 +209,28 @@ public class NavigationHandle {
      * The navigation received a redirect. Called once per redirect.
      *
      * @param url The new URL.
+     * @param redirectResponseHeaders The headers of the response that caused this redirect.
+     * @param redirectHttpStatusCode The HTTP status code of the response that caused this redirect.
      */
     @CalledByNative
     @VisibleForTesting
-    public void didRedirect(GURL url, boolean isExternalProtocol) {
+    public void didRedirect(
+            @JniType("GURL") GURL url,
+            boolean isExternalProtocol,
+            @JniType("GURL") GURL referrerUrl,
+            int referrerPolicy,
+            @JniType("base::flat_map<std::string, std::string>")
+                    Map<String, String> redirectResponseHeaders,
+            int redirectHttpStatusCode) {
         mUrl = url;
         mIsRedirect = true;
         mIsExternalProtocol = isExternalProtocol;
+        mReferrerUrl = referrerUrl;
+        mReferrerPolicy = referrerPolicy;
+        mRedirectResponseHeaders = redirectResponseHeaders;
+        mRedirectHttpStatusCode = redirectHttpStatusCode;
+
+        takeNavigationStateSnapshot();
     }
 
     /** The navigation finished. Called once per navigation. */
@@ -246,6 +274,8 @@ public class NavigationHandle {
         mIsSameOrigin = isSameOrigin;
         mResponseHeaders = responseHeaders;
         mIgnoredDuplicateNavigationCount = ignoredDuplicateNavigationCount;
+
+        takeNavigationStateSnapshot();
     }
 
     public void callDidFinishForTesting(GURL url) {
@@ -352,10 +382,38 @@ public class NavigationHandle {
     }
 
     /**
+     * The headers of the response the navigation committed, available once the navigation has
+     * finished. The headers of intermediate redirect responses are not included, those are provided
+     * by {@link #getRedirectResponseHeaders()}.
+     *
      * @return The response headers.
      */
     public @Nullable Map<String, String> getResponseHeaders() {
         return mResponseHeaders;
+    }
+
+    /**
+     * The headers of the response that caused the most recent redirect, or null if the navigation
+     * hasn't been redirected. This is intended to be called from within {@link
+     * WebContentsObserver#didRedirectNavigation}, since a subsequent redirect will replace the
+     * value.
+     *
+     * @return The headers of the redirect response.
+     */
+    public @Nullable Map<String, String> getRedirectResponseHeaders() {
+        return mRedirectResponseHeaders;
+    }
+
+    /**
+     * The HTTP status code of the response that caused the most recent redirect, or 0 if the
+     * navigation hasn't been redirected. This is intended to be called from within {@link
+     * WebContentsObserver#didRedirectNavigation}, since a subsequent redirect will replace the
+     * value.
+     *
+     * @return The status code of the redirect response.
+     */
+    public int redirectHttpStatusCode() {
+        return mRedirectHttpStatusCode;
     }
 
     /**
@@ -552,5 +610,38 @@ public class NavigationHandle {
     /** Returns the number of duplicate navigations ignored during this navigation. */
     public int getIgnoredDuplicateNavigationCount() {
         return mIgnoredDuplicateNavigationCount;
+    }
+
+    /** Returns the most recent {@link NavigationState} */
+    @AnyThread
+    public NavigationState getMostRecentNavigationState() {
+        return mMostRecentNavigationState;
+    }
+
+    /** Take a snapshot of the current state of NavigationHandle */
+    private void takeNavigationStateSnapshot() {
+        PageState committedPageState =
+                mCommittedPage == null ? null : mCommittedPage.getMostRecentPageState();
+
+        mMostRecentNavigationState =
+                new NavigationState(
+                        mUrl,
+                        mIsRendererInitiated,
+                        mIsSameDocument,
+                        mIsReload,
+                        mIsHistory,
+                        mIsRestore,
+                        mIsBack,
+                        mIsForward,
+                        mHasCommitted,
+                        mIsErrorPage,
+                        mNavigationStartMs,
+                        mHttpStatusCode,
+                        mErrorCode,
+                        mErrorDescription,
+                        mResponseHeaders,
+                        mStarted,
+                        committedPageState,
+                        this);
     }
 }

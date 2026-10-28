@@ -97,6 +97,18 @@ bool NeedsImplicitCombinatorForMatching(const CSSSelector& selector) {
          CSSSelector::RelationType::kSubSelector;
 }
 
+// Reverses the order of the given selectors. Equivalent to
+// std::ranges::reverse(), but that generates surprisingly poor code here
+// (it materializes checked iterators on the stack, causing store-forwarding
+// stalls in what is a very hot loop for large stylesheets), so we spell it
+// out; swap(CSSSelector&, CSSSelector&) is a plain byte swap.
+ALWAYS_INLINE void ReverseSelectors(base::span<CSSSelector> selectors) {
+  for (wtf_size_t i = 0, j = static_cast<wtf_size_t>(selectors.size());
+       i + 1 < j; ++i, --j) {
+    swap(selectors[i], selectors[j - 1]);
+  }
+}
+
 // Marks the end of parsing a complex selector. (In many cases, there may
 // be more complex selectors after this, since we are often dealing with
 // lists of complex selectors. Those are marked using SetLastInSelectorList(),
@@ -580,51 +592,6 @@ CSSSelectorList* CSSSelectorParser::ConsumeForgivingCompoundSelectorList(
   return CSSSelectorList::AdoptSelectorVector(reset_vector.AddedElements());
 }
 
-CSSSelectorList* CSSSelectorParser::ConsumeForgivingRelativeSelectorList(
-    CSSParserTokenStream& stream,
-    ResultFlags& result_flags) {
-  if (in_supports_parsing_) {
-    CSSSelectorList* selector_list =
-        ConsumeRelativeSelectorList(stream, result_flags);
-    if (!selector_list || !selector_list->IsValid()) {
-      return nullptr;
-    }
-    return selector_list;
-  }
-
-  ResetVectorAfterScope reset_vector(output_);
-  while (!stream.AtEnd()) {
-    base::AutoReset<bool> reset_failure(&failed_parsing_, false);
-    CSSParserTokenStream::BlockGuard guard(stream);
-    wtf_size_t subpos = output_.size();
-    base::span<CSSSelector> selector =
-        ConsumeRelativeSelector(stream, result_flags);
-
-    if (selector.empty() || failed_parsing_ ||
-        (!stream.AtEnd() && stream.Peek().GetType() != kCommaToken)) {
-      output_.resize(subpos);  // Drop what we parsed so far.
-      stream.SkipUntilPeekedTypeIs<kCommaToken>();
-    }
-    if (!stream.AtEnd()) {
-      stream.ConsumeIncludingWhitespace();
-    }
-  }
-
-  // :has() is not allowed in the pseudos accepting only compound selectors, or
-  // not allowed after pseudo-elements.
-  // (e.g. '::slotted(:has(.a))', '::part(foo):has(:hover)')
-  if (inside_compound_pseudo_ ||
-      restricting_pseudo_element_ != CSSSelector::kPseudoUnknown ||
-      reset_vector.AddedElements().empty()) {
-    // TODO(blee@igalia.com) Workaround to make :has() unforgiving to avoid
-    // JQuery :has() issue: https://github.com/w3c/csswg-drafts/issues/7676
-    // Should return empty CSSSelectorList. (return CSSSelectorList::Empty())
-    return nullptr;
-  }
-
-  return CSSSelectorList::AdoptSelectorVector(reset_vector.AddedElements());
-}
-
 CSSSelectorList* CSSSelectorParser::ConsumeRelativeSelectorList(
     CSSParserTokenStream& stream,
     ResultFlags& result_flags) {
@@ -680,14 +647,14 @@ unsigned ExtractCompoundFlags(const CSSSelector& simple_selector,
 
 unsigned ExtractCompoundFlags(const base::span<CSSSelector> compound_selector,
                               CSSParserMode parser_mode) {
-  unsigned compound_flags = 0;
-  for (const CSSSelector& simple : compound_selector) {
-    if (compound_flags) {
-      break;
+  // (Indexed loop rather than a span range-for; see ReverseSelectors().)
+  for (wtf_size_t i = 0; i < compound_selector.size(); ++i) {
+    if (unsigned flags =
+            ExtractCompoundFlags(compound_selector[i], parser_mode)) {
+      return flags;
     }
-    compound_flags |= ExtractCompoundFlags(simple, parser_mode);
   }
-  return compound_flags;
+  return 0;
 }
 
 }  // namespace
@@ -716,7 +683,7 @@ base::span<CSSSelector> CSSSelectorParser::ConsumeRelativeSelector(
   }
 
   // See ConsumeComplexSelector().
-  std::ranges::reverse(reset_vector.AddedElements());
+  ReverseSelectors(reset_vector.AddedElements());
 
   MarkAsEntireComplexSelector(reset_vector.AddedElements());
   return reset_vector.CommitAddedElements();
@@ -856,7 +823,7 @@ base::span<CSSSelector> CSSSelectorParser::ConsumeNestedRelativeSelector(
     return {};
   }
 
-  std::ranges::reverse(reset_vector.AddedElements());
+  ReverseSelectors(reset_vector.AddedElements());
 
   MarkAsEntireComplexSelector(reset_vector.AddedElements());
   return reset_vector.CommitAddedElements();
@@ -882,7 +849,7 @@ base::span<CSSSelector> CSSSelectorParser::ConsumeComplexSelector(
 
   // Reverse the compound selector, so that it comes out properly
   // after we reverse everything below.
-  std::ranges::reverse(compound_selector);
+  ReverseSelectors(compound_selector);
 
   if (CSSSelector::RelationType combinator = ConsumeCombinator(stream)) {
     result_flags |= kContainsComplexSelector;
@@ -915,7 +882,7 @@ base::span<CSSSelector> CSSSelectorParser::ConsumeComplexSelector(
   // The boundaries between the compound selectors are implicit; they are given
   // by having a Relation() not equal to kSubSelector, so they follow
   // automatically when we do the reversal.
-  std::ranges::reverse(reset_vector.AddedElements());
+  ReverseSelectors(reset_vector.AddedElements());
 
   if (nesting_type != CSSNestingType::kNone) {
     // In nested top-level rules, if we do not have a & anywhere in the list,
@@ -962,7 +929,7 @@ bool CSSSelectorParser::ConsumePartialComplexSelector(
     compound_selector.back().SetRelation(combinator);
 
     // See ConsumeComplexSelector().
-    std::ranges::reverse(compound_selector);
+    ReverseSelectors(compound_selector);
 
     if (previous_compound_flags & kHasPseudoElementForRightmostCompound) {
       // If we've already seen a compound that needs to be rightmost, and still
@@ -1104,7 +1071,8 @@ PseudoId CSSSelectorParser::ParsePseudoElement(const String& selector_string,
   }
 
   PseudoId pseudo_id = result.GetPseudoId(result.GetPseudoType());
-  if (!PseudoElement::IsWebExposed(pseudo_id, parent)) {
+  if (pseudo_id == kPseudoIdNone ||
+      !PseudoElement::IsWebExposed(pseudo_id, parent)) {
     return kPseudoIdInvalid;
   }
 
@@ -1259,7 +1227,10 @@ bool IsSimpleSelectorValidAfterPseudoElement(
       }
       break;
     case CSSSelector::kPseudoSlotted:
-      return simple_selector.IsTreeAbidingPseudoElement();
+      if (simple_selector.IsTreeAbidingPseudoElement()) {
+        return true;
+      }
+      break;
     default:
       break;
   }
@@ -1292,6 +1263,11 @@ bool IsPseudoClassValidWithinHasArgument(CSSSelector& selector) {
   switch (selector.GetPseudoType()) {
     // Limited nested :has() to avoid increasing :has() invalidation complexity.
     case CSSSelector::kPseudoHas:
+      return false;
+    // Would allow a cycle, e.g. an overscroll container that stops being one
+    // when it has an open or closed overscroll area.
+    case CSSSelector::kPseudoOverscrollClosed:
+    case CSSSelector::kPseudoOverscrollOpen:
       return false;
     default:
       return true;
@@ -1410,9 +1386,9 @@ base::span<CSSSelector> CSSSelectorParser::ConsumeCompoundSelector(
                               start_pos);
 
   // The relationship between all of these are that they are sub-selectors.
-  for (CSSSelector& selector : reset_vector.AddedElements().first(
-           reset_vector.AddedElements().size() - 1)) {
-    selector.SetRelation(CSSSelector::kSubSelector);
+  // (Indexed loop rather than a span range-for; see ReverseSelectors().)
+  for (wtf_size_t i = start_pos; i + 1 < output_.size(); ++i) {
+    output_[i].SetRelation(CSSSelector::kSubSelector);
   }
 
   SplitCompoundAtImplicitCombinator(reset_vector.AddedElements());
@@ -1512,8 +1488,8 @@ bool CSSSelectorParser::ConsumeId(CSSParserTokenStream& stream) {
   }
   CSSSelector selector;
   selector.SetMatch(CSSSelector::kId);
-  AtomicString value = stream.Consume().Value().ToAtomicString();
-  selector.SetValue(value, IsQuirksModeBehavior(context_->Mode()));
+  selector.SetValue(stream.Consume().Value().ToAtomicString(),
+                    IsQuirksModeBehavior(context_->Mode()));
   output_.push_back(std::move(selector));
   return true;
 }
@@ -1527,8 +1503,8 @@ bool CSSSelectorParser::ConsumeClass(CSSParserTokenStream& stream) {
   }
   CSSSelector selector;
   selector.SetMatch(CSSSelector::kClass);
-  AtomicString value = stream.Consume().Value().ToAtomicString();
-  selector.SetValue(value, IsQuirksModeBehavior(context_->Mode()));
+  selector.SetValue(stream.Consume().Value().ToAtomicString(),
+                    IsQuirksModeBehavior(context_->Mode()));
   output_.push_back(std::move(selector));
   return true;
 }
@@ -2039,10 +2015,16 @@ bool CSSSelectorParser::ConsumePseudo(CSSParserTokenStream& stream,
     }
     case CSSSelector::kPseudoHighlight: {
       const CSSParserToken& ident = stream.Peek();
-      if (ident.GetType() != kIdentToken) {
+      if (ident.GetType() == kIdentToken) {
+        selector.SetArgument(ident.Value().ToAtomicString());
+      } else if (RuntimeEnabledFeatures::
+                     CSSCustomHighlightUniversalSelectorEnabled() &&
+                 ident.GetType() == kDelimiterToken &&
+                 ident.Delimiter() == '*') {
+        selector.SetArgument(CSSSelector::UniversalSelectorAtom());
+      } else {
         return false;
       }
-      selector.SetArgument(ident.Value().ToAtomicString());
       stream.ConsumeIncludingWhitespace();
       if (!stream.AtEnd()) {
         return false;
@@ -2432,7 +2414,8 @@ void CSSSelectorParser::SplitCompoundAtImplicitCombinator(
   //
   // Example:
   //
-  // input#x::-webkit-clear-button -> [ ::-webkit-clear-button, input, #x ]
+  // input#x::-webkit-search-cancel-button -> [ ::-webkit-search-cancel-button,
+  // input, #x ]
   //
   // Likewise, ::slotted() pseudo-element has an implicit ShadowSlot combinator
   // to its left for finding matching slot element in other TreeScope.
@@ -2481,7 +2464,6 @@ WebFeature FeatureForWebKitCustomPseudoElement(const AtomicString& name) {
        WebFeature::kCSSSelectorInternalMediaControlsOverlayCastButton},
       {"-webkit-calendar-picker-indicator",
        WebFeature::kCSSSelectorWebkitCalendarPickerIndicator},
-      {"-webkit-clear-button", WebFeature::kCSSSelectorWebkitClearButton},
       {"-webkit-color-swatch", WebFeature::kCSSSelectorWebkitColorSwatch},
       {"-webkit-color-swatch-wrapper",
        WebFeature::kCSSSelectorWebkitColorSwatchWrapper},

@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <optional>
 #include <sstream>
 #include <utility>
 
@@ -16,6 +17,7 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic_no_webview_contents_manager.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_instance.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
@@ -31,11 +33,12 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_test_util.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry.h"
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/glic/glic_button_interface.h"
 #include "chrome/browser/ui/views/interaction/browser_elements_views.h"
@@ -83,61 +86,6 @@ namespace {
 int ToInt(GlicActuationOnWebPolicyState state) {
   return std::to_underlying(state);
 }
-
-// An observer of the GlicInstanceCoordinator's panel state. Fires the given
-// callback when the state changes to the given kind.
-class PanelStateObserver : public GlicInstanceCoordinator::StateObserver {
- public:
-  PanelStateObserver(mojom::PanelStateKind kind, base::OnceClosure callback)
-      : kind_(kind), callback_(std::move(callback)) {}
-
-  void PanelStateChanged(const mojom::PanelState& panel_state) override {
-    if (panel_state.kind == kind_) {
-      std::move(callback_).Run();
-    }
-  }
-
- private:
-  mojom::PanelStateKind kind_;
-  base::OnceClosure callback_;
-};
-
-class GlicAppStateObserver : public Host::Observer {
- public:
-  explicit GlicAppStateObserver(Host* host)
-      : GlicAppStateObserver(host, host->GetPrimaryWebUiState()) {}
-
-  explicit GlicAppStateObserver(Host* host, mojom::WebUiState initial_state) {
-    observation_.Observe(host);
-    state_ = initial_state;
-  }
-
-  ~GlicAppStateObserver() override { observation_.Reset(); }
-
-  void Wait(mojom::WebUiState state) {
-    waiting_for_state_ = state;
-    if (state_ == waiting_for_state_) {
-      return;
-    }
-    // Run run_loop until the state_ == waiting_for_state_.
-    run_loop_.Run();
-  }
-
-  void WebUiStateChanged(mojom::WebUiState state) override {
-    state_ = state;
-    if (state_ != waiting_for_state_) {
-      return;
-    }
-    run_loop_.Quit();
-    observation_.Reset();
-  }
-
- private:
-  base::ScopedObservation<Host, Host::Observer> observation_{this};
-  mojom::WebUiState state_ = mojom::WebUiState::kUninitialized;
-  mojom::WebUiState waiting_for_state_ = mojom::WebUiState::kUninitialized;
-  base::RunLoop run_loop_;
-};
 
 class GlicPolicyTest : public PolicyTest {
  public:
@@ -250,7 +198,7 @@ class GlicPolicyTest : public PolicyTest {
     profile_2_ = nullptr;
   }
 
-  bool IsGlicButtonVisible(Browser* browser) {
+  bool IsGlicButtonVisible(BrowserWindowInterface* browser) {
     views::LabelButton* button =
         glic::GlicButtonInterface::FromBrowser(browser);
     return button && button->GetVisible();
@@ -273,6 +221,33 @@ class GlicPolicyTest : public PolicyTest {
                  POLICY_SOURCE_ENTERPRISE_DEFAULT,
                  base::Value(std::to_underlying(value)), nullptr);
     provider.UpdateChromePolicy(policies);
+  }
+
+  // In NoWebview mode, errors are shown by the overlay error panel instead of
+  // the chrome://glic WebUI state. Only valid when NoWebview is enabled.
+  static std::optional<mojom::ErrorPanelType> GetErrorPanelType(Host* host) {
+    CHECK(GlicKeyedService::IsNoWebviewEnabled(host->profile()));
+    auto* manager =
+        static_cast<GlicNoWebviewContentsManager*>(host->contents_manager());
+    return manager ? manager->error_type() : std::nullopt;
+  }
+
+  // Returns true if Glic shows the generic load error.
+  static bool IsShowingLoadError(Host* host) {
+    if (GlicKeyedService::IsNoWebviewEnabled(host->profile())) {
+      return GetErrorPanelType(host) == mojom::ErrorPanelType::kError;
+    }
+    return host->GetPrimaryWebUiState() == mojom::WebUiState::kError;
+  }
+
+  // Returns true if Glic shows the disabled-by-admin page.
+  static bool IsShowingDisabledByAdmin(Host* host) {
+    if (GlicKeyedService::IsNoWebviewEnabled(host->profile())) {
+      std::optional<mojom::ErrorPanelType> type = GetErrorPanelType(host);
+      return type == mojom::ErrorPanelType::kDisabledByAdmin ||
+             type == mojom::ErrorPanelType::kDisabledByAdminWithLink;
+    }
+    return host->GetPrimaryWebUiState() == mojom::WebUiState::kDisabledByAdmin;
   }
 
   // Simulates a click on an element with the given |id|.
@@ -383,12 +358,12 @@ IN_PROC_BROWSER_TEST_F(GlicPolicyTest, PolicyAffectsGlicButtonInNewWindows) {
 
   {
     // A new window in profile 1 shouldn't have the Glic button.
-    Browser* new_window_profile_1 = CreateBrowser(profile_1_);
+    BrowserWindowInterface* new_window_profile_1 = CreateBrowser(profile_1_);
     EXPECT_FALSE(IsGlicButtonVisible(new_window_profile_1));
 
     // A new window in profile 2 should continue to have the Glic button since
     // only profile 1 disabled Glic.
-    Browser* new_window_profile_2 = CreateBrowser(profile_2_);
+    BrowserWindowInterface* new_window_profile_2 = CreateBrowser(profile_2_);
     EXPECT_TRUE(IsGlicButtonVisible(new_window_profile_2));
   }
 
@@ -399,7 +374,7 @@ IN_PROC_BROWSER_TEST_F(GlicPolicyTest, PolicyAffectsGlicButtonInNewWindows) {
   {
     // A new window in profile 1 should again get the Glic button now that the
     // policy is re-enabled.
-    Browser* new_window_profile_1 = CreateBrowser(profile_1_);
+    BrowserWindowInterface* new_window_profile_1 = CreateBrowser(profile_1_);
     EXPECT_TRUE(IsGlicButtonVisible(new_window_profile_1));
   }
 }
@@ -411,10 +386,10 @@ IN_PROC_BROWSER_TEST_F(GlicPolicyTest, GlicButtonInExistingWindows) {
   ASSERT_NE(profile_1_, profile_2_);
 
   // Create two windows in each profile.
-  Browser* profile_1_window_1 = browser();
-  Browser* profile_1_window_2 = CreateBrowser(profile_1_);
-  Browser* profile_2_window_1 = CreateBrowser(profile_2_);
-  Browser* profile_2_window_2 = CreateBrowser(profile_2_);
+  BrowserWindowInterface* profile_1_window_1 = browser();
+  BrowserWindowInterface* profile_1_window_2 = CreateBrowser(profile_1_);
+  BrowserWindowInterface* profile_2_window_1 = CreateBrowser(profile_2_);
+  BrowserWindowInterface* profile_2_window_2 = CreateBrowser(profile_2_);
 
   // Ensure the button was created in each window.
   EXPECT_TRUE(IsGlicButtonVisible(profile_1_window_1));
@@ -458,7 +433,7 @@ IN_PROC_BROWSER_TEST_F(GlicPolicyTest, PolicyDisablesBackgroundMode) {
   ASSERT_EQ(browser()->GetProfile(), profile_1_);
   ASSERT_NE(profile_1_, profile_2_);
 
-  Browser* new_window_profile_2 = CreateBrowser(profile_2_);
+  BrowserWindowInterface* new_window_profile_2 = CreateBrowser(profile_2_);
   ASSERT_TRUE(new_window_profile_2);
 
   GlicBackgroundModeManager* background_mode_manager =
@@ -519,10 +494,8 @@ IN_PROC_BROWSER_TEST_F(GlicPolicyTest, PolicyDisablesWebUi) {
   Host* host = instance_tracker.GetHost();
   ASSERT_TRUE(host);
 
-  // WebUi will be in an error state since the mock web client is not setup.
-  ASSERT_TRUE(base::test::RunUntil([&]() {
-    return host->GetPrimaryWebUiState() == mojom::WebUiState::kError;
-  }));
+  // Glic will be in an error state since the mock web client is not setup.
+  ASSERT_TRUE(base::test::RunUntil([&]() { return IsShowingLoadError(host); }));
 
   // 2. Disable the policy.
   SetGlicPolicy(policy_for_profile_1(), GeminiSettingsPolicyState::kDisabled);
@@ -530,9 +503,8 @@ IN_PROC_BROWSER_TEST_F(GlicPolicyTest, PolicyDisablesWebUi) {
             browser()->GetProfile()->GetPrefs()->GetInteger(kGeminiSettings));
 
   // Verify it shows the disabled page.
-  ASSERT_TRUE(base::test::RunUntil([&]() {
-    return host->GetPrimaryWebUiState() == mojom::WebUiState::kDisabledByAdmin;
-  }));
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return IsShowingDisabledByAdmin(host); }));
 
   // 3. Re-enable the policy.
   SetGlicPolicy(policy_for_profile_1(), GeminiSettingsPolicyState::kEnabled);
@@ -558,12 +530,9 @@ IN_PROC_BROWSER_TEST_F(GlicPolicyTest, PolicyDisablesWebUi) {
   host = instance_tracker2.GetHost();
   ASSERT_TRUE(host);
 
-  // WebUi will be in an error state since the mock web client is not setup.
-  ASSERT_TRUE(base::test::RunUntil([&]() {
-    return host->GetPrimaryWebUiState() == mojom::WebUiState::kError;
-  }));
+  // Glic will be in an error state since the mock web client is not setup.
+  ASSERT_TRUE(base::test::RunUntil([&]() { return IsShowingLoadError(host); }));
 }
-
 
 // Same as GlicPolicyTest but starts Chrome with the Glic policy disabled.
 class GlicPolicyDisabledTest : public GlicPolicyTest {
@@ -604,23 +573,26 @@ IN_PROC_BROWSER_TEST_F(GlicPolicyTest, DisableGlicWhenIsOpen) {
   ASSERT_TRUE(GetGlicInstance());
   ASSERT_TRUE(GetGlicInstance()->IsShowing());
   Host* host = GetHost();
-  GlicAppStateObserver app_observer(host);
-  app_observer.Wait(mojom::WebUiState::kError);
+  ASSERT_TRUE(base::test::RunUntil([&]() { return IsShowingLoadError(host); }));
 
   // Disable the policy.
   SetGlicPolicy(policy_for_profile_1(), GeminiSettingsPolicyState::kDisabled);
   ASSERT_EQ(kDisabledValue,
             profile_1_->GetPrefs()->GetInteger(kGeminiSettings));
   ASSERT_TRUE(base::test::RunUntil([&]() {
-    return host->GetPrimaryWebUiState() == mojom::WebUiState::kDisabledByAdmin;
-  })) << "Timed out waiting for unavailable state. Current state: "
-      << host->GetPrimaryWebUiState();
+    return IsShowingDisabledByAdmin(host);
+  })) << "Timed out waiting for unavailable state.";
 
   ASSERT_TRUE(GetGlicInstance());
   ASSERT_TRUE(GetGlicInstance()->IsShowing());
 
 // Flakiness on linux.
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+  // The close button is part of the chrome://glic WebUI, which is not used in
+  // NoWebview mode.
+  if (GlicKeyedService::IsNoWebviewEnabled(profile_1_)) {
+    return;
+  }
   // TODO(crbug.com/426583248) Wait for animation to finish instead of using the
   // arbitrary 1000ms wait.
   base::RunLoop run_loop;

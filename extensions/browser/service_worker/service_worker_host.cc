@@ -25,6 +25,7 @@
 #include "extensions/browser/service_worker/service_worker_task_queue.h"
 #include "extensions/browser/service_worker/worker_id.h"
 #include "extensions/common/api/messaging/port_context.h"
+#include "extensions/common/api/messaging/signing_certificate.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/mojom/frame.mojom.h"
 #include "extensions/common/permissions/permissions_data.h"
@@ -75,12 +76,10 @@ ServiceWorkerHost::ServiceWorkerHost(
   receiver_.set_disconnect_handler(base::BindOnce(
       &ServiceWorkerHost::RemoteDisconnected, base::Unretained(this)));
 
-  render_process_host_->AddObserver(this);
+  render_process_host_observation_.Observe(render_process_host_);
 }
 
-ServiceWorkerHost::~ServiceWorkerHost() {
-  render_process_host_->RemoveObserver(this);
-}
+ServiceWorkerHost::~ServiceWorkerHost() = default;
 
 // static
 base::AutoReset<ServiceWorkerHost::FactoryCallback*>
@@ -96,7 +95,7 @@ void ServiceWorkerHost::BindReceiver(
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   auto* render_process_host =
       content::RenderProcessHost::FromID(render_process_id);
-  if (!render_process_host) {
+  if (!render_process_host || !render_process_host->IsInitializedAndNotDead()) {
     return;
   }
   auto* service_worker_host_list = ServiceWorkerHostList::Get(
@@ -162,6 +161,9 @@ void ServiceWorkerHost::DidInitializeServiceWorkerContext(
     const blink::ServiceWorkerToken& service_worker_token,
     mojo::PendingAssociatedRemote<mojom::EventDispatcher> event_dispatcher) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!render_process_host_->IsInitializedAndNotDead()) {
+    return;
+  }
   content::BrowserContext* browser_context = GetBrowserContext();
   if (!browser_context) {
     return;
@@ -366,6 +368,9 @@ void ServiceWorkerHost::OpenChannelToExtension(
 
 void ServiceWorkerHost::OpenChannelToNativeApp(
     const std::string& native_app_name,
+#if BUILDFLAG(IS_ANDROID)
+    const MojomSigningCertificates& android_certificates,
+#endif
     const PortId& port_id,
     mojo::PendingAssociatedRemote<extensions::mojom::MessagePort> port,
     mojo::PendingAssociatedReceiver<extensions::mojom::MessagePortHost>
@@ -377,9 +382,16 @@ void ServiceWorkerHost::OpenChannelToNativeApp(
     return;
   }
 
+#if BUILDFLAG(IS_ANDROID)
+  SigningCertificates parsed_certificates =
+      ParseCertificatesFromMojom(android_certificates);
+#else
+  SigningCertificates parsed_certificates = {};
+#endif
+
   MessageServiceApi::GetMessageService()->OpenChannelToNativeApp(
-      browser_context, worker_id_, port_id, native_app_name, std::move(port),
-      std::move(port_host));
+      browser_context, worker_id_, port_id, native_app_name,
+      std::move(parsed_certificates), std::move(port), std::move(port_host));
 }
 
 void ServiceWorkerHost::OpenChannelToTab(
@@ -423,6 +435,17 @@ void ServiceWorkerHost::RenderProcessExited(
   // RenderProcessHostImpl::Cleanup.
   Destroy();
   // This instance has now been deleted.
+}
+
+void ServiceWorkerHost::RenderProcessHostDestroyed(
+    content::RenderProcessHost* host) {
+  CHECK_EQ(host, render_process_host_);
+  render_process_host_observation_.Reset();
+  if (ServiceWorkerHostList::Get(render_process_host_,
+                                 /*create_if_not_exists=*/false)) {
+    Destroy();
+    // This instance has now been deleted.
+  }
 }
 
 }  // namespace extensions

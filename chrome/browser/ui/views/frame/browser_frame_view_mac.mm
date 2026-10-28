@@ -15,6 +15,7 @@
 #include "base/numerics/safe_conversions.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "chrome/browser/headless/headless_mode_util.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/themes/theme_properties.h"
@@ -32,6 +33,7 @@
 #include "chrome/browser/ui/tabs/tab_style.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view.h"
+#include "chrome/browser/ui/views/frame/browser_native_widget.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/ui/views/frame/caption_button_placeholder_container.h"
@@ -244,7 +246,7 @@ int BrowserFrameViewMac::GetTopInset(bool restored) const {
 }
 
 void BrowserFrameViewMac::UpdateFullscreenTopUI() {
-  Browser* browser = GetBrowserView()->browser();
+  BrowserWindowInterface* browser = GetBrowserView()->browser();
   // Update to the new toolbar style if needed.
   FullscreenToolbarStyle new_style;
   if (fullscreen_utils::IsInContentFullscreen(browser)) {
@@ -303,8 +305,7 @@ void BrowserFrameViewMac::UpdateFullscreenTopUI() {
 
   // Notify browser that top ui state has been changed so that we can update
   // the bookmark bar state as well.
-  browser->GetFeatures()
-      .exclusive_access_manager()
+  ExclusiveAccessManager::From(browser)
       ->fullscreen_controller()
       ->FullscreenTopUIStateChanged();
 
@@ -336,7 +337,9 @@ void BrowserFrameViewMac::UpdateThrobber(bool running) {}
 
 void BrowserFrameViewMac::PaintAsActiveChanged() {
   UpdateCaptionButtonPlaceholderContainerBackground();
-  BrowserFrameView::PaintAsActiveChanged();
+  if (!is_glass_frame_eligible_) {
+    BrowserFrameView::PaintAsActiveChanged();
+  }
 }
 
 void BrowserFrameViewMac::OnThemeChanged() {
@@ -361,6 +364,14 @@ gfx::RoundedCornersF BrowserFrameViewMac::GetWindowRoundedCorners() const {
   return gfx::RoundedCornersF();
 }
 
+int BrowserFrameViewMac::GetRestoredWindowCornerRadius() const {
+  // These values are determined empirically.
+  if (@available(macOS 26, *)) {
+    return 20;
+  }
+  return 16;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // BrowserFrameViewMac, views::FrameView implementation:
 
@@ -377,7 +388,7 @@ gfx::Rect BrowserFrameViewMac::GetWindowBoundsForClientBounds(
   // explicitly add it. If a custom titlebar is being drawn, this calculation
   // will be zero.
   NSWindow* window = GetWidget()->GetNativeWindow().GetNativeNSWindow();
-  DCHECK(window);
+  CHECK(window, base::NotFatalUntil::M162);
   top_inset += window.frame.size.height -
                [window contentRectForFrameRect:window.frame].size.height;
 
@@ -418,6 +429,12 @@ void BrowserFrameViewMac::WindowControlsOverlayEnabledChanged() {
 
 gfx::Size BrowserFrameViewMac::GetMinimumSize() const {
   gfx::Size client_size = browser_widget()->client_view()->GetMinimumSize();
+
+  // Headless mode does not enforce macOS desktop window aspect ratio
+  // constraints.
+  if (headless::IsHeadlessMode()) {
+    return client_size;
+  }
 
   // macOS apps generally don't allow their windows to get shorter than a
   // certain height, which empirically seems to be related to their *minimum*
@@ -492,20 +509,20 @@ void BrowserFrameViewMac::OnPaint(gfx::Canvas* canvas) {
     return;
   }
 
-  SkColor frame_color = GetFrameColor(BrowserFrameActiveState::kUseCurrent);
   if (is_glass_frame_eligible_) {
-    const SkAlpha frame_alpha = color_utils::IsDark(frame_color)
-                                    ? kBrowserFrameAlphaDark
-                                    : kBrowserFrameAlphaLight;
-    canvas->DrawColor(SkColorSetA(frame_color, frame_alpha));
-  } else {
-    canvas->DrawColor(frame_color);
+    // In glass mode, painting to frame color happens in the opaque background
+    // view instead.
+    return;
+  }
 
-    auto* theme_service = ThemeServiceFactory::GetForProfile(
-        GetBrowserView()->browser()->GetProfile());
-    if (!theme_service->UsingSystemTheme()) {
-      PaintThemedFrame(canvas);
-    }
+  const SkColor frame_color =
+      GetFrameColor(BrowserFrameActiveState::kUseCurrent);
+  canvas->DrawColor(frame_color);
+
+  auto* theme_service = ThemeServiceFactory::GetForProfile(
+      GetBrowserView()->browser()->GetProfile());
+  if (!theme_service->UsingSystemTheme()) {
+    PaintThemedFrame(canvas);
   }
 }
 

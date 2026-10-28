@@ -8,7 +8,6 @@
  * under Site Settings.
  */
 import 'chrome://resources/cr_components/localized_link/localized_link.js';
-import 'chrome://resources/cr_elements/action_link.css.js';
 import 'chrome://resources/js/action_link.js';
 import 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
 import 'chrome://resources/cr_elements/cr_button/cr_button.js';
@@ -23,14 +22,15 @@ import '../icons.html.js';
 import '../privacy_icons.html.js';
 import '../settings_page/settings_subpage.js';
 import '../settings_shared.css.js';
+import './action_link.css.js';
 import './all_sites_icons.html.js';
 import './clear_storage_dialog_shared.css.js';
 import './site_details_permission.js';
 
-import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
+import {PrefServiceObserverMixin} from '/shared/settings/prefs2/pref_service_observer_mixin.js';
+import {WebUiListenerMixin} from '/shared/settings/web_ui_listener_mixin.js';
 import type {CrDialogElement} from 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
 import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
-import {WebUiListenerMixin} from 'chrome://resources/cr_elements/web_ui_listener_mixin.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {focusWithoutInk} from 'chrome://resources/js/focus_without_ink.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
@@ -66,8 +66,8 @@ export interface SiteDetailsElement {
 }
 
 const SiteDetailsElementBase =
-    RouteObserverMixin(SiteSettingsMixin(SettingsViewMixin(
-        WebUiListenerMixin(PrefsMixin(I18nMixin(PolymerElement))))));
+    RouteObserverMixin(SiteSettingsMixin(SettingsViewMixin(WebUiListenerMixin(
+        PrefServiceObserverMixin(I18nMixin(PolymerElement))))));
 
 export class SiteDetailsElement extends SiteDetailsElementBase {
   static get is() {
@@ -203,9 +203,7 @@ export class SiteDetailsElement extends SiteDetailsElementBase {
        */
       useBlockIfUnfamiliarLabelForV8OptimizerDefault_: {
         type: Boolean,
-        computed:
-            'computeShouldUseBlockIfUnfamiliarLabelForV8OptimizerDefault_(' +
-            'prefs.generated.javascript_optimizer.value)',
+        value: false,
       },
 
       /**
@@ -246,6 +244,12 @@ export class SiteDetailsElement extends SiteDetailsElementBase {
 
   override connectedCallback() {
     super.connectedCallback();
+
+    this.addPrefObserver<JavascriptOptimizerSetting>(
+        'generated.javascript_optimizer', pref => {
+          this.useBlockIfUnfamiliarLabelForV8OptimizerDefault_ = pref.value ===
+              JavascriptOptimizerSetting.BLOCKED_FOR_UNFAMILIAR_SITES;
+        });
 
     this.addWebUiListener(
         'usage-total-changed',
@@ -461,15 +465,6 @@ export class SiteDetailsElement extends SiteDetailsElementBase {
     return storage !== '' && cookies !== '';
   }
 
-  /**
-   * Returns whether the "Block if site is unfamiliar" label should be used for
-   * the default javascript-optimizer content setting.
-   */
-  private computeShouldUseBlockIfUnfamiliarLabelForV8OptimizerDefault_():
-      boolean {
-    const pref = this.getPref('generated.javascript_optimizer').value;
-    return pref === JavascriptOptimizerSetting.BLOCKED_FOR_UNFAMILIAR_SITES;
-  }
 
   private onResetSettingsDialogClosed_() {
     const toFocus =
@@ -501,144 +496,6 @@ export class SiteDetailsElement extends SiteDetailsElementBase {
           routes.SITE_SETTINGS_SITE_DETAILS,
           new URLSearchParams('site=' + this.parentAppOrigin_));
     }
-  }
-
-  protected getAccountCircleIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:account-circle' :
-        'privacy:account-circle-old';
-  }
-
-  protected getCardboardIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:cardboard' :
-        'privacy:cardboard-old';
-  }
-
-  protected getCodeIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:code' :
-        'privacy:code-old';
-  }
-
-  protected getContentPasteIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:content-paste' :
-        'privacy:content-paste-old';
-  }
-
-  protected getCreditCardIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:credit-card' :
-        'privacy:credit-card-old';
-  }
-
-  protected getDeveloperBoardIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:developer-board' :
-        'privacy:developer-board-old';
-  }
-
-  protected getFileSaveIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:file-save' :
-        'privacy:file-save-old';
-  }
-
-  protected getFontDownloadIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:font-download' :
-        'privacy:font-download-old';
-  }
-
-  protected getHandGestureIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:hand-gesture' :
-        'privacy:hand-gesture-old';
-  }
-
-  protected getImagesmodeIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:imagesmode' :
-        'privacy:imagesmode-old';
-  }
-
-  protected getMicIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:mic' :
-        'privacy:mic-old';
-  }
-
-  protected getNotificationsIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:notifications' :
-        'privacy:notifications-old';
-  }
-
-  protected getPianoIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:piano' :
-        'privacy:piano-old';
-  }
-
-  protected getSelectWindowIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:select-window' :
-        'privacy:select-window-old';
-  }
-
-  protected getSensorsIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:sensors' :
-        'privacy:sensors-old';
-  }
-
-  protected getSmartCardReaderIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:smart-card-reader' :
-        'privacy:smart-card-reader-old';
-  }
-
-  protected getSyncSavedLocallyIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:sync-saved-locally' :
-        'privacy:sync-saved-locally-old';
-  }
-
-  protected getUsbIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:usb' :
-        'privacy:usb-old';
-  }
-
-  protected getV8Icon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:v8' :
-        'privacy:v8-old';
-  }
-
-  protected getVideogameAssetIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:videogame-asset' :
-        'privacy:videogame-asset-old';
-  }
-
-  protected getVolumeUpIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:volume-up' :
-        'privacy:volume-up-old';
-  }
-
-  protected getWarningIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:warning' :
-        'privacy:warning-old';
-  }
-
-  protected getWebAssetIcon_(): string {
-    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-        'privacy:web-asset' :
-        'privacy:web-asset-old';
   }
 }
 

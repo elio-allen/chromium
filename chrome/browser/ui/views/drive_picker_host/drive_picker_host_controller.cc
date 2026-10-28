@@ -10,22 +10,25 @@
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/task/single_thread_task_runner.h"
-#include "chrome/browser/platform_util.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/views/drive_picker_host/drive_picker_host_view.h"
 #include "chrome/browser/ui/views/drive_picker_host/drive_picker_result_handler.mojom.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "components/constrained_window/constrained_window_views.h"
+#include "components/web_modal/web_contents_modal_dialog_host.h"
 #include "content/public/browser/web_contents.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/gfx/geometry/insets.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
+#include "ui/views/bubble/bubble_border.h"
+#include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/widget/native_widget.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
 #include "ui/views/window/dialog_delegate.h"
+#include "ui/views/window/frame_view.h"
 
 // `DrivePickerDialogDelegate` configures a window-modal dialog containing the
 // `WebContents` view. It suppresses standard Chrome dialog decorations (title,
@@ -42,6 +45,18 @@ class DrivePickerDialogDelegate : public views::DialogDelegate {
     set_margins(gfx::Insets());
     SetContentsView(std::move(contents_view));
     SetOwnershipOfNewWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
+  }
+
+  std::unique_ptr<views::FrameView> CreateFrameView(
+      views::Widget* widget) override {
+    auto frame =
+        std::make_unique<views::BubbleFrameView>(gfx::Insets(), gfx::Insets());
+    auto border = std::make_unique<views::BubbleBorder>(
+        views::BubbleBorder::FLOAT, views::BubbleBorder::NO_SHADOW);
+    border->set_rounded_corners(gfx::RoundedCornersF(0));
+    frame->SetBubbleBorder(std::move(border));
+    frame->SetBackgroundColor(SK_ColorTRANSPARENT);
+    return frame;
   }
 };
 
@@ -71,18 +86,18 @@ void DrivePickerHostController::ShowDrivePickerHost(
   // We host the view inside a standard browser-modal dialog widget using the
   // `constrained_window` framework to prevent interaction with the parent
   // window (such as the omnibox or tabs) while the picker is active.
-  BrowserView* browser_view = nullptr;
+  web_modal::WebContentsModalDialogHost* dialog_host = nullptr;
   if (browser_window_interface_) {
-    browser_view =
-        BrowserView::GetBrowserViewForBrowser(browser_window_interface_);
+    dialog_host =
+        browser_window_interface_->GetWebContentsModalDialogHostForWindow();
   }
 
-  // Under standard Chrome conditions, a valid active browser view must be
+  // Under standard Chrome conditions, a valid active modal dialog host must be
   // resolved to anchor the dialog modal. However, under the Loomnibox
   // feature flag (omnibox::kOmniboxEverywhere), if no active browser window
   // exists (e.g. Chrome running in background), we bypass this restriction to
   // show the Drive picker as a parentless, top-level standalone widget.
-  if (!browser_view &&
+  if (!dialog_host &&
       !base::FeatureList::IsEnabled(omnibox::kOmniboxEverywhere)) {
     SendErrorToRequest(
         std::move(request),
@@ -109,12 +124,13 @@ void DrivePickerHostController::ShowDrivePickerHost(
 
   views::Widget* widget = nullptr;
   gfx::NativeView parent_view = gfx::NativeView();
+  views::Widget* parent_widget = nullptr;
   if (use_loomnibox_anchoring) {
     parent_view = anchor_widget_->GetNativeView();
-  } else if (browser_view) {
-    gfx::NativeWindow parent_window =
-        browser_view->GetWidget()->GetNativeWindow();
-    parent_view = platform_util::GetViewForWindow(parent_window);
+    parent_widget = anchor_widget_;
+  } else if (dialog_host) {
+    parent_view = dialog_host->GetHostView();
+    parent_widget = views::Widget::GetWidgetForNativeView(parent_view);
   }
 
   widget = views::DialogDelegate::CreateDialogWidget(
@@ -126,18 +142,8 @@ void DrivePickerHostController::ShowDrivePickerHost(
 
   picker_widget_ = base::WrapUnique(widget);
 
-  if (use_loomnibox_anchoring) {
-    browser_widget_observation_.Observe(anchor_widget_);
-  } else if (browser_view) {
-    browser_widget_observation_.Observe(browser_view->GetWidget());
-  }
-
-  if (auto* frame_view = picker_widget_->widget_delegate()
-                             ->AsDialogDelegate()
-                             ->GetBubbleFrameView()) {
-    frame_view->SetBackgroundColor(SK_ColorTRANSPARENT);
-    // Ensure the dialog frame itself is rectangular to match the picker's look.
-    frame_view->SetRoundedCorners(gfx::RoundedCornersF(0));
+  if (parent_widget) {
+    browser_widget_observation_.Observe(parent_widget);
   }
 
   picker_widget_->Show();
@@ -184,6 +190,11 @@ void DrivePickerHostController::ResetControllerState() {
   browser_widget_observation_.Reset();
   anchor_widget_ = nullptr;
   browser_window_interface_ = nullptr;
+  Observe(nullptr);
+  if (picker_view_) {
+    picker_view_->RemoveAllChildViews();
+    picker_view_ = nullptr;
+  }
   if (picker_widget_) {
     picker_widget_->Close();
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
@@ -197,10 +208,8 @@ void DrivePickerHostController::ResetControllerState() {
   } else {
     picker_delegate_.reset();
   }
-  picker_view_ = nullptr;
   is_picker_document_loaded_ = false;
   pending_request_.reset();
-  Observe(nullptr);
   if (on_close_callback_) {
     std::move(on_close_callback_).Run();
   }

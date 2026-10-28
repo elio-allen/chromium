@@ -45,6 +45,9 @@ public class TabStripMenuMetricsUtils {
         TabMenuAction.ADD_TAB_TO_READING_LIST,
         TabMenuAction.SEND_TO_YOUR_DEVICES,
         TabMenuAction.TOGGLE_TAB_LAYOUT,
+        TabMenuAction.SHARE_TAB_WITH_GLIC_NEW_CHAT,
+        TabMenuAction.SHARE_TAB_WITH_GLIC_RECENT,
+        TabMenuAction.UNSHARE_TAB_WITH_GLIC,
         TabMenuAction.SHOWN,
     })
     public @interface TabMenuAction {
@@ -74,6 +77,9 @@ public class TabStripMenuMetricsUtils {
         String ADD_TAB_TO_READING_LIST = "AddTabToReadingList";
         String SEND_TO_YOUR_DEVICES = "SendToYourDevices";
         String TOGGLE_TAB_LAYOUT = "ToggleTabLayout";
+        String SHARE_TAB_WITH_GLIC_NEW_CHAT = "ShareTabWithGlicNewChat";
+        String SHARE_TAB_WITH_GLIC_RECENT = "ShareTabWithGlicRecent";
+        String UNSHARE_TAB_WITH_GLIC = "UnshareTabWithGlic";
         String SHOWN = "Shown";
     }
 
@@ -120,7 +126,6 @@ public class TabStripMenuMetricsUtils {
         StripMenuAction.PIN_GLIC,
         StripMenuAction.UNPIN_GLIC,
         StripMenuAction.TASK_MANAGER,
-        StripMenuAction.SEND_FEEDBACK,
     })
     public @interface StripMenuAction {
         String REOPEN_CLOSED_ENTRY = "ReopenClosedEntry";
@@ -128,7 +133,6 @@ public class TabStripMenuMetricsUtils {
         String PIN_GLIC = "PinGlic";
         String UNPIN_GLIC = "UnpinGlic";
         String TASK_MANAGER = "TaskManager";
-        String SEND_FEEDBACK = "SendFeedback";
     }
 
     private TabStripMenuMetricsUtils() {}
@@ -213,7 +217,9 @@ public class TabStripMenuMetricsUtils {
                 case TabMenuAction.MOVE_TAB_TO_INCOGNITO_GROUP:
                     RecordUserAction.record(
                             isMultipleTabs
-                                    ? "Android.VerticalTabs.TabMenu.MoveTabToIncognitoGroup.MultiTab"
+                                    ? "Android.VerticalTabs.TabMenu."
+                                            + "MoveTabToIncognitoGroup"
+                                            + ".MultiTab"
                                     : "Android.VerticalTabs.TabMenu.MoveTabToIncognitoGroup");
                     break;
                 case TabMenuAction.MOVE_TAB_TO_OTHER_WINDOW:
@@ -272,6 +278,27 @@ public class TabStripMenuMetricsUtils {
                     break;
                 case TabMenuAction.TOGGLE_TAB_LAYOUT:
                     RecordUserAction.record("Android.VerticalTabs.TabMenu.ToggleTabLayout");
+                    break;
+                case TabMenuAction.SHARE_TAB_WITH_GLIC_NEW_CHAT:
+                    if (isMultipleTabs) {
+                        RecordUserAction.record(
+                                "Android.VerticalTabs.TabMenu.ShareTabWithGlicNewChat.MultiTab");
+                    } else {
+                        RecordUserAction.record(
+                                "Android.VerticalTabs.TabMenu.ShareTabWithGlicNewChat");
+                    }
+                    break;
+                case TabMenuAction.SHARE_TAB_WITH_GLIC_RECENT:
+                    RecordUserAction.record(
+                            isMultipleTabs
+                                    ? "Android.VerticalTabs.TabMenu.ShareTabWithGlicRecent.MultiTab"
+                                    : "Android.VerticalTabs.TabMenu.ShareTabWithGlicRecent");
+                    break;
+                case TabMenuAction.UNSHARE_TAB_WITH_GLIC:
+                    RecordUserAction.record(
+                            isMultipleTabs
+                                    ? "Android.VerticalTabs.TabMenu.UnshareTabWithGlic.MultiTab"
+                                    : "Android.VerticalTabs.TabMenu.UnshareTabWithGlic");
                     break;
                 case TabMenuAction.SHOWN:
                     RecordUserAction.record(
@@ -412,6 +439,24 @@ public class TabStripMenuMetricsUtils {
                     break;
                 case TabMenuAction.TOGGLE_TAB_LAYOUT:
                     RecordUserAction.record("MobileToolbarTabMenu.ToggleTabLayout");
+                    break;
+                case TabMenuAction.SHARE_TAB_WITH_GLIC_NEW_CHAT:
+                    RecordUserAction.record(
+                            isMultipleTabs
+                                    ? "MobileToolbarTabMenu.ShareTabWithGlicNewChat.MultiTab"
+                                    : "MobileToolbarTabMenu.ShareTabWithGlicNewChat");
+                    break;
+                case TabMenuAction.SHARE_TAB_WITH_GLIC_RECENT:
+                    RecordUserAction.record(
+                            isMultipleTabs
+                                    ? "MobileToolbarTabMenu.ShareTabWithGlicRecent.MultiTab"
+                                    : "MobileToolbarTabMenu.ShareTabWithGlicRecent");
+                    break;
+                case TabMenuAction.UNSHARE_TAB_WITH_GLIC:
+                    RecordUserAction.record(
+                            isMultipleTabs
+                                    ? "MobileToolbarTabMenu.UnshareTabWithGlic.MultiTab"
+                                    : "MobileToolbarTabMenu.UnshareTabWithGlic");
                     break;
                 case TabMenuAction.SHOWN:
                     RecordUserAction.record(
@@ -562,9 +607,6 @@ public class TabStripMenuMetricsUtils {
                 case StripMenuAction.TASK_MANAGER:
                     RecordUserAction.record("Android.VerticalTabs.StripMenu.TaskManager");
                     break;
-                case StripMenuAction.SEND_FEEDBACK:
-                    RecordUserAction.record("Android.VerticalTabs.StripMenu.SendFeedback");
-                    break;
                 default:
                     assert false : "Unknown strip menu action: " + action;
             }
@@ -584,9 +626,6 @@ public class TabStripMenuMetricsUtils {
                     break;
                 case StripMenuAction.TASK_MANAGER:
                     RecordUserAction.record("Android.TabStripMenu.TaskManager");
-                    break;
-                case StripMenuAction.SEND_FEEDBACK:
-                    RecordUserAction.record("Android.TabStripMenu.SendFeedback");
                     break;
                 default:
                     assert false : "Unknown strip menu action: " + action;

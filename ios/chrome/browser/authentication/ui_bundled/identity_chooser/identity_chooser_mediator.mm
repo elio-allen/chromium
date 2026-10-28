@@ -6,7 +6,6 @@
 
 #import <algorithm>
 
-#import "base/strings/sys_string_conversions.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/authentication/ui_bundled/cells/table_view_identity_item.h"
@@ -14,9 +13,9 @@
 #import "ios/chrome/browser/authentication/ui_bundled/identity_chooser/identity_chooser_consumer.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/avatar/avatar_provider.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
+#import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
 
 @interface IdentityChooserMediator () <IdentityManagerObserving> {
@@ -66,7 +65,6 @@
   _identityManager = nullptr;
 }
 
-
 #pragma mark - Private
 
 - (bool)defaultIdentityIsValid {
@@ -74,7 +72,7 @@
     GaiaId gaia(_defaultIdentity.gaiaId);
     return std::ranges::contains(
         _identityManager->GetAccountsOnDevice(), gaia,
-        [](const AccountInfo& info) { return info.gaia; });
+        [](const AccountInfo& info) { return info.GetGaiaId(); });
   }
   return false;
 }
@@ -134,7 +132,7 @@
 
 - (void)extendedAccountInfoDidUpdate:(const AccountInfo&)info {
   id<SystemIdentity> identity =
-      _accountManagerService->GetIdentityOnDeviceWithGaiaID(info.gaia);
+      _accountManagerService->GetIdentityOnDeviceWithGaiaID(info.GetGaiaId());
   CHECK(identity);
   TableViewIdentityItem* item =
       [self.consumer tableViewIdentityItemWithGaiaID:identity.gaiaId];

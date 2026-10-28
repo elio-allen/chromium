@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -14,13 +15,27 @@
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_util.h"
+#include "base/time/time.h"
 #include "cc/paint/paint_flags.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/autofill/autofill_popup_controller.h"
+#include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/views/autofill/popup/popup_interactive_row_view.h"
 #include "chrome/browser/ui/views/autofill/popup/popup_row_view.h"
+#include "chrome/common/webui_url_constants.h"
+#include "components/autofill/content/browser/content_autofill_client.h"
+#include "components/autofill/core/browser/filling/filling_product.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
+#include "components/autofill/core/browser/suggestions/suggestion_type.h"
+#include "components/autofill/core/common/autofill_prefs.h"
 #include "components/input/native_web_keyboard_event.h"
+#include "components/optimization_guide/core/feature_registry/enterprise_policy_registry.h"
+#include "components/optimization_guide/core/feature_registry/feature_registration.h"
+#include "components/prefs/pref_service.h"
+#include "components/strings/grit/components_strings.h"
+#include "content/public/browser/web_contents.h"
 #include "ui/accessibility/ax_enums.mojom.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
@@ -63,8 +78,8 @@ constexpr int kMinimumWidth = 320;
 class LinkFocusBorder : public views::Border {
  public:
   explicit LinkFocusBorder(bool is_focused) : is_focused_(is_focused) {
-    SetColor(is_focused ? ui::kColorFocusableBorderFocused
-                        : ui::ColorVariant());
+    set_color(is_focused ? ui::kColorFocusableBorderFocused
+                         : ui::ColorVariant());
   }
 
   LinkFocusBorder(const LinkFocusBorder&) = delete;
@@ -92,6 +107,16 @@ class LinkFocusBorder : public views::Border {
   const bool is_focused_;
 };
 
+// Records that the user acknowledged the notice and removes it from the popup.
+// Can destroy `controller`.
+void AcknowledgeNotice(AutofillPopupController& controller,
+                       int line_number,
+                       std::string_view histogram_name) {
+  base::UmaHistogramEnumeration(
+      histogram_name, AutofillMetrics::PopupNoticeInteractions::kAcknowledged);
+  controller.RemoveSuggestion(line_number);
+}
+
 }  // namespace
 
 PopupNoticeView::PopupNoticeView(
@@ -104,6 +129,8 @@ PopupNoticeView::PopupNoticeView(
     std::u16string_view subtitle_text,
     std::u16string_view link_text,
     std::u16string_view accept_button_text,
+    std::u16string_view accept_button_a11y_label,
+    std::u16string_view a11y_instructions,
     base::RepeatingClosure on_link_clicked,
     std::string_view notice_interaction_histogram_name)
     : controller_(std::move(controller)),
@@ -116,6 +143,7 @@ PopupNoticeView::PopupNoticeView(
   CHECK(!subtitle_text.empty());
   CHECK(!link_text.empty());
   CHECK(!accept_button_text.empty());
+  CHECK(!a11y_instructions.empty());
   CHECK(!notice_interaction_histogram_name_.empty());
 
   auto* layout_manager = SetLayoutManager(std::make_unique<views::BoxLayout>(
@@ -129,7 +157,13 @@ PopupNoticeView::PopupNoticeView(
                                 kRowVerticalMargin, kRowHorizontalMargin));
 
   // When shown on its own, the notice suggestion has a slightly different UI.
-  if (controller_ && controller_->GetSuggestions().size() > 1) {
+  // AtMemory is an exception as it always has a searchbox and the notice should
+  // be rendered as a pop-up in such cases.
+  const bool has_other_content =
+      controller_ &&
+      (controller_->GetSuggestions().size() > 1 ||
+       controller_->GetMainFillingProduct() == FillingProduct::kAtMemory);
+  if (has_other_content) {
     SetBackground(views::CreateRoundedRectBackground(
         ui::kColorSysSurface3, /*radius=*/kBackgroundCornerRadius));
     SetBorder(views::CreateEmptyBorder(gfx::Insets(kBorderInsets)));
@@ -140,8 +174,9 @@ PopupNoticeView::PopupNoticeView(
   layout_manager->SetFlexForView(description_, 1);
 
   if (controller_) {
-    base::UmaHistogramEnumeration(notice_interaction_histogram_name_,
-                                  PopupNoticeInteractions::kShown);
+    base::UmaHistogramEnumeration(
+        notice_interaction_histogram_name_,
+        AutofillMetrics::PopupNoticeInteractions::kShown);
   }
 
   // TODO(crbug.com/534738804): Use offset markers for string assembly to
@@ -150,7 +185,9 @@ PopupNoticeView::PopupNoticeView(
       base::JoinString({title_text, subtitle_text, link_text}, u" ");
   const size_t full_text_length = full_text.length();
   GetViewAccessibility().SetRole(ax::mojom::Role::kGroup);
-  GetViewAccessibility().SetName(full_text, ax::mojom::NameFrom::kAttribute);
+  GetViewAccessibility().SetName(
+      base::JoinString({full_text, a11y_instructions}, u". "),
+      ax::mojom::NameFrom::kAttribute);
   description_->SetText(std::move(full_text));
   description_->SetTextContext(views::style::CONTEXT_DIALOG_BODY_TEXT);
   description_->SetDefaultTextStyle(views::style::STYLE_BODY_5);
@@ -183,6 +220,10 @@ PopupNoticeView::PopupNoticeView(
       base::BindRepeating(&PopupNoticeView::OnAcceptButtonClicked,
                           base::Unretained(this)),
       std::u16string(accept_button_text)));
+  if (!accept_button_a11y_label.empty()) {
+    accept_button_->GetViewAccessibility().SetName(
+        std::u16string(accept_button_a11y_label));
+  }
   accept_button_->SetStyle(ui::ButtonStyle::kTonal);
 
   if (views::FocusRing* focus_ring = views::FocusRing::Get(accept_button_)) {
@@ -248,20 +289,19 @@ bool PopupNoticeView::IsSelectable() const {
 
 void PopupNoticeView::OnAcceptButtonClicked() {
   if (controller_) {
-    base::UmaHistogramEnumeration(notice_interaction_histogram_name_,
-                                  PopupNoticeInteractions::kAcknowledged);
-    controller_->RemoveSuggestion(
-        line_number_,
-        AutofillMetrics::SingleEntryRemovalMethod::kDeleteButtonClicked);
+    AcknowledgeNotice(*controller_, line_number_,
+                      notice_interaction_histogram_name_);
   }
 }
 
 void PopupNoticeView::OnLinkClicked() {
   if (controller_) {
-    base::UmaHistogramEnumeration(notice_interaction_histogram_name_,
-                                  PopupNoticeInteractions::kLinkButtonClicked);
+    base::UmaHistogramEnumeration(
+        notice_interaction_histogram_name_,
+        AutofillMetrics::PopupNoticeInteractions::kLinkButtonClicked);
   }
   if (on_link_clicked_) {
+    // Running the closure can destroy `this`. Do not access members afterwards.
     on_link_clicked_.Run();
   }
 }
@@ -311,8 +351,9 @@ void PopupNoticeView::FocusAcceptButton() {
     a11y_selection_delegate_->NotifyAXSelection(*this);
     GetViewAccessibility().NotifyEvent(ax::mojom::Event::kFocus, true);
     GetViewAccessibility().SetIsSelected(true);
-    announce_callback_.Run(std::u16string(accept_button_->GetText()),
-                           /*polite=*/false);
+    announce_callback_.Run(
+        accept_button_->GetViewAccessibility().GetCachedName(),
+        /*polite=*/false);
   }
 }
 
@@ -379,5 +420,128 @@ PopupNoticeView::~PopupNoticeView() = default;
 
 BEGIN_METADATA(PopupNoticeView)
 END_METADATA
+
+namespace {
+
+// TODO(b/524157152): Refactor AutofillPopupController to provide this.
+bool IsLoggingDisabledByPolicy(const AutofillPopupController* controller) {
+  if (!controller || !controller->GetWebContents()) {
+    return false;
+  }
+  Profile* profile = Profile::FromBrowserContext(
+      controller->GetWebContents()->GetBrowserContext());
+  if (!profile || !profile->GetPrefs()) {
+    return false;
+  }
+  const int policy_value = profile->GetPrefs()->GetInteger(
+      optimization_guide::prefs::kFindAndFillWithGeminiSettings);
+  return policy_value ==
+         std::to_underlying(
+             optimization_guide::EnterprisePolicyValue::kAllowWithoutLogging);
+}
+
+}  // namespace
+
+std::unique_ptr<PopupNoticeView> CreatePersonalContextNoticeView(
+    PopupRowView::AccessibilitySelectionDelegate& a11y_selection_delegate,
+    base::RepeatingCallback<void(const std::u16string&, bool)>
+        announce_callback,
+    base::WeakPtr<AutofillPopupController> controller,
+    int line_number) {
+  std::string histogram_name =
+      controller &&
+              controller->GetMainFillingProduct() == FillingProduct::kAtMemory
+          ? "PersonalContext.AtMemory.NoticeInteractions"
+          : "PersonalContext.AmbientAutofill.NoticeInteractions";
+  std::u16string title_text = l10n_util::GetStringUTF16(
+      IDS_AUTOFILL_POPUP_PERSONAL_CONTEXT_NOTICE_TITLE);
+  std::u16string subtitle_text = l10n_util::GetStringUTF16(
+      IDS_AUTOFILL_POPUP_PERSONAL_CONTEXT_NOTICE_SUBTITLE);
+  std::u16string link_text = l10n_util::GetStringUTF16(
+      IDS_AUTOFILL_POPUP_PERSONAL_CONTEXT_NOTICE_LINK_TEXT);
+  std::u16string accept_button_text = l10n_util::GetStringUTF16(
+      IDS_AUTOFILL_POPUP_PERSONAL_CONTEXT_NOTICE_OK_BUTTON);
+  std::u16string accept_button_a11y_label = l10n_util::GetStringUTF16(
+      IDS_AUTOFILL_POPUP_PERSONAL_CONTEXT_NOTICE_OK_BUTTON_A11Y_LABEL);
+  std::u16string a11y_instructions =
+      l10n_util::GetStringUTF16(IDS_AUTOFILL_POPUP_NOTICE_A11Y_INSTRUCTIONS);
+  if (controller) {
+    if (controller->GetMainFillingProduct() == FillingProduct::kAtMemory &&
+        !IsLoggingDisabledByPolicy(controller.get())) {
+      subtitle_text = l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_POPUP_PERSONAL_CONTEXT_NOTICE_SUBTITLE_WITH_LOGGING);
+    }
+  }
+  // Clicking the link acknowledges the notice and opens the settings.
+  auto on_link_clicked = base::BindRepeating(
+      [](base::WeakPtr<AutofillPopupController> controller, int line_number,
+         const std::string& histogram_name) {
+        if (!controller) {
+          return;
+        }
+        // Acknowledging the notice can destroy `controller`, so get the
+        // profile first.
+        content::WebContents* web_contents = controller->GetWebContents();
+        Profile* profile =
+            web_contents
+                ? Profile::FromBrowserContext(web_contents->GetBrowserContext())
+                : nullptr;
+        AcknowledgeNotice(*controller, line_number, histogram_name);
+        if (profile) {
+          chrome::ShowSettingsSubPageForProfile(
+              profile, chrome::kSuggestionsFromGeminiSubPage);
+        }
+      },
+      controller, line_number, histogram_name);
+  return std::make_unique<PopupNoticeView>(
+      a11y_selection_delegate, announce_callback, std::move(controller),
+      line_number, title_text, subtitle_text, link_text, accept_button_text,
+      accept_button_a11y_label, a11y_instructions, std::move(on_link_clicked),
+      histogram_name);
+}
+
+std::unique_ptr<PopupNoticeView> CreateAutofillAiPrivateInferenceNoticeView(
+    PopupRowView::AccessibilitySelectionDelegate& a11y_selection_delegate,
+    base::RepeatingCallback<void(const std::u16string&, bool)>
+        announce_callback,
+    base::WeakPtr<AutofillPopupController> controller,
+    int line_number) {
+  const std::u16string title_text =
+      l10n_util::GetStringUTF16(IDS_AUTOFILL_AI_PRIVATE_INFERENCE_NOTICE_TITLE);
+  const std::u16string subtitle_text = l10n_util::GetStringUTF16(
+      IDS_AUTOFILL_AI_PRIVATE_INFERENCE_NOTICE_DESCRIPTION);
+  const std::u16string link_text = l10n_util::GetStringUTF16(
+      IDS_AUTOFILL_AI_PRIVATE_INFERENCE_NOTICE_LINK_TEXT);
+  const std::u16string accept_button_text = l10n_util::GetStringUTF16(
+      IDS_AUTOFILL_AI_PRIVATE_INFERENCE_NOTICE_PRIMARY_BUTTON_TEXT);
+  const std::u16string accept_button_a11y_label = l10n_util::GetStringUTF16(
+      IDS_AUTOFILL_AI_PRIVATE_INFERENCE_NOTICE_PRIMARY_BUTTON_A11Y_LABEL);
+  const std::u16string a11y_instructions =
+      l10n_util::GetStringUTF16(IDS_AUTOFILL_POPUP_NOTICE_A11Y_INSTRUCTIONS);
+
+  auto on_link_clicked = base::BindRepeating(
+      [](base::WeakPtr<AutofillPopupController> controller) {
+        if (!controller || !controller->GetWebContents()) {
+          return;
+        }
+        if (auto* const client = ContentAutofillClient::FromWebContents(
+                controller->GetWebContents())) {
+          if (PrefService* const prefs = client->GetPrefs()) {
+            prefs->SetTime(
+                prefs::kAutofillAiPrivateInferenceNoticeAcknowledgedTimestamp,
+                base::Time::Now());
+          }
+          client->ShowAutofillSettings(
+              SuggestionType::kAutofillAiPrivateInferenceNotice);
+        }
+      },
+      controller);
+
+  return std::make_unique<PopupNoticeView>(
+      a11y_selection_delegate, announce_callback, std::move(controller),
+      line_number, title_text, subtitle_text, link_text, accept_button_text,
+      accept_button_a11y_label, a11y_instructions, std::move(on_link_clicked),
+      "Autofill.Ai.PrivateInferenceNoticeInteractions");
+}
 
 }  // namespace autofill

@@ -17,13 +17,14 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
+#include "components/autofill/core/browser/autofill_field_test_api.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/form_structure_test_api.h"
 #include "components/autofill/core/browser/heuristic_source.h"
-#include "components/autofill/core/browser/test_utils/autofill_form_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
 #include "components/autofill/core/common/autofill_features.h"
-#include "components/autofill/core/common/autofill_test_utils.h"
+#include "components/autofill/core/common/autofill_test_util.h"
 #include "components/optimization_guide/core/delivery/model_info.h"
 #include "components/optimization_guide/core/delivery/test_optimization_guide_model_provider.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
@@ -48,8 +49,10 @@ using MockExecuteModelCallback = base::OnceCallback<void(
 // because heuristic_type() returns the post-processed prediction, after
 // potentially falling back to regex.
 MATCHER(MlTypeEq, "") {
-  return std::get<0>(arg)->local_type_predictions()[static_cast<size_t>(
-             HeuristicSource::kAutofillMachineLearning)] == std::get<1>(arg);
+  return test_api(*std::get<0>(arg))
+             .local_type_predictions()[static_cast<size_t>(
+                 HeuristicSource::kAutofillMachineLearning)] ==
+         std::get<1>(arg);
 }
 
 FieldClassificationModelEncoder::ModelOutput

@@ -4,6 +4,7 @@
 
 import {hasAllowedInputs} from '//resources/cr_components/composebox/common.js';
 import {ToolMode} from '//resources/cr_components/composebox/composebox_query.mojom-webui.js';
+import {GlowMode} from '//resources/cr_components/search/constants.js';
 import {html} from '//resources/lit/v3_0/lit.rollup.js';
 
 import type {OmniboxComposeboxElement} from './omnibox_composebox.js';
@@ -13,15 +14,14 @@ export function getHtml(this: OmniboxComposeboxElement) {
   return html`<!--_html_template_start_-->
     <search-animated-glow id="animatedSearchElement"
         animation-state="${this.animationState}"
+        .glowMode="${this.willFulfillInAim ? GlowMode.INNER_GLOW : GlowMode.NONE}"
         .coloredTicTacVoiceAnimationEnabled=
             "${this.voiceSearchCoherenceEnabled}"
         .isListening="${this.isListening}"
-        .entrypointName="${this.entrypointName}"
         .requiresVoice="${this.shouldShowVoiceSearchAnimation()}"
         .transcript="${this.transcript}"
         .receivedSpeech="${this.receivedSpeech}"
         .energyEffectAnimationEnabled="${false}"
-        .isZeroState="${false}"
         exportparts="composebox-background">
       ${this.showFileCarousel && this.shouldShowVoiceSearchAnimation() &&
           this.voiceSearchCoherenceEnabled ? html`
@@ -48,8 +48,8 @@ export function getHtml(this: OmniboxComposeboxElement) {
                   <cr-composebox-tool-chip
                     exportparts="tool-chip-label"
                     .inputState="${this.inputState}"
-                    .isCanvasQuerySubmitted="
-                        ${this.isCanvasQuerySubmitted}"
+                    .isCanvasQuerySubmitted="${
+                        this.isCanvasQuerySubmitted}"
                     @tool-click="${this.onToolClick}"
                     part="tool-chip">
                   </cr-composebox-tool-chip>
@@ -59,7 +59,7 @@ export function getHtml(this: OmniboxComposeboxElement) {
     ${this.errorMessage ?
       html`<ntp-error-scrim id="errorScrim" part="error-scrim"
           ?compact-mode="${this.searchboxLayoutMode === 'Compact' &&
-                          this.files.size === 0}"
+                          this.attachedContext.size === 0}"
           .errorMessage="${this.errorMessage}"
           @dismiss-error-scrim="${this.onDismissErrorScrim}">
       </ntp-error-scrim>`
@@ -84,10 +84,26 @@ export function getHtml(this: OmniboxComposeboxElement) {
             .submitEnabled="${this.submitEnabled}"
             .entrypointName="${this.entrypointName}"
             .cancelButtonTitle="${this.computeCancelButtonTitle()}"
+            .hideCancel="${this.isAimButtonShown_}"
+            .inlineActionButtons="${this.isAimButtonShown_}"
             @input-input="${this.onInputInput}"
             @input-focusin="${this.onInputFocusin}"
             @cancel-click="${this.onCancelClick}"
             @clear-smart-compose="${this.onClearSmartCompose}">
+          ${this.isAimButtonShown_ ? html`
+            <cr-composebox-aim-button slot="action-buttons"
+                .mode="${this.getAimButtonMode()}"
+                .showExitIcon="${this.showAimButtonExitIcon_}"
+                .disabled="${this.isAimButtonDisabled()}"
+                .energyEffectAnimationEnabled="${
+                    this.energyEffectAnimationEnabled_}"
+                .label="${this.i18n('searchboxComposeButtonText')}"
+                .exitTitle="${this.i18n('composeboxAimButtonExitTitle')}"
+                .sendTitle="${this.i18n('composeboxAimButtonSendTitle')}"
+                @aim-button-click="${this.onAimButtonClick}"
+                @focusin="${this.onAimButtonFocusin}">
+            </cr-composebox-aim-button>
+          ` : ''}
         </cr-composebox-input>
         <div id="context" part="context-entrypoint">
           <div id="carouselContainer" part="carousel-container">
@@ -103,24 +119,28 @@ export function getHtml(this: OmniboxComposeboxElement) {
                 </cr-composebox-file-carousel> ` : ''}
             </div>
           </div>
-          ${this.shouldShowDivider() ? html`
-          <div class="carousel-divider" part="carousel-divider"></div>
-          ` : ''}
-          <cr-composebox-dropdown
-              id="matches"
-              part="dropdown"
-              exportparts="match-text-container"
-              role="listbox"
-              .result="${this.result}"
-              .selectedMatchIndex="${this.selectedMatchIndex}"
-              .maxSuggestions="${this.maxSuggestions}"
-              .toolMode="${this.inputState?.activeTool || ToolMode.kUnspecified}"
-              @selected-match-index-changed="${this.onSelectedMatchIndexChanged}"
-              @match-focusin="${this.onMatchFocusin}"
-              @match-click="${this.onMatchClick}"
-              ?hidden="${!this.showDropdown || !this.dropdownNeeded}"
-              .lastQueriedInput="${this.lastQueriedInput}">
-          </cr-composebox-dropdown>
+          <div class="divider-and-dropdown">
+            ${this.shouldShowDivider() ? html`
+            <div class="carousel-divider" part="carousel-divider"></div>
+            ` : ''}
+            <cr-composebox-dropdown
+                id="matches"
+                part="dropdown"
+                exportparts="match-text-container"
+                role="listbox"
+                .result="${this.result}"
+                .selectedMatchIndex="${this.selectedMatchIndex}"
+                .maxSuggestions="${this.maxSuggestions}"
+                .toolMode="${this.inputState?.activeTool || ToolMode.kUnspecified}"
+                .richImageSuggestionsEnabled="${
+                  this.richImageSuggestionsEnabled}"
+                @selected-match-index-changed="${this.onSelectedMatchIndexChanged}"
+                @match-focusin="${this.onMatchFocusin}"
+                @match-click="${this.onMatchClick}"
+                ?hidden="${this.shouldHideDropdown()}"
+                .lastQueriedInput="${this.lastQueriedInput}">
+            </cr-composebox-dropdown>
+          </div>
           ${this.contextMenuEnabled ? html`
             <div class="context-menu-container" id="contextMenuContainer"
                 part="context-menu-and-tools"
@@ -135,7 +155,6 @@ export function getHtml(this: OmniboxComposeboxElement) {
                     .inputState="${this.inputState}"
                     .applyContextButtonBackground="${this.applyContextButtonBackground}"
                     .isOblongShape="${this.isOblongShape}"
-                    ?upload-button-disabled="${this.uploadButtonDisabled}"
                     .sharedTabs="${this.getSharedTabs()}"
                     .restoredTabs="${this.aimThreadRestoredTabs}"
                     ?show-context-menu-description="${this.showContextMenuDescription}"
@@ -165,7 +184,8 @@ export function getHtml(this: OmniboxComposeboxElement) {
                 title="${this.i18n('voiceSearchButtonLabel')}">
             </cr-icon-button>
           ` : ''}
-          ${this.shouldShowSubmitButton() &&
+          ${!this.isAimButtonShown_ &&
+                this.shouldShowSubmitButton() &&
                 this.searchboxLayoutMode === 'TallBottomContext' ? html`
               <cr-composebox-submit
                 exportparts="action-icon, submit, submit-icon, submit-overlay"
@@ -178,6 +198,14 @@ export function getHtml(this: OmniboxComposeboxElement) {
           ` : ''}
         </div>
       </div>
+      ${this.shouldShowSuggestionActivityLink() ? html`
+        <div id="suggestionActivity">
+          <localized-link
+            .localizedString="${this.i18nAdvanced('suggestionActivityLink')}"
+            @link-clicked="${this.onLinkClicked}">
+          </localized-link>
+        </div>
+      ` : ''}
     </div>
     ${this.shouldShowVoiceSearch() ? html`
       <cr-composebox-voice-search id="voiceSearch"
@@ -196,14 +224,6 @@ export function getHtml(this: OmniboxComposeboxElement) {
           exportparts="voice-close-button, voice-details-link, voice-stop-button, voice-submit-button">
       </cr-composebox-voice-search>
     ` : ''}
-    ${this.shouldShowSuggestionActivityLink() ? html`
-      <div id="suggestionActivity">
-        <localized-link
-          .localizedString="${this.i18nAdvanced('suggestionActivityLink')}"
-          @link-clicked="${this.onLinkClicked}">
-        </localized-link>
-      </div>
-    `: ''}
 <!--_html_template_end_-->`;
   // clang-format on
 }

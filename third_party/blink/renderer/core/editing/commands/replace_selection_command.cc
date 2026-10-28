@@ -128,8 +128,8 @@ class ReplacementFragment final {
   Document* document_;
   DocumentFragment* fragment_;
   String trivial_text_;
-  bool has_interchange_newline_at_start_;
-  bool has_interchange_newline_at_end_;
+  bool has_interchange_newline_at_start_ = false;
+  bool has_interchange_newline_at_end_ = false;
 };
 
 static bool IsInterchangeHTMLBRElement(const Node* node) {
@@ -179,10 +179,7 @@ static Position PositionAvoidingPrecedingNodes(Position pos) {
 ReplacementFragment::ReplacementFragment(Document* document,
                                          DocumentFragment* fragment,
                                          const VisibleSelection& selection)
-    : document_(document),
-      fragment_(fragment),
-      has_interchange_newline_at_start_(false),
-      has_interchange_newline_at_end_(false) {
+    : document_(document), fragment_(fragment) {
   if (!document_)
     return;
   if (!fragment_ || !fragment_->HasChildren())
@@ -202,16 +199,26 @@ ReplacementFragment::ReplacementFragment(Document* document,
   else
     shadow_ancestor_element = editable_root;
 
-  if (!editable_root->GetAttributeEventListener(
-          event_type_names::kWebkitBeforeTextInserted)
-      // FIXME: Remove these checks once textareas and textfields actually
-      // register an event handler.
-      &&
-      !(shadow_ancestor_element && shadow_ancestor_element->GetLayoutObject() &&
-        shadow_ancestor_element->GetLayoutObject()->IsTextControl()) &&
-      IsRichlyEditable(*editable_root)) {
-    RemoveInterchangeNodes(fragment_);
-    return;
+  if (RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    if (!(shadow_ancestor_element &&
+          shadow_ancestor_element->GetLayoutObject() &&
+          shadow_ancestor_element->GetLayoutObject()->IsTextControl()) &&
+        IsRichlyEditable(*editable_root)) {
+      RemoveInterchangeNodes(fragment_);
+      return;
+    }
+  } else {
+    if (!editable_root->GetAttributeEventListener(
+            event_type_names::kWebkitBeforeTextInserted)
+        // FIXME: Remove these checks once textareas and textfields actually
+        // register an event handler.
+        && !(shadow_ancestor_element &&
+             shadow_ancestor_element->GetLayoutObject() &&
+             shadow_ancestor_element->GetLayoutObject()->IsTextControl()) &&
+        IsRichlyEditable(*editable_root)) {
+      RemoveInterchangeNodes(fragment_);
+      return;
+    }
   }
 
   if (!IsRichlyEditable(*editable_root)) {
@@ -229,12 +236,18 @@ ReplacementFragment::ReplacementFragment(Document* document,
     if (is_plain_text) {
       RemoveInterchangeNodes(fragment_);
       String original_text = fragment_->textContent();
-      auto* event =
-          MakeGarbageCollected<BeforeTextInsertedEvent>(original_text);
-      editable_root->DefaultEventHandler(*event);
-      if (original_text != event->GetText()) {
+      String filtered_text;
+      if (RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+        filtered_text = editable_root->FilterBeforeTextInserted(original_text);
+      } else {
+        auto* event =
+            MakeGarbageCollected<BeforeTextInsertedEvent>(original_text);
+        editable_root->DefaultEventHandler(*event);
+        filtered_text = event->GetText();
+      }
+      if (original_text != filtered_text) {
         fragment_ = CreateFragmentFromText(
-            selection.ToNormalizedEphemeralRange(), event->GetText());
+            selection.ToNormalizedEphemeralRange(), filtered_text);
         RemoveInterchangeNodes(fragment_);
       }
       UpdateTrivialReplacementText();
@@ -267,9 +280,15 @@ ReplacementFragment::ReplacementFragment(Document* document,
   RestoreAndRemoveTestRenderingNodesToFragment(holder);
 
   // Give the root a chance to change the text.
-  auto* evt = MakeGarbageCollected<BeforeTextInsertedEvent>(text);
-  editable_root->DefaultEventHandler(*evt);
-  if (text != evt->GetText() || !IsRichlyEditable(*editable_root)) {
+  String filtered_text;
+  if (RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    filtered_text = editable_root->FilterBeforeTextInserted(text);
+  } else {
+    auto* evt = MakeGarbageCollected<BeforeTextInsertedEvent>(text);
+    editable_root->DefaultEventHandler(*evt);
+    filtered_text = evt->GetText();
+  }
+  if (text != filtered_text || !IsRichlyEditable(*editable_root)) {
     RestoreAndRemoveTestRenderingNodesToFragment(holder);
 
     // TODO(editing-dev): Use of UpdateStyleAndLayout
@@ -277,13 +296,10 @@ ReplacementFragment::ReplacementFragment(Document* document,
     document->UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
 
     fragment_ = CreateFragmentFromText(selection.ToNormalizedEphemeralRange(),
-                                       evt->GetText());
+                                       filtered_text);
 
     // Fragment may have become trivial after recreation from text
-    if (RuntimeEnabledFeatures::
-            UpdateTrivalTextAfterFragmentCreationFromTextEnabled()) {
-      UpdateTrivialReplacementText();
-    }
+    UpdateTrivialReplacementText();
 
     if (!fragment_->HasChildren())
       return;
@@ -522,8 +538,7 @@ ReplaceSelectionCommand::ReplaceSelectionCommand(
       moving_paragraph_(options & kMovingParagraph),
       password_echo_behavior_(password_echo_behavior),
       input_type_(input_type),
-      sanitize_fragment_(options & kSanitizeFragment),
-      should_merge_end_(false) {}
+      sanitize_fragment_(options & kSanitizeFragment) {}
 
 String ReplaceSelectionCommand::TextDataForInputEvent() const {
   // As per spec https://www.w3.org/TR/input-events-1/#overview
@@ -1350,13 +1365,13 @@ void ReplaceSelectionCommand::SetUpStyle(const VisibleSelection& selection) {
        selection.Start()
                .AnchorNode()
                ->GetLayoutObject()
-               ->StyleRef()
+               ->Style()
                .UsedUserModify() == EUserModify::kReadWritePlaintextOnly) &&
       (selection.End().AnchorNode()->GetLayoutObject() &&
        selection.End()
                .AnchorNode()
                ->GetLayoutObject()
-               ->StyleRef()
+               ->Style()
                .UsedUserModify() == EUserModify::kReadWritePlaintextOnly)) {
     match_style_ = false;
   }
@@ -1476,19 +1491,16 @@ void ReplaceSelectionCommand::InsertParagraphSeparatorIfNeeds(
     //   <div>xbar<div>bar</div><div>bazx</div></div>
     // Don't do this if the selection started in a Mail blockquote.
     //
-    // When SkipParagraphSplitForInlineInsertHTML is enabled, skip the
-    // paragraph split for insertHTML commands (InputType::kNone) whose
-    // fragment contains only inline content, since splitting incorrectly
-    // pushes inline elements outside their containing block.
+    // Skip the paragraph split for insertHTML commands (InputType::kNone)
+    // whose fragment contains only inline content, since splitting
+    // incorrectly pushes inline elements outside their containing block.
     // See https://crbug.com/41024699.
     const VisiblePosition visible_start_position =
         EndingVisibleSelection().VisibleStart();
     if (prevent_nesting_ && !start_is_inside_mail_blockquote &&
         !IsEndOfParagraph(visible_start_position) &&
         !IsStartOfParagraph(visible_start_position) &&
-        (!RuntimeEnabledFeatures::
-             SkipParagraphSplitForInlineInsertHTMLEnabled() ||
-         fragment.HasBlockLevelContent() ||
+        (fragment.HasBlockLevelContent() ||
          input_type_ == InputEvent::InputType::kInsertFromPaste ||
          input_type_ == InputEvent::InputType::kInsertFromDrop ||
          input_type_ == InputEvent::InputType::kInsertReplacementText)) {
@@ -2145,7 +2157,7 @@ void ReplaceSelectionCommand::AddSpacesForSmartReplace(
   if (needs_trailing_space && end_node) {
     bool collapse_white_space =
         !end_node->GetLayoutObject() ||
-        end_node->GetLayoutObject()->StyleRef().ShouldCollapseWhiteSpaces();
+        end_node->GetLayoutObject()->Style().ShouldCollapseWhiteSpaces();
     end_text_node = DynamicTo<Text>(end_node);
     if (end_text_node) {
       InsertTextIntoNode(end_text_node, end_offset,
@@ -2187,7 +2199,7 @@ void ReplaceSelectionCommand::AddSpacesForSmartReplace(
   if (needs_leading_space && start_node) {
     bool collapse_white_space =
         !start_node->GetLayoutObject() ||
-        start_node->GetLayoutObject()->StyleRef().ShouldCollapseWhiteSpaces();
+        start_node->GetLayoutObject()->Style().ShouldCollapseWhiteSpaces();
     if (auto* start_text_node = DynamicTo<Text>(start_node)) {
       InsertTextIntoNode(start_text_node, start_offset,
                          collapse_white_space ? NonBreakingSpaceString() : " ",
@@ -2393,10 +2405,6 @@ UChar NextCharacterForOffset(Text& text, wtf_size_t offset) {
 
 bool ReplaceSelectionCommand::ShouldNormalizeNbspInInsertedContent(
     EditingState* editing_state) const {
-  if (!RuntimeEnabledFeatures::NormalizeNbspForPasteAndDropEnabled()) {
-    return false;
-  }
-
   if (editing_state->IsAborted()) {
     return false;
   }
@@ -2407,13 +2415,7 @@ bool ReplaceSelectionCommand::ShouldNormalizeNbspInInsertedContent(
   }
 
   Node* node = EndingSelection().Anchor().AnchorNode();
-  if (!node) {
-    return false;
-  }
-
-  return RuntimeEnabledFeatures::NormalizeNbspRichTextOnlyEnabled()
-             ? IsRichlyEditable(*node)
-             : IsEditable(*node);
+  return node && IsRichlyEditable(*node);
 }
 
 // Converts U+00A0 (&nbsp;) to a regular space where it is surrounded by
@@ -2444,7 +2446,7 @@ void ReplaceSelectionCommand::NormalizeNbspInInsertedContent(
     if (!layout_object) {
       continue;
     }
-    const ComputedStyle& style = layout_object->StyleRef();
+    const ComputedStyle& style = layout_object->Style();
     if (style.ShouldPreserveWhiteSpaces() &&
         style.UsedUserModify() != EUserModify::kReadWritePlaintextOnly) {
       continue;

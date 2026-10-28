@@ -179,6 +179,18 @@ declare global {
         PRIVATE_PASS = 'PRIVATE_PASS',
       }
 
+      export enum UserDataProcessingConsentState {
+        UNDEFINED = 'UNDEFINED',
+        UNKNOWN = 'UNKNOWN',
+        ENABLED = 'ENABLED',
+        DISABLED = 'DISABLED',
+      }
+
+      export interface UserDataProcessingConsentStates {
+        commsApps: UserDataProcessingConsentState;
+        googleApps: UserDataProcessingConsentState;
+      }
+
       export interface AutofillMetadata {
         summaryLabel: string;
         summarySublabel?: string;
@@ -275,6 +287,22 @@ declare global {
         value: string|DateValue;
       }
 
+      export interface LegalMessageLink {
+        start: number;
+        end: number;
+        url: string;
+      }
+
+      export interface LegalMessageLine {
+        text: string;
+        links: LegalMessageLink[];
+      }
+
+      export interface UpsertPassDetails {
+        legalMessageLines: LegalMessageLine[];
+        contextToken: string;
+      }
+
       export interface EntityInstance {
         type: EntityType;
         attributeInstances: AttributeInstance[];
@@ -283,6 +311,7 @@ declare global {
         shouldAuthenticateToView?: boolean;
         storedInWallet?: boolean;
         isReadOnly?: boolean;
+        contextToken?: string;
       }
 
       export interface EntityInstanceWithLabels {
@@ -348,6 +377,11 @@ declare global {
       export function getWalletablePassDetectionOptInStatus(): Promise<boolean>;
       export function setWalletablePassDetectionOptInStatus(optedIn: boolean):
           Promise<boolean>;
+      export function fetchUserDataProcessingConsent():
+          Promise<UserDataProcessingConsentStates>;
+      export function getDetailsForUpsertPass(entityTypeName: number):
+          Promise<UpsertPassDetails|null>;
+      export function preloadDetailsForUpsertPass(entityTypeName: number): void;
       export const onPersonalDataChanged: ChromeEvent<
           (addresses: AddressEntry[], creditCards: CreditCardEntry[],
            ibans: IbanEntry[], payOverTimeIssuers: PayOverTimeIssuerEntry[],

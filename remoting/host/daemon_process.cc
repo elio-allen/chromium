@@ -18,6 +18,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "components/named_mojo_ipc_server/connection_info.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "remoting/base/auto_thread_task_runner.h"
@@ -35,6 +36,10 @@
 #include "remoting/host/host_status_observer.h"
 #include "remoting/host/peer_connection_process_handler.h"
 #include "remoting/protocol/transport.h"
+
+#if BUILDFLAG(IS_WIN)
+#include "remoting/host/certificate_broker_impl.h"
+#endif
 
 namespace remoting {
 
@@ -73,12 +78,6 @@ void DaemonProcess::OnChannelConnected(int32_t peer_pid) {
 
   VLOG(1) << "IPC: daemon <- network (" << peer_pid << ")";
 
-  DeleteAllDesktopSessions();
-
-  // Reset the last known terminal ID because no IDs have been allocated
-  // by the the newly started process yet.
-  next_terminal_id_ = 0;
-
   BindAssociatedInterfaces();
 
   if (!OnInitAfterChannelConnected(peer_pid)) {
@@ -98,12 +97,15 @@ void DaemonProcess::OnPermanentError(int exit_code) {
 
 void DaemonProcess::OnWorkerProcessStopped() {
   desktop_session_manager_.reset();
+  peer_session_manager_.reset();
   host_status_observer_.reset();
+#if BUILDFLAG(IS_WIN)
+  certificate_broker_->reset();
+#endif
   // Reset our IPC remote so it's ready to re-init if the network process is
   // re-launched.
   remoting_host_control_.reset();
   peer_connection_launchers_.clear();
-  DeleteAllDesktopSessions();
 }
 
 void DaemonProcess::OnAssociatedInterfaceRequest(
@@ -132,6 +134,15 @@ void DaemonProcess::OnAssociatedInterfaceRequest(
     mojo::PendingAssociatedReceiver<mojom::DesktopSessionManager>
         pending_receiver(std::move(handle));
     desktop_session_manager_.Bind(std::move(pending_receiver));
+  } else if (interface_name == mojom::PeerSessionManager::Name_) {
+    LOG_IF(WARNING, peer_session_manager_)
+        << "Associated interface requested "
+        << "while |peer_session_manager_| was still bound.";
+
+    peer_session_manager_.reset();
+    mojo::PendingAssociatedReceiver<mojom::PeerSessionManager> pending_receiver(
+        std::move(handle));
+    peer_session_manager_.Bind(std::move(pending_receiver));
   } else if (interface_name == mojom::HostStatusObserver::Name_) {
     LOG_IF(WARNING, host_status_observer_)
         << "Associated interface requested "
@@ -141,6 +152,17 @@ void DaemonProcess::OnAssociatedInterfaceRequest(
     mojo::PendingAssociatedReceiver<mojom::HostStatusObserver> pending_receiver(
         std::move(handle));
     host_status_observer_.Bind(std::move(pending_receiver));
+#if BUILDFLAG(IS_WIN)
+  } else if (interface_name == mojom::CertificateBroker::Name_) {
+    LOG_IF(WARNING, certificate_broker_->is_bound())
+        << "Associated interface requested "
+        << "while |certificate_broker_| was still bound.";
+
+    certificate_broker_->reset();
+    mojo::PendingAssociatedReceiver<mojom::CertificateBroker> pending_receiver(
+        std::move(handle));
+    certificate_broker_->Bind(std::move(pending_receiver));
+#endif
   } else {
     LOG(ERROR) << "Received unexpected associated interface request: "
                << interface_name;
@@ -183,37 +205,58 @@ void DaemonProcess::CloseDesktopSessionWithError(
 
   delete i->second;
   desktop_sessions_.erase(i);
+  OnSessionCountChanged(desktop_sessions_.size());
 
   VLOG(1) << "Daemon: closed desktop session " << terminal_id;
+}
 
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          kEnablePeerConnectionProcessSwitch)) {
-    ClosePeerConnectionProcess(terminal_id);
+void DaemonProcess::LaunchPeerSession(
+    mojo::PendingReceiver<mojom::PeerSession> peer_session_receiver) {
+  DCHECK(caller_task_runner()->BelongsToCurrentThread());
+
+  // A dedicated Peer Connection process is launched for each client session.
+  // Because the WebRTC connection state is transient and stateful, if the
+  // process terminates or crashes, it is not auto-relaunched and the client
+  // must reconnect to establish a new session.
+  PeerConnectionProcessHandler* handler = LaunchPeerConnectionProcess();
+  if (handler) {
+    handler->BindPeerSession(std::move(peer_session_receiver));
   }
 }
 
-void DaemonProcess::LaunchPeerConnectionProcess(int terminal_id) {
+PeerConnectionProcessHandler* DaemonProcess::LaunchPeerConnectionProcess() {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
-  auto delegate = CreatePeerConnectionProcessLauncherDelegate(terminal_id);
+  auto delegate = CreatePeerConnectionProcessLauncherDelegate();
   if (!delegate) {
     LOG(ERROR) << "Failed to create launcher delegate.";
-    return;
+    return nullptr;
   }
 
   // Safe to use base::Unretained(this) because DaemonProcess owns the
   // PeerConnectionProcessHandler instances (in peer_connection_launchers_)
   // which outlive the lifetime of the callbacks.
-  peer_connection_launchers_[terminal_id] =
-      std::make_unique<PeerConnectionProcessHandler>(
-          terminal_id, caller_task_runner(), std::move(delegate),
-          base::BindOnce(&DaemonProcess::ClosePeerConnectionProcess,
-                         base::Unretained(this)));
+  auto handler = std::make_unique<PeerConnectionProcessHandler>(
+      caller_task_runner(), std::move(delegate),
+      base::BindOnce(&DaemonProcess::OnPeerConnectionProcessStopped,
+                     base::Unretained(this)));
+  PeerConnectionProcessHandler* handler_ptr = handler.get();
+  peer_connection_launchers_.insert(std::move(handler));
+  return handler_ptr;
 }
 
-void DaemonProcess::ClosePeerConnectionProcess(int terminal_id) {
+void DaemonProcess::OnPeerConnectionProcessStopped(
+    base::WeakPtr<PeerConnectionProcessHandler> handler) {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
-  peer_connection_launchers_.erase(terminal_id);
+  // If the handler is invalid, it was already destroyed and removed from
+  // `peer_connection_launchers_` (e.g. during daemon shutdown).
+  if (!handler) {
+    return;
+  }
+  auto it = peer_connection_launchers_.find(handler.get());
+  if (it != peer_connection_launchers_.end()) {
+    peer_connection_launchers_.erase(it);
+  }
 }
 
 DaemonProcess::DaemonProcess(
@@ -236,6 +279,13 @@ DaemonProcess::DaemonProcess(
   if (!base::ThreadPoolInstance::Get()) {
     base::ThreadPoolInstance::CreateAndStartWithDefaultParams("Daemon");
   }
+
+#if BUILDFLAG(IS_WIN)
+  certificate_broker_impl_ = std::make_unique<CertificateBrokerImpl>();
+  certificate_broker_ =
+      std::make_unique<mojo::AssociatedReceiver<mojom::CertificateBroker>>(
+          certificate_broker_impl_.get());
+#endif
 }
 
 void DaemonProcess::GetDesktopSession(
@@ -244,7 +294,14 @@ void DaemonProcess::GetDesktopSession(
     mojom::DesktopSessionOptionsPtr options) {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
-  std::string client_id = options->client_id;
+  // Persistent desktop sessions are only supported on Linux where CRD manages
+  // the virtual desktop environment (X11 / Wayland session) and closing the
+  // desktop process would terminate the user's running applications. On
+  // Windows, user sessions and applications are persisted natively by the OS,
+  // and the desktop process is purely a transient capture/input agent that is
+  // recreated per connection.
+#if BUILDFLAG(IS_LINUX)
+  const std::string& client_id = options->client_id;
   auto it = std::ranges::find_if(desktop_sessions_, [&](const auto& pair) {
     return !client_id.empty() && pair.second->client_id() == client_id;
   });
@@ -255,6 +312,7 @@ void DaemonProcess::GetDesktopSession(
                             std::move(events_remote), std::move(options));
     return;
   }
+#endif  // BUILDFLAG(IS_LINUX)
 
   int terminal_id = next_terminal_id_;
   CreateDesktopSession(terminal_id, std::move(control_receiver),
@@ -299,11 +357,7 @@ void DaemonProcess::CreateDesktopSession(
   session->SetEventsRemote(std::move(events_remote));
   VLOG(1) << "Daemon: opened desktop session " << terminal_id;
   desktop_sessions_[terminal_id] = session.release();
-
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          kEnablePeerConnectionProcessSwitch)) {
-    LaunchPeerConnectionProcess(terminal_id);
-  }
+  OnSessionCountChanged(desktop_sessions_.size());
 }
 
 void DaemonProcess::ReconnectDesktopSession(
@@ -330,7 +384,6 @@ void DaemonProcess::CrashNetworkProcess(const base::Location& location) {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
   DoCrashNetworkProcess(location);
-  DeleteAllDesktopSessions();
 }
 
 void DaemonProcess::DoCrashNetworkProcess(const base::Location& location) {
@@ -351,17 +404,6 @@ void DaemonProcess::SetNetworkLauncherDelegate(
 bool DaemonProcess::OnDesktopSessionAgentAttached(
     int terminal_id,
     mojo::ScopedMessagePipeHandle desktop_pipe) {
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          kEnablePeerConnectionProcessSwitch)) {
-    auto it = peer_connection_launchers_.find(terminal_id);
-    if (it != peer_connection_launchers_.end()) {
-      it->second->ConnectDesktopChannel(std::move(desktop_pipe));
-    } else {
-      LOG(ERROR) << "No PC process launcher found for terminal " << terminal_id;
-    }
-    return true;
-  }
-
   auto session_it = desktop_sessions_.find(terminal_id);
 
   if (session_it != desktop_sessions_.end() &&
@@ -446,6 +488,7 @@ void DaemonProcess::Stop(int exit_code) {
   DCHECK(caller_task_runner()->BelongsToCurrentThread());
 
   OnWorkerProcessStopped();
+  DeleteAllDesktopSessions();
 
   if (stopped_callback_) {
     std::move(stopped_callback_).Run(exit_code);
@@ -536,6 +579,8 @@ void DaemonProcess::OnHostShutdown() {
     observer.OnHostShutdown();
   }
 }
+
+void DaemonProcess::OnSessionCountChanged(size_t session_count) {}
 
 void DaemonProcess::DeleteAllDesktopSessions() {
   for (auto& [id, session] : desktop_sessions_) {

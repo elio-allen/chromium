@@ -44,6 +44,9 @@ namespace {
 class WindowEventObserver;
 }  // namespace
 
+// TODO(crbug.com/546631275): Rename PictureInPictureBrowserFrameView to better
+// reflect that it is now used for both document picture-in-picture and
+// always-on-top windows.
 class PictureInPictureBrowserFrameView
     : public BrowserFrameView,
       public ChromeLocationBarModelDelegate,
@@ -120,8 +123,6 @@ class PictureInPictureBrowserFrameView
   void OnWidgetActivationChanged(views::Widget* widget, bool active) override;
   void OnWidgetDestroying(views::Widget* widget) override;
   void OnWidgetVisibilityChanged(views::Widget* eidget, bool visible) override;
-  void OnWidgetBoundsChanged(views::Widget* widget,
-                             const gfx::Rect& new_bounds) override;
 
   // PictureInPictureWindow:
   void SetForcedTucking(bool tuck) override;
@@ -183,6 +184,7 @@ class PictureInPictureBrowserFrameView
   bool HasAnyVisibleContentSettingViews() const;
 
   // Helper functions for testing.
+  bool IsTopBarActiveForTesting() const;
   std::vector<raw_ptr<gfx::Animation>> GetRenderActiveAnimationsForTesting();
   std::vector<raw_ptr<gfx::Animation>> GetRenderInactiveAnimationsForTesting();
   views::View* GetBackToTabButtonForTesting();
@@ -242,6 +244,7 @@ class PictureInPictureBrowserFrameView
 
   // PipChildDialogObserverHelper::Delegate:
   void EnforceTucking() override;
+  void OnUserDesiredBoundsChanged(const gfx::Rect& bounds) override;
 
   CloseReason close_reason_ = CloseReason::kOther;
 

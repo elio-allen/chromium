@@ -55,7 +55,8 @@ class MockAutofillManager : public AutofillManager {
       OnDidDetectJavaScriptAutofillImpl,
       (const FormData& form,
        const FieldGlobalId& trigger_field_id,
-       const std::vector<JavaScriptFieldModification>& field_modifications),
+       const std::vector<JavaScriptFieldModification>& field_modifications,
+       base::TimeTicks detection_start_timestamp),
       (override));
   MOCK_METHOD(void,
               OnLoadedServerPredictionsImpl,
@@ -67,7 +68,7 @@ class MockAutofillManager : public AutofillManager {
               (override));
   MOCK_METHOD(void,
               OnFormWithEmailVerificationTokenSubmittedImpl,
-              (const FormData& form, const FieldGlobalId& field_id),
+              (const FormData& form, const FieldGlobalId& email_field_id),
               (override));
   MOCK_METHOD(void,
               OnCaretMovedInFormFieldImpl,
@@ -85,14 +86,16 @@ class MockAutofillManager : public AutofillManager {
               OnTextFieldDidScrollImpl,
               (const FormData& form, const FieldGlobalId& field_id),
               (override));
-  MOCK_METHOD(void,
-              OnAskForValuesToFillImpl,
-              (const FormData& form,
-               const FieldGlobalId& field_id,
-               const gfx::Rect& caret_bounds,
-               AutofillSuggestionTriggerSource trigger_source,
-               std::optional<PasswordSuggestionRequest> password_request),
-              (override));
+  MOCK_METHOD(
+      void,
+      OnAskForValuesToFillImpl,
+      (const FormData& form,
+       const FieldGlobalId& field_id,
+       const gfx::Rect& caret_bounds,
+       AutofillSuggestionTriggerSource trigger_source,
+       std::optional<PasswordSuggestionRequest> password_request,
+       base::ScopedClosureRunner scoped_on_after_ask_for_values_to_fill),
+      (override));
   MOCK_METHOD(void,
               OnFocusOnFormFieldImpl,
               (const FormData& form, const FieldGlobalId& field_id),
@@ -125,7 +128,7 @@ class MockAutofillManager : public AutofillManager {
   MOCK_METHOD(const CreditCardAccessManager*,
               GetCreditCardAccessManager,
               (),
-              (const override));
+              (const, override));
 
   base::WeakPtr<AutofillManager> GetWeakPtr() override;
 

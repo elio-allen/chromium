@@ -22,6 +22,7 @@
 #include "base/no_destructor.h"
 #include "base/notimplemented.h"
 #include "base/trace_event/trace_event.h"
+#include "components/embedder_support/android/delegate/eye_dropper_bridge.h"
 #include "components/embedder_support/android/delegate/html_color_picker_bridge.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "content/public/browser/color_chooser.h"
@@ -120,6 +121,15 @@ WebContentsDelegateAndroid::OpenColorChooser(
   return std::make_unique<HtmlColorPickerBridge>(source, color, suggestions);
 }
 
+std::unique_ptr<content::EyeDropper> WebContentsDelegateAndroid::OpenEyeDropper(
+    content::RenderFrameHost* frame,
+    content::EyeDropperListener* listener) {
+  content::WebContents* web_contents =
+      content::WebContents::FromRenderFrameHost(frame);
+  CHECK(web_contents);
+  return EyeDropperBridge::Create(web_contents, listener);
+}
+
 // OpenURLFromTab() will be called when we're performing a browser-intiated
 // navigation. The most common scenario for this is opening new tabs (see
 // RenderViewImpl::decidePolicyForNavigation for more details).
@@ -131,10 +141,10 @@ WebContents* WebContentsDelegateAndroid::OpenURLFromTab(
   const GURL& url = params.url;
   WindowOpenDisposition disposition = params.disposition;
 
-  if (!source || (disposition != WindowOpenDisposition::CURRENT_TAB &&
-                  disposition != WindowOpenDisposition::NEW_FOREGROUND_TAB &&
-                  disposition != WindowOpenDisposition::NEW_BACKGROUND_TAB &&
-                  disposition != WindowOpenDisposition::OFF_THE_RECORD)) {
+  if (!source || (disposition != WindowOpenDisposition::kCurrentTab &&
+                  disposition != WindowOpenDisposition::kNewForegroundTab &&
+                  disposition != WindowOpenDisposition::kNewBackgroundTab &&
+                  disposition != WindowOpenDisposition::kOffTheRecord)) {
     NOTIMPLEMENTED();
     return NULL;
   }
@@ -146,9 +156,9 @@ WebContents* WebContentsDelegateAndroid::OpenURLFromTab(
         source, params, std::move(navigation_handle_callback));
   }
 
-  if (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB ||
-      disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB ||
-      disposition == WindowOpenDisposition::OFF_THE_RECORD) {
+  if (disposition == WindowOpenDisposition::kNewForegroundTab ||
+      disposition == WindowOpenDisposition::kNewBackgroundTab ||
+      disposition == WindowOpenDisposition::kOffTheRecord) {
     ScopedJavaLocalRef<jobject> java_gurl =
         url::GURLAndroid::FromNativeGURL(env, url);
     ScopedJavaLocalRef<jstring> extra_headers =
@@ -543,6 +553,7 @@ void WebContentsDelegateAndroid::OnDidBlockNavigation(
     const GURL& blocked_url,
     const GURL& initiator_url,
     const url::Origin& initiator_origin,
+    scoped_refptr<content::InitiatorNavigationState> initiator_navigation_state,
     blink::mojom::NavigationBlockedReason reason) {}
 
 int WebContentsDelegateAndroid::GetTopControlsHeight() {

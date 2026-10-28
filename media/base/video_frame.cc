@@ -20,6 +20,7 @@
 #include "base/bits.h"
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
@@ -57,6 +58,9 @@
 namespace media {
 
 namespace {
+
+BASE_FEATURE(kVideoFrameRetainSharedImageOwnership,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 VideoFrame::ID GetNextID() {
   static std::atomic_uint64_t counter(1u);
@@ -287,49 +291,34 @@ static std::optional<VideoFrameLayout> GetDefaultLayout(
           coded_size.width() * 4, 0, coded_size.GetArea() * 4)};
       break;
 
-    case PIXEL_FORMAT_NV12: {
-      int uv_width = (coded_size.width() + 1) / 2;
-      int uv_height = (coded_size.height() + 1) / 2;
-      int uv_stride = uv_width * 2;
-      int uv_size = uv_stride * uv_height;
-      planes = std::vector<ColorPlaneLayout>{
-          ColorPlaneLayout(coded_size.width(), 0, coded_size.GetArea()),
-          ColorPlaneLayout(uv_stride, coded_size.GetArea(), uv_size),
-      };
-      break;
-    }
-
-    case PIXEL_FORMAT_NV12A: {
-      int uv_width = (coded_size.width() + 1) / 2;
-      int uv_height = (coded_size.height() + 1) / 2;
-      int uv_stride = uv_width * 2;
-      int uv_size = uv_stride * uv_height;
-      planes = std::vector<ColorPlaneLayout>{
-          ColorPlaneLayout(coded_size.width(), 0, coded_size.GetArea()),
-          ColorPlaneLayout(uv_stride, coded_size.GetArea(), uv_size),
-          ColorPlaneLayout(coded_size.width(), coded_size.GetArea() + uv_size,
-                           coded_size.GetArea()),
-      };
-      break;
-    }
-
+    case PIXEL_FORMAT_NV12:
+    case PIXEL_FORMAT_NV12A:
+    case PIXEL_FORMAT_NV16:
+    case PIXEL_FORMAT_NV24:
     case PIXEL_FORMAT_P010LE:
     case PIXEL_FORMAT_P210LE:
     case PIXEL_FORMAT_P410LE: {
-      int y_stride = coded_size.width() * 2;
+      const bool is_420 = format == PIXEL_FORMAT_NV12 ||
+                          format == PIXEL_FORMAT_NV12A ||
+                          format == PIXEL_FORMAT_P010LE;
+      const bool is_444 =
+          format == PIXEL_FORMAT_NV24 || format == PIXEL_FORMAT_P410LE;
+      int sample_bytes =
+          VideoFrame::BytesPerElement(format, VideoFrame::Plane::kY);
+      int y_stride = coded_size.width() * sample_bytes;
       int y_size = y_stride * coded_size.height();
-      int uv_width = (format == PIXEL_FORMAT_P410LE)
-                         ? coded_size.width()
-                         : (coded_size.width() + 1) / 2;
-      int uv_height = (format == PIXEL_FORMAT_P010LE)
-                          ? (coded_size.height() + 1) / 2
-                          : coded_size.height();
-      int uv_stride = uv_width * 4;
+      int uv_width = is_444 ? coded_size.width() : (coded_size.width() + 1) / 2;
+      int uv_height =
+          is_420 ? (coded_size.height() + 1) / 2 : coded_size.height();
+      int uv_stride = uv_width * sample_bytes * 2;
       int uv_size = uv_stride * uv_height;
       planes = std::vector<ColorPlaneLayout>{
           ColorPlaneLayout(y_stride, 0, y_size),
           ColorPlaneLayout(uv_stride, y_size, uv_size),
       };
+      if (format == PIXEL_FORMAT_NV12A) {
+        planes.emplace_back(y_stride, y_size + uv_size, y_size);
+      }
       break;
     }
 
@@ -480,7 +469,12 @@ scoped_refptr<VideoFrame> VideoFrame::WrapSharedImage(
   }
 
   frame->acquire_sync_token_ = sync_token;
-  frame->shared_image_ = shared_image->MakeUnowned();
+  frame->set_color_space(shared_image->color_space());
+  if (base::FeatureList::IsEnabled(kVideoFrameRetainSharedImageOwnership)) {
+    frame->shared_image_ = std::move(shared_image);
+  } else {
+    frame->shared_image_ = shared_image->MakeUnowned();
+  }
   if (shared_image_release_cb) {
     frame->SetReleaseMailboxCB(std::move(shared_image_release_cb));
   }
@@ -522,8 +516,8 @@ scoped_refptr<VideoFrame> VideoFrame::WrapMappableSharedImage(
   }
   uint64_t modifier = gfx::NativePixmapHandle::kNoModifier;
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-  bool is_native_buffer = !shared_image->IsSharedMemoryForVideoFrame();
-  if (is_native_buffer) {
+  if (shared_image->GetGpuMemoryBufferType() ==
+      gfx::GpuMemoryBufferType::NATIVE_PIXMAP) {
     const auto gmb_handle = shared_image->CloneGpuMemoryBufferHandle();
     if (gmb_handle.is_null() ||
         gmb_handle.native_pixmap_handle().planes.empty()) {
@@ -571,6 +565,7 @@ scoped_refptr<VideoFrame> VideoFrame::WrapMappableSharedImage(
   // Note that we cannot use |shared_image|->MakeUnowned() here since MappableSI
   // owns a MappableBuffer internally, which we cannot create an unowned
   // reference to.
+  frame->set_color_space(shared_image->color_space());
   frame->shared_image_ = std::move(shared_image);
   return frame;
 }
@@ -1065,12 +1060,15 @@ gfx::Size VideoFrame::PlaneSizeInSamples(VideoPixelFormat format,
                                          const gfx::Size& coded_size) {
   DCHECK(IsValidPlane(format, plane));
   const gfx::Size subsample_size = SampleSize(format, plane);
-  return gfx::Size(base::bits::AlignUpDeprecatedDoNotUse(
-                       coded_size.width(), subsample_size.width()) /
-                       subsample_size.width(),
-                   base::bits::AlignUpDeprecatedDoNotUse(
-                       coded_size.height(), subsample_size.height()) /
-                       subsample_size.height());
+  return gfx::Size(
+      base::bits::AlignUp<size_t>(
+          base::checked_cast<size_t>(coded_size.width()),
+          base::checked_cast<size_t>(subsample_size.width())) /
+          subsample_size.width(),
+      base::bits::AlignUp<size_t>(
+          base::checked_cast<size_t>(coded_size.height()),
+          base::checked_cast<size_t>(subsample_size.height())) /
+          subsample_size.height());
 }
 
 // static
@@ -1181,7 +1179,9 @@ std::vector<size_t> VideoFrame::ComputeStrides(VideoPixelFormat format,
 size_t VideoFrame::Rows(size_t plane, VideoPixelFormat format, int height) {
   DCHECK(IsValidPlane(format, plane));
   const int sample_height = SampleSize(format, plane).height();
-  return base::bits::AlignUpDeprecatedDoNotUse(height, sample_height) /
+  return base::bits::AlignUp<size_t>(
+             base::checked_cast<size_t>(height),
+             base::checked_cast<size_t>(sample_height)) /
          sample_height;
 }
 
@@ -1189,7 +1189,9 @@ size_t VideoFrame::Rows(size_t plane, VideoPixelFormat format, int height) {
 size_t VideoFrame::Columns(size_t plane, VideoPixelFormat format, int width) {
   DCHECK(IsValidPlane(format, plane));
   const int sample_width = SampleSize(format, plane).width();
-  return base::bits::AlignUpDeprecatedDoNotUse(width, sample_width) /
+  return base::bits::AlignUp<size_t>(
+             base::checked_cast<size_t>(width),
+             base::checked_cast<size_t>(sample_width)) /
          sample_width;
 }
 
@@ -1313,14 +1315,7 @@ gfx::ColorSpace VideoFrame::ColorSpace() const {
 void VideoFrame::set_color_space(const gfx::ColorSpace& color_space) {
   // Check color spaces are same for video frames created from shared image.
   if (HasSharedImage()) {
-    SCOPED_CRASH_KEY_STRING256("video_frame", "si_color_space",
-                               shared_image()->color_space().ToString());
-    SCOPED_CRASH_KEY_STRING256("video_frame", "color_space",
-                               color_space.ToString());
-    SCOPED_CRASH_KEY_STRING256("video_frame", "si_label",
-                               shared_image()->debug_label());
-    CHECK_EQ(color_space, shared_image()->color_space(),
-             base::NotFatalUntil::M153);
+    CHECK_EQ(color_space, shared_image()->color_space());
   }
   color_space_ = color_space;
 }
@@ -1393,10 +1388,13 @@ base::span<T> VideoFrame::GetVisibleDataInternal(base::span<T> data,
 
   // Calculate an offset that is properly aligned for all planes.
   const gfx::Size alignment = CommonAlignment(format());
-  const gfx::Point offset(base::bits::AlignDownDeprecatedDoNotUse(
-                              visible_rect_.x(), alignment.width()),
-                          base::bits::AlignDownDeprecatedDoNotUse(
-                              visible_rect_.y(), alignment.height()));
+  const gfx::Point offset(
+      base::bits::AlignDown<size_t>(
+          base::checked_cast<size_t>(visible_rect_.x()),
+          base::checked_cast<size_t>(alignment.width())),
+      base::bits::AlignDown<size_t>(
+          base::checked_cast<size_t>(visible_rect_.y()),
+          base::checked_cast<size_t>(alignment.height())));
 
   const size_t plane_stride = stride(plane);
   const gfx::Size subsample = SampleSize(format(), plane);
@@ -1707,10 +1705,12 @@ gfx::Size VideoFrame::DetermineAlignedSize(VideoPixelFormat format,
                                            const gfx::Size& dimensions) {
   const gfx::Size alignment = CommonAlignment(format);
   const gfx::Size adjusted =
-      gfx::Size(base::bits::AlignUpDeprecatedDoNotUse(dimensions.width(),
-                                                      alignment.width()),
-                base::bits::AlignUpDeprecatedDoNotUse(dimensions.height(),
-                                                      alignment.height()));
+      gfx::Size(base::bits::AlignUp<size_t>(
+                    base::checked_cast<size_t>(dimensions.width()),
+                    base::checked_cast<size_t>(alignment.width())),
+                base::bits::AlignUp<size_t>(
+                    base::checked_cast<size_t>(dimensions.height()),
+                    base::checked_cast<size_t>(alignment.height())));
   DCHECK((adjusted.width() % alignment.width() == 0) &&
          (adjusted.height() % alignment.height() == 0));
   return adjusted;

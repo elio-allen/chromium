@@ -5,14 +5,14 @@
 #ifndef CHROME_BROWSER_PASSWORD_MANAGER_PASSWORD_CHANGE_PASSWORD_CHANGE_ACTUATOR_H_
 #define CHROME_BROWSER_PASSWORD_MANAGER_PASSWORD_CHANGE_PASSWORD_CHANGE_ACTUATOR_H_
 
-#include <memory>
-#include <string>
-
 #include "base/observer_list_types.h"
-#include "chrome/browser/password_manager/password_change_delegate.h"
 
 namespace content {
 class WebContents;
+}
+
+namespace password_manager {
+class PasswordString;
 }
 
 // Interface for performing the actual password change actuation on a website.
@@ -20,11 +20,31 @@ class WebContents;
 // actuation mechanism (DOM/Script-based vs Glic/Actor-based).
 class PasswordChangeActuator {
  public:
+  enum class State {
+    // Actuator is waiting for change password form to appear.
+    kWaitingForChangePasswordForm,
+
+    // Change password form wasn't found.
+    kChangePasswordFormNotFound,
+
+    // Change password form is detected. Generating and filling password fields.
+    // Actuator waits for submission confirmation.
+    kChangingPassword,
+
+    // Password is successfully updated.
+    kPasswordSuccessfullyChanged,
+
+    // Password change failed.
+    kPasswordChangeFailed,
+
+    // One time password (OTP) was detected on a page. User input is required.
+    kOtpDetected,
+  };
+
   class Observer : public base::CheckedObserver {
    public:
     // Notifies the observer that the actuation state has changed.
-    virtual void OnActuationStateChanged(
-        PasswordChangeDelegate::State new_state) = 0;
+    virtual void OnActuationStateChanged(State new_state) = 0;
   };
 
   virtual ~PasswordChangeActuator() = default;
@@ -44,7 +64,7 @@ class PasswordChangeActuator {
   virtual void OpenPasswordChangeTab(content::WebContents* originator) = 0;
 
   // Returns the password generated during the password change flow, if any.
-  virtual std::u16string GetGeneratedPassword() const = 0;
+  virtual password_manager::PasswordString GetGeneratedPassword() const = 0;
 
   virtual void AddObserver(Observer* observer) = 0;
   virtual void RemoveObserver(Observer* observer) = 0;

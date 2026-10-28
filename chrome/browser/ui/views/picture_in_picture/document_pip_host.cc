@@ -10,10 +10,12 @@
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
+#include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "chrome/browser/content_settings/page_specific_content_settings_delegate.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/picture_in_picture/document_pip_contents_view.h"
 #include "chrome/browser/ui/views/picture_in_picture/document_pip_dialog_manager_delegate.h"
 #include "chrome/browser/ui/views/picture_in_picture/document_pip_frame_view.h"
@@ -35,6 +37,7 @@
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/views/view_utils.h"
@@ -42,14 +45,26 @@
 #include "ui/views/window/non_client_view.h"
 #include "url/origin.h"
 
+#if !BUILDFLAG(IS_WIN)
+#include "chrome/browser/picture_in_picture/picture_in_picture_widget_fade_animator.h"
+#endif
+
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/ui/views/picture_in_picture/document_pip_native_widget_mac.h"
 #endif
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+#include "chrome/browser/extensions/chrome_extension_web_contents_observer.h"
+#include "chrome/browser/extensions/tab_helper.h"
+#include "chrome/browser/ui/views/picture_in_picture/document_pip_base_window.h"
+#include "chrome/browser/ui/views/picture_in_picture/document_pip_window_controller.h"
+#include "components/sessions/content/session_tab_helper.h"
+#include "components/zoom/zoom_controller.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/browser/view_type_utils.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
+#include "extensions/common/mojom/view_type.mojom.h"
 #endif
 
 namespace {
@@ -60,7 +75,7 @@ namespace {
 const extensions::Extension* GetExtensionForOrigin(
     Profile* profile,
     const GURL& security_origin) {
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   if (!security_origin.SchemeIs(extensions::kExtensionScheme)) {
     return nullptr;
   }
@@ -68,7 +83,7 @@ const extensions::Extension* GetExtensionForOrigin(
   const extensions::Extension* extension =
       extensions::ExtensionRegistry::Get(profile)->enabled_extensions().GetByID(
           security_origin.GetHost());
-  DCHECK(extension);
+  CHECK(extension, base::NotFatalUntil::M162);
   return extension;
 #else
   return nullptr;
@@ -122,6 +137,12 @@ void DocumentPipHost::CreateAndShowPipWindow(
 
   CHECK(child_web_contents);
   pip_options_ = std::move(pip_options);
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  session_id_ = SessionID::NewUnique();
+  extensions::SetViewType(child_web_contents.get(),
+                          extensions::mojom::ViewType::kTabContents);
+#endif
 
   // Store a back-pointer on the child so the content-settings refresh path can
   // find this host given the captured (child) WebContents. Done before the
@@ -198,6 +219,20 @@ void DocumentPipHost::CreateAndShowPipWindow(
   // is initialized because the dialog manager anchors to it.
   CreateChildWebContentsHelpers(GetChildWebContents());
 
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  window_controller_ =
+      std::make_unique<extensions::DocumentPipWindowController>(
+          *this, std::make_unique<DocumentPipBaseWindow>(*widget_),
+          session_id_);
+#endif
+
+  restore_focus_on_activation_ = true;
+#if !BUILDFLAG(IS_WIN)
+  // Resizable Windows PiP widgets cannot be translucent.
+  fade_animator_ = std::make_unique<PictureInPictureWidgetFadeAnimator>();
+  fade_animator_->AnimateShowWindow(
+      widget_.get(), PictureInPictureWidgetFadeAnimator::WidgetShowType::kNone);
+#endif
   widget_->Show();
 }
 
@@ -269,6 +304,12 @@ void DocumentPipHost::PrimaryPageChanged(content::Page& page) {
   ClosePipWindow();
 }
 
+void DocumentPipHost::TitleWasSet(content::NavigationEntry* entry) {
+  if (widget_) {
+    widget_->UpdateWindowTitle();
+  }
+}
+
 // =============================================================================
 // WebContentsDelegate - Navigation & State
 // =============================================================================
@@ -287,7 +328,7 @@ void DocumentPipHost::CloseContents(content::WebContents* source) {
 void DocumentPipHost::NavigationStateChanged(
     content::WebContents* source,
     content::InvalidateTypes changed_flags) {
-  // Update the frame view's title when the page title changes.
+  // Refresh window metadata without using the child page's title.
   if (widget_ && (changed_flags & content::INVALIDATE_TYPE_TITLE)) {
     widget_->UpdateWindowTitle();
   }
@@ -325,7 +366,7 @@ void DocumentPipHost::SetContentsBounds(content::WebContents* source,
                                         const gfx::Rect& bounds) {
   // Record feature usage for window.moveTo()/resizeTo() calls, aligned with
   // Browser::SetContentsBounds which records the same metrics for all
-  // non-normal browser types including TYPE_PICTURE_IN_PICTURE.
+  // non-normal browser types including TYPE_FLOATING.
   std::vector<blink::mojom::WebFeature> features = {
       blink::mojom::WebFeature::kMovedOrResizedPopup};
   if (creation_timer_.Elapsed() > base::Seconds(2)) {
@@ -410,8 +451,10 @@ content::WebContents* DocumentPipHost::OpenURLFromTab(
     const content::OpenURLParams& params,
     base::OnceCallback<void(content::NavigationHandle&)>
         navigation_handle_callback) {
-  if (params.disposition == WindowOpenDisposition::CURRENT_TAB) {
-    ClosePipWindow();
+  if (params.disposition == WindowOpenDisposition::kCurrentTab) {
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(&DocumentPipHost::ClosePipWindow,
+                                  weak_factory_.GetWeakPtr()));
     return nullptr;
   }
 
@@ -599,6 +642,23 @@ bool DocumentPipHost::CheckMediaAccessPermission(
 
 void DocumentPipHost::CreateChildWebContentsHelpers(
     content::WebContents* child_web_contents) {
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  extensions::ChromeExtensionWebContentsObserver::CreateForWebContents(
+      child_web_contents);
+  // Supply extension identity without registering the script-created document
+  // with session restore. TabHelper preserves an existing SessionTabHelper.
+  sessions::SessionTabHelper::CreateForWebContents(
+      child_web_contents, sessions::SessionTabHelper::DelegateLookup());
+  auto* session_helper =
+      sessions::SessionTabHelper::FromWebContents(child_web_contents);
+  extensions::ChromeExtensionWebContentsObserver::FromWebContents(
+      child_web_contents)
+      ->ListenToWindowIdChangesFrom(session_helper);
+  session_helper->SetWindowID(session_id_);
+  extensions::TabHelper::CreateForWebContents(child_web_contents);
+  zoom::ZoomController::CreateForWebContents(child_web_contents);
+#endif
+
   // Create PageSpecificContentSettings so media grants from the PiP document
   // are recorded on the child and mirrored onto the opener via the PiP
   // synced-settings path (MaybeGetSyncedSettingsForPictureInPicture). Without
@@ -641,10 +701,32 @@ void DocumentPipHost::ClosePipWindow() {
     return;
   }
 
-  modal_dialog_host_observer_list_.Notify(
-      &web_modal::ModalDialogHostObserver::OnHostDestroying);
+  PrepareForWidgetDestruction();
+
+  // CLIENT_OWNS_WIDGET: synchronously destroy the widget. This tears down the
+  // view tree -> DocumentPipContentsView (the WebView) -> child WebContents.
+  // The widget references `widget_delegate_` by raw pointer, so destroy the
+  // widget first, then the delegate.
+  widget_.reset();
+  widget_delegate_.reset();
+}
+
+void DocumentPipHost::PrepareForWidgetDestruction() {
+  // An external native close prepares here before the synchronous close
+  // callback releases ownership. Run the cleanup only once per window.
+  if (!widget_observation_.IsObserving()) {
+    return;
+  }
+
   widget_observation_.Reset();
   contents_view_observation_.Reset();
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  // Unpublish while both the Widget and child WebContents are still alive.
+  window_controller_.reset();
+  session_id_ = SessionID::InvalidValue();
+#endif
+  modal_dialog_host_observer_list_.Notify(
+      &web_modal::ModalDialogHostObserver::OnHostDestroying);
 
   // Destroy the child-dialog observer before the widget it observes, so its
   // scoped observations remove themselves while the widget is still alive.
@@ -661,16 +743,15 @@ void DocumentPipHost::ClosePipWindow() {
     child->SetDelegate(nullptr);
   }
 
+#if !BUILDFLAG(IS_WIN)
+  if (fade_animator_) {
+    fade_animator_->CancelAndReset();
+    fade_animator_.reset();
+  }
+#endif
   // Destroy the tucker before the widget, since it references the widget.
   tucker_.reset();
   is_tucking_forced_ = false;
-
-  // CLIENT_OWNS_WIDGET: synchronously destroy the widget. This tears down the
-  // view tree -> DocumentPipContentsView (the WebView) -> child WebContents.
-  // The widget references `widget_delegate_` by raw pointer, so destroy the
-  // widget first, then the delegate.
-  widget_.reset();
-  widget_delegate_.reset();
 }
 
 void DocumentPipHost::OnWidgetCloseRequested(
@@ -757,27 +838,21 @@ void DocumentPipHost::OnAnyBrowserEnteredFullscreen() {
 
 void DocumentPipHost::SetWebContentsBlocked(content::WebContents* web_contents,
                                             bool blocked) {
-  DCHECK_EQ(GetChildWebContents(), web_contents);
+  CHECK_EQ(GetChildWebContents(), web_contents, base::NotFatalUntil::M162);
   if (!blocked && widget_ && widget_->IsActive()) {
-    if (widget_delegate_) {
-      if (auto* contents_view =
-              widget_delegate_->GetDocumentPipContentsView()) {
-        contents_view->RequestFocus();
-      }
-    }
-    web_contents->Focus();
+    FocusChildWebContents();
   }
 }
 
 web_modal::WebContentsModalDialogHost*
 DocumentPipHost::GetWebContentsModalDialogHost(
     content::WebContents* web_contents) {
-  DCHECK_EQ(GetChildWebContents(), web_contents);
+  CHECK_EQ(GetChildWebContents(), web_contents, base::NotFatalUntil::M162);
   return this;
 }
 
 bool DocumentPipHost::IsWebContentsVisible(content::WebContents* web_contents) {
-  DCHECK_EQ(GetChildWebContents(), web_contents);
+  CHECK_EQ(GetChildWebContents(), web_contents, base::NotFatalUntil::M162);
   return widget_ && !widget_->IsClosed() && widget_->IsVisible() &&
          !widget_->IsMinimized();
 }
@@ -832,13 +907,39 @@ void DocumentPipHost::RemoveObserver(
 // views::WidgetObserver & views::ViewObserver
 // =============================================================================
 
+void DocumentPipHost::OnWidgetActivationChanged(views::Widget* widget,
+                                                bool active) {
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  if (window_controller_) {
+    window_controller_->NotifyWindowFocusChanged(active);
+  }
+#endif
+  if (!active || !restore_focus_on_activation_) {
+    return;
+  }
+
+  restore_focus_on_activation_ = false;
+  auto* manager = web_modal::WebContentsModalDialogManager::FromWebContents(
+      GetChildWebContents());
+  if (!manager || !manager->IsDialogActive()) {
+    FocusChildWebContents();
+  }
+}
+
 void DocumentPipHost::OnWidgetBoundsChanged(views::Widget* widget,
                                             const gfx::Rect& new_bounds) {
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  if (window_controller_) {
+    window_controller_->NotifyWindowBoundsChanged();
+  }
+#endif
   NotifyPositionRequiresUpdate();
 }
 
 void DocumentPipHost::OnWidgetDestroying(views::Widget* widget) {
-  ClosePipWindow();
+  // Views still uses the client view after this notification. The
+  // MakeCloseSynchronous callback releases the widget after native destruction.
+  PrepareForWidgetDestruction();
 }
 
 void DocumentPipHost::OnViewBoundsChanged(views::View* observed_view) {
@@ -847,6 +948,19 @@ void DocumentPipHost::OnViewBoundsChanged(views::View* observed_view) {
 
 void DocumentPipHost::OnViewIsDeleting(views::View* observed_view) {
   contents_view_observation_.Reset();
+}
+
+void DocumentPipHost::FocusChildWebContents() {
+  if (!widget_delegate_) {
+    return;
+  }
+
+  if (auto* contents_view = widget_delegate_->GetDocumentPipContentsView()) {
+    contents_view->RequestFocus();
+  }
+  if (auto* child_web_contents = GetChildWebContents()) {
+    child_web_contents->Focus();
+  }
 }
 
 void DocumentPipHost::NotifyPositionRequiresUpdate() {

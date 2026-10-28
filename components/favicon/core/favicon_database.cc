@@ -295,9 +295,9 @@ void FaviconDatabase::RollbackTransaction() {
 }
 
 void FaviconDatabase::Vacuum() {
-  DCHECK(db_.transaction_nesting() == 0)
+  DCHECK(!db_.HasActiveTransactions())
       << "Can not have a transaction when vacuuming.";
-  std::ignore = db_.Execute("VACUUM");
+  std::ignore = db_.Vacuum();
 }
 
 std::map<favicon_base::FaviconID, IconMappingsForExpiry>
@@ -690,10 +690,11 @@ bool FaviconDatabase::GetIconMappingsForPageURL(
 
   bool result = false;
   for (auto m = mapping_data.begin(); m != mapping_data.end(); ++m) {
-    if (required_icon_types.count(m->icon_type) != 0) {
+    if (required_icon_types.Has(m->icon_type)) {
       result = true;
-      if (!filtered_mapping_data)
+      if (!filtered_mapping_data) {
         return result;
+      }
 
       filtered_mapping_data->push_back(*m);
     }
@@ -768,7 +769,7 @@ FaviconDatabase::FindBestPageURLForHost(
     favicon_base::IconType icon_type =
         FaviconDatabase::FromPersistedIconType(statement.ColumnInt(1));
 
-    if (required_icon_types.count(icon_type) != 0) {
+    if (required_icon_types.Has(icon_type)) {
       return std::make_optional(std::make_pair(
           GURL(statement.ColumnStringView(0)),
           FaviconDatabase::FromPersistedPageUrlType(statement.ColumnInt64(2))));
@@ -1091,13 +1092,6 @@ sql::InitStatus FaviconDatabase::InitImpl(const base::FilePath& db_name) {
                         kCompatibleVersionNumber) ||
       !InitTables(&db_) || !InitIndices(&db_)) {
     return sql::INIT_FAILURE;
-  }
-
-  // Version check. We should not encounter a database too old for us to handle
-  // in the wild, so we try to continue in that case.
-  if (meta_table_.GetCompatibleVersionNumber() > kCurrentVersionNumber) {
-    LOG(WARNING) << "Favicon database is too new.";
-    return sql::INIT_TOO_NEW;
   }
 
   int cur_version = meta_table_.GetVersionNumber();

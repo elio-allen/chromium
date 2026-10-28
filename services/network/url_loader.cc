@@ -31,7 +31,6 @@
 #include "base/numerics/safe_conversions.h"
 #include "base/sequence_checker.h"
 #include "base/strings/strcat.h"
-#include "base/strings/string_util.h"
 #include "base/strings/string_view_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
@@ -44,6 +43,7 @@
 #include "build/build_config.h"
 #include "mojo/public/cpp/bindings/shared_remote.h"
 #include "mojo/public/cpp/system/simple_watcher.h"
+#include "net/base/auth.h"
 #include "net/base/completion_once_callback.h"
 #include "net/base/features.h"
 #include "net/base/isolation_info.h"
@@ -89,7 +89,6 @@
 #include "services/network/cookie_settings.h"
 #include "services/network/devtools_durable_msg_writer.h"
 #include "services/network/file_opener_for_upload.h"
-#include "services/network/orb/orb_impl.h"
 #include "services/network/pervasive_resources/shared_resource_checker.h"
 #include "services/network/public/cpp/client_hints.h"
 #include "services/network/public/cpp/constants.h"
@@ -108,6 +107,7 @@
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/sri_message_signatures.h"
 #include "services/network/public/cpp/synthetic_response_util.h"
+#include "services/network/public/cpp/trust_token_http_headers.h"
 #include "services/network/public/mojom/client_security_state.mojom.h"
 #include "services/network/public/mojom/cookie_access_observer.mojom.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
@@ -465,7 +465,8 @@ URLLoader::URLLoader(
 
   url_request_ = url_request_context_->CreateRequest(
       request.url, request.priority, this, traffic_annotation,
-      net::handles::kInvalidNetworkHandle,
+      factory_params_->target_network.value_or(
+          net::handles::kInvalidNetworkHandle),
       /*is_for_websockets=*/false, request.net_log_create_info);
 
   // If the request is to a URL that we can determine is an LNA request from
@@ -827,6 +828,13 @@ void URLLoader::FollowRedirect(
 
   deferred_redirect_url_.reset();
   new_redirect_url_ = new_url;
+  pvt_token_removed_due_to_cookies_ = false;
+
+  if (base::FeatureList::IsEnabled(
+          net::features::kEnablePrivateVerificationTokens)) {
+    url_request_->RemoveRequestHeaderByName(
+        net::HttpRequestHeaders::kSecPrivateVerificationToken);
+  }
 
   net::HttpRequestHeaders merged_modified_headers =
       std::move(headers_update_params.modified_headers);
@@ -944,6 +952,8 @@ mojom::URLResponseHeadPtr URLLoader::BuildResponseHead() const {
       include_load_timing_internal_info_with_response_,
       /*response_start=*/base::TimeTicks::Now(), devtools_observer_.get(),
       devtools_request_id().value_or(""));
+  response->pvt_token_removed_due_to_cookies =
+      pvt_token_removed_due_to_cookies_;
   if (response->load_timing_internal_info) {
     response->load_timing_internal_info->accept_ch_frame_received =
         accept_ch_frame_received_;
@@ -1009,7 +1019,8 @@ void URLLoader::OnReceivedRedirect(net::URLRequest* url_request,
   url_loader_util::SetRequestCredentials(
       redirect_info.new_url, factory_params_->client_security_state,
       request_mode_, request_credentials_mode_, url_request_->initiator(),
-      *url_request_);
+      *url_request_, &origin_access_list_.get(),
+      factory_params_->disable_web_security);
 
   // Clear the Cookie header to ensure that cookies passed in through the
   // `ResourceRequest` do not persist across redirects.
@@ -1025,6 +1036,18 @@ void URLLoader::OnReceivedRedirect(net::URLRequest* url_request,
         net::CookieSettingOverride::kStorageAccessGrantEligibleViaHeader);
     url_request_->cookie_setting_overrides().Remove(
         net::CookieSettingOverride::kStorageAccessGrantEligible);
+
+    // Request headers added by `trust_token_interceptor_` are computed for the
+    // initial request origin and must not be sent to a different origin. In
+    // addition, `trust_token_interceptor_` must handle the cross-origin
+    // redirect so that subsequent responses are not processed against the
+    // initial request origin and the operation fails.
+    if (trust_token_interceptor_) {
+      for (std::string_view header : TrustTokensRequestHeaders()) {
+        url_request_->RemoveRequestHeaderByName(header);
+      }
+      trust_token_interceptor_->OnCrossOriginRedirect();
+    }
   }
 
   DCHECK_EQ(emitted_devtools_raw_request_, emitted_devtools_raw_response_);
@@ -1055,7 +1078,13 @@ void URLLoader::OnAuthRequired(net::URLRequest* url_request,
     return;
   }
 
-  if (do_not_prompt_for_login_) {
+  // Server auth challenges for requests that must not prompt for login are
+  // cancelled here. Proxy auth challenges are forwarded, flagged, so that
+  // non-UI credential sources in the browser (e.g. extensions or enterprise
+  // policy) can still answer them. The browser never shows login UI for them.
+  if (do_not_prompt_for_login_ &&
+      (!auth_info.is_proxy || !base::FeatureList::IsEnabled(
+                                  features::kForwardProxyAuthWithoutPrompt))) {
     OnAuthCredentials(std::nullopt);
     return;
   }
@@ -1064,7 +1093,7 @@ void URLLoader::OnAuthRequired(net::URLRequest* url_request,
 
   url_loader_network_observer_->OnAuthRequired(
       fetch_window_id_, request_id_, url_request_->url(), first_auth_attempt_,
-      auth_info, url_request->response_headers(),
+      do_not_prompt_for_login_, auth_info, url_request->response_headers(),
       auth_challenge_responder_receiver_.BindNewPipeAndPassRemote());
 
   auth_challenge_responder_receiver_.set_disconnect_handler(
@@ -1272,28 +1301,6 @@ void URLLoader::ContinueOnResponseStarted() {
     url_request_->AbortAndCloseConnection();
     DeleteSelf();
     return;
-  }
-
-  // Enforce ad-auction-only signals -- the renderer process isn't allowed
-  // to read auction-only signals for ad auctions; only the browser process
-  // is allowed to read those, and only the browser process can issue trusted
-  // requests.
-  // TODO(crbug.com/40269364): Remove old names once API users have migrated to
-  // new names.
-  if (!factory_params_->is_trusted && response_->headers) {
-    std::optional<std::string> auction_only =
-        response_->headers->GetNormalizedHeader("Ad-Auction-Only");
-    if (!auction_only) {
-      auction_only =
-          response_->headers->GetNormalizedHeader("X-FLEDGE-Auction-Only");
-    }
-    if (auction_only &&
-        base::EqualsCaseInsensitiveASCII(*auction_only, "true")) {
-      CompleteBlockedResponse(net::ERR_BLOCKED_BY_RESPONSE, false);
-      url_request_->AbortAndCloseConnection();
-      DeleteSelf();
-      return;
-    }
   }
 
   // Figure out if we need to sniff (for MIME type detection or for Opaque
@@ -1792,9 +1799,27 @@ int URLLoader::OnBeforeStartTransaction(
     net::NetworkDelegate::OnBeforeStartTransactionCallback callback) {
   const net::HttpRequestHeaders* used_headers = &headers;
   net::HttpRequestHeaders headers_with_bonus_cookies;
+  bool headers_modified = false;
   if (!cookies_from_browser_.empty()) {
     headers_with_bonus_cookies = AttachCookies(headers, cookies_from_browser_);
     used_headers = &headers_with_bonus_cookies;
+    headers_modified = true;
+  }
+
+  net::HttpRequestHeaders modified_headers_removed_pvt;
+
+  if (base::FeatureList::IsEnabled(
+          net::features::kEnablePrivateVerificationTokens)) {
+    if (used_headers->HasHeader(
+            net::HttpRequestHeaders::kSecPrivateVerificationToken) &&
+        used_headers->HasHeader(net::HttpRequestHeaders::kCookie)) {
+      modified_headers_removed_pvt = *used_headers;
+      modified_headers_removed_pvt.RemoveHeader(
+          net::HttpRequestHeaders::kSecPrivateVerificationToken);
+      used_headers = &modified_headers_removed_pvt;
+      pvt_token_removed_due_to_cookies_ = true;
+      headers_modified = true;
+    }
   }
 
   if (include_request_cookies_with_response_) {
@@ -1815,14 +1840,13 @@ int URLLoader::OnBeforeStartTransaction(
     return net::ERR_IO_PENDING;
   }
 
-  // Additional cookies were added to the existing headers, so `callback` must
-  // be invoked to ensure that the cookies are included in the request.
-  if (!cookies_from_browser_.empty()) {
-    CHECK_EQ(used_headers, &headers_with_bonus_cookies);
+  // If headers were modified (e.g. bonus cookies added or PVT token stripped
+  // due to cookies), `callback` must be invoked to ensure that the updated
+  // headers are used for the transaction.
+  if (headers_modified) {
     TaskRunner(url_request_->priority())
         ->PostTask(FROM_HERE,
-                   base::BindOnce(std::move(callback), net::OK,
-                                  std::move(headers_with_bonus_cookies)));
+                   base::BindOnce(std::move(callback), net::OK, *used_headers));
     return net::ERR_IO_PENDING;
   }
 
@@ -2104,16 +2128,16 @@ void URLLoader::NotifyEarlyResponse(
   DCHECK(headers);
   DCHECK_EQ(headers->response_code(), 103);
 
-  // Calculate IP address space.
   mojom::ParsedHeadersPtr parsed_headers =
       PopulateParsedHeaders(headers.get(), url_request_->url());
+
+  // Calculate IP address space.
   net::IPEndPoint transaction_endpoint;
   bool has_endpoint =
       url_request_->GetTransactionRemoteEndpoint(&transaction_endpoint);
   DCHECK(has_endpoint);
   CalculateClientAddressSpaceParams params{
       .client_address_space_inherited_from_service_worker = std::nullopt,
-      .parsed_headers = &parsed_headers,
       .remote_endpoint = &transaction_endpoint,
   };
   mojom::IPAddressSpace ip_address_space =

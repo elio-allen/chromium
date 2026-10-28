@@ -15,6 +15,7 @@
 #include "base/strings/string_util.h"
 #include "base/test/task_environment.h"
 #include "components/omnibox/browser/on_device_tail_model_executor.h"
+#include "components/omnibox/browser/on_device_tail_model_executor_constants.h"
 #include "components/optimization_guide/core/delivery/model_info.h"
 #include "components/optimization_guide/core/delivery/test_optimization_guide_model_provider.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -30,8 +31,6 @@ static const char kVocabFilename[] = "vocab_test.txt";
 constexpr int kNumLayer = 1;
 constexpr int kStateSize = 512;
 constexpr int kEmbeddingDim = 64;
-constexpr int kMaxNumSteps = 20;
-constexpr float kProbabilityThreshold = 0.01;
 
 }  // namespace
 
@@ -59,9 +58,10 @@ class OnDeviceTailModelServiceTest : public ::testing::Test {
     metadata.mutable_lstm_model_params()->set_state_size(kStateSize);
     metadata.mutable_lstm_model_params()->set_embedding_dimension(
         kEmbeddingDim);
-    metadata.mutable_lstm_model_params()->set_max_num_steps(kMaxNumSteps);
+    metadata.mutable_lstm_model_params()->set_max_num_steps(
+        kDefaultMaxNumSteps);
     metadata.mutable_lstm_model_params()->set_probability_threshold(
-        kProbabilityThreshold);
+        kDefaultProbabilityThreshold);
     metadata.SerializeToString(any_metadata.mutable_value());
 
     model_info_ = optimization_guide::ModelInfo{
@@ -163,7 +163,7 @@ TEST_F(OnDeviceTailModelServiceTest, MemoryPressureLevel) {
       },
       &results_1);
   memory_consumer_registry_.NotifyUpdateMemoryLimit(
-      base::kCriticalMemoryPressureThreshold);
+      base::MemoryLimit::CriticalPressureThreshold());
   memory_consumer_registry_.NotifyReleaseMemory();
   service_->GetPredictionsForInput(input, std::move(callback_1));
   task_environment_.RunUntilIdle();
@@ -179,7 +179,7 @@ TEST_F(OnDeviceTailModelServiceTest, MemoryPressureLevel) {
       },
       &results_2);
   memory_consumer_registry_.NotifyUpdateMemoryLimit(
-      base::kModerateMemoryPressureThreshold);
+      base::MemoryLimit::ModeratePressureThreshold());
   memory_consumer_registry_.NotifyReleaseMemory();
   service_->GetPredictionsForInput(input, std::move(callback_2));
   task_environment_.RunUntilIdle();

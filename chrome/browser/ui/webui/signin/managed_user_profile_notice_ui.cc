@@ -54,15 +54,13 @@
 #include "ui/base/webui/resource_path.h"
 #include "ui/strings/grit/ui_strings.h"
 #include "ui/webui/webui_util.h"
+#include "url/gurl.h"
 
-ManagedUserProfileNoticeUI::ManagedUserProfileNoticeUI(content::WebUI* web_ui)
-    : content::WebUIController(web_ui) {
-  Profile* profile = Profile::FromWebUI(web_ui);
-  content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
-      profile, chrome::kChromeUIManagedUserProfileNoticeHost);
-  // Explicitly add ThemeSource for serving the dynamic WebUI color stylesheet.
-  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
+namespace {
 
+using ScreenType = ManagedUserProfileNoticeUI::ScreenType;
+
+void AddResourcePaths(content::WebUIDataSource* source) {
   static constexpr webui::ResourcePath kResources[] = {
       {"icons.html.js", IDR_SIGNIN_ICONS_HTML_JS},
       {"managed_user_profile_notice_refresh.html",
@@ -83,18 +81,26 @@ ManagedUserProfileNoticeUI::ManagedUserProfileNoticeUI(content::WebUI* web_ui)
        IDR_SIGNIN_MANAGED_USER_PROFILE_NOTICE_MANAGED_USER_PROFILE_NOTICE_DISCLOSURE_CSS_JS},
       {"signals_disclaimer.css.js",
        IDR_SIGNIN_MANAGED_USER_PROFILE_NOTICE_SIGNALS_DISCLAIMER_CSS_JS},
+      {"signals_disclaimer_refresh.css.js",
+       IDR_SIGNIN_MANAGED_USER_PROFILE_NOTICE_SIGNALS_DISCLAIMER_REFRESH_CSS_JS},
       {"managed_user_profile_notice_disclosure_refresh.css.js",
        IDR_SIGNIN_MANAGED_USER_PROFILE_NOTICE_MANAGED_USER_PROFILE_NOTICE_DISCLOSURE_REFRESH_CSS_JS},
+      {"managed_user_profile_notice_refresh_shared.css.js",
+       IDR_SIGNIN_MANAGED_USER_PROFILE_NOTICE_MANAGED_USER_PROFILE_NOTICE_REFRESH_SHARED_CSS_JS},
       {"managed_user_profile_notice_disclosure.html.js",
        IDR_SIGNIN_MANAGED_USER_PROFILE_NOTICE_MANAGED_USER_PROFILE_NOTICE_DISCLOSURE_HTML_JS},
       {"signals_disclaimer.html.js",
        IDR_SIGNIN_MANAGED_USER_PROFILE_NOTICE_SIGNALS_DISCLAIMER_HTML_JS},
+      {"signals_disclaimer_refresh.html.js",
+       IDR_SIGNIN_MANAGED_USER_PROFILE_NOTICE_SIGNALS_DISCLAIMER_REFRESH_HTML_JS},
       {"managed_user_profile_notice_disclosure_refresh.html.js",
        IDR_SIGNIN_MANAGED_USER_PROFILE_NOTICE_MANAGED_USER_PROFILE_NOTICE_DISCLOSURE_REFRESH_HTML_JS},
       {"managed_user_profile_notice_disclosure.js",
        IDR_SIGNIN_MANAGED_USER_PROFILE_NOTICE_MANAGED_USER_PROFILE_NOTICE_DISCLOSURE_JS},
       {"signals_disclaimer.js",
        IDR_SIGNIN_MANAGED_USER_PROFILE_NOTICE_SIGNALS_DISCLAIMER_JS},
+      {"signals_disclaimer_refresh.js",
+       IDR_SIGNIN_MANAGED_USER_PROFILE_NOTICE_SIGNALS_DISCLAIMER_REFRESH_JS},
       {"managed_user_profile_notice_disclosure_refresh.js",
        IDR_SIGNIN_MANAGED_USER_PROFILE_NOTICE_MANAGED_USER_PROFILE_NOTICE_DISCLOSURE_REFRESH_JS},
       {"managed_user_profile_notice_state.css.js",
@@ -135,134 +141,109 @@ ManagedUserProfileNoticeUI::ManagedUserProfileNoticeUI(content::WebUI* web_ui)
        IDR_SIGNIN_ANIMATIONS_AVATAR_SIGN_IN_CELEBRATION_JSON},
       {"animations/avatar_sign_in_celebration_dark.json",
        IDR_SIGNIN_ANIMATIONS_AVATAR_SIGN_IN_CELEBRATION_DARK_JSON},
-      {"images/profile_picker_light_background.svg",
-       IDR_SIGNIN_IMAGES_PROFILE_PICKER_LIGHT_BACKGROUND_SVG},
-      {"images/profile_picker_dark_background.svg",
-       IDR_SIGNIN_IMAGES_PROFILE_PICKER_DARK_BACKGROUND_SVG},
+      {"images/shared_gradient_light_background.svg",
+       IDR_SIGNIN_IMAGES_SHARED_GRADIENT_LIGHT_BACKGROUND_SVG},
+      {"images/shared_gradient_dark_background.svg",
+       IDR_SIGNIN_IMAGES_SHARED_GRADIENT_DARK_BACKGROUND_SVG},
       {"signin_shared.css.js", IDR_SIGNIN_SIGNIN_SHARED_CSS_JS},
       {"signin_vars.css.js", IDR_SIGNIN_SIGNIN_VARS_CSS_JS},
       {"tangible_sync_style_shared.css.js",
        IDR_SIGNIN_TANGIBLE_SYNC_STYLE_SHARED_CSS_JS},
+      {"images/left-banner.svg", IDR_SIGNIN_IMAGES_SHARED_LEFT_BANNER_SVG},
+      {"images/left-banner-dark.svg",
+       IDR_SIGNIN_IMAGES_SHARED_LEFT_BANNER_DARK_SVG},
+      {"images/right-banner.svg", IDR_SIGNIN_IMAGES_SHARED_RIGHT_BANNER_SVG},
+      {"images/right-banner-dark.svg",
+       IDR_SIGNIN_IMAGES_SHARED_RIGHT_BANNER_DARK_SVG},
+      {"images/dialog_illustration.svg",
+       IDR_SIGNIN_IMAGES_SHARED_DIALOG_ILLUSTRATION_SVG},
+      {"images/dialog_illustration_dark.svg",
+       IDR_SIGNIN_IMAGES_SHARED_DIALOG_ILLUSTRATION_DARK_SVG},
   };
 
   webui::SetupWebUIDataSource(
       source, kResources,
       IDR_SIGNIN_MANAGED_USER_PROFILE_NOTICE_MANAGED_USER_PROFILE_NOTICE_HTML);
+}
 
-  source->AddResourcePath("images/left-banner.svg",
-                          IDR_SIGNIN_IMAGES_SHARED_LEFT_BANNER_SVG);
-  source->AddResourcePath("images/left-banner-dark.svg",
-                          IDR_SIGNIN_IMAGES_SHARED_LEFT_BANNER_DARK_SVG);
-  source->AddResourcePath("images/right-banner.svg",
-                          IDR_SIGNIN_IMAGES_SHARED_RIGHT_BANNER_SVG);
-  source->AddResourcePath("images/right-banner-dark.svg",
-                          IDR_SIGNIN_IMAGES_SHARED_RIGHT_BANNER_DARK_SVG);
-  source->AddResourcePath("images/dialog_illustration.svg",
-                          IDR_SIGNIN_IMAGES_SHARED_DIALOG_ILLUSTRATION_SVG);
-  source->AddResourcePath(
-      "images/dialog_illustration_dark.svg",
-      IDR_SIGNIN_IMAGES_SHARED_DIALOG_ILLUSTRATION_DARK_SVG);
-  source->AddLocalizedString("enterpriseProfileWelcomeTitle",
-                             IDS_ENTERPRISE_PROFILE_WELCOME_TITLE);
-  source->AddLocalizedString("cancelLabel", IDS_CANCEL);
-  source->AddLocalizedString("backLabel", IDS_ENTERPRISE_PROFILE_WELCOME_BACK);
-  source->AddLocalizedString(
-      "cancelValueProp",
-      IDS_SIGNIN_DICE_WEB_INTERCEPT_BUBBLE_CHROME_SIGNIN_DECLINE_TEXT);
-  source->AddLocalizedString("continueLabel", IDS_APP_CONTINUE);
-  source->AddLocalizedString("confirmLabel", IDS_CONFIRM);
-  source->AddLocalizedString("closeLabel", IDS_CLOSE);
-  source->AddLocalizedString("retryLabel",
-                             IDS_ENTERPRISE_OIDC_WELCOME_TIMEOUT_RETRY_LABEL);
-  source->AddLocalizedString("linkDataText",
-                             IDS_ENTERPRISE_PROFILE_WELCOME_LINK_DATA_CHECKBOX);
+void AddStrings(content::WebUIDataSource* source) {
+  static constexpr webui::LocalizedString kStrings[] = {
+      {"enterpriseProfileWelcomeTitle", IDS_ENTERPRISE_PROFILE_WELCOME_TITLE},
+      {"cancelLabel", IDS_CANCEL},
+      {"backLabel", IDS_ENTERPRISE_PROFILE_WELCOME_BACK},
+      {"cancelValueProp",
+       IDS_SIGNIN_DICE_WEB_INTERCEPT_BUBBLE_CHROME_SIGNIN_DECLINE_TEXT},
+      {"continueLabel", IDS_APP_CONTINUE},
+      {"confirmLabel", IDS_CONFIRM},
+      {"closeLabel", IDS_CLOSE},
+      {"retryLabel", IDS_ENTERPRISE_OIDC_WELCOME_TIMEOUT_RETRY_LABEL},
 
-  source->AddLocalizedString(
-      "profileDisclosureTitle",
-      IDS_ENTERPRISE_WELCOME_PROFILE_DISCLOSURE_WORK_TITLE);
-  source->AddLocalizedString(
-      "profileDisclosureSubtitle",
-      IDS_ENTERPRISE_WELCOME_PROFILE_DISCLOSURE_SUBTITLE);
+      {"profileDisclosureTitle",
+       IDS_ENTERPRISE_WELCOME_PROFILE_DISCLOSURE_WORK_TITLE},
+      {"profileDisclosureSubtitle",
+       IDS_ENTERPRISE_WELCOME_PROFILE_DISCLOSURE_SUBTITLE},
+      {"profileInformationTitle",
+       IDS_ENTERPRISE_WELCOME_PROFILE_INFORMATION_TITLE},
+      {"profileInformationDetails",
+       IDS_ENTERPRISE_WELCOME_PROFILE_INFORMATION_DETAILS},
+      {"deviceInformationTitle",
+       IDS_ENTERPRISE_WELCOME_DEVICE_INFORMATION_TITLE},
+      {"deviceInformationDetails",
+       IDS_ENTERPRISE_WELCOME_DEVICE_INFORMATION_DETAILS},
 
-  source->AddLocalizedString("profileInformationTitle",
-                             IDS_ENTERPRISE_WELCOME_PROFILE_INFORMATION_TITLE);
-  source->AddLocalizedString(
-      "profileInformationDetails",
-      IDS_ENTERPRISE_WELCOME_PROFILE_INFORMATION_DETAILS);
-  source->AddLocalizedString("deviceInformationTitle",
-                             IDS_ENTERPRISE_WELCOME_DEVICE_INFORMATION_TITLE);
-  source->AddLocalizedString("deviceInformationDetails",
-                             IDS_ENTERPRISE_WELCOME_DEVICE_INFORMATION_DETAILS);
+      {"avatarAccessibilityLabel", IDS_ACCNAME_YOUR_AVATAR},
+      {"enterpriseIconAccessibilityLabel",
+       IDS_ACCNAME_ENTERPRISE_ORGANIZATION_ICON},
 
-  source->AddLocalizedString("avatarAccessibilityLabel",
-                             IDS_ACCNAME_YOUR_AVATAR);
-  source->AddLocalizedString("enterpriseIconAccessibilityLabel",
-                             IDS_ACCNAME_ENTERPRISE_ORGANIZATION_ICON);
+      {"processingSubtitle", IDS_ENTERPRISE_OIDC_WELCOME_PROCESSING_SUBTITLE},
+      {"longProcessingSubtitle",
+       IDS_ENTERPRISE_OIDC_WELCOME_LONG_PROCESSING_SUBTITLE},
+      {"successTitle", IDS_ENTERPRISE_OIDC_WELCOME_SUCCESS_TITLE},
+      {"successSubtitle", IDS_ENTERPRISE_OIDC_WELCOME_SUCCESS_SUBTITLE},
+      {"timeoutTitle", IDS_ENTERPRISE_OIDC_WELCOME_TIMEOUT_TITLE},
+      {"timeoutSubtitle", IDS_ENTERPRISE_OIDC_WELCOME_TIMEOUT_SUBTITLE},
+      {"separateBrowsingDataTitle",
+       IDS_ENTERPRISE_WELCOME_SEPARATE_BROWSING_WORK_TITLE},
 
-  source->AddLocalizedString("processingSubtitle",
-                             IDS_ENTERPRISE_OIDC_WELCOME_PROCESSING_SUBTITLE);
-  source->AddLocalizedString(
-      "longProcessingSubtitle",
-      IDS_ENTERPRISE_OIDC_WELCOME_LONG_PROCESSING_SUBTITLE);
+      {"valuePropTitle",
+       IDS_ENTERPRISE_VALUE_PROPOSITION_PROFILE_SUGGESTED_TITLE},
+      {"valuePropSubtitle", IDS_ENTERPRISE_VALUE_PROPOSITION_WORK_SUBTITLE},
 
-  source->AddLocalizedString("successTitle",
-                             IDS_ENTERPRISE_OIDC_WELCOME_SUCCESS_TITLE);
-  source->AddLocalizedString("successSubtitle",
-                             IDS_ENTERPRISE_OIDC_WELCOME_SUCCESS_SUBTITLE);
-  source->AddLocalizedString("timeoutTitle",
-                             IDS_ENTERPRISE_OIDC_WELCOME_TIMEOUT_TITLE);
-  source->AddLocalizedString("timeoutSubtitle",
-                             IDS_ENTERPRISE_OIDC_WELCOME_TIMEOUT_SUBTITLE);
-  source->AddLocalizedString(
-      "separateBrowsingDataTitle",
-      IDS_ENTERPRISE_WELCOME_SEPARATE_BROWSING_WORK_TITLE);
-  source->AddLocalizedString(
-      "valuePropTitle",
-      IDS_ENTERPRISE_VALUE_PROPOSITION_PROFILE_SUGGESTED_TITLE);
-  source->AddLocalizedString("valuePropSubtitle",
-                             IDS_ENTERPRISE_VALUE_PROPOSITION_WORK_SUBTITLE);
+      {"separateBrowsingDataChoiceTitle",
+       IDS_ENTERPRISE_WELCOME_SEPARATE_BROWSING_DATA_WORK_CHOICE},
+      {"separateBrowsingDataChoiceDetails",
+       IDS_ENTERPRISE_WELCOME_SEPARATE_BROWSING_DATA_CHOICE_DETAILS},
+      {"mergeBrowsingDataChoiceTitle",
+       IDS_ENTERPRISE_WELCOME_MERGE_BROWSING_DATA_WORK_CHOICE},
+      {"mergeBrowsingDataChoiceDetails",
+       IDS_ENTERPRISE_WELCOME_MERGE_BROWSING_DATA_CHOICE_DETAILS},
 
-  source->AddLocalizedString(
-      "separateBrowsingDataChoiceTitle",
-      IDS_ENTERPRISE_WELCOME_SEPARATE_BROWSING_DATA_WORK_CHOICE);
-  source->AddLocalizedString(
-      "separateBrowsingDataChoiceDetails",
-      IDS_ENTERPRISE_WELCOME_SEPARATE_BROWSING_DATA_CHOICE_DETAILS);
-  source->AddLocalizedString(
-      "mergeBrowsingDataChoiceTitle",
-      IDS_ENTERPRISE_WELCOME_MERGE_BROWSING_DATA_WORK_CHOICE);
-  source->AddLocalizedString(
-      "mergeBrowsingDataChoiceDetails",
-      IDS_ENTERPRISE_WELCOME_MERGE_BROWSING_DATA_CHOICE_DETAILS);
-  source->AddBoolean("showLinkDataCheckbox", false);
-  source->AddBoolean("isModalDialog", false);
-  source->AddBoolean("enforcedByPolicy", false);
+      // Signals disclaimer screen:
+      {"signalsDisclaimerTitle",
+       IDS_ENTERPRISE_DEVICE_SIGNALS_DISCLAIMER_TITLE},
+      {"signalsDisclaimerSubtitle",
+       IDS_ENTERPRISE_DEVICE_SIGNALS_DISCLAIMER_SUBTITLE},
+      {"signalsDisclaimerProfileInformationDetails",
+       IDS_ENTERPRISE_DEVICE_SIGNALS_DISCLAIMER_PROFILE_INFORMATION_DETAILS},
+      {"signalsDisclaimerDeviceInformationDetails",
+       IDS_ENTERPRISE_DEVICE_SIGNALS_DISCLAIMER_DEVICE_INFORMATION_DETAILS},
+      {"signalsDisclaimerContinueLabel",
+       IDS_ENTERPRISE_DEVICE_SIGNALS_DISCLAIMER_CONTINUE_BUTTON_LABEL},
+      {"signalsDisclaimerCancelLabel",
+       IDS_ENTERPRISE_DEVICE_SIGNALS_DISCLAIMER_CANCEL_BUTTON_LABEL},
+      {"learnMore", IDS_LEARN_MORE},
+  };
+  source->AddLocalizedStrings(kStrings);
+}
+
+void AddFlags(content::WebUIDataSource* source, Profile* profile) {
   source->AddInteger("initialState",
                      ManagedUserProfileNoticeHandler::State::kDisclosure);
   source->AddInteger("screenType",
                      static_cast<int>(ScreenType::kProfilePicker));
-  source->AddBoolean("usePrimaryAndTonalButtonsForPromos",
-                     base::FeatureList::IsEnabled(
-                         switches::kUsePrimaryAndTonalButtonsForPromos));
 
-  // Signals disclaimer screen:
-  source->AddLocalizedString("signalsDisclaimerTitle",
-                             IDS_ENTERPRISE_DEVICE_SIGNALS_DISCLAIMER_TITLE);
-  source->AddLocalizedString("signalsDisclaimerSubtitle",
-                             IDS_ENTERPRISE_DEVICE_SIGNALS_DISCLAIMER_SUBTITLE);
-  source->AddLocalizedString(
-      "signalsDisclaimerProfileInformationDetails",
-      IDS_ENTERPRISE_DEVICE_SIGNALS_DISCLAIMER_PROFILE_INFORMATION_DETAILS);
-  source->AddLocalizedString(
-      "signalsDisclaimerDeviceInformationDetails",
-      IDS_ENTERPRISE_DEVICE_SIGNALS_DISCLAIMER_DEVICE_INFORMATION_DETAILS);
-  source->AddLocalizedString(
-      "signalsDisclaimerContinueLabel",
-      IDS_ENTERPRISE_DEVICE_SIGNALS_DISCLAIMER_CONTINUE_BUTTON_LABEL);
-  source->AddLocalizedString(
-      "signalsDisclaimerCancelLabel",
-      IDS_ENTERPRISE_DEVICE_SIGNALS_DISCLAIMER_CANCEL_BUTTON_LABEL);
-  source->AddLocalizedString("learnMore", IDS_LEARN_MORE);
+  source->AddBoolean("isModalDialog", false);
+  source->AddBoolean("enforcedByPolicy", false);
 
   if (base::FeatureList::IsEnabled(
           switches::kDisableFirstRunAnimationsForTesting)) {
@@ -289,6 +270,22 @@ ManagedUserProfileNoticeUI::ManagedUserProfileNoticeUI(content::WebUI* web_ui)
         network::mojom::CSPDirectiveName::WorkerSrc,
         "worker-src blob: chrome://resources 'self';");
   }
+}
+
+}  // namespace
+
+ManagedUserProfileNoticeUI::ManagedUserProfileNoticeUI(content::WebUI* web_ui)
+    : ui::MojoWebUIController(web_ui, /*enable_chrome_send=*/true) {
+  Profile* profile = Profile::FromWebUI(web_ui);
+  content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
+      profile, chrome::kChromeUIManagedUserProfileNoticeHost);
+  // Explicitly add ThemeSource for serving the dynamic WebUI color stylesheet.
+  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
+
+  // Add all default static resources, strings and flags.
+  AddResourcePaths(source);
+  AddStrings(source);
+  AddFlags(source, profile);
 
   ManagedUserProfileNoticeParams* params =
       ManagedUserProfileNoticeParams::FromWebContents(web_ui->GetWebContents());
@@ -309,79 +306,9 @@ ManagedUserProfileNoticeUI::ManagedUserProfileNoticeUI(content::WebUI* web_ui)
       ManagedUserProfileNoticeParams::UserDataKey());
 
   source->AddInteger("screenType", static_cast<int>(type));
-  if (type == ScreenType::kDeviceSignalsDisclaimer) {
-    source->AddBoolean("isModalDialog",
-                       create_param->is_device_signals_disclaimer_modal);
-    source->AddInteger(
-        "initialState",
-        ManagedUserProfileNoticeHandler::State::kSignalsDisclaimer);
-  }
-  const bool is_school_account =
-      account_info.GetAccountCapabilities().can_use_edu_features() ==
-      signin::Tribool::kTrue;
+
   const std::string domain =
-      enterprise_util::GetDomainFromEmail(account_info.email);
-  if (type == ScreenType::kEnterpriseAccountCreation) {
-    source->AddBoolean("isModalDialog", true);
-
-    int title_id = create_param->profile_creation_required_by_policy
-                       ? IDS_ENTERPRISE_WELCOME_PROFILE_REQUIRED_TITLE
-                       : IDS_ENTERPRISE_WELCOME_PROFILE_WILL_BE_MANAGED_TITLE;
-    if (create_param->profile_creation_required_by_policy) {
-      std::string manager =
-          signin_util::IsProfileSeparationEnforcedByProfile(profile,
-                                                            account_info.email)
-              ? GetEnterpriseAccountDomain(*profile).value_or(std::string())
-              : domain;
-      source->AddString(
-          "valuePropTitle",
-          manager.empty()
-              ? l10n_util::GetStringUTF16(
-                    IDS_ENTERPRISE_VALUE_PROPOSITION_PROFILE_REQUIRED_BY_ORG_TITLE)
-              : l10n_util::GetStringFUTF16(
-                    IDS_ENTERPRISE_VALUE_PROPOSITION_PROFILE_REQUIRED_BY_ORG_KNOWN_DOMAIN_TITLE,
-                    base::UTF8ToUTF16(manager)));
-    }
-    source->AddString("enterpriseProfileWelcomeTitle",
-                      l10n_util::GetStringUTF16(title_id));
-
-    source->AddBoolean("showLinkDataCheckbox",
-                       create_param->show_link_data_option);
-    // If the user is already signed in and is trying to turn sync on, we can
-    // skip the value proposition screen since they are already signed in.
-    if (create_param->user_already_signed_in) {
-      source->AddInteger("initialState",
-                         ManagedUserProfileNoticeHandler::State::kDisclosure);
-    } else {
-      source->AddInteger(
-          "initialState",
-          ManagedUserProfileNoticeHandler::State::kValueProposition);
-    }
-    source->AddBoolean("enforcedByPolicy",
-                       create_param->profile_creation_required_by_policy);
-  } else if (type == ScreenType::kEnterpriseOIDC) {
-    source->AddInteger("initialState",
-                       ManagedUserProfileNoticeHandler::State::kDisclosure);
-    source->AddBoolean("isModalDialog", true);
-    source->AddString(
-        "enterpriseProfileWelcomeTitle",
-        l10n_util::GetStringUTF16(IDS_ENTERPRISE_WELCOME_PROFILE_SETUP_TITLE));
-    source->AddString(
-        "profileDisclosureTitle",
-        l10n_util::GetStringUTF16(
-            IDS_ENTERPRISE_WELCOME_PROFILE_OIDC_DISCLOSURE_TITLE));
-
-    source->AddBoolean("showLinkDataCheckbox", false);
-  }
-
-  if (account_info.IsManaged() == signin::Tribool::kTrue) {
-    source->AddString(
-        "profileDisclosureSubtitle",
-        l10n_util::GetStringFUTF16(
-            IDS_ENTERPRISE_WELCOME_PROFILE_DISCLOSURE_KNOWN_DOMAIN_SUBTITLE,
-            base::UTF8ToUTF16(domain)));
-  }
-
+      enterprise_util::GetDomainFromEmail(account_info.GetEmail());
   if (account_info.IsManaged() != signin::Tribool::kTrue) {
     source->AddString(
         "valuePropSubtitle",
@@ -393,9 +320,7 @@ ManagedUserProfileNoticeUI::ManagedUserProfileNoticeUI(content::WebUI* web_ui)
         "separateBrowsingDataTitle",
         l10n_util::GetStringUTF16(
             IDS_ENTERPRISE_WELCOME_SEPARATE_BROWSING_CONSUMER_TITLE));
-  } else if (create_param->user_already_signed_in ||
-             base::FeatureList::IsEnabled(
-                 switches::kEnforceManagementDisclaimer)) {
+  } else {
     source->AddString(
         "separateBrowsingDataTitle",
         l10n_util::GetStringUTF16(
@@ -424,49 +349,73 @@ ManagedUserProfileNoticeUI::ManagedUserProfileNoticeUI(content::WebUI* web_ui)
         l10n_util::GetStringFUTF16(
             IDS_ENTERPRISE_WELCOME_SEPARATE_BROWSING_DATA_CHOICE_ALREADY_SIGNED_IN_DETAILS,
             base::UTF8ToUTF16(domain)));
-    if (type == ScreenType::kEnterpriseAccountCreation) {
-      source->AddString("cancelLabel",
-                        l10n_util::GetStringUTF16(
-                            create_param->profile_creation_required_by_policy
-                                ? IDS_SYNC_ERROR_USER_MENU_SIGNOUT_BUTTON
-                                : IDS_CANCEL));
+    // When a managed profile is mandatory, show Sign out instead of Cancel.
+    if (type == ScreenType::kEnterpriseAccountCreation &&
+        create_param->profile_creation_required_by_policy) {
+      source->AddString(
+          "cancelLabel",
+          l10n_util::GetStringUTF16(IDS_SYNC_ERROR_USER_MENU_SIGNOUT_BUTTON));
     }
-  } else if (is_school_account) {
+  }
+
+  if (type == ScreenType::kDeviceSignalsDisclaimer) {
+    source->AddBoolean("isModalDialog",
+                       create_param->is_device_signals_disclaimer_modal);
+    source->AddInteger(
+        "initialState",
+        ManagedUserProfileNoticeHandler::State::kSignalsDisclaimer);
+  } else if (type == ScreenType::kEnterpriseAccountCreation) {
+    source->AddBoolean("isModalDialog", true);
+
+    int title_id = create_param->profile_creation_required_by_policy
+                       ? IDS_ENTERPRISE_WELCOME_PROFILE_REQUIRED_TITLE
+                       : IDS_ENTERPRISE_WELCOME_PROFILE_WILL_BE_MANAGED_TITLE;
+    if (create_param->profile_creation_required_by_policy) {
+      std::string manager =
+          signin_util::IsProfileSeparationEnforcedByProfile(
+              profile, account_info.GetEmail())
+              ? GetEnterpriseAccountDomain(*profile).value_or(std::string())
+              : domain;
+      source->AddString(
+          "valuePropTitle",
+          manager.empty()
+              ? l10n_util::GetStringUTF16(
+                    IDS_ENTERPRISE_VALUE_PROPOSITION_PROFILE_REQUIRED_BY_ORG_TITLE)
+              : l10n_util::GetStringFUTF16(
+                    IDS_ENTERPRISE_VALUE_PROPOSITION_PROFILE_REQUIRED_BY_ORG_KNOWN_DOMAIN_TITLE,
+                    base::UTF8ToUTF16(manager)));
+    }
+    source->AddString("enterpriseProfileWelcomeTitle",
+                      l10n_util::GetStringUTF16(title_id));
+
+    // If the user is already signed in and is trying to turn sync on, we use
+    // the default state (kDisclosure). Otherwise we show the value proposition
+    // screen
+    if (!create_param->user_already_signed_in) {
+      source->AddInteger(
+          "initialState",
+          ManagedUserProfileNoticeHandler::State::kValueProposition);
+    }
+    source->AddBoolean("enforcedByPolicy",
+                       create_param->profile_creation_required_by_policy);
+  } else if (type == ScreenType::kEnterpriseOIDC) {
+    source->AddBoolean("isModalDialog", true);
     source->AddString(
-        "separateBrowsingDataTitle",
-        l10n_util::GetStringUTF16(
-            IDS_ENTERPRISE_WELCOME_SEPARATE_BROWSING_SCHOOL_TITLE));
+        "enterpriseProfileWelcomeTitle",
+        l10n_util::GetStringUTF16(IDS_ENTERPRISE_WELCOME_PROFILE_SETUP_TITLE));
     source->AddString(
         "profileDisclosureTitle",
         l10n_util::GetStringUTF16(
-            IDS_ENTERPRISE_WELCOME_PROFILE_DISCLOSURE_SCHOOL_TITLE));
-    source->AddString("valuePropSubtitle",
-                      l10n_util::GetStringUTF16(
-                          IDS_ENTERPRISE_VALUE_PROPOSITION_SCHOOL_SUBTITLE));
-    source->AddString(
-        "mergeBrowsingDataChoiceTitle",
-        l10n_util::GetStringUTF16(
-            IDS_ENTERPRISE_WELCOME_MERGE_BROWSING_DATA_SCHOOL_CHOICE));
-    source->AddString(
-        "separateBrowsingDataChoiceTitle",
-        l10n_util::GetStringUTF16(
-            IDS_ENTERPRISE_WELCOME_SEPARATE_BROWSING_DATA_SCHOOL_CHOICE));
-  }
-  if (type == ScreenType::kFirstRun) {
-    const std::string given_name =
-        std::string(account_info.GetGivenName().value_or(account_info.email));
+            IDS_ENTERPRISE_WELCOME_PROFILE_OIDC_DISCLOSURE_TITLE));
+  } else if (type == ScreenType::kFirstRun) {
+    const std::string_view given_name =
+        account_info.GetGivenName().value_or(account_info.GetEmail());
 
     if (!given_name.empty()) {
       source->AddString(
           "profileDisclosureTitle",
           l10n_util::GetStringFUTF16(IDS_FRE_SIGN_IN_CELEBRATION_WELCOME_TITLE,
                                      base::UTF8ToUTF16(given_name)));
-      source->AddString(
-          "profileDisclosureSubtitle",
-          l10n_util::GetStringFUTF16(
-              IDS_ENTERPRISE_WELCOME_PROFILE_DISCLOSURE_KNOWN_DOMAIN_SUBTITLE,
-              base::UTF8ToUTF16(
-                  enterprise_util::GetDomainFromEmail(account_info.email))));
     }
   }
 
@@ -481,6 +430,9 @@ ManagedUserProfileNoticeUI::ManagedUserProfileNoticeUI(content::WebUI* web_ui)
   if (create_param->show_link_data_option &&
       (profile_separation_data_migration_settings_optout ||
        check_link_data_checkbox_by_default_from_legacy_policy)) {
+    const bool is_school_account =
+        account_info.GetAccountCapabilities().can_use_edu_features() ==
+        signin::Tribool::kTrue;
     source->AddString(
         "separateBrowsingDataChoiceTitle",
         l10n_util::GetStringUTF16(
@@ -503,6 +455,39 @@ ManagedUserProfileNoticeUI::ManagedUserProfileNoticeUI(content::WebUI* web_ui)
 }
 
 ManagedUserProfileNoticeUI::~ManagedUserProfileNoticeUI() = default;
+
+// static
+GURL ManagedUserProfileNoticeUI::GetUrl(ScreenType screen_type,
+                                        Profile& profile) {
+  const bool is_in_search_engine_choice_region =
+      CHECK_DEREF(regional_capabilities::RegionalCapabilitiesServiceFactory::
+                      GetForProfile(&profile))
+          .IsInSearchEngineChoiceScreenRegion();
+
+  bool use_refreshed_ui = false;
+  switch (screen_type) {
+    // Screens shown in the profile picker and FRE flows.
+    case ScreenType::kEntepriseAccountSyncEnabled:
+    case ScreenType::kEntepriseAccountSyncDisabled:
+    case ScreenType::kConsumerAccountSyncDisabled:
+    case ScreenType::kProfilePicker:
+    case ScreenType::kFirstRun:
+      use_refreshed_ui = switches::IsFirstRunDesktopRefreshEnabled(
+          is_in_search_engine_choice_region);
+      break;
+    case ScreenType::kDeviceSignalsDisclaimer:
+      use_refreshed_ui = switches::IsEnterpriseSigninDialogsRefreshEnabled(
+          is_in_search_engine_choice_region);
+      break;
+    case ScreenType::kEnterpriseAccountCreation:
+    case ScreenType::kEnterpriseOIDC:
+      break;
+  }
+
+  return use_refreshed_ui
+             ? GURL(chrome::kChromeUIManagedUserProfileNoticeRefreshURL)
+             : GURL(chrome::kChromeUIManagedUserProfileNoticeUrl);
+}
 
 ManagedUserProfileNoticeHandler*
 ManagedUserProfileNoticeUI::GetHandlerForTesting() {
@@ -551,7 +536,6 @@ void ManagedUserProfileNoticeUI::UpdateBrowsingDataStringWithCounts(
   string_replacements.push_back(std::move(domain));
 
   base::DictValue update_data;
-  std::u16string browsing_data_string;
   if (string_replacements.size() == 2) {
     update_data.Set(
         "mergeBrowsingDataChoiceDetails",

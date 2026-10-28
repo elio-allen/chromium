@@ -22,8 +22,6 @@
 #include "chrome/browser/ash/borealis/borealis_service.h"
 #include "chrome/browser/ash/borealis/borealis_service_factory.h"
 #include "chrome/browser/ash/borealis/borealis_window_manager.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/crostini/crostini_features.h"
 #include "chrome/browser/ash/crostini/crostini_util.h"
 #include "chrome/browser/ash/guest_os/guest_os_shelf_utils.h"
@@ -37,9 +35,10 @@
 #include "chrome/browser/ui/ash/shelf/arc_app_window.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
 #include "chrome/browser/ui/ash/shelf/crostini_app_window.h"
-#include "chrome/browser/web_applications/web_app_utils.h"
 #include "chrome/grit/chrome_unscaled_resources.h"
 #include "chromeos/ash/components/borealis/borealis_util.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/experiences/arc/app/arc_app_constants.h"
 #include "chromeos/ui/base/app_types.h"
 #include "chromeos/ui/base/window_properties.h"
@@ -127,7 +126,7 @@ AppServiceAppWindowShelfController::ControllerForWindow(aura::Window* window) {
   }
 
   AppWindowBase* const app_window = it->second.get();
-  DCHECK(app_window);
+  CHECK(app_window, base::NotFatalUntil::M162);
   return app_window->controller();
 }
 
@@ -137,7 +136,8 @@ void AppServiceAppWindowShelfController::ActiveUserChanged(
   // Deactivates the running app windows in InstanceRegistry for the inactive
   // user, and activates the app windows for the active user.
   for (aura::Window* window : window_list_) {
-    ash::ShelfID shelf_id = proxy_->InstanceRegistry().GetShelfId(window);
+    ash::ShelfID shelf_id =
+        app_service_instance_helper_->GetShelfId(owner()->profile(), window);
     if (!shelf_id.IsNull()) {
       RegisterWindow(window, shelf_id);
     } else {
@@ -241,7 +241,7 @@ void AppServiceAppWindowShelfController::OnWindowVisibilityChanged(
 
 void AppServiceAppWindowShelfController::OnWindowDestroying(
     aura::Window* window) {
-  DCHECK(observed_windows_.IsObservingSource(window));
+  CHECK(observed_windows_.IsObservingSource(window), base::NotFatalUntil::M162);
   observed_windows_.RemoveObservation(window);
 
   if (arc_tracker_) {
@@ -656,8 +656,7 @@ ash::ShelfID AppServiceAppWindowShelfController::GetShelfId(
   // If the window exists in InstanceRegistry, get the shelf id from
   // InstanceRegistry.
   for (Profile* profile : profile_list_) {
-    auto* proxy = apps::AppServiceProxyFactory::GetForProfile(profile);
-    shelf_id = proxy->InstanceRegistry().GetShelfId(window);
+    shelf_id = app_service_instance_helper_->GetShelfId(profile, window);
     if (!shelf_id.IsNull()) {
       break;
     }
@@ -688,7 +687,7 @@ void AppServiceAppWindowShelfController::UserHasAppOnActiveDesktop(
     aura::Window* window,
     const ash::ShelfID& shelf_id,
     content::BrowserContext* browser_context) {
-  DCHECK(browser_context);
+  CHECK(browser_context, base::NotFatalUntil::M162);
   // If the window was created for the active user, register it to show an item
   // on the shelf.
   if (proxy_->InstanceRegistry().Exists(window)) {

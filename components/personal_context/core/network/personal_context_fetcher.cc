@@ -57,6 +57,7 @@ net::NetworkTrafficAnnotationTag GetNetworkTrafficAnnotation(
             trigger:
               "User interacts with a form field that supports ambient autofill."
             destination: GOOGLE_OWNED_SERVICE
+            api_service_name: "contextmemoryservice.pa.googleapis.com"
             data:
               "The domain of the current webpage and the requested entity "
               "types."
@@ -90,6 +91,10 @@ net::NetworkTrafficAnnotationTag GetNetworkTrafficAnnotation(
       return MISSING_TRAFFIC_ANNOTATION;
     case proto::CONTEXT_MEMORY_FEATURE_AUTO_TODOS:
       // TODO(crbug.com/523284957): fill out auto-todos traffic annotation
+      // details.
+      return MISSING_TRAFFIC_ANNOTATION;
+    case proto::CONTEXT_MEMORY_FEATURE_SMART_SEARCH:
+      // TODO(crbug.com/552048073): fill out smart-search traffic annotation
       // details.
       return MISSING_TRAFFIC_ANNOTATION;
     case proto::CONTEXT_MEMORY_FEATURE_UNSPECIFIED:

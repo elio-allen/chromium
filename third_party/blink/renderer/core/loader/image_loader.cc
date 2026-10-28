@@ -391,8 +391,14 @@ inline void ImageLoader::EnqueueImageLoadingMicroTask(
     UpdateFromElementBehavior update_behavior) {
   auto task = std::make_unique<Task>(this, update_behavior);
   pending_task_ = task->GetWeakPtr();
-  element_->GetDocument().GetAgent().event_loop()->EnqueueMicrotask(
-      BindOnce(&Task::Run, std::move(task)));
+  if (update_behavior == kUpdateFromTask) {
+    element_->GetDocument()
+        .GetTaskRunner(TaskType::kDOMManipulation)
+        ->PostTask(FROM_HERE, BindOnce(&Task::Run, std::move(task)));
+  } else {
+    element_->GetDocument().GetAgent().event_loop()->EnqueueMicrotask(
+        BindOnce(&Task::Run, std::move(task)));
+  }
   delay_until_do_update_from_element_ =
       std::make_unique<IncrementLoadEventDelayCount>(element_->GetDocument());
 }
@@ -660,7 +666,8 @@ void ImageLoader::UpdateFromElement(UpdateFromElementBehavior update_behavior,
 
   const KURL image_source_kurl = ImageSourceToKURL(image_source_url);
   if (ShouldLoadImmediately(image_source_kurl) &&
-      update_behavior != kUpdateFromMicrotask) {
+      update_behavior != kUpdateFromMicrotask &&
+      update_behavior != kUpdateFromTask) {
     DoUpdateFromElement(element_->GetExecutionContext()->GetCurrentWorld(),
                         update_behavior, &image_source_kurl, UpdateType::kSync,
                         force_blocking);
@@ -805,7 +812,6 @@ void ImageLoader::ImageNotifyFinished(ImageResourceContent* content) {
       // has been dispatched in the SVG document).
       svg_image->CheckLoaded();
       svg_image->UpdateUseCountersAfterLoad(GetElement()->GetDocument());
-      svg_image->MaybeRecordSvgImageProcessingTime(GetElement()->GetDocument());
     }
   }
 
@@ -871,14 +877,13 @@ void ImageLoader::OnAttachLayoutTree() {
 }
 
 void ImageLoader::ResetAnimation(ResetTimeline timeline) {
-  if (!RuntimeEnabledFeatures::SvgImageAnimationResetEnabled()) {
+  bool is_svg = image_content_ && image_content_->HasImage() &&
+                image_content_->GetImage()->IsSVGImage();
+
+  if (!RuntimeEnabledFeatures::SvgImageAnimationResetEnabled() || !is_svg) {
     if (LayoutImageResource* image_resource = GetLayoutImageResource()) {
       image_resource->ResetAnimation(timeline);
     }
-    return;
-  }
-
-  if (!image_content_ || !image_content_->HasImage()) {
     return;
   }
 

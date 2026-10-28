@@ -324,12 +324,15 @@ bool FtlSignalStrategy::Core::Send(
     case SignalingFormat::BOTH:
       xmpp->set_stanza(message.ToSerializedXml());
       SetIqStanza(xmpp, message);
+      VLOG(1) << "Sending signaling message in BOTH format (XML + Protobuf).";
       break;
     case SignalingFormat::PROTOBUF:
       SetIqStanza(xmpp, message);
+      VLOG(1) << "Sending signaling message in PROTOBUF-only format.";
       break;
     case SignalingFormat::XML:
       xmpp->set_stanza(message.ToSerializedXml());
+      VLOG(1) << "Sending signaling message in XML-only format.";
       break;
   }
 
@@ -464,6 +467,8 @@ void FtlSignalStrategy::Core::OnMessageReceived(
   }
 
   if (!message.has_xmpp()) {
+    LOG(WARNING) << "Received FTL message without XMPP payload: "
+                 << message.DebugString();
     return;
   }
 
@@ -476,15 +481,24 @@ void FtlSignalStrategy::Core::OnMessageReceived(
     if (JingleMessageFromProto(message.xmpp().iq_stanza(), &jingle_message,
                                &error)) {
       parsed_message = SignalStrategy::Message(std::move(jingle_message));
-      incoming_format = SignalingFormat::PROTOBUF;
+      incoming_format = message.xmpp().has_stanza() ? SignalingFormat::BOTH
+                                                    : SignalingFormat::PROTOBUF;
+      VLOG(1) << "Successfully parsed JingleMessage from iq_stanza."
+              << " (has_stanza=" << message.xmpp().has_stanza() << ")";
     } else {
       JingleMessageReply jingle_reply;
       if (JingleMessageReplyFromProto(message.xmpp().iq_stanza(),
                                       &jingle_reply)) {
         parsed_message = SignalStrategy::Message(std::move(jingle_reply));
-        incoming_format = SignalingFormat::PROTOBUF;
+        incoming_format = message.xmpp().has_stanza()
+                              ? SignalingFormat::BOTH
+                              : SignalingFormat::PROTOBUF;
+        VLOG(1) << "Successfully parsed JingleMessageReply from iq_stanza."
+                << " (has_stanza=" << message.xmpp().has_stanza() << ")";
       } else {
-        LOG(WARNING) << "Failed to parse iq_stanza: " << error;
+        LOG(WARNING) << "Failed to parse iq_stanza: " << error
+                     << "\nRaw iq_stanza:\n"
+                     << message.xmpp().iq_stanza().DebugString();
       }
     }
   }
@@ -493,10 +507,19 @@ void FtlSignalStrategy::Core::OnMessageReceived(
     parsed_message = SignalStrategy::ParseStanzaXml(message.xmpp().stanza());
     if (parsed_message) {
       incoming_format = SignalingFormat::XML;
+      VLOG(1) << "Successfully parsed message from XML stanza.";
+    } else {
+      LOG(WARNING) << "Failed to parse XML stanza: " << message.xmpp().stanza();
     }
   }
 
   if (!parsed_message) {
+    LOG(WARNING)
+        << "Message could not be parsed as XML or Protobuf. Dropping message."
+        << "\nhas_xmpp=" << message.has_xmpp() << ", has_iq_stanza="
+        << (message.has_xmpp() && message.xmpp().has_iq_stanza())
+        << ", has_stanza="
+        << (message.has_xmpp() && message.xmpp().has_stanza());
     return;
   }
 
@@ -516,20 +539,26 @@ void FtlSignalStrategy::Core::OnMessageReceived(
   }
 
   if (from != sender_address) {
-    LOG(WARNING) << "Expected sender: " << sender_address.id()
-                 << ", but received: " << from.id();
+    LOG(WARNING) << "Sender address mismatch! Expected sender: '"
+                 << sender_address.id() << "', but received: '" << from.id()
+                 << "'";
     return;
   }
   if (to != local_address_) {
-    LOG(WARNING) << "Expected receiver: " << local_address_.id()
-                 << ", but received: " << to.id();
+    LOG(WARNING) << "Receiver address mismatch! Expected receiver: '"
+                 << local_address_.id() << "', but received: '" << to.id()
+                 << "'";
     return;
   }
 
   if (const auto* jm = std::get_if<JingleMessage>(&*parsed_message)) {
     if (jm->action() == JingleMessage::ActionType::kSessionInitiate) {
-      // Record format chosen by the initiator.
-      session_formats_.Put(jm->sid, incoming_format);
+      // Record format chosen by the initiator. If the initiator sent BOTH,
+      // and we support Protobuf, we lock into PROTOBUF for the session.
+      SignalingFormat chosen_format = (incoming_format == SignalingFormat::BOTH)
+                                          ? SignalingFormat::PROTOBUF
+                                          : incoming_format;
+      session_formats_.Put(jm->sid, chosen_format);
     } else if (jm->action() == JingleMessage::ActionType::kSessionTerminate) {
       // Clean up session format on terminate.
       auto it = session_formats_.Peek(jm->sid);
@@ -538,14 +567,22 @@ void FtlSignalStrategy::Core::OnMessageReceived(
       }
     }
     // Track the format of the incoming request so we can match it in the reply.
-    incoming_request_formats_.Put(jm->message_id, incoming_format);
+    // If request was BOTH, respond with PROTOBUF to lock the session into
+    // Proto.
+    SignalingFormat reply_format = (incoming_format == SignalingFormat::BOTH)
+                                       ? SignalingFormat::PROTOBUF
+                                       : incoming_format;
+    incoming_request_formats_.Put(jm->message_id, reply_format);
   } else if (const auto* jmr =
                  std::get_if<JingleMessageReply>(&*parsed_message)) {
     // Correlate the reply to the outbound initiate request to set session
     // format.
     auto it = outbound_request_to_sid_.Peek(jmr->message_id);
     if (it != outbound_request_to_sid_.end()) {
-      session_formats_.Put(it->second, incoming_format);
+      SignalingFormat chosen_format = (incoming_format == SignalingFormat::BOTH)
+                                          ? SignalingFormat::PROTOBUF
+                                          : incoming_format;
+      session_formats_.Put(it->second, chosen_format);
       outbound_request_to_sid_.Erase(it);
     }
   }
@@ -651,7 +688,7 @@ void FtlSignalStrategy::Core::OnSendMessageResponse(
   ftl::ChromotingMessage crd_message;
   auto* xmpp = crd_message.mutable_xmpp();
   xmpp->set_stanza(error_reply.ToSerializedXml());
-  // TODO: crbug.com/504910955 - Re-enable iq_stanza once issues are fixed.
+  *xmpp->mutable_iq_stanza() = JingleMessageReplyToProto(error_reply);
   OnMessageReceived(receiver, crd_message);
 }
 
@@ -704,11 +741,12 @@ SignalingFormat FtlSignalStrategy::Core::GetFormatForMessage(
 
   if (IsSessionPending(message.sid)) {
     // If the session is pending negotiation, we don't know the format yet.
-    // Return BOTH if we initiated with BOTH, otherwise XML.
+    // Subsequent non-initiate messages must never be sent in BOTH format;
+    // default to PROTOBUF if we initiated with PROTOBUF/BOTH, otherwise XML.
     VLOG(1) << "Session " << message.sid
             << " is pending negotiation. Defaulting to "
-            << (send_protobuf_in_initiate_ ? "BOTH" : "XML");
-    return send_protobuf_in_initiate_ ? SignalingFormat::BOTH
+            << (send_protobuf_in_initiate_ ? "PROTOBUF" : "XML");
+    return send_protobuf_in_initiate_ ? SignalingFormat::PROTOBUF
                                       : SignalingFormat::XML;
   }
 

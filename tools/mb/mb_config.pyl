@@ -79,7 +79,9 @@
       'android_arm64-builder-perf-pgo': 'official_remoteexec_minimal_symbols_android_arm64_pgo',
       'android_arm64_high_end-builder-perf': 'official_remoteexec_minimal_symbols_android_arm64_high_end',
       'android_arm64_high_end-builder-perf-pgo': 'official_remoteexec_minimal_symbols_android_arm64_high_end_pgo',
+      'android_arm64_high_end-builder-perf-pgo-heapdump': 'official_remoteexec_minimal_symbols_android_arm64_high_end_pgo_heapdump',
       'chromecast-linux-builder-perf': 'cast_binary_size_remoteexec',
+      'linux-arm-builder-perf': 'official_linux_perf_arm64',
       'linux-builder-perf': 'official_linux_perf',
       'linux-builder-perf-pgo': 'official_remoteexec_perf_pgo',
       'linux-builder-perf-rel': 'official_linux_perf',
@@ -113,7 +115,9 @@
       'android_arm64-builder-perf-pgo': 'official_remoteexec_minimal_symbols_android_arm64_pgo',
       'android_arm64_high_end-builder-perf': 'official_remoteexec_minimal_symbols_android_arm64_high_end',
       'android_arm64_high_end-builder-perf-pgo': 'official_remoteexec_minimal_symbols_android_arm64_high_end_pgo',
+      'android_arm64_high_end-builder-perf-pgo-heapdump': 'official_remoteexec_minimal_symbols_android_arm64_high_end_pgo_heapdump',
       'chromecast-linux-builder-perf': 'cast_binary_size_remoteexec',
+      'linux-arm-builder-perf': 'official_linux_perf_arm64',
       'linux-builder-perf': 'official_linux_perf',
       'linux-builder-perf-pgo': 'official_remoteexec_perf_pgo',
       'linux-builder-perf-rel': 'official_linux_perf',
@@ -127,8 +131,7 @@
     },
 
     'client.devtools-frontend.integration': {
-      'DevTools Linux': 'release_trybot_blink_do_typecheck_siso',
-      'DevTools Linux Fastbuild': 'release_trybot_blink_siso',
+      'DevTools Linux': 'release_trybot_blink_siso',
     },
 
     'client.openscreen.chromium': {
@@ -158,10 +161,9 @@
     },
 
     'internal.chrome.fyi': {
-      'android-buildspeed-dbg': 'android_debug_bot_remoteexec_fastbuild',
-      'android-emulator-finch-smoke-chrome': 'android_release_bot_minimal_symbols_x86_fastbuild_webview_trichrome_remoteexec',
+      'android-emulator-finch-smoke-chrome': 'android_release_bot_minimal_symbols_x86_fastbuild_webview_debug_package_name_remoteexec',
       'linux-finch-smoke-chrome': 'official_remoteexec',
-      'lorenz-graph-dbg': 'android_debug_bot_remoteexec_external_fastbuild',
+      'lorenz-graph-dbg': 'android_debug_static_no_symbols_remoteexec_external_fastbuild',
       'mac-arm64-finch-smoke-chrome': 'official_remoteexec_mac_arm',
       'win-celab-rel': 'official_celab_release_bot',
       'win-finch-smoke-chrome': 'official_remoteexec',
@@ -170,8 +172,6 @@
     'internal.optimization_guide': {
       # Linux and win64 CI bots use official builds to catch official-specific ODML bugs. These
       # take significantly longer to compile, and thus are only for these two builders.
-      'ai_wpt-mac-arm64': 'optimization_guide_mac_arm64_rel',
-      'ai_wpt-mac-x64': 'optimization_guide_rel',
       'model_validation-linux': 'optimization_guide_rel',
       'model_validation-mac-arm64': 'optimization_guide_mac_arm64_rel',
       'model_validation-mac-x64': 'optimization_guide_rel',
@@ -240,21 +240,18 @@
 
     'tryserver.devtools-frontend': {
       # Align devtools blink builders with chromium linux-rel
-      'devtools_frontend_linux_blink_light_rel': 'release_trybot_blink_do_typecheck_siso',
-      'devtools_frontend_linux_blink_light_rel_fastbuild': 'release_trybot_blink_siso',
-      'devtools_frontend_linux_blink_rel': 'release_trybot_blink_do_typecheck_siso',
+      'devtools_frontend_linux_blink_light_rel': 'release_trybot_blink_siso',
+      'devtools_frontend_linux_blink_rel': 'release_trybot_blink_siso',
     },
 
     'tryserver.internal.chrome.fyi': {
-      'android-emulator-finch-smoke-chrome': 'android_release_bot_minimal_symbols_x86_fastbuild_webview_trichrome_remoteexec',
+      'android-emulator-finch-smoke-chrome': 'android_release_bot_minimal_symbols_x86_fastbuild_webview_debug_package_name_remoteexec',
       'linux-finch-smoke-chrome': 'official_remoteexec',
       'mac-arm64-finch-smoke-chrome': 'official_remoteexec_mac_arm',
       'win-finch-smoke-chrome': 'official_remoteexec',
     },
 
     'tryserver.internal.optimization_guide': {
-      'ai_wpt-mac-arm64': 'optimization_guide_mac_arm64_rel',
-      'ai_wpt-mac-x64': 'optimization_guide_rel',
       'model_validation-linux': 'optimization_guide_rel',
       'model_validation-mac-arm64': 'optimization_guide_mac_arm64_rel',
       'model_validation-mac-x64': 'optimization_guide_rel',
@@ -283,9 +280,9 @@
     'tryserver.webrtc': {
       'android_chromium_compile': 'android_release_trybot_remoteexec_siso',
       'linux_chromium_compile': 'release_trybot_remoteexec_siso',
-      'linux_chromium_compile_dbg': 'debug_bot_remoteexec_siso',
+      'linux_chromium_compile_dbg': 'debug_bot_no_symbols_remoteexec_siso',
       'mac_chromium_compile': 'gpu_tests_release_trybot_remoteexec_siso',
-      'webrtc_linux_chromium': 'release_trybot_blink_siso',
+      'webrtc_linux_chromium': 'gpu_tests_release_trybot_remoteexec_siso',
       'win_chromium_compile': 'gpu_tests_release_trybot_resource_allowlisting_remoteexec_siso',
       'win_chromium_compile_dbg': 'gpu_tests_debug_bot_x86_no_symbols_remoteexec_siso',
     },
@@ -297,17 +294,14 @@
   # we must support. A given config *may* be platform-specific but
   # is not necessarily so.
   'configs': {
-    'android_debug_bot_remoteexec_external_fastbuild': [
-      'android', 'debug_bot_remoteexec', 'android_external', 'android_fastbuild',
+    'android_debug_static_no_symbols_remoteexec_external_fastbuild': [
+      'android', 'debug', 'static', 'remoteexec', 'no_symbols',
+      'android_external', 'android_fastbuild',
     ],
 
-    'android_debug_bot_remoteexec_fastbuild': [
-      'android', 'debug_bot_remoteexec', 'android_fastbuild',
-    ],
-
-    'android_release_bot_minimal_symbols_x86_fastbuild_webview_trichrome_remoteexec': [
+    'android_release_bot_minimal_symbols_x86_fastbuild_webview_debug_package_name_remoteexec': [
       'android', 'release_bot_remoteexec', 'minimal_symbols', 'x86',
-      'strip_debug_info', 'android_fastbuild', 'webview_trichrome',
+      'strip_debug_info', 'android_fastbuild', 'webview_debug_package_name',
       'webview_shell',
     ],
 
@@ -388,12 +382,12 @@
       'debug_bot_blink', 'use_siso',
     ],
 
-    'debug_bot_remoteexec': [
-      'debug_bot_remoteexec',
+    'debug_bot_no_symbols_remoteexec_siso': [
+      'debug_bot_remoteexec', 'no_symbols', 'use_siso',
     ],
 
-    'debug_bot_remoteexec_siso': [
-      'debug_bot_remoteexec', 'use_siso',
+    'debug_bot_remoteexec': [
+      'debug_bot_remoteexec',
     ],
 
     'gpu_tests_android_release_trybot_arm64_remoteexec': [
@@ -442,7 +436,7 @@
     ],
 
     'official_android_arm32_pgo': [
-      'official', 'remoteexec', 'android', 'android_external', 'arm', 'minimal_symbols', 'no_default_afdo', 'pgo_phase_1', 'stable_version_code',
+      'official', 'remoteexec', 'android', 'android_external', 'arm', 'minimal_symbols', 'no_default_afdo', 'pgo_phase_1',
     ],
 
     'official_android_arm64_orderfile': [
@@ -450,7 +444,7 @@
     ],
 
     'official_android_arm64_pgo': [
-      'official', 'remoteexec', 'android', 'android_external', 'arm64', 'minimal_symbols', 'no_default_afdo', 'pgo_phase_1', 'stable_version_code',
+      'official', 'remoteexec', 'android', 'android_external', 'arm64', 'minimal_symbols', 'no_default_afdo', 'pgo_phase_1',
     ],
 
     'official_celab_release_bot': [
@@ -467,6 +461,10 @@
 
     'official_linux_perf': [
       'official', 'remoteexec', 'minimal_symbols', 'pgo_phase_0',
+    ],
+
+    'official_linux_perf_arm64': [
+      'official', 'remoteexec', 'arm64', 'minimal_symbols', 'pgo_phase_0',
     ],
 
     'official_linux_pgo': [
@@ -542,6 +540,10 @@
       'official', 'remoteexec', 'minimal_symbols', 'android', 'arm64', 'no_default_afdo',
     ],
 
+    'official_remoteexec_minimal_symbols_android_arm64_high_end_pgo_heapdump': [
+      'official', 'remoteexec', 'minimal_symbols', 'android', 'arm64', 'no_default_afdo', 'no_partition_alloc_as_malloc',
+    ],
+
     'official_remoteexec_minimal_symbols_android_arm64_pgo': [
       'official', 'remoteexec', 'minimal_symbols', 'android', 'arm64', 'android_low_end',
     ],
@@ -579,7 +581,7 @@
     ],
 
     'official_webview_arm64_pgo': [
-      'official', 'remoteexec', 'android', 'arm64', 'minimal_symbols', 'no_default_afdo', 'pgo_phase_1', 'stable_version_code',
+      'official', 'remoteexec', 'android', 'arm64', 'minimal_symbols', 'no_default_afdo', 'pgo_phase_1',
     ],
 
     'official_win_arm64_pgo': [
@@ -653,10 +655,6 @@
 
     'release_bot_remoteexec': [
       'release_bot_remoteexec', 'use_siso',
-    ],
-
-    'release_trybot_blink_do_typecheck_siso': [
-      'release_trybot_blink', 'devtools_do_typecheck', 'use_siso',
     ],
 
     'release_trybot_blink_siso': [
@@ -845,10 +843,6 @@
       'mixins': ['debug', 'shared', 'remoteexec', 'minimal_symbols'],
     },
 
-    # Representative GN args for developer builds.
-    'devtools_do_typecheck': {
-      'gn_args': 'devtools_skip_typecheck=false',
-    },
 
     'devtools_instrumentation_dumping': {
       'gn_args': 'devtools_instrumentation_dumping=true',
@@ -947,6 +941,11 @@
       'gn_args': 'clang_use_default_sample_profile=false',
     },
 
+    'no_partition_alloc_as_malloc': {
+      'mixins': ['no_brp'],
+      'gn_args': 'use_partition_alloc_as_malloc=false use_alloc_token=false',
+    },
+
     'no_proguard_obfuscation': {
       'gn_args': 'enable_proguard_obfuscation=false',
     },
@@ -1037,7 +1036,7 @@
     },
 
     'remoteexec': {
-      'gn_args': 'use_remoteexec=true use_reclient=false',
+      'gn_args': 'use_remoteexec=true',
     },
 
     # windows cross. crbug.com/1213717 crbug.com/1407983
@@ -1052,12 +1051,6 @@
 
     'shared': {
       'gn_args': 'is_component_build=true',
-    },
-
-    # Ensures we don't have mulitple versions of Trichrome Library installed on
-    # devices so as to not run out of disk space.
-    'stable_version_code': {
-      'gn_args': 'android_override_version_code="1234567980"',
     },
 
     'static': {
@@ -1106,15 +1099,15 @@
       'gn_args': 'system_webview_package_name="com.google.android.webview"',
     },
 
+    # For Android >=Q, only userdebug/eng
+    'webview_debug_package_name': {
+      'gn_args': 'system_webview_package_name="com.google.android.webview.debug"',
+    },
+
     # Mainly used by builders that use android emulator.
     # See https://bit.ly/3B1cyyt for more details.
     'webview_shell': {
       'gn_args': 'system_webview_shell_package_name = "org.chromium.my_webview_shell"',
-    },
-
-    # For Android >=Q, only userdebug/eng
-    'webview_trichrome': {
-      'gn_args': 'system_webview_package_name="com.google.android.webview.debug"',
     },
 
     'win_linker_timing': {

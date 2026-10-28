@@ -26,6 +26,7 @@
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "net/base/backoff_entry.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace ash {
 namespace {
@@ -44,14 +45,17 @@ const net::BackoffEntry::Policy
         true,  // Don't use initial delay unless last request was an error.
 };
 
-PasswordSyncTokenVerifier::PasswordSyncTokenVerifier(PrefService* local_state,
-                                                     Profile* primary_profile)
+PasswordSyncTokenVerifier::PasswordSyncTokenVerifier(
+    PrefService* local_state,
+    Profile* primary_profile,
+    signin::IdentityManager* identity_manager)
     : local_state_(CHECK_DEREF(local_state)),
       primary_profile_(primary_profile),
       primary_user_(ProfileHelper::Get()->GetUserByProfile(primary_profile)),
+      identity_manager_(CHECK_DEREF(identity_manager)),
       retry_backoff_(&kFetchTokenRetryBackoffPolicy) {
-  DCHECK(primary_profile_);
-  DCHECK(primary_user_);
+  CHECK(primary_profile_, base::NotFatalUntil::M160);
+  CHECK(primary_user_, base::NotFatalUntil::M160);
 }
 
 PasswordSyncTokenVerifier::~PasswordSyncTokenVerifier() = default;
@@ -66,7 +70,7 @@ void PasswordSyncTokenVerifier::RecheckAfter(base::TimeDelta delay) {
 }
 
 void PasswordSyncTokenVerifier::CreateTokenAsync() {
-  DCHECK(!password_sync_token_fetcher_);
+  CHECK(!password_sync_token_fetcher_, base::NotFatalUntil::M160);
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory =
       primary_profile_->GetURLLoaderFactory();
   if (!url_loader_factory.get()) {
@@ -74,7 +78,7 @@ void PasswordSyncTokenVerifier::CreateTokenAsync() {
   }
 
   password_sync_token_fetcher_ = std::make_unique<PasswordSyncTokenFetcher>(
-      url_loader_factory, primary_profile_, this);
+      url_loader_factory, &identity_manager_.get(), this);
   password_sync_token_fetcher_->StartTokenCreate();
 }
 
@@ -100,7 +104,7 @@ void PasswordSyncTokenVerifier::CheckForPasswordNotInSync() {
 }
 
 void PasswordSyncTokenVerifier::PerformTokenCheck() {
-  DCHECK(!password_sync_token_fetcher_);
+  CHECK(!password_sync_token_fetcher_, base::NotFatalUntil::M160);
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory =
       primary_profile_->GetURLLoaderFactory();
   // url_loader_factory is nullptr in unit tests so constructing
@@ -109,7 +113,7 @@ void PasswordSyncTokenVerifier::PerformTokenCheck() {
     return;
   }
   password_sync_token_fetcher_ = std::make_unique<PasswordSyncTokenFetcher>(
-      url_loader_factory, primary_profile_, this);
+      url_loader_factory, &identity_manager_.get(), this);
 
   // Get current sync token for primary_user_.
   std::string token_to_verify = fake_token;
@@ -146,7 +150,7 @@ void PasswordSyncTokenVerifier::FetchSyncTokenOnReauth() {
 }
 
 void PasswordSyncTokenVerifier::PerformFetchToken() {
-  DCHECK(!password_sync_token_fetcher_);
+  CHECK(!password_sync_token_fetcher_, base::NotFatalUntil::M160);
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory =
       primary_profile_->GetURLLoaderFactory();
   // No url_loader_factory in unit tests.
@@ -155,7 +159,7 @@ void PasswordSyncTokenVerifier::PerformFetchToken() {
   }
 
   password_sync_token_fetcher_ = std::make_unique<PasswordSyncTokenFetcher>(
-      url_loader_factory, primary_profile_, this);
+      url_loader_factory, &identity_manager_.get(), this);
   password_sync_token_fetcher_->StartTokenGet();
 }
 
@@ -163,7 +167,7 @@ void PasswordSyncTokenVerifier::CancelPendingChecks() {
   // We should not have any active request at this point. DCHECK makes sure it
   // is really the case for the dev build. In a release build InvalidateWeakPtrs
   // helps to recover by cancelling potential existing requests.
-  DCHECK(!weak_ptr_factory_.HasWeakPtrs());
+  CHECK(!weak_ptr_factory_.HasWeakPtrs(), base::NotFatalUntil::M160);
   weak_ptr_factory_.InvalidateWeakPtrs();
 }
 
@@ -172,7 +176,7 @@ void PasswordSyncTokenVerifier::RecordTokenPollingStart() {
 }
 
 void PasswordSyncTokenVerifier::OnTokenCreated(const std::string& sync_token) {
-  DCHECK(!sync_token.empty());
+  CHECK(!sync_token.empty(), base::NotFatalUntil::M160);
 
   // Set token value in local state.
   user_manager::KnownUser known_user(&local_state_.get());

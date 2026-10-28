@@ -102,19 +102,29 @@ void ChromeBrowserPolicyConnector::OnResourceBundleCreated() {
 void ChromeBrowserPolicyConnector::Init(
     PrefService* local_state,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
-  PolicyLogger::GetInstance()->EnableLogDeletion();
   auto configuration = std::make_unique<DeviceManagementServiceConfiguration>(
       GetDeviceManagementUrl(), GetRealtimeReportingUrl(),
       GetEncryptedReportingUrl());
   auto device_management_service =
       std::make_unique<DeviceManagementService>(std::move(configuration));
-  device_management_service->ScheduleInitialization(
-      kServiceInitializationStartupDelay);
+  // Production delays initialization by 5 seconds to avoid slowing initial UI
+  // startup. Skip the delay in browser tests so tests that upload reports or
+  // fetch policies don't stall waiting for the service to start.
+  const int64_t delay_milliseconds =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kTestType)
+          ? 0
+          : kServiceInitializationStartupDelay;
+  device_management_service->ScheduleInitialization(delay_milliseconds);
 
 #if BUILDFLAG(IS_ANDROID)
   policy_cache_updater_ = std::make_unique<android::PolicyCacheUpdater>(
       GetPolicyService(), GetHandlerList());
 #endif
+
+  PolicyLogger::GetInstance()->EnableLogCompression(
+      base::ThreadPool::CreateSequencedTaskRunner(
+          {base::TaskPriority::USER_VISIBLE,
+           base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}));
 
   InitInternal(local_state, std::move(device_management_service));
 }

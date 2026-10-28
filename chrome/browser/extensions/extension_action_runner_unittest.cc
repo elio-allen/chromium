@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/api/extension_action/extension_action_api.h"
@@ -216,7 +217,7 @@ TEST_F(ExtensionActionRunnerUnitTest, GrantTabPermissions) {
   EXPECT_TRUE(RequiresUserConsent(extension));
   EXPECT_TRUE(runner()->WantsToRun(extension));
 
-  runner()->GrantTabPermissions({extension});
+  runner()->GrantTabPermissions({extension}, base::DoNothing());
   task_environment()->RunUntilIdle();
 
   EXPECT_EQ(1u, GetExecutionCountForExtension(extension->id()));
@@ -405,7 +406,8 @@ TEST_F(ExtensionActionRunnerUnitTest, ActiveScriptsUseActiveTabPermissions) {
   ASSERT_TRUE(active_tab_permission_granter);
   {
     PermissionsManagerWaiter waiter(PermissionsManager::Get(profile()));
-    active_tab_permission_granter->GrantIfRequested(extension);
+    active_tab_permission_granter->GrantIfRequested(extension,
+                                                    base::DoNothing());
     waiter.WaitForActiveTabPermissionGranted(extension->id());
   }
 
@@ -437,7 +439,8 @@ TEST_F(ExtensionActionRunnerUnitTest, ActiveScriptsUseActiveTabPermissions) {
   // Grant active tab.
   {
     PermissionsManagerWaiter waiter(PermissionsManager::Get(profile()));
-    active_tab_permission_granter->GrantIfRequested(extension);
+    active_tab_permission_granter->GrantIfRequested(extension,
+                                                    base::DoNothing());
     waiter.WaitForActiveTabPermissionGranted(extension->id());
   }
 
@@ -583,6 +586,36 @@ TEST_F(ExtensionActionRunnerUnitTest, TestWebRequestBlocked) {
   NavigateAndCommit(GURL("https://www.bar.com"));
   EXPECT_EQ(BLOCKED_ACTION_NONE, runner()->GetBlockedActions(extension->id()));
   EXPECT_FALSE(runner()->WantsToRun(extension));
+}
+
+// Tests that `ExtensionActionRunner::RequiresUserConsentForScriptInjection()`
+// gates `mojom::InjectionType::kDeclarativeScript` injections (from the
+// `RequestContentScript` action of the `chrome.declarativeContent` API) on the
+// extension's host permissions (`PermissionsData::GetPageAccess()`), the same
+// as `mojom::InjectionType::kProgrammaticScript`, rather than on its manifest
+// content script matches (`PermissionsData::GetContentScriptAccess()`).
+TEST_F(ExtensionActionRunnerUnitTest, DeclarativeScriptsUseHostPermissions) {
+  // Add an extension with withheld all hosts permissions and no manifest
+  // content scripts, then navigate to a page it has requested host permissions
+  // for.
+  const Extension* extension = AddExtension();
+  ASSERT_TRUE(extension);
+  NavigateAndCommit(GURL("https://www.google.com"));
+
+  // Content script injections are denied since the extension has no manifest
+  // content scripts matching the page.
+  EXPECT_EQ(PermissionsData::PageAccess::kDenied,
+            runner()->RequiresUserConsentForScriptInjectionForTesting(
+                extension, mojom::InjectionType::kContentScript));
+
+  // Declarative and programmatic script injections are withheld because they
+  // use the extension's withheld host permissions.
+  EXPECT_EQ(PermissionsData::PageAccess::kWithheld,
+            runner()->RequiresUserConsentForScriptInjectionForTesting(
+                extension, mojom::InjectionType::kDeclarativeScript));
+  EXPECT_EQ(PermissionsData::PageAccess::kWithheld,
+            runner()->RequiresUserConsentForScriptInjectionForTesting(
+                extension, mojom::InjectionType::kProgrammaticScript));
 }
 
 }  // namespace extensions

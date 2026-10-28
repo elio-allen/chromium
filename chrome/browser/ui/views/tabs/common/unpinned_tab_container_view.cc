@@ -6,6 +6,7 @@
 
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
+#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/views/tabs/common/dragged_tabs_container.h"
 #include "chrome/browser/ui/views/tabs/common/split_tab_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.h"
@@ -14,8 +15,10 @@
 #include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
 #include "chrome/browser/ui/views/tabs/common/tab_view.h"
-#include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.h"
+#include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_horizontal_layout.h"
+#include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_vertical_layout.h"
 #include "components/tabs/public/tab_group.h"
+#include "content/public/browser/navigation_controller.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/controls/scroll_view.h"
@@ -68,6 +71,14 @@ class UnpinnedTabContainerViewTargeter : public views::ViewTargeterDelegate {
   raw_ptr<views::View> view_;
 };
 
+std::unique_ptr<UnpinnedTabContainerView::LayoutManager>
+CreateUnpinnedTabContainerViewLayout(TabStripOrientation orientation) {
+  if (orientation == TabStripOrientation::kVertical) {
+    return std::make_unique<UnpinnedTabContainerViewVerticalLayout>();
+  }
+  return std::make_unique<UnpinnedTabContainerViewHorizontalLayout>();
+}
+
 }  // namespace
 
 UnpinnedTabContainerView::UnpinnedTabContainerView(
@@ -83,14 +94,15 @@ UnpinnedTabContainerView::UnpinnedTabContainerView(
                                  TabStripOrientation::kHorizontal
               ? DragLayout::kHorizontal
               : DragLayout::kVertical),
+      orientation_(collection_node->orientation()),
       collection_node_(collection_node),
       layout_manager_(*SetLayoutManager(std::make_unique<
                                         TabCollectionAnimatingLayoutManager>(
-          std::make_unique<UnpinnedTabContainerViewLayout>(
-              collection_node->orientation()),
+          CreateUnpinnedTabContainerViewLayout(orientation_),
           /*delegate=*/*this,
+          collection_node->GetController()->animation_coordinator(),
           /*animation_axis=*/
-          collection_node->orientation() == TabStripOrientation::kHorizontal
+          orientation_ == TabStripOrientation::kHorizontal
               ? TabCollectionAnimatingLayoutManager::AnimationAxis::kHorizontal
               : TabCollectionAnimatingLayoutManager::AnimationAxis::kVertical,
           /*animate_host_size=*/true))) {
@@ -107,18 +119,78 @@ UnpinnedTabContainerView::UnpinnedTabContainerView(
   node_destroyed_subscription_ = collection_node_->RegisterWillDestroyCallback(
       base::BindOnce(&UnpinnedTabContainerView::ResetCollectionNode,
                      base::Unretained(this)));
+
+  if (orientation_ == TabStripOrientation::kVertical) {
+    auto* state_controller =
+        collection_node_->GetController()->GetStateController();
+    CHECK(state_controller);
+    collapsed_state_changed_subscription_ =
+        state_controller->RegisterOnCollapseChanged(base::BindRepeating(
+            &UnpinnedTabContainerView::OnCollapseStateChanged,
+            base::Unretained(this)));
+  }
 }
 
 UnpinnedTabContainerView::~UnpinnedTabContainerView() = default;
 
+int UnpinnedTabContainerView::LayoutManager::GetUnconstrainedPreferredWidth()
+    const {
+  return 0;
+}
+
+void UnpinnedTabContainerView::LayoutManager::OnInstalled(views::View* host) {
+  CHECK(IsViewClass<class UnpinnedTabContainerView>(host));
+}
+
+const UnpinnedTabContainerView&
+UnpinnedTabContainerView::LayoutManager::UnpinnedTabContainerView() const {
+  return static_cast<const class UnpinnedTabContainerView&>(*host_view());
+}
+
+bool UnpinnedTabContainerView::LayoutManager::IsChildVisibleInContainer(
+    std::optional<tab_groups::TabGroupId> focused_group_id,
+    const views::View* child) const {
+  if (!CanBeVisible(child)) {
+    return false;
+  }
+  auto drag_data =
+      UnpinnedTabContainerView().GetVisualDataForDraggedView(*child);
+  if (drag_data && drag_data->should_hide) {
+    return false;
+  }
+  if (focused_group_id.has_value() &&
+      GetGroupIdForChild(child) != focused_group_id.value()) {
+    return false;
+  }
+  return true;
+}
+
+std::optional<tab_groups::TabGroupId>
+UnpinnedTabContainerView::LayoutManager::GetFocusedGroupId() const {
+  if (!UnpinnedTabContainerView().collection_node_ ||
+      !UnpinnedTabContainerView().collection_node_->GetController()) {
+    return std::nullopt;
+  }
+  return UnpinnedTabContainerView()
+      .collection_node_->GetController()
+      ->GetFocusedGroup();
+}
+
+std::optional<tab_groups::TabGroupId>
+UnpinnedTabContainerView::LayoutManager::GetGroupIdForChild(
+    const views::View* child) const {
+  if (auto* group_view = views::AsViewClass<TabGroupView>(child)) {
+    return group_view->GetTabGroup().id();
+  }
+  return std::nullopt;
+}
 
 std::optional<BrowserRootView::DropIndex>
 UnpinnedTabContainerView::GetLinkDropIndex(const gfx::Point& loc_in_container) {
   if (!collection_node_) {
     return std::nullopt;
   }
-  const bool is_horizontal =
-      collection_node_->orientation() == TabStripOrientation::kHorizontal;
+  const bool is_horizontal = orientation_ == TabStripOrientation::kHorizontal;
 
   for (auto& child_node : collection_node_->children()) {
     auto* view = child_node->view();
@@ -202,6 +274,9 @@ bool UnpinnedTabContainerView::IsViewDragging(
 
 bool UnpinnedTabContainerView::ShouldAnimateOpacityForAddAndRemove(
     const views::View& child_view) const {
+  if (orientation_ == TabStripOrientation::kHorizontal) {
+    return false;
+  }
   // Only animate opacity for tab views.
   return views::IsViewClass<TabView>(&child_view);
 }
@@ -211,11 +286,37 @@ bool UnpinnedTabContainerView::ShouldSnapToTarget(
   return views::IsViewClass<SplitTabView>(&child_view);
 }
 
+bool UnpinnedTabContainerView::ShouldAnimateLayout() {
+  if (!collection_node_) {
+    return false;
+  }
+  return collection_node_->GetController()->ShouldAnimateLayout();
+}
+
+gfx::Size UnpinnedTabContainerView::GetTargetPreferredSize() const {
+  return layout_manager_->GetTargetPreferredSize();
+}
+
+int UnpinnedTabContainerView::GetUnconstrainedPreferredWidth() const {
+  return static_cast<const UnpinnedTabContainerView::LayoutManager*>(
+             layout_manager_->target_layout_manager())
+      ->GetUnconstrainedPreferredWidth();
+}
+
 void UnpinnedTabContainerView::ResetCollectionNode() {
+  collapsed_state_changed_subscription_ = {};
   collection_node_ = nullptr;
 }
 
+void UnpinnedTabContainerView::OnCollapseStateChanged(
+    tabs::VerticalTabStripCollapseState state) {
+  InvalidateLayout();
+}
+
 views::ScrollView* UnpinnedTabContainerView::GetScrollViewForContainer() const {
+  if (!collection_node_) {
+    return nullptr;
+  }
   return views::ScrollView::GetScrollViewForContents(
       const_cast<UnpinnedTabContainerView*>(this));
 }
@@ -244,9 +345,7 @@ DraggedTabsContainer& UnpinnedTabContainerView::GetTabDragTarget(
                              GetDraggingViewsBoundsAtPoint(point_in_container))
                        : std::nullopt;
   const views::ProposedLayout& target_layout = layout_manager_->target_layout();
-  const bool is_horizontal =
-      collection_node_ &&
-      collection_node_->orientation() == TabStripOrientation::kHorizontal;
+  const bool is_horizontal = orientation_ == TabStripOrientation::kHorizontal;
   for (const views::ChildLayout& layout : target_layout.child_layouts) {
     if (!layout.visible || IsViewDragging(*layout.child_view)) {
       continue;
@@ -254,6 +353,10 @@ DraggedTabsContainer& UnpinnedTabContainerView::GetTabDragTarget(
     auto* group_view = views::AsViewClass<TabGroupView>(layout.child_view);
     if (!group_view || group_view->IsCollapsed()) {
       continue;
+    }
+
+    if (group_view->IsGroupFocused()) {
+      return *group_view;
     }
 
     if (group_view->IsHandlingDrag()) {
@@ -265,6 +368,7 @@ DraggedTabsContainer& UnpinnedTabContainerView::GetTabDragTarget(
       }
     }
 
+    const gfx::Rect group_bounds = GetMirroredRect(layout.bounds);
     if (dragging_view_bounds) {
       const auto header_size = is_horizontal
                                    ? group_view->group_header()->width()
@@ -272,7 +376,7 @@ DraggedTabsContainer& UnpinnedTabContainerView::GetTabDragTarget(
       const auto required_overlap_amount =
           header_size * kMinHeaderHeightPctForGroupEntry;
       if (HasMinimumOverlap(
-              *dragging_view_bounds, layout.bounds,
+              *dragging_view_bounds, group_bounds,
               is_horizontal ? std::make_optional(required_overlap_amount)
                             : std::nullopt,
               is_horizontal ? std::nullopt
@@ -280,10 +384,10 @@ DraggedTabsContainer& UnpinnedTabContainerView::GetTabDragTarget(
         return *group_view;
       }
     } else if (is_horizontal
-                   ? (layout.bounds.x() <= point_in_container.x() &&
-                      layout.bounds.right() >= point_in_container.x())
-                   : (layout.bounds.y() <= point_in_container.y() &&
-                      layout.bounds.bottom() >= point_in_container.y())) {
+                   ? (group_bounds.x() <= point_in_container.x() &&
+                      group_bounds.right() >= point_in_container.x())
+                   : (group_bounds.y() <= point_in_container.y() &&
+                      group_bounds.bottom() >= point_in_container.y())) {
       // If neither the group or this container are handling a drag and the drag
       // point falls in the group (e.g. when starting the drag), then use the
       // group.
@@ -309,9 +413,7 @@ bool UnpinnedTabContainerView::ShouldDragRemainInGroup(
   auto dragging_view_bounds_from_group = views::View::ConvertRectToTarget(
       &group_view, this, dragging_view_bounds_in_group);
 
-  const bool is_horizontal =
-      collection_node_ &&
-      collection_node_->orientation() == TabStripOrientation::kHorizontal;
+  const bool is_horizontal = orientation_ == TabStripOrientation::kHorizontal;
   const auto header_size = is_horizontal ? group_view.group_header()->width()
                                          : group_view.group_header()->height();
   const auto dragging_size = is_horizontal
@@ -327,7 +429,7 @@ bool UnpinnedTabContainerView::ShouldDragRemainInGroup(
       dragging_size - (header_size * kMinHeaderHeightPctForGroupExit);
 
   return HasMinimumOverlap(
-      dragging_view_bounds_from_group, proposed_group_bounds,
+      dragging_view_bounds_from_group, GetMirroredRect(proposed_group_bounds),
       is_horizontal ? std::make_optional(required_overlap_amount)
                     : std::nullopt,
       is_horizontal ? std::nullopt

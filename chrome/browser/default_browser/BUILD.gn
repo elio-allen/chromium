@@ -52,6 +52,7 @@ source_set("default_browser") {
     "//chrome/browser/ui/toasts",
     "//chrome/browser/ui/toasts/api:toasts",
     "//components/tabs:public",
+    "//components/vector_icons",
     "//ui/base",
     "//ui/base/unowned_user_data",
     "//ui/message_center/public/cpp",
@@ -68,6 +69,18 @@ source_set("default_browser") {
     ]
   } else {
     sources += [ "default_browser_monitor_stub.cc" ]
+  }
+}
+
+if (is_win) {
+  source_set("startup_metrics") {
+    public = [ "default_browser_startup_metrics.h" ]
+    sources = [ "default_browser_startup_metrics.cc" ]
+    public_deps = [
+      "//base",
+      "//chrome/browser:shell_integration",
+    ]
+    deps = [ "//chrome/installer/util:with_no_strings" ]
   }
 }
 
@@ -99,7 +112,10 @@ source_set("unit_tests") {
   ]
 
   if (is_win) {
-    sources += [ "default_browser_notification_observer_unittest.cc" ]
+    sources += [
+      "default_browser_notification_observer_unittest.cc",
+      "default_browser_startup_metrics_unittest.cc",
+    ]
   }
 
   deps = [
@@ -109,10 +125,20 @@ source_set("unit_tests") {
     "//chrome/browser:global_features",
     "//chrome/browser:shell_integration",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//content/test:test_support",
     "//ui/base/unowned_user_data",
     "//url",
   ]
+
+  if (is_win) {
+    deps += [
+      ":startup_metrics",
+      "//chrome/install_static:install_static_util",
+      "//chrome/install_static/test:test_support",
+      "//chrome/installer/util:with_no_strings",
+    ]
+  }
 }
 
 source_set("browser_tests") {
@@ -136,6 +162,7 @@ source_set("browser_tests") {
     "//chrome/browser/ui/toasts/api:toasts",
     "//chrome/test:test_support",
     "//chrome/test:test_support_ui",
+    "//chrome/test/base:testing_browser_process",
     "//content/test:test_support",
     "//ui/base",
   ]

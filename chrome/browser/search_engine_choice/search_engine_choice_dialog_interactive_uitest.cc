@@ -8,11 +8,11 @@
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/preloading/preloading_features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engine_choice/search_engine_choice_dialog_service.h"
 #include "chrome/browser/search_engine_choice/search_engine_choice_dialog_service_factory.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/common/webui_url_constants.h"
@@ -29,6 +29,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
+#include "ui/base/window_open_disposition.h"
 
 namespace {
 
@@ -105,13 +106,21 @@ class SearchEngineChoiceDialogInteractiveUiTest
     : public InteractiveBrowserTest {
  public:
   SearchEngineChoiceDialogInteractiveUiTest() {
+    // interactive_ui_tests sets `ui_test_utils::BringBrowserWindowToFront()`
+    // for the setup function by default. This causes timeouts on sanitizer bots
+    // and failures on Mac because the window-modal Search Engine Choice dialog
+    // steals activation, preventing the parent browser window from activating.
+    set_global_browser_set_up_function(nullptr);
+
+    // TODO(crbug.com/539786691): Re-enable kPrewarm once the feature is
+    // compatible with the test.
     webui_omnibox_feature_list_.InitWithFeatures(
         /*enabled_features=*/{},
         /*disabled_features=*/
         // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
         // is enabled and then remove these two Features.
         {omnibox::internal::kWebUIOmniboxPopup,
-         omnibox::internal::kWebUIOmniboxAimPopup});
+         omnibox::internal::kWebUIOmniboxAimPopup, features::kPrewarm});
   }
 
   auto PressJsButton(const ui::ElementIdentifier web_contents_id,
@@ -182,16 +191,8 @@ class SearchEngineChoiceDialogInteractiveUiTest
   base::test::ScopedFeatureList webui_omnibox_feature_list_;
 };
 
-// TODO(crbug.com/431780231): Flaky on mac bots and chromeOS bots.
-#if BUILDFLAG(IS_MAC) ||       \
-    (BUILDFLAG(IS_CHROMEOS) && \
-     (defined(ADDRESS_SANITIZER) || defined(LEAK_SANITIZER)))
-#define MAYBE_ChooseSearchEngine DISABLED_ChooseSearchEngine
-#else
-#define MAYBE_ChooseSearchEngine ChooseSearchEngine
-#endif
 IN_PROC_BROWSER_TEST_F(SearchEngineChoiceDialogInteractiveUiTest,
-                       MAYBE_ChooseSearchEngine) {
+                       ChooseSearchEngine) {
   SearchEngineChoiceDialogService* search_engine_choice_service =
       SearchEngineChoiceDialogServiceFactory::GetForProfile(
           browser()->GetProfile());
@@ -254,7 +255,7 @@ IN_PROC_BROWSER_TEST_F(SearchEngineChoiceDialogInteractiveUiTest,
 
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
       browser(), chrome::ChromeUINewTabPageURLAsGURL(),
-      WindowOpenDisposition::CURRENT_TAB,
+      WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   EXPECT_FALSE(search_engine_choice_service->IsShowingDialog(*browser()));

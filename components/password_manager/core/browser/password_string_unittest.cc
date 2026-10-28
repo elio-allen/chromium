@@ -5,12 +5,16 @@
 #include "components/password_manager/core/browser/password_string.h"
 
 #include <string>
+#include <string_view>
+#include <tuple>
 #include <utility>
 
 #include "base/test/scoped_feature_list.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "crypto/process_bound_string.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
+#include "third_party/abseil-cpp/absl/hash/hash_testing.h"
 
 namespace password_manager {
 
@@ -79,6 +83,109 @@ TEST_P(PasswordStringTest, EqualityRejectsDifferentValues) {
   PasswordString a(u"one");
   PasswordString b(u"two");
   EXPECT_FALSE(a == b);
+}
+
+TEST_P(PasswordStringTest, AbslHashValue) {
+  EXPECT_TRUE(absl::VerifyTypeImplementsAbslHashCorrectly(
+      {PasswordString(), PasswordString(), PasswordString(u"same"),
+       PasswordString(u"same"), PasswordString(u"different")}));
+}
+
+TEST_P(PasswordStringTest, HeterogeneousAbslHashValue) {
+  EXPECT_TRUE(absl::VerifyTypeImplementsAbslHashCorrectly(
+      std::make_tuple(PasswordString(), std::u16string_view(),
+                      PasswordString(u"same"), std::u16string_view(u"same"),
+                      PasswordString(u"different"),
+                      std::u16string_view(u"different")),
+      PasswordString::TransparentEqual{}));
+}
+
+TEST_P(PasswordStringTest, HeterogeneousLookup) {
+  absl::flat_hash_set<PasswordString> passwords = {PasswordString(),
+                                                   PasswordString(u"same")};
+
+  EXPECT_TRUE(passwords.contains(std::u16string_view()));
+  EXPECT_TRUE(passwords.contains(std::u16string_view(u"same")));
+  EXPECT_FALSE(passwords.contains(std::u16string_view(u"different")));
+}
+
+// Moving must hand the password over completely: the moved-from object has to
+// be left empty and still readable, rather than retaining the password's length
+// or a buffer it can no longer decrypt.
+TEST_P(PasswordStringTest, MoveConstructionClearsSource) {
+  PasswordString source(u"hunter2");
+
+  PasswordString moved(std::move(source));
+
+  EXPECT_EQ(moved, u"hunter2");
+
+  // Intentional use-after-move to validate the password is wiped out on move.
+  // NOLINTNEXTLINE(bugprone-use-after-move)
+  EXPECT_TRUE(source.empty());
+  // NOLINTNEXTLINE(bugprone-use-after-move)
+  EXPECT_EQ(0u, source.size());
+  // NOLINTNEXTLINE(bugprone-use-after-move)
+  EXPECT_EQ(std::u16string(), source.value());
+  // NOLINTNEXTLINE(bugprone-use-after-move)
+  EXPECT_TRUE(source.secure_value().empty());
+}
+
+TEST_P(PasswordStringTest, MoveAssignmentClearsSource) {
+  PasswordString source(u"hunter2");
+  PasswordString moved(u"placeholder");
+
+  moved = std::move(source);
+
+  EXPECT_EQ(moved, u"hunter2");
+
+  // Intentional use-after-move to validate the password is wiped out on move.
+  // NOLINTNEXTLINE(bugprone-use-after-move)
+  EXPECT_TRUE(source.empty());
+  // NOLINTNEXTLINE(bugprone-use-after-move)
+  EXPECT_EQ(0u, source.size());
+  // NOLINTNEXTLINE(bugprone-use-after-move)
+  EXPECT_EQ(std::u16string(), source.value());
+  // NOLINTNEXTLINE(bugprone-use-after-move)
+  EXPECT_TRUE(source.secure_value().empty());
+}
+
+TEST_P(PasswordStringTest, MovedFromCanBeAssignedAgain) {
+  PasswordString source(u"hunter2");
+  PasswordString moved(std::move(source));
+
+  // Intentional use-after-move to validate the behavior of the password_value
+  // field being reassigned after being moved out of.
+  // NOLINTNEXTLINE(bugprone-use-after-move)
+  source = PasswordString(u"reused");
+
+  EXPECT_EQ(source, u"reused");
+  EXPECT_EQ(6u, source.size());
+
+  EXPECT_EQ(moved, u"hunter2");
+}
+
+TEST_P(PasswordStringTest, SelfMoveAssignmentKeepsValue) {
+  PasswordString ps(u"hunter2");
+
+  // Indirect through a pointer so this is not diagnosed as a self-move.
+  PasswordString* alias = &ps;
+  ps = std::move(*alias);
+
+  EXPECT_EQ(ps, u"hunter2");
+  EXPECT_FALSE(ps.empty());
+}
+
+TEST_P(PasswordStringTest, CopyLeavesSourceIntactAndIsIndependent) {
+  PasswordString source(u"hunter2");
+
+  PasswordString copy(source);
+
+  EXPECT_EQ(copy, u"hunter2");
+  EXPECT_EQ(source, u"hunter2");
+
+  copy.clear();
+  EXPECT_TRUE(copy.empty());
+  EXPECT_EQ(source, u"hunter2");
 }
 
 INSTANTIATE_TEST_SUITE_P(FlagStates,

@@ -1059,68 +1059,61 @@ TEST_F(DevicePolicyDecoderTest, DecodeDeviceLoginScreenPreferSlowCiphers) {
                                std::move(deviceloginscreenpreferslowciphers));
 }
 
-TEST_F(DevicePolicyDecoderTest, DeviceLocalNetworkAccessAllowedForUrls) {
+TEST_F(DevicePolicyDecoderTest, DeviceMaxUserProfiles) {
   em::ChromeDeviceSettingsProto device_policy;
-  DecodeUnsetDevicePolicyTestHelper(
-      device_policy, key::kDeviceLocalNetworkAccessAllowedForUrls);
+  DecodeUnsetDevicePolicyTestHelper(device_policy, key::kDeviceMaxUserProfiles);
 
-  em::StringList* list =
-      device_policy.mutable_devicelocalnetworkaccessallowedforurls()
-          ->mutable_value();
-
-  base::ListValue list_items;
-  list_items.Append("http://www.example.com:8080");
-  list_items.Append("[*.]example.edu");
-  for (auto& item : list_items) {
-    list->add_entries(item.GetString());
-  }
-
-  DecodeDevicePolicyTestHelper(device_policy,
-                               key::kDeviceLocalNetworkAccessAllowedForUrls,
-                               base::Value(std::move(list_items)));
+  device_policy.mutable_devicemaxuserprofiles()->set_value(5);
+  DecodeDevicePolicyTestHelper(device_policy, key::kDeviceMaxUserProfiles,
+                               base::Value(5));
 }
 
-TEST_F(DevicePolicyDecoderTest,
-       DeviceLocalNetworkAccessIpAddressSpaceOverrides) {
+TEST_F(DevicePolicyDecoderTest, DeviceMetricsReportingEnabled) {
   em::ChromeDeviceSettingsProto device_policy;
-  DecodeUnsetDevicePolicyTestHelper(
-      device_policy, key::kDeviceLocalNetworkAccessIpAddressSpaceOverrides);
 
-  em::StringList* list =
-      device_policy.mutable_devicelocalnetworkaccessipaddressspaceoverrides()
-          ->mutable_value();
-
-  base::ListValue list_items;
-  list_items.Append("100.64.0.0/10=public");
-  list_items.Append("192.168.0.1:8000=public");
-  for (auto& item : list_items) {
-    list->add_entries(item.GetString());
+  {
+    PolicyBundle bundle;
+    PolicyMap& policies = bundle.Get(PolicyNamespace(POLICY_DOMAIN_CHROME, ""));
+    DecodeDevicePolicy(device_policy,
+                       /*external_data_manager=*/nullptr, &policies);
+    const PolicyMap::Entry* entry =
+        policies.Get(key::kDeviceMetricsReportingEnabled);
+    ASSERT_NE(entry, nullptr);
+    PolicyMap::Entry expected_entry(
+        POLICY_LEVEL_MANDATORY, POLICY_SCOPE_MACHINE,
+        POLICY_SOURCE_ENTERPRISE_DEFAULT, base::Value(true), nullptr);
+    EXPECT_TRUE(entry->Equals(expected_entry));
   }
 
-  DecodeDevicePolicyTestHelper(
-      device_policy, key::kDeviceLocalNetworkAccessIpAddressSpaceOverrides,
-      base::Value(std::move(list_items)));
-}
-
-TEST_F(DevicePolicyDecoderTest, DeviceLocalNetworkAccessBlockedForUrls) {
-  em::ChromeDeviceSettingsProto device_policy;
-  DecodeUnsetDevicePolicyTestHelper(
-      device_policy, key::kDeviceLocalNetworkAccessBlockedForUrls);
-
-  em::StringList* list =
-      device_policy.mutable_devicelocalnetworkaccessblockedforurls()
-          ->mutable_value();
-
-  base::ListValue list_items;
-  list_items.Append("http://www.example.com:8080");
-  list_items.Append("[*.]example.edu");
-  for (auto& item : list_items) {
-    list->add_entries(item.GetString());
+  device_policy.mutable_metrics_enabled()->set_metrics_enabled(false);
+  {
+    PolicyBundle bundle;
+    PolicyMap& policies = bundle.Get(PolicyNamespace(POLICY_DOMAIN_CHROME, ""));
+    DecodeDevicePolicy(device_policy,
+                       /*external_data_manager=*/nullptr, &policies);
+    const PolicyMap::Entry* entry =
+        policies.Get(key::kDeviceMetricsReportingEnabled);
+    ASSERT_NE(entry, nullptr);
+    PolicyMap::Entry expected_entry(POLICY_LEVEL_MANDATORY,
+                                    POLICY_SCOPE_MACHINE, POLICY_SOURCE_CLOUD,
+                                    base::Value(false), nullptr);
+    EXPECT_TRUE(entry->Equals(expected_entry));
   }
 
-  DecodeDevicePolicyTestHelper(device_policy,
-                               key::kDeviceLocalNetworkAccessBlockedForUrls,
-                               base::Value(std::move(list_items)));
+  device_policy.mutable_metrics_enabled()->set_metrics_enabled(true);
+  {
+    PolicyBundle bundle;
+    PolicyMap& policies = bundle.Get(PolicyNamespace(POLICY_DOMAIN_CHROME, ""));
+    DecodeDevicePolicy(device_policy,
+                       /*external_data_manager=*/nullptr, &policies);
+    const PolicyMap::Entry* entry =
+        policies.Get(key::kDeviceMetricsReportingEnabled);
+    ASSERT_NE(entry, nullptr);
+    PolicyMap::Entry expected_entry(POLICY_LEVEL_MANDATORY,
+                                    POLICY_SCOPE_MACHINE, POLICY_SOURCE_CLOUD,
+                                    base::Value(true), nullptr);
+    EXPECT_TRUE(entry->Equals(expected_entry));
+  }
 }
 
 }  // namespace policy

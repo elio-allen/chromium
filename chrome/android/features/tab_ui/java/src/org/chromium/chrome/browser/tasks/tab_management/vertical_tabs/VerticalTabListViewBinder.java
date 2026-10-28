@@ -7,8 +7,9 @@ package org.chromium.chrome.browser.tasks.tab_management.vertical_tabs;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.view.View;
-import android.widget.ImageView;
+import android.widget.ImageButton;
 
+import androidx.appcompat.widget.TooltipCompat;
 import androidx.core.view.ViewCompat;
 import androidx.core.widget.ImageViewCompat;
 
@@ -35,32 +36,34 @@ public class VerticalTabListViewBinder {
      */
     public static void bind(
             PropertyModel model, VerticalTabRailLayout view, PropertyKey propertyKey) {
-        if (VerticalTabListProperties.EXPAND_OR_COLLAPSE_ON_HOVER_LISTENER == propertyKey) {
-            view.setExpandOrCollapseOnHoverListener(
-                    model.get(VerticalTabListProperties.EXPAND_OR_COLLAPSE_ON_HOVER_LISTENER));
-        } else if (VerticalTabListProperties.ON_GRID_CLICK_LISTENER == propertyKey) {
-            View gridButton = view.findViewById(R.id.grid_button);
-            assert gridButton != null;
-            gridButton.setOnClickListener(
-                    model.get(VerticalTabListProperties.ON_GRID_CLICK_LISTENER));
-        } else if (VerticalTabListProperties.ON_SEARCH_CLICK_LISTENER == propertyKey) {
-            View searchButton = view.findViewById(R.id.tab_search_button);
-            assert searchButton != null;
-            searchButton.setOnClickListener(
-                    model.get(VerticalTabListProperties.ON_SEARCH_CLICK_LISTENER));
+        if (VerticalTabListProperties.ON_SEARCH_CLICK_LISTENER == propertyKey) {
+            view.getSearchButton()
+                    .setOnClickListener(
+                            model.get(VerticalTabListProperties.ON_SEARCH_CLICK_LISTENER));
+        } else if (VerticalTabListProperties.IS_SEARCH_BUTTON_VISIBLE == propertyKey) {
+            boolean visible = model.get(VerticalTabListProperties.IS_SEARCH_BUTTON_VISIBLE);
+            view.getSearchButton().setVisibility(visible ? View.VISIBLE : View.GONE);
         } else if (VerticalTabListProperties.ON_NEW_TAB_CLICK_LISTENER == propertyKey) {
-            View newTabButton = view.findViewById(R.id.new_tab_button);
-            assert newTabButton != null;
-            newTabButton.setOnClickListener(
-                    model.get(VerticalTabListProperties.ON_NEW_TAB_CLICK_LISTENER));
+            view.getNewTabButton()
+                    .setOnClickListener(
+                            model.get(VerticalTabListProperties.ON_NEW_TAB_CLICK_LISTENER));
+        } else if (VerticalTabListProperties.ON_INCOGNITO_CLICK_LISTENER == propertyKey) {
+            View incognitoButton = view.getIncognitoButton();
+            assert incognitoButton != null;
+            incognitoButton.setOnClickListener(
+                    model.get(VerticalTabListProperties.ON_INCOGNITO_CLICK_LISTENER));
+        } else if (VerticalTabListProperties.IS_INCOGNITO_BUTTON_VISIBLE == propertyKey) {
+            View incognitoButton = view.getIncognitoButton();
+            assert incognitoButton != null;
+            boolean visible = model.get(VerticalTabListProperties.IS_INCOGNITO_BUTTON_VISIBLE);
+            incognitoButton.setVisibility(visible ? View.VISIBLE : View.GONE);
+            view.updateFooterLayout();
         } else if (VerticalTabListProperties.ON_COLLAPSE_CLICK_LISTENER == propertyKey) {
-            View collapseButton = view.findViewById(R.id.collapse_button);
-            assert collapseButton != null;
-            collapseButton.setOnClickListener(
-                    model.get(VerticalTabListProperties.ON_COLLAPSE_CLICK_LISTENER));
+            view.getCollapseButton()
+                    .setOnClickListener(
+                            model.get(VerticalTabListProperties.ON_COLLAPSE_CLICK_LISTENER));
         } else if (VerticalTabListProperties.IS_COLLAPSE_BUTTON_ENABLED == propertyKey) {
-            View collapseButton = view.findViewById(R.id.collapse_button);
-            assert collapseButton != null;
+            View collapseButton = view.getCollapseButton();
             boolean enabled = model.get(VerticalTabListProperties.IS_COLLAPSE_BUTTON_ENABLED);
             collapseButton.setEnabled(enabled);
             float disabledAlpha =
@@ -70,7 +73,9 @@ public class VerticalTabListViewBinder {
         } else if (VerticalTabListProperties.COLLAPSE_STATE == propertyKey) {
             view.setCollapseState(model.get(VerticalTabListProperties.COLLAPSE_STATE));
         } else if (VerticalTabListProperties.IS_INCOGNITO == propertyKey) {
-            updateIncognitoColors(view, model.get(VerticalTabListProperties.IS_INCOGNITO));
+            boolean isIncognito = model.get(VerticalTabListProperties.IS_INCOGNITO);
+            updateIncognitoButton(view.getIncognitoButton(), isIncognito);
+            updateIncognitoColors(view, isIncognito);
         }
     }
 
@@ -95,25 +100,18 @@ public class VerticalTabListViewBinder {
                         ? context.getColorStateList(R.color.incognito_tab_action_button_color)
                         : ColorStateList.valueOf(SemanticColorUtils.getDefaultIconColor(context));
 
-        @Nullable ImageView collapseButton = view.findViewById(R.id.collapse_button);
-        if (collapseButton != null) {
-            ImageViewCompat.setImageTintList(collapseButton, iconTint);
-        }
-
-        @Nullable ImageView gridButton = view.findViewById(R.id.grid_button);
-        if (gridButton != null) {
-            ImageViewCompat.setImageTintList(gridButton, iconTint);
-        }
-
-        @Nullable ImageView searchButton = view.findViewById(R.id.tab_search_button);
-        if (searchButton != null) {
-            ImageViewCompat.setImageTintList(searchButton, iconTint);
-        }
-
-        @Nullable ImageView newTabButton = view.findViewById(R.id.new_tab_button);
-        if (newTabButton != null) {
-            ImageViewCompat.setImageTintList(newTabButton, iconTint);
-        }
+        ImageViewCompat.setImageTintList(view.getCollapseButton(), iconTint);
+        ImageViewCompat.setImageTintList(view.getSearchIcon(), iconTint);
+        view.getSearchLabel()
+                .setTextColor(
+                        isIncognito
+                                ? iconTint
+                                : ColorStateList.valueOf(
+                                        SemanticColorUtils.getDefaultTextColor(context)));
+        ImageButton newTabButton = view.getNewTabButton();
+        ImageButton incognitoButton = view.getIncognitoButton();
+        ImageViewCompat.setImageTintList(newTabButton, iconTint);
+        ImageViewCompat.setImageTintList(incognitoButton, iconTint);
 
         @Nullable ColorStateList buttonBgTint =
                 isIncognito
@@ -121,14 +119,19 @@ public class VerticalTabListViewBinder {
                                 R.color.incognito_vertical_tabs_button_background_color)
                         : null;
 
-        if (gridButton != null) {
-            ViewCompat.setBackgroundTintList(gridButton, buttonBgTint);
-        }
-        if (searchButton != null) {
-            ViewCompat.setBackgroundTintList(searchButton, buttonBgTint);
-        }
-        if (newTabButton != null) {
-            ViewCompat.setBackgroundTintList(newTabButton, buttonBgTint);
-        }
+        ViewCompat.setBackgroundTintList(view.getSearchButton(), buttonBgTint);
+        ViewCompat.setBackgroundTintList(newTabButton, buttonBgTint);
+        ViewCompat.setBackgroundTintList(incognitoButton, buttonBgTint);
+    }
+
+    private static void updateIncognitoButton(@Nullable ImageButton button, boolean isIncognito) {
+        if (button == null) return;
+        int resId =
+                isIncognito
+                        ? R.string.accessibility_tabstrip_btn_incognito_toggle_incognito
+                        : R.string.accessibility_tabstrip_btn_incognito_toggle_standard;
+        String text = button.getContext().getString(resId);
+        button.setContentDescription(text);
+        TooltipCompat.setTooltipText(button, text);
     }
 }

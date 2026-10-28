@@ -153,6 +153,8 @@ void OpenPasswordManualFillView(bool has_suggestions) {
       has_suggestions ? manual_fill::KeyboardAccessoryManualFillButton()
                       : manual_fill::PasswordManualFillViewButton();
 
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:button_to_tap];
+
   // Tap the button that'll open the password manual fill view.
   [[EarlGrey selectElementWithMatcher:button_to_tap] performAction:grey_tap()];
 
@@ -229,7 +231,8 @@ void CheckPasswordFillingOptionIsVisible(NSString* site) {
                      manual_fill::kExpandedManualFillPasswordFaviconID)]
       assertWithMatcher:grey_sufficientlyVisible()];
 
-  [[EarlGrey selectElementWithMatcher:grey_text(site)]
+  [[EarlGrey
+      selectElementWithMatcher:manual_fill::PasswordCellLabelWithText(site)]
       assertWithMatcher:grey_sufficientlyVisible()];
 
   [[EarlGrey selectElementWithMatcher:UsernameButtonMatcher()]
@@ -270,6 +273,10 @@ void CheckKeyboardIsUpAndNotCovered() {
 
 - (void)setUp {
   [super setUp];
+  // Each test relaunches the app, so wait for the startup New Tab Page load to
+  // finish before starting the login page navigation; otherwise the initial
+  // navigation can stall on the New Tab Page on iPad.
+  [ChromeEarlGrey waitForPageToFinishLoading];
   _HTTPSServer = nil;
   GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
   self.URL = self.testServer->GetURL(kFormHTMLFile);
@@ -313,6 +320,13 @@ void CheckKeyboardIsUpAndNotCovered() {
   // is tested in its own suite in password_suggestion_egtest.mm.
   config.features_disabled.push_back(
       password_manager::features::kIOSProactivePasswordGenerationBottomSheet);
+
+  if ([self
+          isRunningTest:
+              @selector(
+                  testNoPasswordsFoundMessageIsVisibleWhenNoPasswordSuggestions)]) {
+    config.features_disabled.push_back(kIOSPasskeyConditionalLoginWithShim);
+  }
 
   if ([self isRunningTest:@selector
             (testNoCredentialsMessageIsVisibleWhenPasskeysEnabled)] ||
@@ -360,6 +374,11 @@ void CheckKeyboardIsUpAndNotCovered() {
 
 // Opens the "Other Passwords" screen.
 - (void)openOtherPasswords {
+  [self openOtherPasswordsAndWaitForPresentation:YES];
+}
+
+// Opens the "Other Passwords" screen, optionally waiting for it to present.
+- (void)openOtherPasswordsAndWaitForPresentation:(BOOL)waitForPresentation {
   // Bring up the keyboard.
   [ChromeEarlGrey
       waitForUIElementToAppearWithMatcher:chrome_test_util::WebViewMatcher()];
@@ -388,6 +407,11 @@ void CheckKeyboardIsUpAndNotCovered() {
                  ActionSheetItemWithAccessibilityLabelId(
                      IDS_IOS_CONFIRM_USING_OTHER_PASSWORD_CONTINUE)]
       performAction:grey_tap()];
+
+  if (waitForPresentation) {
+    [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
+                        manual_fill::OtherPasswordsDismissMatcher()];
+  }
 }
 
 #pragma mark - Tests
@@ -552,17 +576,12 @@ void CheckKeyboardIsUpAndNotCovered() {
 }
 
 // Tests that the "Select Password..." action works in incognito mode.
-// TODO(crbug.com/363017975): Re-enable test
-- (void)DISABLED_testSelectPasswordActionInIncognito {
+- (void)testSelectPasswordActionInIncognito {
   // Open a tab in incognito.
   [ChromeEarlGrey openNewIncognitoTab];
   [self loadLoginPage];
 
   [self openOtherPasswords];
-
-  [[EarlGrey
-      selectElementWithMatcher:manual_fill::OtherPasswordsDismissMatcher()]
-      assertWithMatcher:grey_sufficientlyVisible()];
 }
 
 // Tests that returning from "Manage Settings..." leaves the keyboard and the
@@ -594,10 +613,6 @@ void CheckKeyboardIsUpAndNotCovered() {
 // Tests that the "Select Password..." action works.
 - (void)testSelectPasswordActionOpensOtherPasswordList {
   [self openOtherPasswords];
-
-  [[EarlGrey
-      selectElementWithMatcher:manual_fill::OtherPasswordsDismissMatcher()]
-      assertWithMatcher:grey_sufficientlyVisible()];
 }
 
 // Tests that the "Select Password..." screen won't open if canceled.
@@ -628,13 +643,8 @@ void CheckKeyboardIsUpAndNotCovered() {
 - (void)testClosingOtherPasswordListViaSwipeDown {
   [self openOtherPasswords];
 
-  [[EarlGrey
-      selectElementWithMatcher:manual_fill::OtherPasswordsDismissMatcher()]
-      assertWithMatcher:grey_sufficientlyVisible()];
-
   // Dismiss Other Passwords via swipe.
-  [[EarlGrey
-      selectElementWithMatcher:manual_fill::OtherPasswordsDismissMatcher()]
+  [[EarlGrey selectElementWithMatcher:manual_fill::PasswordTableViewMatcher()]
       performAction:grey_swipeFastInDirection(kGREYDirectionDown)];
 
   [ChromeEarlGrey waitForNotSufficientlyVisibleElementWithMatcher:
@@ -642,10 +652,6 @@ void CheckKeyboardIsUpAndNotCovered() {
 
   // Open it again to make sure the old coordinator was properly cleaned up.
   [self openOtherPasswords];
-
-  [[EarlGrey
-      selectElementWithMatcher:manual_fill::OtherPasswordsDismissMatcher()]
-      assertWithMatcher:grey_sufficientlyVisible()];
 }
 
 // Tests that the "Select Password..." action is only availbale when there are
@@ -683,7 +689,7 @@ void CheckKeyboardIsUpAndNotCovered() {
                                     ReauthenticationResult::kFailure];
   [ReauthenticationAppInterface mockReauthenticationModuleShouldSkipReAuth:NO];
 
-  [self openOtherPasswords];
+  [self openOtherPasswordsAndWaitForPresentation:NO];
 
   // Validate reauth UI is visible until auth result is delivered.
   [[EarlGrey selectElementWithMatcher:password_manager_test_utils::
@@ -712,10 +718,6 @@ void CheckKeyboardIsUpAndNotCovered() {
 // in the right state.
 - (void)testPasswordsStateAfterPresentingOtherPasswordList {
   [self openOtherPasswords];
-
-  [[EarlGrey
-      selectElementWithMatcher:manual_fill::OtherPasswordsDismissMatcher()]
-      assertWithMatcher:grey_sufficientlyVisible()];
 
   // Tap Done Button.
   [[EarlGrey selectElementWithMatcher:NavigationBarDoneButton()]
@@ -763,7 +765,8 @@ void CheckKeyboardIsUpAndNotCovered() {
   // Search for a term that shouldn't give any results.
   [[EarlGrey selectElementWithMatcher:chrome_test_util::SearchBar()]
       performAction:grey_replaceText(@"example1")];
-  [[EarlGrey selectElementWithMatcher:grey_text(@"example.com")]
+  [[EarlGrey selectElementWithMatcher:manual_fill::PasswordCellLabelWithText(
+                                          @"example.com")]
       assertWithMatcher:grey_notVisible()];
 
   // Search for a term that matches with the saved credential.
@@ -838,8 +841,7 @@ void CheckKeyboardIsUpAndNotCovered() {
 }
 
 // Tests that content is injected in iframe messaging.
-// TODO(crbug.com/517074595): Test is consitently failing on iPad Air.
-- (void)DISABLED_testPasswordControllerSupportsIFrameMessaging {
+- (void)testPasswordControllerSupportsIFrameMessaging {
   // Disable the credential bottom sheet.
   [CredentialSuggestionBottomSheetAppInterface disableBottomSheet];
 

@@ -45,10 +45,7 @@ PreTargetHandler::~PreTargetHandler() {
   // Cancel any active context-menus, |view_| was a companion-view of which,
   // unless it had requested otherwise for some cases.
   if (dismiss_anchor_menu_on_view_closed_) {
-    auto* active_menu_instance = views::MenuController::GetActiveInstance();
-    if (active_menu_instance) {
-      active_menu_instance->Cancel(views::MenuController::ExitType::kAll);
-    }
+    views::MenuController::CancelAllActive();
   }
 }
 
@@ -140,7 +137,7 @@ void PreTargetHandler::OnEvent(ui::Event* event) {
 // TODO(siabhijeet): Investigate using SendEventsToSink() for dispatching.
 bool PreTargetHandler::DoDispatchEvent(views::View* view,
                                        ui::LocatedEvent* event) {
-  DCHECK(view && event);
+  CHECK(view && event, base::NotFatalUntil::M162);
 
   // Out-of-bounds `EventType::kMouseMoved` events are allowed to sift through
   // to clear any set hover-state.

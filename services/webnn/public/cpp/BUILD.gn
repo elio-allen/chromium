@@ -20,13 +20,16 @@ buildflag_header("buildflags") {
 
 component("cpp") {
   sources = [
-    "compiler_disconnect_reason.h",
     "context_properties.cc",
     "context_properties.h",
     "data_type_limits.cc",
     "data_type_limits.h",
     "graph_validation_utils.cc",
     "graph_validation_utils.h",
+    "in_renderer_context_handle.cc",
+    "in_renderer_context_handle.h",
+    "in_renderer_tensor_handle.cc",
+    "in_renderer_tensor_handle.h",
     "ml_number.cc",
     "ml_number.h",
     "ml_tensor_usage.h",
@@ -35,8 +38,11 @@ component("cpp") {
     "range.h",
     "supported_data_types.h",
     "supported_tensors.h",
+    "webgpu_context_properties.h",
     "webnn_errors.cc",
     "webnn_errors.h",
+    "webnn_sandbox_init.cc",
+    "webnn_sandbox_init.h",
     "webnn_trace.cc",
     "webnn_trace.h",
     "webnn_types.h",
@@ -45,6 +51,8 @@ component("cpp") {
   public_deps = [
     ":buildflags",
     "//base",
+    "//services/webnn/public/mojom:features",
+    "//third_party/blink/public/common/tokens:tokens_headers",
   ]
 
   deps = [
@@ -56,13 +64,6 @@ component("cpp") {
     sources += [
       "coreml_initializer.cc",
       "coreml_initializer.h",
-    ]
-  }
-
-  if (is_win || is_linux) {
-    sources += [
-      "webnn_sandbox_init.cc",
-      "webnn_sandbox_init.h",
     ]
   }
 
@@ -80,6 +81,7 @@ source_set("in_process_context_provider") {
   ]
 
   public_deps = [
+    ":cpp",
     "//base",
     "//mojo/public/cpp/system",
   ]

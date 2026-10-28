@@ -14,15 +14,17 @@
 #include "base/time/time.h"
 #include "base/uuid.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
+#include "chrome/browser/glic/experimental_triggering/actor_log.h"
+#include "chrome/browser/glic/experimental_triggering/glic_experimental_triggering_converters.h"
 #include "chrome/browser/glic/experimental_triggering/glic_experimental_triggering_coordinator.h"
 #include "chrome/browser/glic/experimental_triggering/glic_experimental_triggering_metrics.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/public/glic_provider_metrics.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/sharing/glic_experimental_triggering/actor_log.h"
-#include "chrome/browser/sharing/glic_experimental_triggering/glic_experimental_triggering_converters.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/common/chrome_features.h"
 #include "components/sharing_message/proto/sharing_message.pb.h"
@@ -164,6 +166,16 @@ GlicExperimentalTriggeringMessageHandler::
 }
 
 void GlicExperimentalTriggeringMessageHandler::CancelAllPendingMessages() {
+#if BUILDFLAG(IS_ANDROID)
+  if (profile_) {
+    if (actor::ActorKeyedService* actor_service =
+            actor::ActorKeyedService::Get(profile_)) {
+      for (const auto& [context_id, _] : pending_messages_) {
+        actor_service->RemovePendingTask(context_id);
+      }
+    }
+  }
+#endif
   for (auto& [context_id, message_list] : pending_messages_) {
     for (auto& pending_message : message_list) {
       if (pending_message.done_callback) {
@@ -212,6 +224,7 @@ void GlicExperimentalTriggeringMessageHandler::OnMessage(
   CHECK(message.has_glic_experimental_triggering());
 
   glic::ScopedIncomingMessageResultLogger result_logger(
+      glic::GlicMetricReporter(profile_),
       glic::ScopedIncomingMessageResultLogger::Channel::kSharingMessage);
 
   // If no `context_id` is present in the request, we generate one that
@@ -257,7 +270,7 @@ void GlicExperimentalTriggeringMessageHandler::OnMessage(
     if (profile_) {
       actor::ActorKeyedService* actor_service =
           actor::ActorKeyedService::Get(profile_);
-      LogGlicExperimentalTriggeringProto(
+      glic::LogGlicExperimentalTriggeringProto(
           actor_service, "GlicExperimentalTriggering", "", request);
     }
 
@@ -273,31 +286,64 @@ void GlicExperimentalTriggeringMessageHandler::OnMessage(
   }
 
 #if BUILDFLAG(IS_ANDROID)
+  // TODO(b/540892797): Move message-specific routing and foreground
+  // service lifecycle management into GlicExperimentalTriggeringCoordinator.
   if (base::FeatureList::IsEnabled(features::kGlicBackgroundTriggering)) {
-    VLOG(1) << "GlicTrigger: Triggering ActorForegroundService from native";
-    if (profile_) {
-      actor::ActorKeyedService* actor_service =
-          actor::ActorKeyedService::Get(profile_);
-      if (actor_service) {
-        if (!actor_service_observation_.IsObserving()) {
-          actor_service_observation_.Observe(actor_service);
+    if (request.has_request() &&
+        request.request().has_stop_actuation_request()) {
+      VLOG(1) << "GlicTrigger: Received StopActuationRequest, intercepting to "
+                 "clear pending messages before routing to Domain logic.";
+
+      if (profile_) {
+        if (actor::ActorKeyedService* actor_service =
+                actor::ActorKeyedService::Get(profile_)) {
+          actor_service->RemovePendingTask(context_id);
         }
-        bool already_pending = pending_messages_.contains(context_id);
-        pending_messages_[context_id].push_back(
-            MessageData{std::move(message), std::move(done_callback),
-                        std::move(result_logger)});
-        if (!already_pending) {
-          // TODO(crbug.com/540892797): Avoid starting an Android Foreground
-          // Service (FGS) if it is redundant or unnecessary:
-          // 1. If Chrome is already in the foreground, starting an FGS is
-          //    unnecessary and adds asynchronous JNI/IPC overhead.
-          // 2. If a task is already active and executing (meaning the initial
-          //    tab preparation is complete and the queue is cleared),
-          //    subsequent control messages (e.g., INTERRUPT or STOP) should not
-          //    trigger EnsureForegroundServiceStarted() again.
-          actor_service->EnsureForegroundServiceStarted(context_id);
+      }
+
+      // Delete any pending requests waiting for an offscreen tab
+      auto it = pending_messages_.find(context_id);
+      if (it != pending_messages_.end()) {
+        for (auto& pending_message : it->second) {
+          if (pending_message.done_callback) {
+            std::move(pending_message.done_callback)
+                .Run(CreateResponseMessage(
+                    context_id, TaskUpdate::FAILED, TaskUpdate::ERROR_MESSAGE,
+                    "Message cancelled by stop actuation request.",
+                    request_metadata,
+                    kDefaultStartingRequestFailureSequenceNumber));
+          }
         }
-        return;
+        pending_messages_.erase(it);
+      }
+
+      if (pending_messages_.empty()) {
+        actor_service_observation_.Reset();
+      }
+    } else if (pending_messages_.contains(context_id)) {
+      // Tab preparation is already in flight for this context. Queue the
+      // message.
+      pending_messages_[context_id].push_back(
+          MessageData{std::move(message), std::move(done_callback),
+                      std::move(result_logger)});
+      return;
+    } else if (request.has_request() &&
+               request.request().has_trigger_actuation_request()) {
+      if (profile_) {
+        actor::ActorKeyedService* actor_service =
+            actor::ActorKeyedService::Get(profile_);
+        if (actor_service) {
+          VLOG(1)
+              << "GlicTrigger: Registering pending task in ActorKeyedService";
+          if (!actor_service_observation_.IsObserving()) {
+            actor_service_observation_.Observe(actor_service);
+          }
+          pending_messages_[context_id].push_back(
+              MessageData{std::move(message), std::move(done_callback),
+                          std::move(result_logger)});
+          actor_service->AddPendingTask(context_id);
+          return;
+        }
       }
     }
   } else {
@@ -320,24 +366,10 @@ void GlicExperimentalTriggeringMessageHandler::ProcessValidatedMessage(
   const auto& request = message.glic_experimental_triggering();
   CHECK(!context_id.empty());
 
-  if (profile_) {
-    actor::ActorKeyedService* actor_service =
-        actor::ActorKeyedService::Get(profile_);
-    LogGlicExperimentalTriggeringProto(
-        actor_service, "GlicExperimentalTriggering", context_id, request);
-  }
-
-  glic::ExperimentalTriggeringRequest domain_request =
-      glic::ProtoToRequest(request);
-  domain_request.context_id = context_id;
-
-  glic::GlicExperimentalTriggeringUpdateCallback update_callback =
-      GetUpdateCallback(message);
-
   std::optional<glic::ExperimentalTriggeringResponse> domain_response =
-      coordinator_->OnRequest(context_id, domain_request,
-                              std::move(result_logger),
-                              std::move(update_callback), prepared_tab);
+      coordinator_->OnProtoMessage(context_id, request,
+                                   std::move(result_logger),
+                                   GetUpdateCallback(message), prepared_tab);
 
   if (domain_response.has_value()) {
     std::move(done_callback)
@@ -367,7 +399,7 @@ GlicExperimentalTriggeringMessageHandler::GetUpdateCallback(
         if (weak_message_handler->profile_) {
           actor::ActorKeyedService* actor_service =
               actor::ActorKeyedService::Get(weak_message_handler->profile_);
-          LogGlicExperimentalTriggeringProto(
+          glic::LogGlicExperimentalTriggeringProto(
               actor_service, "GlicExperimentalTriggering", response.context_id,
               outgoing_message.glic_experimental_triggering());
         }
@@ -431,6 +463,14 @@ void GlicExperimentalTriggeringMessageHandler::OnBackgroundTabPrepared(
 
 void GlicExperimentalTriggeringMessageHandler::OnBackgroundSetupFailed(
     const std::string& context_id) {
+#if BUILDFLAG(IS_ANDROID)
+  if (profile_) {
+    if (actor::ActorKeyedService* actor_service =
+            actor::ActorKeyedService::Get(profile_)) {
+      actor_service->RemovePendingTask(context_id);
+    }
+  }
+#endif
   auto it = pending_messages_.find(context_id);
   if (it == pending_messages_.end()) {
     return;

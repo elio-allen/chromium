@@ -17,7 +17,6 @@
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
-#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/chrome_app_deprecation/chrome_app_deprecation.h"
 #include "chrome/browser/ash/app_list/app_list_client_impl.h"
 #include "chrome/browser/ash/app_list/app_list_model_updater.h"
@@ -27,7 +26,6 @@
 #include "chrome/browser/ash/login/login_manager_test.h"
 #include "chrome/browser/ash/login/test/login_manager_mixin.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/common/chrome_constants.h"
@@ -38,7 +36,7 @@
 #include "components/session_manager/core/session_manager.h"
 #include "components/sync/model/string_ordinal.h"
 #include "components/sync/test/fake_sync_change_processor.h"
-#include "components/user_manager/fake_user_manager.h"
+#include "components/user_manager/test_helper.h"
 #include "content/public/test/browser_test.h"
 #include "extensions/browser/extension_system.h"
 
@@ -75,7 +73,7 @@ class OemAppPositionTest : public ash::LoginManagerTest {
     base::FilePath user_data_dir;
     base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir);
     const std::string user_id_hash =
-        user_manager::FakeUserManager::GetFakeUsernameHash(
+        user_manager::TestHelper::GetFakeUsernameHash(
             login_mixin_.users()[0].account_id);
     const base::FilePath user_profile_path = user_data_dir.Append(
         base::FilePath(ash::BrowserContextHelper::GetUserBrowserContextDirName(

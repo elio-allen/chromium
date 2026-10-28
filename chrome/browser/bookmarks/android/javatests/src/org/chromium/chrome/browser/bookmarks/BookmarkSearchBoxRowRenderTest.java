@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.bookmarks;
 
 import android.graphics.Color;
 import android.view.LayoutInflater;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -26,10 +27,12 @@ import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
+import org.chromium.components.browser_ui.widget.search.SearchBoxProperties;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 import org.chromium.ui.test.util.BlankUiTestActivity;
@@ -43,7 +46,10 @@ import java.util.List;
 @RunWith(ParameterizedRunner.class)
 @ParameterAnnotations.UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
 @Batch(Batch.PER_CLASS)
-@DisableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT)
+@DisableFeatures({
+    ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT,
+    ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG
+})
 public class BookmarkSearchBoxRowRenderTest {
     @ClassParameter
     private static final List<ParameterSet> sClassParams = new NightModeParams().getParameters();
@@ -75,7 +81,7 @@ public class BookmarkSearchBoxRowRenderTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     mContentView = new LinearLayout(mActivityTestRule.getActivity());
-                    mContentView.setBackgroundColor(Color.WHITE);
+                    mContentView.setBackgroundColor(Color.TRANSPARENT);
 
                     FrameLayout.LayoutParams params =
                             new FrameLayout.LayoutParams(
@@ -100,6 +106,7 @@ public class BookmarkSearchBoxRowRenderTest {
                                     .with(
                                             BookmarkSearchBoxRowProperties.SHOPPING_CHIP_VISIBILITY,
                                             false)
+                                    .with(SearchBoxProperties.SEARCH_LOUPE_VISIBILITY, View.GONE)
                                     .build();
 
                     PropertyModelChangeProcessor.create(
@@ -133,11 +140,31 @@ public class BookmarkSearchBoxRowRenderTest {
     public void testWithSearchText() throws IOException {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mPropertyModel.set(BookmarkSearchBoxRowProperties.SEARCH_TEXT, "foo");
-                    mPropertyModel.set(
-                            BookmarkSearchBoxRowProperties.CLEAR_SEARCH_TEXT_BUTTON_VISIBILITY,
-                            true);
+                    mPropertyModel.set(SearchBoxProperties.SEARCH_TEXT, "foo");
+                    mPropertyModel.set(SearchBoxProperties.CLEAR_BUTTON_VISIBILITY, true);
                 });
         mRenderTestRule.render(mContentView, "searchText");
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"RenderTest"})
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT)
+    public void testDesktopNormal() throws IOException {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mContentView.removeAllViews();
+                    LayoutInflater.from(mActivityTestRule.getActivity())
+                            .inflate(R.layout.bookmark_search_box_row, mContentView);
+                    BookmarkSearchBoxRow bookmarkSearchBoxRow =
+                            mContentView.findViewById(R.id.bookmark_toolbar);
+                    bookmarkSearchBoxRow.updateDesktopMode(true);
+                    mPropertyModel.set(SearchBoxProperties.SEARCH_LOUPE_VISIBILITY, View.VISIBLE);
+                    PropertyModelChangeProcessor.create(
+                            mPropertyModel,
+                            bookmarkSearchBoxRow,
+                            BookmarkSearchBoxRowViewBinder.createViewBinder());
+                });
+        mRenderTestRule.render(mContentView, "desktop_normal");
     }
 }

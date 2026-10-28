@@ -97,6 +97,32 @@ extern NSString* const kSettingsDoneButtonId;
     BWGControllerForBrowser:(Browser*)browser
                    delegate:(id<SettingsNavigationControllerDelegate>)delegate;
 
+// Creates a new `SettingsNavigationController` that displays the Gemini
+// contextual cue settings. `browser` is the browser where settings are being
+// displayed and should not be nil. `delegate` may be nil.
++ (instancetype)
+    BWGContextualCueControllerForBrowser:(Browser*)browser
+                                delegate:
+                                    (id<SettingsNavigationControllerDelegate>)
+                                        delegate;
+
+// Creates a new SettingsNavigationController that displays the Suggestions from
+// Gemini settings. `browser` is the browser where settings are being displayed
+// and should not be nil. `delegate` may be nil.
++ (instancetype)
+    geminiSuggestionsControllerForBrowser:(Browser*)browser
+                                 delegate:
+                                     (id<SettingsNavigationControllerDelegate>)
+                                         delegate;
+
+// Creates a new SettingsNavigationController that displays the Suggestions from
+// Gemini Help Improve settings.
++ (instancetype)
+    geminiHelpImproveControllerForBrowser:(Browser*)browser
+                                 delegate:
+                                     (id<SettingsNavigationControllerDelegate>)
+                                         delegate;
+
 // Creates a new GoogleServicesSettingsCollectionViewController and the chrome
 // around it. `browser` is the browser where settings are being displayed and
 // should not be nil. `delegate` may be nil.
@@ -154,6 +180,37 @@ extern NSString* const kSettingsDoneButtonId;
                                     delegate:
                                         (id<SettingsNavigationControllerDelegate>)
                                             delegate;
+
+// Creates a new view controller presenting the Identity Docs settings.
+// `browser` is the browser where settings are being displayed and should not be
+// nil. `delegate` may be nil.
++ (instancetype)
+    identityDocsControllerForBrowser:(Browser*)browser
+                            referrer:(autofill::autofill_metrics::
+                                          AutofillSettingsReferrer)referrer
+                            delegate:(id<SettingsNavigationControllerDelegate>)
+                                         delegate;
+
+// Creates a new view controller presenting the Travel settings. `browser`
+// is the browser where settings are being displayed and should not be nil.
+// `delegate` may be nil.
++ (instancetype)
+    travelControllerForBrowser:(Browser*)browser
+                      referrer:
+                          (autofill::autofill_metrics::AutofillSettingsReferrer)
+                              referrer
+                      delegate:
+                          (id<SettingsNavigationControllerDelegate>)delegate;
+
+// Creates a new view controller presenting the Shopping settings. `browser` is
+// the browser where settings are being displayed and should not be nil.
+// `delegate` may be nil.
++ (instancetype)
+    shoppingControllerForBrowser:(Browser*)browser
+                        referrer:(autofill::autofill_metrics::
+                                      AutofillSettingsReferrer)referrer
+                        delegate:
+                            (id<SettingsNavigationControllerDelegate>)delegate;
 
 // Creates a new PasswordManagerViewController in search mode and the chrome
 // around it. `browser` is the browser where settings are being displayed and
@@ -305,6 +362,15 @@ extern NSString* const kSettingsDoneButtonId;
                                          (id<SettingsNavigationControllerDelegate>)
                                              delegate;
 
+// Creates a new UniversalOptOutTableViewController and the chrome around it.
+// `browser` is the browser where settings are being displayed and should not be
+// nil. `delegate` may be nil.
++ (instancetype)
+    universalOptOutControllerForBrowser:(Browser*)browser
+                               delegate:
+                                   (id<SettingsNavigationControllerDelegate>)
+                                       delegate;
+
 // Initializes the UINavigationController with `rootViewController`.
 - (instancetype)initWithRootViewController:(UIViewController*)rootViewController
                                    browser:(Browser*)browser
@@ -329,6 +395,12 @@ extern NSString* const kSettingsDoneButtonId;
 // `closeSettings` when it is pressed. Should only be called by view controllers
 // owned by SettingsNavigationController.
 - (UIBarButtonItem*)doneButton;
+
+// Shows the Suggestions from Gemini settings UI (no back button).
+- (void)showSuggestionsFromGemini;
+
+// Shows the Enhanced Autofill settings UI (no back button).
+- (void)showEnhancedAutofillSettings;
 
 // Notifies this `SettingsNavigationController` of a dismissal such
 // that it has a possibility to do necessary clean up.

@@ -128,6 +128,7 @@ public class WebsitePermissionsFetcher {
             case ContentSettingsType.BLUETOOTH_GUARD:
             case ContentSettingsType.SERIAL_GUARD:
             case ContentSettingsType.USB_GUARD:
+            case ContentSettingsType.HID_GUARD:
                 return WebsitePermissionsType.CHOSEN_OBJECT_INFO;
             case ContentSettingsType.GEOLOCATION:
                 if (!PermissionsAndroidFeatureMap.isEnabled(
@@ -238,7 +239,8 @@ public class WebsitePermissionsFetcher {
     private class WebsitePermissionFetcherInternal {
         // This map looks up Websites by their origin and embedder and content setting (e.g. allow,
         // block).
-        private final Map<Pair<OriginAndEmbedder, Integer>, Website> mSites = new HashMap<>();
+        private final Map<Pair<OriginAndEmbedder, @Nullable Integer>, Website> mSites =
+                new HashMap<>();
 
         /**
          * Fetches preferences for all sites that have them. TODO(mvanouwerkerk): Add an argument
@@ -367,6 +369,10 @@ public class WebsitePermissionsFetcher {
                             ContentFeatureList.WEB_BLUETOOTH_NEW_PERMISSIONS_BACKEND)) {
                 return;
             }
+            if (contentSettingsType == ContentSettingsType.HID_GUARD
+                    && !ContentFeatureMap.isEnabled(ContentFeatureList.WEB_HID)) {
+                return;
+            }
 
             switch (websitePermissionsType) {
                 case WebsitePermissionsType.CONTENT_SETTING_EXCEPTION:
@@ -415,7 +421,7 @@ public class WebsitePermissionsFetcher {
             WebsiteAddress permissionOrigin = assumeNonNull(WebsiteAddress.create(origin));
             WebsiteAddress permissionEmbedder = WebsiteAddress.create(embedder);
 
-            Pair<OriginAndEmbedder, Integer> key =
+            Pair<OriginAndEmbedder, @Nullable Integer> key =
                     new Pair<>(
                             OriginAndEmbedder.create(permissionOrigin, permissionEmbedder),
                             contentSetting);
@@ -780,6 +786,7 @@ public class WebsitePermissionsFetcher {
                                 website.setDomainImportant(info.isDomainImportant());
                             }
                             queue.next();
+                            model.releaseModel();
                         });
             }
         }

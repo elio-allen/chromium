@@ -199,8 +199,6 @@ class CORE_EXPORT ListedElement : public GarbageCollectedMixin {
  protected:
   ListedElement();
 
-  bool FormWasSetByParser() const { return form_was_set_by_parser_; }
-
   // FIXME: Remove usage of setForm. resetFormOwner should be enough, and
   // setForm is confusing.
   void SetForm(HTMLFormElement*);
@@ -248,7 +246,7 @@ class CORE_EXPORT ListedElement : public GarbageCollectedMixin {
   // Requests validity recalc for the form owner, if one exists.
   void FormOwnerSetNeedsValidityCheck();
   // Requests validity recalc for all ancestor fieldsets, if exist.
-  enum class StartingNodeType { IS_PARENT, IS_INSERTION_POINT };
+  enum class StartingNodeType { kParent, kInsertionPoint };
   void FieldSetAncestorsSetNeedsValidityCheck(Node*, StartingNodeType);
 
   ValidationMessageClient* GetValidationMessageClient() const;

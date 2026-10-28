@@ -74,6 +74,14 @@ void OpenItem(Profile* profile,
 // Must be called on the UI thread.
 void ShowItemInFolder(Profile* profile, const base::FilePath& full_path);
 
+#if BUILDFLAG(IS_WIN)
+// Shows the Windows "Open with" dialog for the file specified by `full_path`,
+// letting the user pick an application to open it with.
+//
+// Must be called on the UI thread.
+void OpenFileWithDialog(const base::FilePath& full_path);
+#endif
+
 // Open the given external protocol URL in the desktop's default manner.
 // (For example, mailto: URLs in the default mail user agent.)
 // Must be called from the UI thread.
@@ -119,6 +127,8 @@ gfx::NativeWindow GetActiveWindow();
 // Returns true if the given browser window is in locked fullscreen mode
 // (a special type of fullscreen where the user is locked into one browser
 // window).
+// TODO(crbug.com/365146870): Deprecate in favor of LockedStateController and
+// BrowserDelegate::IsOnTaskState.
 bool IsBrowserLockedFullscreen(const BrowserWindowInterface* browser);
 #endif
 

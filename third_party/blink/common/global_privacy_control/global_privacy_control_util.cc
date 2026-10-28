@@ -8,6 +8,7 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/rand_util.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
 
 namespace blink {
 namespace {
@@ -20,20 +21,34 @@ inline constexpr double kGlobalPrivacyControlSourceHistogramSampleProbability =
     0.001;
 }  // namespace
 
-bool IsGlobalPrivacyControlEnabled() {
-  if (base::FeatureList::IsEnabled(
-          blink::features::kGlobalPrivacyControlForce)) {
+bool IsGlobalPrivacyControlFeatureEnabled() {
+  // `kGlobalPrivacyControlForce` is kept for testing.
+  return base::FeatureList::IsEnabled(features::kGlobalPrivacyControlForce) ||
+         base::FeatureList::IsEnabled(features::kGlobalPrivacyControlApi);
+}
+
+bool IsGlobalPrivacyControlFeatureAndSettingEnabled(
+    const RendererPreferences& renderer_preferences) {
+  // `kGlobalPrivacyControlForce` is kept for testing.
+  if (base::FeatureList::IsEnabled(features::kGlobalPrivacyControlForce)) {
     return true;
   }
-  // TODO(crbug.com/40745270): Also use pref to inform whether to enable.
-  return base::FeatureList::IsEnabled(
-      blink::features::kGlobalPrivacyControlTest);
+
+  if (!IsGlobalPrivacyControlFeatureEnabled()) {
+    return false;
+  }
+
+  // The DevTools override, when explicitly set, takes precedence over the
+  // embedder's profile setting. When unset, fall back to the embedder's
+  // setting.
+  return renderer_preferences.global_privacy_control_devtools_override.value_or(
+      renderer_preferences.is_global_privacy_control_setting_enabled);
 }
 
 void MaybeRecordGlobalPrivacyControlSourceMetric(
     GPCSignalSourceType source_type) {
   if (base::FeatureList::IsEnabled(
-          blink::features::kGlobalPrivacyControlAlwaysSample) ||
+          features::kGlobalPrivacyControlAlwaysSample) ||
       base::ShouldRecordSubsampledMetric(
           kGlobalPrivacyControlSourceHistogramSampleProbability)) {
     UMA_HISTOGRAM_ENUMERATION(kGlobalPrivacyControlSourceHistogram,

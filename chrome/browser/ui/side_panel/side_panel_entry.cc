@@ -31,8 +31,9 @@ SidePanelEntry::SidePanelEntry(
       create_content_callback_(std::move(create_content_callback)),
       open_in_new_tab_url_callback_(std::move(open_in_new_tab_url_callback)),
       more_info_callback_(std::move(more_info_callback)),
-      default_content_width_callback_(default_content_width_callback) {
-  DCHECK(create_content_callback_);
+      default_content_width_callback_(
+          std::move(default_content_width_callback)) {
+  CHECK(create_content_callback_, base::NotFatalUntil::M162);
 }
 
 SidePanelEntry::SidePanelEntry(
@@ -45,8 +46,9 @@ SidePanelEntry::SidePanelEntry(
       create_content_callback_(std::move(create_content_callback)),
       open_in_new_tab_url_callback_(base::NullCallback()),
       more_info_callback_(base::NullCallback()),
-      default_content_width_callback_(default_content_width_callback) {
-  DCHECK(create_content_callback_);
+      default_content_width_callback_(
+          std::move(default_content_width_callback)) {
+  CHECK(create_content_callback_, base::NotFatalUntil::M162);
 }
 
 SidePanelEntry::SidePanelEntry(
@@ -56,7 +58,7 @@ SidePanelEntry::SidePanelEntry(
     : SidePanelEntry(SidePanelType::kContent,
                      key,
                      std::move(create_content_callback),
-                     default_content_width_callback) {}
+                     std::move(default_content_width_callback)) {}
 
 SidePanelEntry::~SidePanelEntry() = default;
 
@@ -102,6 +104,10 @@ void SidePanelEntry::OnEntryHidden() {
 }
 
 #if BUILDFLAG(IS_ANDROID)
+void SidePanelEntry::OnEntryShowDeferred() {
+  observers_.Notify(&SidePanelEntryObserver::OnEntryShowDeferred, this);
+}
+
 void SidePanelEntry::OnEntryHiddenWithReason(SidePanelEntryHideReason reason) {
   observers_.Notify(&SidePanelEntryObserver::OnEntryHiddenWithReason, this,
                     reason);

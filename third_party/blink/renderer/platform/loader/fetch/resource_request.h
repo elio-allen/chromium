@@ -61,7 +61,6 @@
 
 namespace blink {
 
-class FeatureContext;
 class EncodedFormData;
 struct IntegrityMetadataSet;
 
@@ -170,6 +169,15 @@ class PLATFORM_EXPORT ResourceRequestHead {
   }
   void SetNavigationRedirectChain(const Vector<KURL>& value) {
     navigation_redirect_chain_ = value;
+  }
+
+  // Names of headers an untrusted DevTools client added to this no-cors
+  // request; removed if it redirects cross-origin.
+  const Vector<String>& GetUntrustedDevToolsHeaders() const {
+    return untrusted_devtools_headers_;
+  }
+  void AddUntrustedDevToolsHeader(const String& header) {
+    untrusted_devtools_headers_.push_back(header);
   }
 
   // The origin of the isolated world - set if this is a fetch/XHR initiated by
@@ -377,7 +385,7 @@ class PLATFORM_EXPORT ResourceRequestHead {
   }
 
   const String& GetFetchIntegrity() const { return fetch_integrity_; }
-  void SetFetchIntegrity(const String& integrity, const FeatureContext*);
+  void SetFetchIntegrity(const String& integrity);
 
   // This is also called as a side-effect of `SetFetchIntegrity()`.
   void SetExpectedPublicKeys(const IntegrityMetadataSet&);
@@ -452,17 +460,6 @@ class PLATFORM_EXPORT ResourceRequestHead {
   void SetDevToolsThrottlingToken(
       const std::optional<base::UnguessableToken>& devtools_token) {
     devtools_throttling_token_ = devtools_token;
-  }
-
-  const scoped_refptr<
-      base::RefCountedData<base::flat_set<net::SourceStreamType>>>&
-  GetDevToolsAcceptedStreamTypes() const {
-    return devtools_accepted_stream_types_;
-  }
-  void SetDevToolsAcceptedStreamTypes(
-      const scoped_refptr<
-          base::RefCountedData<base::flat_set<net::SourceStreamType>>>& types) {
-    devtools_accepted_stream_types_ = types;
   }
 
   const String& GetDevToolsId() const { return devtools_id_; }
@@ -651,6 +648,12 @@ class PLATFORM_EXPORT ResourceRequestHead {
     allows_device_bound_sessions_ = allows_device_bound_sessions;
   }
 
+  bool RequiresLoadIgnoreLimits() const { return requires_load_ignore_limits_; }
+
+  void SetRequiresLoadIgnoreLimits(bool sync_load_requires_load_ignore_limits) {
+    requires_load_ignore_limits_ = sync_load_requires_load_ignore_limits;
+  }
+
  private:
   const CacheControlHeader& GetCacheControlHeader() const;
 
@@ -665,6 +668,8 @@ class PLATFORM_EXPORT ResourceRequestHead {
 
   scoped_refptr<const SecurityOrigin> requestor_origin_;
   Vector<KURL> navigation_redirect_chain_;
+  Vector<String> untrusted_devtools_headers_;
+
   scoped_refptr<const SecurityOrigin> isolated_world_origin_;
 
   AtomicString http_method_;
@@ -767,15 +772,6 @@ class PLATFORM_EXPORT ResourceRequestHead {
   RenderBlockingBehavior render_blocking_behavior_ =
       RenderBlockingBehavior::kUnset;
 
-  // If not null, the network service will not advertise any stream types
-  // (via Accept-Encoding) that are not listed. Also, it will not attempt
-  // decoding any non-listed stream types.
-  // Instead of using std::optional, we use scoped_refptr to reduce
-  // blink memory footprint because the attribute is only used by DevTools
-  // and we should keep the footprint minimal when DevTools is closed.
-  scoped_refptr<base::RefCountedData<base::flat_set<net::SourceStreamType>>>
-      devtools_accepted_stream_types_;
-
   net::StorageAccessApiStatus storage_access_api_status_ =
       net::StorageAccessApiStatus::kNone;
 
@@ -802,6 +798,11 @@ class PLATFORM_EXPORT ResourceRequestHead {
   // includes registering a new session, accepting challenges, or deferring the
   // request until a session is refreshed.
   bool allows_device_bound_sessions_ = true;
+
+  // Indicates if this request requires the LOAD_IGNORE_LIMITS flag to be
+  // applied. Should only be used in DOMWindows for synchronous requests.
+  // See https://crbug.com/563817431.
+  bool requires_load_ignore_limits_ = false;
 };
 
 class PLATFORM_EXPORT ResourceRequestBody {

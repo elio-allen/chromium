@@ -3,8 +3,9 @@
 // found in the LICENSE file.
 
 #import <Foundation/Foundation.h>
+#include <stddef.h>
+#include <stdint.h>
 
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -596,14 +597,18 @@ class DownloadStreamReader : public mojo::DataPipeDrainer::Client {
 
   void OnDataComplete() override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    drainer_.reset();
+    // Defer resetting the drainer to avoid UAF in DataPipeDrainer::ReadData().
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::DoNothingWithBoundArgs(std::move(drainer_)));
     MaybeSignalComplete();
   }
 
  private:
   void ClosePipeAndSignalMojoError() {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    drainer_.reset();
+    // Defer resetting the drainer to avoid UAF in DataPipeDrainer::ReadData().
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::DoNothingWithBoundArgs(std::move(drainer_)));
     file_.Close();
     if (completion_callback_) {
       base::SequencedTaskRunner::GetCurrentDefault()->PostTask(

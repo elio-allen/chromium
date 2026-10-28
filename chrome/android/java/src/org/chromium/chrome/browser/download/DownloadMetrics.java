@@ -21,6 +21,7 @@ import java.lang.annotation.RetentionPolicy;
 public class DownloadMetrics {
     // These values are persisted to logs. Entries should not be renumbered and
     // numeric values should never be reused.
+    // LINT.IfChange(OpenWithExternalAppsSource)
     @IntDef({
         OpenWithExternalAppsSource.OPEN_FILE,
         OpenWithExternalAppsSource.DOWNLOAD_PROGRESS_MESSAGE,
@@ -38,8 +39,11 @@ public class DownloadMetrics {
         int NUM_ENTRIES = 4;
     }
 
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/download/enums.xml:OpenDownloadWithExternalAppsSource)
+
     // These values are persisted to logs. Entries should not be renumbered and
     // numeric values should never be reused.
+    // LINT.IfChange(DownloadOpenTarget)
     @IntDef({
         DownloadOpenTarget.CHROME_DEFAULT,
         DownloadOpenTarget.CHROME_FALLBACK,
@@ -57,6 +61,8 @@ public class DownloadMetrics {
         int NUM_ENTRIES = 4;
     }
 
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:AndroidDownloadOpenTarget)
+
     /**
      * Records download open source.
      *
@@ -70,17 +76,17 @@ public class DownloadMetrics {
             RecordHistogram.recordEnumeratedHistogram(
                     "Android.DownloadManager.OpenSource.Video",
                     source,
-                    DownloadOpenSource.MAX_VALUE);
+                    DownloadOpenSource.MAX_VALUE + 1);
         } else if (type == DownloadFilter.Type.AUDIO) {
             RecordHistogram.recordEnumeratedHistogram(
                     "Android.DownloadManager.OpenSource.Audio",
                     source,
-                    DownloadOpenSource.MAX_VALUE);
+                    DownloadOpenSource.MAX_VALUE + 1);
         } else {
             RecordHistogram.recordEnumeratedHistogram(
                     "Android.DownloadManager.OpenSource.Other",
                     source,
-                    DownloadOpenSource.MAX_VALUE);
+                    DownloadOpenSource.MAX_VALUE + 1);
         }
     }
 
@@ -91,7 +97,7 @@ public class DownloadMetrics {
      */
     public static void recordDownloadPageOpen(@DownloadOpenSource int source, @Nullable Tab tab) {
         RecordHistogram.recordEnumeratedHistogram(
-                "Android.DownloadPage.OpenSource", source, DownloadOpenSource.MAX_VALUE);
+                "Android.DownloadPage.OpenSource", source, DownloadOpenSource.MAX_VALUE + 1);
 
         // Below there are metrics per profile type, so there should be a tab to get profile.
         if (tab == null) return;
@@ -99,12 +105,12 @@ public class DownloadMetrics {
         Profile profile = tab.getProfile();
         @BrowserProfileType int type = Profile.getBrowserProfileTypeFromProfile(profile);
         RecordHistogram.recordEnumeratedHistogram(
-                "Download.OpenDownloads.PerProfileType", type, BrowserProfileType.MAX_VALUE);
+                "Download.OpenDownloads.PerProfileType", type, BrowserProfileType.MAX_VALUE + 1);
         if (source == DownloadOpenSource.MENU) {
             RecordHistogram.recordEnumeratedHistogram(
                     "Download.OpenDownloadsFromMenu.PerProfileType",
                     type,
-                    BrowserProfileType.MAX_VALUE);
+                    BrowserProfileType.MAX_VALUE + 1);
         }
     }
 

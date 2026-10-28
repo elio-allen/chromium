@@ -2,20 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/glic/experimental_triggering/glic_experimental_triggering_coordinator.h"
 #include "chrome/browser/glic/glic_pref_names.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/public/glic_provider_metrics.h"
 #include "chrome/browser/glic/test_support/glic_browser_test.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "base/functional/callback_helpers.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "ui/gfx/geometry/rect.h"
 #endif
@@ -28,7 +32,7 @@ using GlicExperimentalTriggeringBrowserTest = GlicBrowserTest;
 IN_PROC_BROWSER_TEST_F(
     GlicExperimentalTriggeringBrowserTest,
     ExperimentalTriggeringWithFocusedPwaDoesNotCreateNewWindow) {
-  GlicEnabling::SetBypassEnablementChecksForTesting(true);
+  GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass;
   auto* glic_service = GlicKeyedServiceFactory::GetGlicKeyedService(
       GetProfile(), /*create=*/true);
   ASSERT_TRUE(glic_service);
@@ -37,8 +41,10 @@ IN_PROC_BROWSER_TEST_F(
   glic_service->enabling().SetExperimentalTriggeringEnabled(true);
 
   // 1. Create and show a PWA app window.
-  Browser* app_browser = Browser::Create(Browser::CreateParams::CreateForApp(
-      "test_app", true, gfx::Rect(), GetProfile(), true));
+  BrowserWindowInterface* app_browser =
+      CreateBrowserWindow(BrowserWindowCreateParams::CreateForApp(
+          "test_app", /*trusted_source=*/true, gfx::Rect(), GetProfile(),
+          /*user_gesture=*/true));
   app_browser->GetWindow()->Show();
 
   // 2. Experimental triggering request fires while PWA window is focused.
@@ -52,6 +58,7 @@ IN_PROC_BROWSER_TEST_F(
   coordinator.OnRequest(
       "test_context", request,
       ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(GetProfile()),
           ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
       base::DoNothing(), nullptr);
 

@@ -275,23 +275,31 @@ public class PwaUniversalInstallBottomSheetCoordinator {
         if (!appAlreadyInstalled) {
             // This is guarded by checking if the app is installed, because if it is then the dialog
             // is already showing the right information, and we shouldn't change it.
-            mMediator
-                    .getModel()
-                    .set(
-                            PwaUniversalInstallProperties.VIEW_STATE,
-                            isInstallable(appType)
-                                    ? PwaUniversalInstallProperties.ViewState.APP_IS_INSTALLABLE
-                                    : PwaUniversalInstallProperties.ViewState
-                                            .APP_IS_NOT_INSTALLABLE);
+            @PwaUniversalInstallProperties.ViewState int viewState;
+            switch (appType) {
+                case AppType.WEBAPK:
+                case AppType.TWA:
+                    viewState = PwaUniversalInstallProperties.ViewState.APP_IS_INSTALLABLE;
+                    break;
+                case AppType.WEBAPK_DIY:
+                    viewState = PwaUniversalInstallProperties.ViewState.APP_IS_INSTALLABLE_DIY;
+                    break;
+                default:
+                    viewState = PwaUniversalInstallProperties.ViewState.APP_IS_NOT_INSTALLABLE;
+                    break;
+            }
+            mMediator.getModel().set(PwaUniversalInstallProperties.VIEW_STATE, viewState);
         }
 
         if (!mWaitingToShow) {
             RecordHistogram.recordEnumeratedHistogram(
-                    "WebApk.UniversalInstall.TimeoutWithAppType", appType, AppType.MAX_VALUE);
+                    "WebApk.UniversalInstall.TimeoutWithAppType", appType, AppType.MAX_VALUE + 1);
             // If we are not waiting to show, that means the dialog has shown already while the app
             // type was not known. This allows the metric to catch up to that fact.
             RecordHistogram.recordEnumeratedHistogram(
-                    "WebApk.UniversalInstall.DialogShownForAppType", mAppType, AppType.MAX_VALUE);
+                    "WebApk.UniversalInstall.DialogShownForAppType",
+                    mAppType,
+                    AppType.MAX_VALUE + 1);
             return;
         }
 
@@ -333,7 +341,7 @@ public class PwaUniversalInstallBottomSheetCoordinator {
         }
 
         RecordHistogram.recordEnumeratedHistogram(
-                "WebApk.UniversalInstall.DialogShownForAppType", mAppType, AppType.MAX_VALUE);
+                "WebApk.UniversalInstall.DialogShownForAppType", mAppType, AppType.MAX_VALUE + 1);
 
         show(/* wasTimeout= */ false);
     }

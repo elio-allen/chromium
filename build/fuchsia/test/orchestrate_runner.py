@@ -14,7 +14,7 @@ import sys
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
-import common  # pylint: disable=wrong-import-position
+import common  # noqa: E402
 
 
 def support_orchestrate(test_type: str) -> bool:
@@ -67,7 +67,6 @@ def support_orchestrate(test_type: str) -> bool:
         'ozone_gl_unittests',
         'ozone_unittests',
         'perfetto_unittests',
-        'rust_gtest_interop_unittests',
         'services_unittests',
         'shell_dialogs_unittests',
         'skia_unittests',
@@ -90,25 +89,40 @@ def support_orchestrate(test_type: str) -> bool:
     }
 
 
-def run_tests_with_orchestrate(out_dir: str,
-                               packages: list,
-                               target_cmd: list,
-                               logs_dir: str = None) -> int:
+def run_tests_with_orchestrate(
+    out_dir: str, packages: list, target_cmd: list, logs_dir: str = None
+) -> int:
     """Entry point to execute the test suite via orchestrate config."""
     if not out_dir:
         raise ValueError('--out-dir must be specified.')
     if not logs_dir:
         logs_dir = '/tmp/'
 
-    config_json = os.path.join(SCRIPT_DIR, 'orchestrate.json')
-    overrides = {'emulator': {'package_archives': packages}}
+    config_json = os.path.join(
+        SCRIPT_DIR, f'orchestrate_{common.get_host_arch()}.json'
+    )
+    assert os.path.exists(config_json)
+    overrides = {
+        'emulator': {
+            'package_archives': packages,
+            'build_ids': [
+                os.path.join(os.path.dirname(pkg), 'ids.txt')
+                for pkg in packages
+            ],
+        }
+    }
     overrides_str = json.dumps(overrides)
 
     orchestrate_bin = os.path.join(common.SDK_TOOLS_DIR, 'orchestrate')
 
     cmd = [
-        orchestrate_bin, 'run', '-input', config_json, '-overrides',
-        overrides_str, '--'
+        orchestrate_bin,
+        'run',
+        '-input',
+        config_json,
+        '-overrides',
+        overrides_str,
+        '--',
     ] + target_cmd
 
     # TODO(crbug.com/346624801): Revert this env injection after

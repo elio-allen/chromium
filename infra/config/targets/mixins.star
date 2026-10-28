@@ -127,6 +127,13 @@ targets.mixin(
 )
 
 targets.mixin(
+    name = "android_extra_verbosity",
+    android_args = [
+        "-v",
+    ],
+)
+
+targets.mixin(
     name = "arm64",
     swarming = targets.swarming(
         dimensions = {
@@ -455,6 +462,7 @@ targets.mixin(
     name = "emulator-4-cores",
     swarming = targets.swarming(
         dimensions = {
+            "cpu": "x86-64",
             "device_os": None,
             "device_type": None,
             "pool": "chromium.tests.avd",
@@ -467,6 +475,7 @@ targets.mixin(
     name = "emulator-8-cores",
     swarming = targets.swarming(
         dimensions = {
+            "cpu": "x86-64-n4|x86-64",
             "device_os": None,
             "device_type": None,
             "pool": "chromium.tests.avd",
@@ -519,17 +528,16 @@ targets.mixin(
     ],
 )
 
-# TODO(fxbug.dev/370067428): Remove once Netstack2 no longer exists.
-targets.mixin(
-    name = "fuchsia-netstack2-x64",
-    args = [
-        "--product=terminal_with_netstack2.x64",
-    ],
-)
-
 # TODO(b/300509814): Large device spec should be the default choice.
 # Choose virtual_device_large spec for more ram. This mixin works on emulators
 # only.
+targets.mixin(
+    name = "fuchsia-arm64-large-device-spec",
+    args = [
+        "--device-spec=arm64-emu-large",
+    ],
+)
+
 targets.mixin(
     name = "fuchsia-large-device-spec",
     args = [
@@ -592,6 +600,39 @@ targets.mixin(
     android_args = [
         targets.magic_args.ANDROID_DESKTOP_FORCE_MAIN_USER,
     ],
+)
+
+targets.mixin(
+    # TODO(crbug.com/554055689): Remove this mixin and use an anonymous mixin
+    # in the test definition once V8 uses Starlark test specs.
+    name = "legacy_gpu_vulkan_pixel_skia_gold_test_args",
+    args = [
+        "--extra-browser-args=--use-vulkan=native --disable-vulkan-fallback-to-gl-for-testing --enable-features=Vulkan --use-gl=angle --use-angle=gl --use-cmd-decoder=passthrough",
+    ],
+)
+
+targets.mixin(
+    # TODO(crbug.com/554055689): Remove this mixin and use an anonymous mixin
+    # in the test definition once V8 uses Starlark test specs.
+    name = "legacy_gpu_webgl_conformance_shards",
+    swarming = targets.swarming(
+        shards = 2,
+    ),
+    android_swarming = targets.swarming(
+        shards = 6,
+    ),
+    chromeos_swarming = targets.swarming(
+        shards = 6,
+    ),
+)
+
+targets.mixin(
+    # TODO(crbug.com/554055689): Remove this mixin and use an anonymous mixin
+    # in the test definition once V8 uses Starlark test specs.
+    name = "legacy_gpu_webgl2_conformance_shards",
+    swarming = targets.swarming(
+        shards = 5,
+    ),
 )
 
 targets.mixin(
@@ -735,6 +776,19 @@ targets.mixin(
 )
 
 targets.mixin(
+    name = "gpu_pixel_11_experimental",
+    swarming = targets.swarming(
+        dimensions = {
+            "device_os_type": "userdebug",
+            "device_os": "CD1A.260714.001.A9",
+            "device_type": "kodiak",
+            "os": "Android",
+            "pool": "chromium.tests.gpu.experimental",
+        },
+    ),
+)
+
+targets.mixin(
     name = "gpu_samsung_a13_stable",
     swarming = targets.swarming(
         dimensions = {
@@ -781,7 +835,7 @@ targets.mixin(
     swarming = targets.swarming(
         dimensions = {
             "device_type": "s5e9945",
-            "device_os": "UP1A.231005.007",
+            "device_os": "AP3A.240905.015.A2",
             "device_os_type": "user",
             "os": "Android",
             "pool": "chromium.tests.gpu",
@@ -1029,18 +1083,6 @@ targets.mixin(
 )
 
 targets.mixin(
-    name = "ios_runtime_cache_18_2",
-    swarming = targets.swarming(
-        named_caches = [
-            swarming.cache(
-                name = "runtime_ios_18_2",
-                path = "Runtime-ios-18.2",
-            ),
-        ],
-    ),
-)
-
-targets.mixin(
     name = "ios_runtime_cache_18_4",
     swarming = targets.swarming(
         named_caches = [
@@ -1059,18 +1101,6 @@ targets.mixin(
             swarming.cache(
                 name = "runtime_ios_18_5",
                 path = "Runtime-ios-18.5",
-            ),
-        ],
-    ),
-)
-
-targets.mixin(
-    name = "ios_runtime_cache_26_0",
-    swarming = targets.swarming(
-        named_caches = [
-            swarming.cache(
-                name = "runtime_ios_26_0",
-                path = "Runtime-ios-26.0",
             ),
         ],
     ),
@@ -1098,6 +1128,37 @@ targets.mixin(
             ),
         ],
     ),
+)
+
+targets.mixin(
+    name = "ios_runtime_cache_27_2",
+    swarming = targets.swarming(
+        named_caches = [
+            swarming.cache(
+                name = "runtime_ios_27_2",
+                path = "Runtime-ios-27.2",
+            ),
+        ],
+    ),
+)
+
+targets.mixin(
+    name = "ios_runtime_cache_27_2_iphone19_4",
+    swarming = targets.swarming(
+        named_caches = [
+            swarming.cache(
+                name = "runtime_ios_27_2_iphone19_4",
+                path = "Runtime-ios-27.2-iphone19-4",
+            ),
+        ],
+    ),
+)
+
+targets.mixin(
+    name = "ios_smoke_tests",
+    args = [
+        "--run-eg-smoke-tests-only",
+    ],
 )
 
 targets.mixin(
@@ -1183,6 +1244,15 @@ targets.mixin(
     ),
 )
 
+targets.mixin(
+    name = "linux-ubuntu",
+    swarming = targets.swarming(
+        dimensions = {
+            "os": "Ubuntu",
+        },
+    ),
+)
+
 # Restricts Linux GPU High Tier AI WPT tasks to NVIDIA, AMD, or modern Intel GPUs
 # (Intel UHD 770 / Iris Xe) to avoid execution stalls on low-end Intel UHD 630
 # integrated graphics (lin-90-g582 and lin-91-g582).
@@ -1191,6 +1261,48 @@ targets.mixin(
     swarming = targets.swarming(
         dimensions = {
             "gpu": "10de|1002|8086:4680|8086:a780|8086:a7a0",
+        },
+    ),
+)
+
+# Restricts Linux GPU High Tier Gemma 4 AI WPT tasks to NVIDIA and AMD discrete
+# GPUs to prevent VK_ERROR_DEVICE_LOST failures on Intel integrated graphics
+# (see https://crbug.com/547936735).
+targets.mixin(
+    name = "linux_gpu_high_tier_gemma4_ai_wpt_dimensions",
+    swarming = targets.swarming(
+        dimensions = {
+            "gpu": "10de|1002",
+        },
+    ),
+)
+
+# Expands Windows GPU AI WPT tasks across both Windows 10 and Windows 11 x86-64
+# discrete GPUs (NVIDIA, Intel Arc/UHD, and discrete AMD Radeon RX 5500 XT /
+# 7600 / 7900 XTX / 9070 XT) while excluding integrated AMD APUs (1002:1638 and
+# 1002:164e) that have < 4 GB dedicated VRAM and fail on-device GPU model
+# preconditions.
+targets.mixin(
+    name = "win_gpu_ai_wpt_dimensions",
+    swarming = targets.swarming(
+        dimensions = {
+            "cpu": "x86-64",
+            "gpu": "10de|8086|1002:7340|1002:744c|1002:7480|1002:7550",
+            "os": "Windows",
+        },
+    ),
+)
+
+# Restricts Windows GPU Gemma 4 AI WPT tasks to Windows 10 and Windows 11 x86-64
+# NVIDIA discrete GPUs to prevent D3D12 vision compilation crashes on AMD
+# integrated graphics (see https://crbug.com/547946848).
+targets.mixin(
+    name = "win_gpu_gemma4_ai_wpt_dimensions",
+    swarming = targets.swarming(
+        dimensions = {
+            "cpu": "x86-64",
+            "gpu": "10de",
+            "os": "Windows",
         },
     ),
 )
@@ -1229,6 +1341,19 @@ targets.mixin(
             "os": "Ubuntu-24.04",
             "display_attached": "1",
             "display_server": "x11",
+            "pool": "chromium.tests.gpu",
+        },
+    ),
+)
+
+targets.mixin(
+    name = "linux_amd_rx_5500_xt_wayland_stable",
+    swarming = targets.swarming(
+        dimensions = {
+            "gpu": "1002:7340-25.2.8",
+            "os": "Ubuntu-24.04",
+            "display_attached": "1",
+            "display_server": "wayland",
             "pool": "chromium.tests.gpu",
         },
     ),
@@ -1290,8 +1415,8 @@ targets.mixin(
     swarming = targets.swarming(
         dimensions = {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-595.104.02",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu",
         },
     ),
@@ -1310,12 +1435,12 @@ targets.mixin(
 )
 
 targets.mixin(
-    name = "linux_nvidia_rtx_4070_super_stable",
+    name = "linux_nvidia_rtx_4070_super_wayland_stable",
     swarming = targets.swarming(
         dimensions = {
-            "display_server": "x11",
-            "gpu": "10de:2783-580.95.05",
-            "os": "Ubuntu-24.04",
+            "display_server": "wayland",
+            "gpu": "10de:2783-595.91.07",
+            "os": "Ubuntu-26.04",
             "pool": "chromium.tests.gpu",
         },
     ),
@@ -1354,7 +1479,7 @@ targets.mixin(
             "os": "Mac-26",
         },
         optional_dimensions = {
-            30: {
+            180: {
                 "cpu": "Apple_(Virtual)",
             },
         },
@@ -1683,7 +1808,7 @@ targets.mixin(
             targets.cipd_package(
                 package = "infra/tools/mac_toolchain/${platform}",
                 location = ".",
-                revision = "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05",
+                revision = "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d",
             ),
         ],
     ),
@@ -1713,6 +1838,13 @@ targets.mixin(
     name = "no_tombstones",
     args = [
         "--do-not-store-tombstones",
+    ],
+)
+
+targets.mixin(
+    name = "no_xvfb_for_real_hardware",
+    linux_args = [
+        targets.magic_args.GPU_NO_XVFB_FOR_REAL_HARDWARE,
     ],
 )
 
@@ -1889,6 +2021,11 @@ targets.mixin(
     args = [
         "--use-simulator-cache",
     ],
+)
+
+targets.mixin(
+    name = "use_isolated_scripts_api",
+    use_isolated_scripts_api = True,
 )
 
 targets.mixin(
@@ -2145,8 +2282,8 @@ targets.mixin(
     swarming = targets.swarming(
         dimensions = {
             "display_attached": "1",
-            "gpu": "10de:2184-31.0.15.4601",
-            "os": "Windows-10-19045",
+            "gpu": "10de:2184-31.0.15.4601|10de:2184-32.0.16.1074",
+            "os": "Windows-10-19045|Windows-11-26200",
             "pool": "chromium.tests.gpu",
         },
     ),
@@ -2251,12 +2388,12 @@ targets.mixin(
     name = "xcode_27_beta",
     args = [
         "--xcode-build-version",
-        "27a5228h",
+        "27b48",
     ],
     swarming = targets.swarming(
         named_caches = [
             swarming.cache(
-                name = "xcode_ios_27a5228h",
+                name = "xcode_ios_27b48",
                 path = "Xcode.app",
             ),
         ],
@@ -2264,31 +2401,15 @@ targets.mixin(
 )
 
 targets.mixin(
-    name = "xcode_17a400",
+    name = "xcode_27_main",
     args = [
         "--xcode-build-version",
-        "17a400",
+        "27a266a",
     ],
     swarming = targets.swarming(
         named_caches = [
             swarming.cache(
-                name = "xcode_ios_17a400",
-                path = "Xcode.app",
-            ),
-        ],
-    ),
-)
-
-targets.mixin(
-    name = "xcode_26_main",
-    args = [
-        "--xcode-build-version",
-        "17f42",
-    ],
-    swarming = targets.swarming(
-        named_caches = [
-            swarming.cache(
-                name = "xcode_ios_17f42",
+                name = "xcode_ios_27a266a",
                 path = "Xcode.app",
             ),
         ],

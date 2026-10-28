@@ -8,12 +8,17 @@ import './content_settings_icons.js';
 import './page_action_icons.js';
 import './selected_keyword.js';
 import '/shared/permission_dashboard.js';
+import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 
-import {TrackedElementManager} from '//resources/js/tracked_element/tracked_element_manager.js';
+import {loadTimeData} from '//resources/js/load_time_data.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
-import type {LocationBarState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
+import {PressHandler} from '/shared/toolbar_button.js';
+import type {OverflowMenuItem} from '/shared/toolbar_ui_api.mojom-webui.js';
+import {PageActionId, PermissionAction, PermissionChipTheme, PermissionPromptStyle, SecurityChipRole} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
+import type {LocationBarState, PermissionChipState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 
+import type {ToolbarAppElement} from './app.js';
 import {BrowserProxyImpl} from './browser_proxy.js';
 import type {BrowserProxy} from './browser_proxy.js';
 import {getCss} from './location_bar.css.js';
@@ -21,6 +26,76 @@ import {getHtml} from './location_bar.html.js';
 import type {PageActionIconsElement} from './page_action_icons.js';
 import type {ReadonlyOmniboxElement} from './readonly_omnibox.js';
 import type {ResponsiveControl} from './responsive_control.js';
+
+function createDefaultPermissionChipState(): PermissionChipState {
+  return {
+    isVisible: false,
+    iconName: '',
+    message: '',
+    tooltip: '',
+    theme: PermissionChipTheme.kUnspecified,
+    userDecision: PermissionAction.kUnspecified,
+    shouldShowBlockedIcon: false,
+    promptStyle: PermissionPromptStyle.kUnspecified,
+    isFullyCollapsed: false,
+    accessibilityName: '',
+    stateToken: 0,
+  };
+}
+
+// Returns a new default LocationBarState, used before the first state is
+// received from the browser. Returns a fresh object on every call so callers
+// never share nested objects/arrays.
+export function createDefaultLocationBarState(): LocationBarState {
+  return {
+    omniboxViewState: {
+      browserVersion: 0,
+      uiVersion: 0,
+      formattedFullUrl: '',
+      textPieces: [],
+      placeholder: null,
+      inlineAutocompletion: '',
+      additionalText: '',
+      a11yFriendlySuggestionText: '',
+      selection: null,
+      textIsUrl: false,
+      userInputInProgress: false,
+      hasTemporaryText: false,
+    },
+    locationBarFlags: {
+      userInputInProgress: false,
+      popupOpen: false,
+      forceAimButtonFocusRing: false,
+      isVirtualKeyboardVisible: false,
+    },
+    selectedKeyword: null,
+    lhsChipsState: {
+      securityChip: {
+        icon: {handleId: 0n},
+        securityLevel: 0,
+        text: '',
+        tooltip: '',
+        accessibilityState: {
+          role: SecurityChipRole.kButton,
+          label: '',
+          description: '',
+        },
+        isClickable: false,
+        isTextDangerous: false,
+        isVisible: true,
+        isContextMenuVisible: false,
+      },
+      activityIndicators: [],
+      permissionDashboard: {
+        indicatorChip: createDefaultPermissionChipState(),
+        requestChip: createDefaultPermissionChipState(),
+        isDividerVisible: false,
+      },
+    },
+    contentSettingImageStates: [],
+    pageActionStates: [],
+  };
+}
 
 export interface LocationBarElement {
   $: {
@@ -61,63 +136,24 @@ export class LocationBarElement extends CrLitElement implements
     return {
       locationBarState: {type: Object},
       isPopupOpen: {type: Boolean},
+      touchUi: {type: Boolean},
     };
   }
 
-  accessor locationBarState: LocationBarState = {
-    omniboxViewState: {
-      browserVersion: 0,
-      uiVersion: 0,
-      formattedFullUrl: '',
-      textPieces: [],
-      placeholder: null,
-      inlineAutocompletion: '',
-      additionalText: '',
-      selection: null,
-      textIsUrl: false,
-      userInputInProgress: false,
-    },
-    locationBarFlags: {
-      userInputInProgress: false,
-      popupOpen: false,
-      forceAimButtonFocusRing: false,
-    },
-    selectedKeyword: null,
-    lhsChipsState: {
-      securityChip: {
-        icon: {handleId: 0n},
-        securityLevel: 0,
-        text: '',
-        accessibilityState: {
-          label: '',
-          description: '',
-        },
-        isClickable: false,
-        isTextDangerous: false,
-        isVisible: true,
-      },
-      activityIndicators: [],
-      permissionDashboard: null,
-    },
-    contentSettingImageStates: [],
-    pageActionStates: [],
-  };
+  accessor locationBarState: LocationBarState = createDefaultLocationBarState();
 
   accessor isPopupOpen: boolean = false;
+  accessor touchUi: boolean = false;
 
-  private trackedElementManager_: TrackedElementManager;
   private browserProxy_: BrowserProxy = BrowserProxyImpl.getInstance();
   private focusState_: boolean = false;
 
   constructor() {
     super();
-    this.trackedElementManager_ = TrackedElementManager.getInstance();
   }
 
   override connectedCallback() {
     super.connectedCallback();
-    this.trackedElementManager_.startTracking(
-        this.$.omnibox, 'kOmniboxElementId');
     // Need to use focusin/focusout and not focus/blur here since we
     // specifically want the events from child elements.
     this.addEventListener('focusin', this.onFocusin_.bind(this));
@@ -128,7 +164,6 @@ export class LocationBarElement extends CrLitElement implements
 
   override disconnectedCallback() {
     super.disconnectedCallback();
-    this.trackedElementManager_.stopTracking(this.$.omnibox);
   }
 
   override willUpdate(changedProperties: PropertyValues<this>): void {
@@ -150,6 +185,11 @@ export class LocationBarElement extends CrLitElement implements
           'no-focus-ring',
           this.locationBarState.locationBarFlags.popupOpen ||
               this.locationBarState.locationBarFlags.forceAimButtonFocusRing);
+      const pageActions = this.locationBarState.pageActionStates;
+      const isAimLastVisible = pageActions && pageActions.length === 1 &&
+          pageActions[0]?.pageActionId === PageActionId.kActionAiMode;
+      this.classList.toggle('aim-last-page-action', isAimLastVisible);
+
       const aimButton = this.$.pageActions.aiModePageAction();
       if (aimButton) {
         aimButton.forceFocusRing =
@@ -183,26 +223,27 @@ export class LocationBarElement extends CrLitElement implements
   }
 
   /**
-   * Calculates the remaining available width for the location bar's content
-   * area. Returned available width includes the width currently taken up by the
-   * location bar. Note that this is available width in a CSS sense, so, e.g.,
-   * exterior margins are not included in the return value. Requires the
+   * Calculates the maximum width of the location bar's content area, taking
+   * into account the current size of all other controls on the toolbar and the
+   * width of the window. Note that this is available width in a CSS sense, so,
+   * e.g., exterior margins are not included in the return value. Requires the
    * location bar be displayed to accurately calculate this value.
    *
    * To achieve this without replicating CSS layout calculations (margins,
-   * padding, gaps, child visibility, walking through children), it takes the
-   * inner width of the window, subtracts the current width of the parent
-   * element, which should be the toolbar itself, and then adds back the current
-   * width of the location bar.
+   * padding, gaps, child visibility, walking through children), it adds the
+   * `ToolbarAppElement.getAvailableWidth()` to current width of the location
+   * bar.
+   *
+   * Always returns a value of at least LOCATION_BAR_MIN_WIDTH, even if there's
+   * not that much width available.
    */
-  private getAvailableWidth(): number {
+  private getMaxAvailableWidth(): number {
     const shadowRoot = this.getRootNode() as ShadowRoot;
     if (!shadowRoot || !shadowRoot.host) {
       return 0;
     }
-    const host = shadowRoot.host as HTMLElement;
-    const availableWidth =
-        window.innerWidth - host.clientWidth + this.clientWidth;
+    const toolbarApp = shadowRoot.host as ToolbarAppElement;
+    const availableWidth = toolbarApp.getAvailableWidth() + this.clientWidth;
     // Always consider at least the minimum required width available.
     return Math.max(availableWidth, LocationBarElement.LOCATION_BAR_MIN_WIDTH);
   }
@@ -223,23 +264,26 @@ export class LocationBarElement extends CrLitElement implements
   // For the location bar, the "preferred width" is maximum width the location
   // bar will assume before space is allocated to lower priority
   // ResponsiveControls. At the end of layout, any remaining available space is
-  // allocated to the location bar by calling setToAvailableWidth(), potentially
-  // increasing its size beyond its preferred width.
+  // allocated to the location bar by calling setToMaxAvailableWidth(),
+  // potentially increasing its size beyond its preferred width.
   expandUpToPreferredWidth() {
     const width = Math.min(
-        this.getAvailableWidth(),
+        this.getMaxAvailableWidth(),
         LocationBarElement.LOCATION_BAR_PREFERRED_WIDTH);
     this.style.width = `${width}px`;
   }
 
-  consumeNeedsLayout(): boolean {
-    // The minimum and preferred sizes of this control do not change.
-    return false;
+  controlsToAddToOverflowMenu(): OverflowMenuItem[] {
+    return [];
   }
 
-  // Sets size to include all remaining unclaimed space on the toolbar.
-  setToAvailableWidth() {
-    this.style.width = `${this.getAvailableWidth()}px`;
+  // Sets the width to include all remaining unclaimed space on the toolbar.
+  // Will not set to less than minimum width.
+  //
+  // TODO(crbug.com/491791965): Should we shrink the location bar to even less
+  // than the minimum if there's less width than that available?
+  setToMaxAvailableWidth() {
+    this.style.width = `${this.getMaxAvailableWidth()}px`;
   }
 
   private updateFocusWithin_() {
@@ -250,6 +294,45 @@ export class LocationBarElement extends CrLitElement implements
       this.browserProxy_.toolbarUIHandler.onLocationBarFocusWithinChanged(
           hasFocus);
     }
+  }
+
+  protected getClearButtonTitle_(): string {
+    return loadTimeData.getString('clearButtonTooltip');
+  }
+
+  protected getClearButtonIcon_(): string {
+    return this.touchUi ? 'webui-toolbar:backspace_filled' :
+                          'webui-toolbar:close';
+  }
+
+  protected shouldShowClearButton_(): boolean {
+    return this.locationBarState.locationBarFlags.userInputInProgress &&
+        this.locationBarState.omniboxViewState.textPieces.some(
+            piece => piece.text.length > 0) &&
+        this.locationBarState.locationBarFlags.isVirtualKeyboardVisible;
+  }
+
+  protected clearPressHandler_: PressHandler = new PressHandler(
+      /*onLongPress=*/ () => {},
+      /*onShortPress=*/ () => this.clearInput_(),
+      /*enableContextMenu=*/ false,
+  );
+
+  private clearInput_() {
+    this.$.omnibox.clearInput();
+  }
+
+  protected onClearClick_(e: MouseEvent) {
+    // Only keyboard `click` (Enter/Space) are handled here, which triggers a
+    // left-click equivalent. Keyboard 'click' has detail === 0.
+    if (e.detail === 0) {
+      this.clearInput_();
+    }
+  }
+
+  protected isPermissionDashboardVisible_(): boolean {
+    const dashboard = this.locationBarState.lhsChipsState.permissionDashboard;
+    return dashboard.indicatorChip.isVisible || dashboard.requestChip.isVisible;
   }
 }
 

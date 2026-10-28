@@ -13,8 +13,19 @@
 #include <vector>
 
 #include "base/functional/callback.h"
+#include "components/optimization_guide/proto/features/actions_data.pb.h"
 
 namespace glic {
+
+// Capabilities supported for experimental triggering.
+inline constexpr char kGlicCapabilityScreenshot[] = "screenshot";
+// Supports structured yields, i.e. receiving `SubmitConfirmation` requests to
+// resolve pending confirmation dialogs.
+inline constexpr char kGlicCapabilityStructuredYields[] = "structured_yields";
+// Supports payment metadata, i.e. passing the opaque `payment_metadata` of a
+// `TriggerActuationRequest` through to the Glic web client in the invocation
+// payload.
+inline constexpr char kGlicCapabilityPaymentMetadata[] = "payment_metadata";
 
 // Outcome of a device opt-in request for experimental triggering.
 enum class DeviceOptInResult {
@@ -72,6 +83,9 @@ struct TaskUpdate {
 // Payload for triggering a new actuation session.
 struct TriggerActuationRequest {
   std::string initial_prompt;
+  // Opaque payment metadata, passed through verbatim to the invocation
+  // payload. May be empty.
+  std::vector<uint8_t> payment_metadata;
 };
 
 // Payload for continuing an active actuation session.
@@ -103,6 +117,18 @@ struct GetScreenshotRequest {
   std::vector<uint8_t> request_token;
 };
 
+// Payload for directly executing actions.
+struct ExecuteActionsRequest {
+  optimization_guide::proto::Actions actions;
+};
+
+// Payload delivering a confirmation decision made by the user on a remote
+// surface. `confirmation_response` is opaque to the browser and is forwarded
+// verbatim to the web client.
+struct SubmitConfirmation {
+  std::vector<uint8_t> confirmation_response;
+};
+
 // Incoming request payload container for experimental triggering.
 struct ExperimentalTriggeringRequest {
   std::optional<int32_t> version;
@@ -116,8 +142,15 @@ struct ExperimentalTriggeringRequest {
                                StopActuationRequest,
                                DeviceOptInRequest,
                                TaskMetadataUpdated,
-                               GetScreenshotRequest>;
+                               GetScreenshotRequest,
+                               ExecuteActionsRequest,
+                               SubmitConfirmation>;
   Payload payload;
+};
+
+// Result payload for directly executed actions.
+struct ExecuteActionsResponse {
+  optimization_guide::proto::ActionsResult actions_result;
 };
 
 // Result payload for encrypted screenshot capture operations.
@@ -128,11 +161,32 @@ struct ScreenshotResult {
     kSuccess,
     kErrorCapture,
     kErrorServer,
+    kErrorDisabled,
+    kErrorInvalidRequest,
   };
   Status status = Status::kUnspecified;
   std::string file_token;
-  std::string error_message;
   std::vector<uint8_t> request_token;
+};
+
+// Result payload reporting whether a confirmation decision was applied by the
+// web client.
+struct ConfirmationResult {
+  // Status of the confirmation response delivery.
+  enum class Status {
+    kUnspecified,
+    // The web client matched the response to a pending confirmation dialog
+    // and applied it.
+    kApplied,
+    // The web client received the response but did not apply it.
+    kNotApplied,
+    // The request payload was malformed or invalid.
+    kErrorInvalidRequest,
+    // The browser could not deliver the response to the web client.
+    kErrorUnavailable,
+  };
+  Status status = Status::kUnspecified;
+  std::string error_message;
 };
 
 // Outgoing response container for experimental triggering.
@@ -145,6 +199,8 @@ struct ExperimentalTriggeringResponse {
   std::optional<TaskUpdate> task_update;
   std::optional<DeviceOptInResult> device_opt_in_result;
   std::optional<ScreenshotResult> screenshot_result;
+  std::optional<ExecuteActionsResponse> execute_actions_response;
+  std::optional<ConfirmationResult> confirmation_result;
 };
 
 using GlicExperimentalTriggeringResponseCallback =

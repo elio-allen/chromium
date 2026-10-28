@@ -1664,4 +1664,113 @@ using IntSequenceContainers =
     ::testing::Types<std::deque<int>, std::vector<int>>;
 INSTANTIATE_TYPED_TEST_SUITE_P(My, FlatTreeTest, IntSequenceContainers);
 
+TEST(FlatTree, Constexpr) {
+  auto create_test_tree = [] {
+    return flat_tree<int, std::identity, std::less<>, std::vector<int>>(
+        sorted_unique, std::vector<int>({1, 2, 3, 5}));
+  };
+
+  static_assert(create_test_tree().size() == 4);
+  static_assert(!create_test_tree().empty());
+  static_assert(create_test_tree().contains(2));
+  static_assert(!create_test_tree().contains(4));
+  static_assert(*create_test_tree().find(3) == 3);
+  static_assert(!create_test_tree().contains(4));
+  static_assert(*create_test_tree().lower_bound(4) == 5);
+  static_assert(*create_test_tree().upper_bound(2) == 3);
+
+  EXPECT_EQ(create_test_tree().size(), 4u);
+}
+
+TEST(FlatTree, ConstexprIteratorsAndLifetime) {
+  // Test constexpr default constructor
+  static_assert([] {
+    flat_tree<int, std::identity, std::less<>, std::vector<int>> tree;
+    return tree.empty();
+  }());
+
+  // Test constexpr copy constructor
+  static_assert([] {
+    flat_tree<int, std::identity, std::less<>, std::vector<int>> tree(
+        sorted_unique, std::vector<int>{1, 2, 3});
+    flat_tree<int, std::identity, std::less<>, std::vector<int>> tree2(tree);
+    return tree2.size() == 3;
+  }());
+
+  // Test constexpr move constructor
+  static_assert([] {
+    flat_tree<int, std::identity, std::less<>, std::vector<int>> tree(
+        sorted_unique, std::vector<int>{1, 2, 3});
+    flat_tree<int, std::identity, std::less<>, std::vector<int>> tree2(
+        std::move(tree));
+    return tree2.size() == 3;
+  }());
+
+  // Test constexpr iterators
+  static_assert([] {
+    flat_tree<int, std::identity, std::less<>, std::vector<int>> tree(
+        sorted_unique, std::vector<int>{1, 2, 3});
+    int sum = 0;
+    for (auto it = tree.begin(); it != tree.end(); ++it) {
+      sum += *it;
+    }
+    return sum;
+  }() == 6);
+  static_assert([] {
+    flat_tree<int, std::identity, std::less<>, std::vector<int>> tree(
+        sorted_unique, std::vector<int>{1, 2, 3});
+    int sum = 0;
+    for (auto it = tree.cbegin(); it != tree.cend(); ++it) {
+      sum += *it;
+    }
+    return sum;
+  }() == 6);
+
+  // Test constexpr reverse iterators
+  static_assert([] {
+    flat_tree<int, std::identity, std::less<>, std::vector<int>> tree(
+        sorted_unique, std::vector<int>{1, 2, 3});
+    int sum = 0;
+    for (auto it = tree.rbegin(); it != tree.rend(); ++it) {
+      sum += *it;
+    }
+    return sum;
+  }() == 6);
+  static_assert([] {
+    flat_tree<int, std::identity, std::less<>, std::vector<int>> tree(
+        sorted_unique, std::vector<int>{1, 2, 3});
+    int sum = 0;
+    for (auto it = tree.crbegin(); it != tree.crend(); ++it) {
+      sum += *it;
+    }
+    return sum;
+  }() == 6);
+}
+
+TEST(FlatTree, ConstexprEmplace) {
+  constexpr auto test_constexpr_emplace = [] {
+    flat_tree<int, std::identity, std::less<>, std::vector<int>> tree(
+        sorted_unique, std::vector<int>({1, 2, 3, 5}));
+
+    // Emplace a new element in the middle of the tree.
+    auto [it, inserted] = tree.emplace(4);
+    return inserted && it != tree.end();
+  };
+
+  static_assert(test_constexpr_emplace());
+}
+
+TEST(FlatTree, ConstexprEmplaceDuplicate) {
+  constexpr auto test_constexpr_emplace_duplicate = [] {
+    flat_tree<int, std::identity, std::less<>, std::vector<int>> tree(
+        sorted_unique, std::vector<int>({1, 2, 3, 5}));
+
+    auto [it, inserted] = tree.emplace(2);
+    // No insertion is performed and `it` should point to element '2'.
+    return !inserted && it != tree.end() && *it == 2;
+  };
+
+  static_assert(test_constexpr_emplace_duplicate());
+}
+
 }  // namespace base::internal

@@ -28,7 +28,7 @@
 #include "build/build_config.h"
 #include "chrome/browser/content_settings/cookie_settings_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/login/login_handler.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
@@ -70,10 +70,12 @@
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/ip_address_space_overrides_test_utils.h"
 #include "services/network/public/cpp/network_switches.h"
+#include "services/network/public/mojom/ip_address_space.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/websocket.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -184,7 +186,9 @@ class WebSocketBrowserTest : public InProcessBrowserTest {
                                              frame->GetRoutingID())),
         /*auth_handler=*/mojo::NullRemote(), std::move(header_client),
         /*throttling_profile_id=*/std::nullopt,
-        /*network_restrictions_id=*/network::GetTestNetworkRestrictionsId());
+        /*network_restrictions_id=*/network::GetTestNetworkRestrictionsId(),
+        /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown,
+        /*target_network=*/std::nullopt);
   }
 
   void SetBlockThirdPartyCookies(bool blocked) {
@@ -324,14 +328,21 @@ class LocalNetworkAccessWebSocketsBrowserTest
               resource);
   }
 
-  // For checking that mixed content checks are bypassed properly.
-  //
-  // Note the usage of kHostLocal, as that's the only method of signaling to the
-  // mixed content checker that the websocket connection might be LNA as the
-  // WebSocket API doesn't have the fetch API's targetAddressSpace option.
+  // For checking that mixed content checks are bypassed properly when using a
+  // literal local hostname.
   void ConnectToInsecureLNAWebSocket(const std::string& resource) {
     ConnectTo(kHostB,
               net::test_server::GetWebSocketURL(ws_server_, kHostLocal,
+                                                "/echo-with-no-extension"),
+              resource);
+  }
+
+  // For checking that mixed content checks are bypassed properly when using the
+  // targetAddressSpace option on an arbitrary target hostname.
+  void ConnectToInsecureLNAWebSocketWithTargetAddressSpace(
+      const std::string& resource) {
+    ConnectTo(kHostB,
+              net::test_server::GetWebSocketURL(ws_server_, kHostA,
                                                 "/echo-with-no-extension"),
               resource);
   }
@@ -343,7 +354,10 @@ class LocalNetworkAccessWebSocketsBrowserTest
     feature_list_.InitWithFeaturesAndParameters(
         {{network::features::kLocalNetworkAccessChecks,
           {{"LocalNetworkAccessChecksWarn", "false"}}},
-         {network::features::kLocalNetworkAccessChecksWebSockets, {}}},
+         {network::features::kLocalNetworkAccessChecksWebSockets, {}},
+         {blink::features::kWebSocketOptionBag, {}},
+         {blink::features::kLocalNetworkAccessWebSocketsTargetAddressSpace,
+          {}}},
         {});
     WebSocketBrowserHTTPSConnectToTest::SetUp();
   }
@@ -403,6 +417,22 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessWebSocketsBrowserTest,
                        LNAInsecureWebSocketDeniedPermission) {
   bubble_factory()->set_response_type(DENY_ALL);
   ConnectToInsecureLNAWebSocket("/websocket/connect_to.html");
+  EXPECT_EQ("FAIL", WaitAndGetTitle());
+}
+
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessWebSocketsBrowserTest,
+                       LNAInsecureWebSocketTargetAddressSpaceHasPermission) {
+  bubble_factory()->set_response_type(ACCEPT_ALL);
+  ConnectToInsecureLNAWebSocketWithTargetAddressSpace(
+      "/websocket/connect_to_with_target_address_space_loopback.html");
+  EXPECT_EQ("PASS", WaitAndGetTitle());
+}
+
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessWebSocketsBrowserTest,
+                       LNAInsecureWebSocketTargetAddressSpaceDeniedPermission) {
+  bubble_factory()->set_response_type(DENY_ALL);
+  ConnectToInsecureLNAWebSocketWithTargetAddressSpace(
+      "/websocket/connect_to_with_target_address_space_loopback.html");
   EXPECT_EQ("FAIL", WaitAndGetTitle());
 }
 
@@ -1141,6 +1171,39 @@ IN_PROC_BROWSER_TEST_F(WebSocketBrowserHTTPSConnectToTest,
   std::string message;
   EXPECT_TRUE(message_queue1.WaitForMessage(&message));
   EXPECT_THAT(message, Not(HasSubstr("cookie=1")));
+  EXPECT_EQ("PASS", WaitAndGetTitle());
+}
+
+IN_PROC_BROWSER_TEST_F(WebSocketBrowserHTTPSConnectToTest,
+                       ConnectFromDedicatedWorker) {
+  wss_server_.SetSSLConfig(net::EmbeddedTestServer::CERT_TEST_NAMES);
+  ASSERT_TRUE(wss_server_.Start());
+  ConnectTo(kHostA,
+            net::test_server::GetWebSocketURL(wss_server_, kHostA,
+                                              "/echo-with-no-extension"),
+            "/websocket/connect_to_using_worker.html");
+  EXPECT_EQ("PASS", WaitAndGetTitle());
+}
+
+IN_PROC_BROWSER_TEST_F(WebSocketBrowserHTTPSConnectToTest,
+                       ConnectFromSharedWorker) {
+  wss_server_.SetSSLConfig(net::EmbeddedTestServer::CERT_TEST_NAMES);
+  ASSERT_TRUE(wss_server_.Start());
+  ConnectTo(kHostA,
+            net::test_server::GetWebSocketURL(wss_server_, kHostA,
+                                              "/echo-with-no-extension"),
+            "/websocket/connect_to_using_shared_worker.html");
+  EXPECT_EQ("PASS", WaitAndGetTitle());
+}
+
+IN_PROC_BROWSER_TEST_F(WebSocketBrowserHTTPSConnectToTest,
+                       ConnectFromServiceWorker) {
+  wss_server_.SetSSLConfig(net::EmbeddedTestServer::CERT_TEST_NAMES);
+  ASSERT_TRUE(wss_server_.Start());
+  ConnectTo(kHostA,
+            net::test_server::GetWebSocketURL(wss_server_, kHostA,
+                                              "/echo-with-no-extension"),
+            "/websocket/connect_to_using_service_worker.html");
   EXPECT_EQ("PASS", WaitAndGetTitle());
 }
 

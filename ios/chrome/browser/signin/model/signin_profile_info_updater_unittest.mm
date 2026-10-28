@@ -7,9 +7,6 @@
 #import <memory>
 #import <string>
 
-#import "base/files/file_path.h"
-#import "base/files/scoped_temp_dir.h"
-#import "base/strings/utf_string_conversions.h"
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/account_info.h"
 #import "components/signin/public/identity_manager/identity_test_environment.h"
@@ -18,7 +15,6 @@
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_storage_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_manager_ios.h"
-#import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/web_task_environment.h"
@@ -79,7 +75,7 @@ TEST_F(SigninProfileInfoUpdaterTest, SigninSignout) {
   {
     ProfileAttributesIOS attr = GetAttributesForProfile();
     EXPECT_TRUE(attr.IsAuthenticated());
-    EXPECT_EQ(account_info.gaia, attr.GetGaiaId());
+    EXPECT_EQ(account_info.GetGaiaId(), attr.GetGaiaId());
     EXPECT_EQ(kEmail, attr.GetUserName());
   }
 
@@ -104,7 +100,7 @@ TEST_F(SigninProfileInfoUpdaterTest, AuthError) {
 
   // Set auth error.
   identity_test_env()->UpdatePersistentErrorOfRefreshTokenForAccount(
-      account_info.account_id,
+      account_info.GetAccountId(),
       GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
           GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
 
@@ -112,7 +108,7 @@ TEST_F(SigninProfileInfoUpdaterTest, AuthError) {
 
   // Remove auth error.
   identity_test_env()->UpdatePersistentErrorOfRefreshTokenForAccount(
-      account_info.account_id, GoogleServiceAuthError::AuthErrorNone());
+      account_info.GetAccountId(), GoogleServiceAuthError::AuthErrorNone());
 
   EXPECT_FALSE(GetAttributesForProfile().HasAuthenticationError());
 }

@@ -39,6 +39,15 @@ enum class PushNotificationClientId;
 // Shows the Gemini settings UI.
 - (void)showGeminiSettings;
 
+// Shows the Gemini contextual cue settings UI.
+- (void)showGeminiContextualCueSettings;
+
+// Shows the Suggestions from Gemini settings UI.
+- (void)showSuggestionsFromGemini;
+
+// Shows the Suggestions from Gemini Help Improve settings UI.
+- (void)showSuggestionsFromGeminiHelpImprove;
+
 // TODO(crbug.com/41352590) : Do not pass baseViewController through dispatcher.
 // Shows the Google services settings UI, presenting from `baseViewController`.
 // If `baseViewController` is nil BVC will be used as presenterViewController.
@@ -79,8 +88,24 @@ enum class PushNotificationClientId;
                      shouldShowLevelUpWalkthroughIPH:
                          (BOOL)shouldShowLevelUpWalkthroughIPH;
 
+// Shows Password Settings in the settings.
+- (void)showPasswordSettingsFromViewController:
+    (UIViewController*)baseViewController;
+
 // Shows the Autofill and Passwords settings page.
 - (void)showAutofillAndPasswordsSettingsWithReferrer:
+    (autofill::autofill_metrics::AutofillSettingsReferrer)referrer;
+
+// Shows the Identity Docs settings page.
+- (void)showIdentityDocsWithReferrer:
+    (autofill::autofill_metrics::AutofillSettingsReferrer)referrer;
+
+// Shows the Travel Info settings page.
+- (void)showTravelWithReferrer:
+    (autofill::autofill_metrics::AutofillSettingsReferrer)referrer;
+
+// Shows the Shopping settings page.
+- (void)showShoppingWithReferrer:
     (autofill::autofill_metrics::AutofillSettingsReferrer)referrer;
 
 // Shows password manager on main page with a purpose to run the credential
@@ -153,6 +178,12 @@ enum class PushNotificationClientId;
 
 // Shows the Autofill settings UI.
 - (void)showAutofillSettings;
+
+// Shows the Autofill settings UI from an Autofill notice (no back button).
+- (void)showAutofillSettingsFromNotice;
+
+// Shows the Universal Opt-Out settings UI.
+- (void)showUniversalOptOutSettings;
 
 @end
 

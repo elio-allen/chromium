@@ -5,8 +5,10 @@
 #import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_item_view.h"
 
 #import "base/check.h"
+#import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_accessory_view.h"
 #import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_constants.h"
 #import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_view_data.h"
+#import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
@@ -26,6 +28,73 @@ const CGFloat kDotSizeSimple = 8.0;
 const CGFloat kDotSizeLabeled = 32.0;
 
 const CGFloat kIconSize = 16.0;
+const CGFloat kCaretSize = 14.0;
+const NSTimeInterval kAnimationDuration = 0.25;
+
+// Kind of indicator displayed in the leading timeline gutter.
+enum class IndicatorKind {
+  // No indicator. Items without an indicator never draw connectors.
+  kNone,
+  // Small dot, with a border when the item is active.
+  kSmallDot,
+  // Large circle that can host an icon.
+  kLargeCircle,
+};
+
+// Visual configuration derived from an `ActuationWorklogItemStyle`.
+struct ItemStyleConfig {
+  IndicatorKind indicator = IndicatorKind::kNone;
+  // Whether the subtitle and icon are displayed.
+  bool shows_details = false;
+  // Whether the content is wrapped in a card container, which can host an
+  // accessory item.
+  bool is_card = false;
+  // Leading inset of the content from the view's leading edge.
+  CGFloat content_leading_inset = kTimelineGutterWidth;
+  UIFont* title_font = nil;
+  UIColor* title_color = nil;
+};
+
+// Returns the visual configuration for `style`. This is the single place where
+// styles are mapped to their presentation.
+ItemStyleConfig ConfigForStyle(ActuationWorklogItemStyle style) {
+  UIFont* boldSubheadline =
+      PreferredFontForTextStyle(UIFontTextStyleSubheadline, UIFontWeightBold);
+  UIColor* primaryColor = [UIColor colorNamed:kTextPrimaryColor];
+
+  switch (style) {
+    case ActuationWorklogItemStyle::kSimple:
+      return {
+          .indicator = IndicatorKind::kSmallDot,
+          .title_font =
+              [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote],
+          .title_color = [UIColor colorNamed:kTextSecondaryColor],
+      };
+    case ActuationWorklogItemStyle::kLabeled:
+      return {
+          .indicator = IndicatorKind::kLargeCircle,
+          .shows_details = true,
+          .title_font = boldSubheadline,
+          .title_color = primaryColor,
+      };
+    case ActuationWorklogItemStyle::kCard:
+      return {
+          .indicator = IndicatorKind::kLargeCircle,
+          .shows_details = true,
+          .is_card = true,
+          .title_font = boldSubheadline,
+          .title_color = primaryColor,
+      };
+    case ActuationWorklogItemStyle::kFreeform:
+      // Freeform text aligns with the leading edge of the large circle.
+      return {
+          .content_leading_inset =
+              (kTimelineGutterWidth - kDotSizeLabeled) / 2.0,
+          .title_font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody],
+          .title_color = primaryColor,
+      };
+  }
+}
 
 }  // namespace
 
@@ -34,11 +103,20 @@ const CGFloat kIconSize = 16.0;
   UIImageView* _iconView;
   UILabel* _titleLabel;
   UILabel* _subtitleLabel;
+  UIImageView* _caretImageView;
+  UIStackView* _titleStackView;
   UIStackView* _mainRowStack;
+  UIView* _bottomBufferView;
+  UITapGestureRecognizer* _tapGestureRecognizer;
+
+  ActuationWorklogAccessoryView* _accessoryCardView;
 
   NSLayoutConstraint* _dotSizeConstraint;
+  NSLayoutConstraint* _bottomBufferHeightConstraint;
+  NSLayoutConstraint* _mainRowLeadingConstraint;
 
   ActuationWorklogItem* _item;
+  ItemStyleConfig _config;
   CAShapeLayer* _connectorLayer;
 }
 
@@ -48,47 +126,7 @@ const CGFloat kIconSize = 16.0;
     self.clipsToBounds = YES;
     _connectorVisibility = ActuationWorklogConnectorVisibility::kNone;
 
-    _connectorLayer = [CAShapeLayer layer];
-    _connectorLayer.strokeColor = [UIColor colorNamed:kGrey400Color].CGColor;
-    _connectorLayer.lineWidth = kConnectorLineWidth;
-    _connectorLayer.lineDashPattern = @[ @(kDashLength), @(kDashLength) ];
-    [self.layer insertSublayer:_connectorLayer atIndex:0];
-
-    _dotView = [[UIView alloc] init];
-    _dotView.translatesAutoresizingMaskIntoConstraints = NO;
-    _dotView.clipsToBounds = YES;
-    _dotView.layer.borderColor = [UIColor colorNamed:kGrey400Color].CGColor;
-    [self addSubview:_dotView];
-
-    _iconView = [[UIImageView alloc] init];
-    _iconView.contentMode = UIViewContentModeScaleAspectFit;
-    _iconView.translatesAutoresizingMaskIntoConstraints = NO;
-    _iconView.tintColor = [UIColor colorNamed:kGrey600Color];
-    [_dotView addSubview:_iconView];
-
-    _mainRowStack = [[UIStackView alloc] init];
-    _mainRowStack.axis = UILayoutConstraintAxisVertical;
-    _mainRowStack.alignment = UIStackViewAlignmentFill;
-    _mainRowStack.layoutMarginsRelativeArrangement = YES;
-    _mainRowStack.clipsToBounds = YES;
-    _mainRowStack.translatesAutoresizingMaskIntoConstraints = NO;
-    [self addSubview:_mainRowStack];
-
-    _titleLabel = [[UILabel alloc] init];
-    _titleLabel.numberOfLines = 0;
-    _titleLabel.adjustsFontForContentSizeCategory = YES;
-    _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [_mainRowStack addArrangedSubview:_titleLabel];
-
-    _subtitleLabel = [[UILabel alloc] init];
-    _subtitleLabel.numberOfLines = 0;
-    _subtitleLabel.adjustsFontForContentSizeCategory = YES;
-    _subtitleLabel.font =
-        [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-    _subtitleLabel.textColor = [UIColor colorNamed:kTextSecondaryColor];
-    _subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [_mainRowStack addArrangedSubview:_subtitleLabel];
-
+    [self setupSubviews];
     [self setupConstraints];
   }
   return self;
@@ -97,11 +135,13 @@ const CGFloat kIconSize = 16.0;
 - (void)configureWithItem:(ActuationWorklogItem*)item {
   CHECK(item);
   _item = item;
+  _config = ConfigForStyle(item.style);
 
   [self updateContent];
   [self updateCardStyleAndLayout];
   [self updateFontsAndColors];
   [self updateDotAppearance];
+  [self setNeedsLayout];
 }
 
 - (void)setConnectorVisibility:
@@ -110,6 +150,40 @@ const CGFloat kIconSize = 16.0;
     _connectorVisibility = connectorVisibility;
     [self setNeedsLayout];
   }
+}
+
+- (void)setCollapsible:(BOOL)collapsible {
+  if (_collapsible == collapsible) {
+    return;
+  }
+  _collapsible = collapsible;
+  _caretImageView.hidden = !collapsible;
+  _tapGestureRecognizer.enabled = collapsible;
+  if (collapsible) {
+    [self applyCaretTransformAnimated:NO];
+  }
+}
+
+- (void)setCollapsed:(BOOL)collapsed {
+  [self setCollapsed:collapsed animated:NO];
+}
+
+- (void)setCollapsed:(BOOL)collapsed animated:(BOOL)animated {
+  _collapsed = collapsed;
+  [self applyCaretTransformAnimated:animated];
+}
+
+#pragma mark - Actions
+
+- (void)handleTap:(UITapGestureRecognizer*)sender {
+  if (!_collapsible) {
+    return;
+  }
+  [self.delegate worklogItemViewDidTapItem:self];
+}
+
+- (void)handleAccessoryTap:(ActuationWorklogAccessoryView*)sender {
+  [self.delegate worklogItemView:self didTapAccessoryItem:sender.accessoryItem];
 }
 
 #pragma mark - UIView
@@ -135,11 +209,14 @@ const CGFloat kIconSize = 16.0;
 
 // Updates the connector line's shape path and dash phase alignment.
 - (void)updateConnectorPath {
-  if (_connectorVisibility == ActuationWorklogConnectorVisibility::kNone) {
+  // Connectors link indicators, so items without one never draw a connector.
+  if (_connectorVisibility == ActuationWorklogConnectorVisibility::kNone ||
+      _config.indicator == IndicatorKind::kNone) {
     _connectorLayer.path = nil;
     return;
   }
-
+  // TODO(crbug.com/550337643): This needs to be adjusted for RTL so that the
+  // dashed lines are positioned at the end instead of the start.
   CGFloat lineCenterX = kTimelineGutterWidth / 2.0;
 
   BOOL hasTopLine =
@@ -151,8 +228,6 @@ const CGFloat kIconSize = 16.0;
   CGFloat start = hasTopLine ? 0.0 : _dotView.center.y;
   CGFloat end = hasBottomLine ? self.bounds.size.height : _dotView.center.y;
 
-  // TODO(crbug.com/532209191): This will need to take into account the various
-  // layout styles of the superviews (compact mode and full scrollable worklog)
   // Adjust dash phase to align with the parent container coordinate space
   // so that dashes across cells connect seamlessly without overlaps.
   UIView* parent = self.superview;
@@ -167,6 +242,83 @@ const CGFloat kIconSize = 16.0;
   [path moveToPoint:CGPointMake(lineCenterX, start)];
   [path addLineToPoint:CGPointMake(lineCenterX, end)];
   _connectorLayer.path = path.CGPath;
+}
+
+// Instantiates and adds all subviews and layout stack hierarchies.
+- (void)setupSubviews {
+  _connectorLayer = [CAShapeLayer layer];
+  _connectorLayer.strokeColor = [UIColor colorNamed:kGrey400Color].CGColor;
+  _connectorLayer.lineWidth = kConnectorLineWidth;
+  _connectorLayer.lineDashPattern = @[ @(kDashLength), @(kDashLength) ];
+  [self.layer insertSublayer:_connectorLayer atIndex:0];
+
+  _dotView = [[UIView alloc] init];
+  _dotView.translatesAutoresizingMaskIntoConstraints = NO;
+  _dotView.clipsToBounds = YES;
+  _dotView.layer.borderColor = [UIColor colorNamed:kGrey400Color].CGColor;
+  [self addSubview:_dotView];
+
+  _iconView = [[UIImageView alloc] init];
+  _iconView.contentMode = UIViewContentModeScaleAspectFit;
+  _iconView.translatesAutoresizingMaskIntoConstraints = NO;
+  _iconView.tintColor = [UIColor colorNamed:kGrey600Color];
+  [_dotView addSubview:_iconView];
+
+  _mainRowStack = [[UIStackView alloc] init];
+  _mainRowStack.axis = UILayoutConstraintAxisVertical;
+  _mainRowStack.layoutMarginsRelativeArrangement = YES;
+  _mainRowStack.clipsToBounds = YES;
+  _mainRowStack.translatesAutoresizingMaskIntoConstraints = NO;
+  [self addSubview:_mainRowStack];
+
+  _titleLabel = [[UILabel alloc] init];
+  _titleLabel.numberOfLines = 0;
+  _titleLabel.adjustsFontForContentSizeCategory = YES;
+  _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+
+  _caretImageView = [[UIImageView alloc] init];
+  _caretImageView.contentMode = UIViewContentModeScaleAspectFit;
+  _caretImageView.image =
+      SymbolTemplateWithPointSize(SymbolChevronDown, kCaretSize);
+  _caretImageView.tintColor = [UIColor colorNamed:kTextSecondaryColor];
+  _caretImageView.translatesAutoresizingMaskIntoConstraints = NO;
+  _caretImageView.hidden = YES;
+  [_caretImageView setContentHuggingPriority:UILayoutPriorityRequired
+                                     forAxis:UILayoutConstraintAxisHorizontal];
+
+  _titleStackView = [[UIStackView alloc]
+      initWithArrangedSubviews:@[ _titleLabel, _caretImageView ]];
+  _titleStackView.alignment = UIStackViewAlignmentCenter;
+  _titleStackView.spacing = kSpacingTiny;
+  _titleStackView.translatesAutoresizingMaskIntoConstraints = NO;
+  [_mainRowStack addArrangedSubview:_titleStackView];
+
+  _subtitleLabel = [[UILabel alloc] init];
+  _subtitleLabel.numberOfLines = 0;
+  _subtitleLabel.adjustsFontForContentSizeCategory = YES;
+  _subtitleLabel.font =
+      [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+  _subtitleLabel.textColor = [UIColor colorNamed:kTextSecondaryColor];
+  _subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+  [_mainRowStack addArrangedSubview:_subtitleLabel];
+
+  _accessoryCardView = [[ActuationWorklogAccessoryView alloc] init];
+  _accessoryCardView.translatesAutoresizingMaskIntoConstraints = NO;
+  [_accessoryCardView addTarget:self
+                         action:@selector(handleAccessoryTap:)
+               forControlEvents:UIControlEventTouchUpInside];
+  [_mainRowStack addArrangedSubview:_accessoryCardView];
+
+  _bottomBufferView = [[UIView alloc] init];
+  _bottomBufferView.translatesAutoresizingMaskIntoConstraints = NO;
+  _bottomBufferView.hidden = YES;
+  [self addSubview:_bottomBufferView];
+
+  _tapGestureRecognizer =
+      [[UITapGestureRecognizer alloc] initWithTarget:self
+                                              action:@selector(handleTap:)];
+  _tapGestureRecognizer.enabled = NO;
+  [self addGestureRecognizer:_tapGestureRecognizer];
 }
 
 // Setup layout constraints.
@@ -185,20 +337,34 @@ const CGFloat kIconSize = 16.0;
 
   NSDirectionalEdgeInsets insets = NSDirectionalEdgeInsetsMake(
       kSpacingTiny, kTimelineGutterWidth, kSpacingTiny, kSpacingLarge);
+  _mainRowLeadingConstraint =
+      [_mainRowStack.leadingAnchor constraintEqualToAnchor:self.leadingAnchor
+                                                  constant:insets.leading];
   [NSLayoutConstraint activateConstraints:@[
     [_mainRowStack.topAnchor constraintEqualToAnchor:self.topAnchor
                                             constant:insets.top],
-    [_mainRowStack.leadingAnchor constraintEqualToAnchor:self.leadingAnchor
-                                                constant:insets.leading],
+    _mainRowLeadingConstraint,
     [_mainRowStack.trailingAnchor constraintEqualToAnchor:self.trailingAnchor
                                                  constant:-insets.trailing],
+
+    [_bottomBufferView.topAnchor
+        constraintEqualToAnchor:_mainRowStack.bottomAnchor],
+    [_bottomBufferView.leadingAnchor
+        constraintEqualToAnchor:_mainRowStack.leadingAnchor],
+    [_bottomBufferView.trailingAnchor
+        constraintEqualToAnchor:_mainRowStack.trailingAnchor],
   ]];
   NSLayoutConstraint* bottomConstraint =
-      [_mainRowStack.bottomAnchor constraintEqualToAnchor:self.bottomAnchor
-                                                 constant:-insets.bottom];
+      [_bottomBufferView.bottomAnchor constraintEqualToAnchor:self.bottomAnchor
+                                                     constant:-insets.bottom];
   bottomConstraint.priority = UILayoutPriorityDefaultHigh - 1;
   bottomConstraint.active = YES;
 
+  _bottomBufferHeightConstraint =
+      [_bottomBufferView.heightAnchor constraintEqualToConstant:0.0];
+  _bottomBufferHeightConstraint.active = YES;
+
+  AddSquareConstraints(_caretImageView, kCaretSize);
   AddSameCenterConstraints(_iconView, _dotView);
   AddSquareConstraints(_iconView, kIconSize);
 }
@@ -207,26 +373,30 @@ const CGFloat kIconSize = 16.0;
 - (void)updateContent {
   _titleLabel.text = _item.title;
 
-  BOOL showSubtitle = _item.style != ActuationWorklogItemStyle::kSimple &&
-                      _item.subtitle.length > 0;
+  BOOL showSubtitle = _config.shows_details && _item.subtitle.length > 0;
   _subtitleLabel.hidden = !showSubtitle;
   _subtitleLabel.text = showSubtitle ? _item.subtitle : nil;
 
-  BOOL hasIcon =
-      (_item.style != ActuationWorklogItemStyle::kSimple) && _item.icon;
+  BOOL hasIcon = _config.shows_details && _item.icon;
   _iconView.image =
       hasIcon ? [_item.icon
                     imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate]
               : nil;
   _iconView.hidden = !hasIcon;
+
+  BOOL showAccessory = _config.is_card && _item.accessoryItem;
+  _accessoryCardView.hidden = !showAccessory;
+  if (showAccessory) {
+    [_accessoryCardView configureWithAccessoryItem:_item.accessoryItem];
+  }
 }
 
 // Updates constraints values and spacing based on the view style.
 - (void)updateCardStyleAndLayout {
   self.backgroundColor = [UIColor clearColor];
+  _mainRowLeadingConstraint.constant = _config.content_leading_inset;
 
-  BOOL isCard = (_item.style == ActuationWorklogItemStyle::kCard);
-
+  BOOL isCard = _config.is_card;
   _mainRowStack.backgroundColor =
       isCard ? [UIColor colorNamed:kSecondaryBackgroundColor]
              : [UIColor clearColor];
@@ -239,37 +409,72 @@ const CGFloat kIconSize = 16.0;
 
   CGFloat spacing = isCard ? kSpacingSmall : kSpacingTiny;
   [_mainRowStack setCustomSpacing:spacing afterView:_titleLabel];
+  if (isCard && _item.accessoryItem) {
+    [_mainRowStack setCustomSpacing:kSpacingMedium afterView:_subtitleLabel];
+  }
 }
 
 // Updates the font and color based on the view style.
 - (void)updateFontsAndColors {
-  BOOL simpleStyle = (_item.style == ActuationWorklogItemStyle::kSimple);
-  _titleLabel.font =
-      simpleStyle
-          ? [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]
-          : CreateDynamicFont(UIFontTextStyleSubheadline, UIFontWeightBold);
-  _titleLabel.textColor = simpleStyle ? [UIColor colorNamed:kTextSecondaryColor]
-                                      : [UIColor colorNamed:kTextPrimaryColor];
+  _titleLabel.font = _config.title_font;
+  _titleLabel.textColor = _config.title_color;
 }
 
+// Updates the indicator's visibility, size and colors based on its kind and
+// the item's active state.
 - (void)updateDotAppearance {
-  CGFloat dotSize;
-  BOOL showLargeDot = (_item.style != ActuationWorklogItemStyle::kSimple);
   BOOL active = _item.isActive;
+  UIColor* backgroundColor = nil;
+  CGFloat dotSize = 0.0;
+  CGFloat borderWidth = 0.0;
 
-  if (showLargeDot) {
-    _dotView.backgroundColor = [UIColor colorNamed:kGrey200Color];
-    dotSize = kDotSizeLabeled;
-  } else {
-    _dotView.backgroundColor = active ? [UIColor colorNamed:kSolidWhiteColor]
-                                      : [UIColor colorNamed:kGrey400Color];
-    dotSize = active ? (kDotSizeSimple + kDotBorderWidth) : kDotSizeSimple;
+  switch (_config.indicator) {
+    case IndicatorKind::kNone:
+      break;
+    case IndicatorKind::kSmallDot:
+      backgroundColor = active ? [UIColor colorNamed:kSolidWhiteColor]
+                               : [UIColor colorNamed:kGrey400Color];
+      dotSize = active ? (kDotSizeSimple + kDotBorderWidth) : kDotSizeSimple;
+      borderWidth = active ? kDotBorderWidth : 0.0;
+      break;
+    case IndicatorKind::kLargeCircle:
+      backgroundColor = [UIColor colorNamed:kGrey200Color];
+      dotSize = kDotSizeLabeled;
+      break;
   }
 
+  _dotView.hidden = (_config.indicator == IndicatorKind::kNone);
+  _dotView.backgroundColor = backgroundColor;
   _dotView.layer.cornerRadius = dotSize / 2.0;
-  _dotView.layer.borderWidth =
-      (active && !showLargeDot) ? kDotBorderWidth : 0.0;
+  _dotView.layer.borderWidth = borderWidth;
   _dotSizeConstraint.constant = dotSize;
+}
+
+- (void)setBottomBufferHeight:(CGFloat)bottomBufferHeight {
+  if (_bottomBufferHeight == bottomBufferHeight) {
+    return;
+  }
+  _bottomBufferHeight = bottomBufferHeight;
+  _bottomBufferHeightConstraint.constant = bottomBufferHeight;
+  _bottomBufferView.hidden = (bottomBufferHeight == 0.0);
+  [self setNeedsLayout];
+}
+
+// Computes and applies the target rotation transform to the caret image view.
+- (void)applyCaretTransformAnimated:(BOOL)animated {
+  // TODO(crbug.com/550337643): Adjust for RTL.
+  CGAffineTransform targetTransform =
+      _collapsed ? CGAffineTransformMakeRotation(-M_PI_2)
+                 : CGAffineTransformIdentity;
+  if (animated) {
+    UIImageView* caretImageView = _caretImageView;
+    [UIView animateWithDuration:kAnimationDuration
+                     animations:^{
+                       caretImageView.transform = targetTransform;
+                     }];
+  } else {
+    _caretImageView.transform = targetTransform;
+  }
 }
 
 @end

@@ -11,6 +11,7 @@
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/common/buildflags.h"
+#include "chrome/common/request_header_integrity/buildflags.h"
 #include "net/net_buildflags.h"
 #include "ui/base/unowned_user_data/user_data_factory.h"
 
@@ -63,6 +64,9 @@ class ApplicationAdvancedProtectionStatusDetector;
 }  // namespace safe_browsing
 
 #if !BUILDFLAG(IS_ANDROID)
+namespace child_module {
+class ChildModuleManager;
+}  // namespace child_module
 class ProfileLaunchObserver;
 #endif  // !BUILDFLAG(IS_ANDROID)
 
@@ -86,6 +90,13 @@ namespace on_device_translation {
 class OnDeviceTranslationInstaller;
 }
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+namespace scheduled_restart {
+class ScheduledRestartBubbleController;
+class ScheduledRestartManager;
+}  // namespace scheduled_restart
+#endif
+
 namespace smart_restart {
 class SmartRestartManager;
 class SmartRestartMetricsObserver;
@@ -94,6 +105,15 @@ class SmartRestartMetricsObserver;
 namespace tabs_api {
 class TabDragSessionManager;
 }
+
+#if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY)
+namespace request_header_integrity {
+class ChromeCompaneroHost;
+#if !BUILDFLAG(IS_ANDROID)
+class PlatformRuntimeHost;
+#endif
+}
+#endif
 
 // This class owns the core controllers for features that are globally
 // scoped on desktop and Android. It can be subclassed by tests to perform
@@ -212,6 +232,10 @@ class GlobalFeatures {
   GetUserDataFactoryForTesting();
 
 #if !BUILDFLAG(IS_ANDROID)
+  child_module::ChildModuleManager* child_module_manager() {
+    return child_module_manager_.get();
+  }
+
   // Prefer using ProfileLaunchObserver::GetInstance() over calling this method
   // directly.
   ProfileLaunchObserver* profile_launch_observer() {
@@ -219,9 +243,32 @@ class GlobalFeatures {
   }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  scheduled_restart::ScheduledRestartBubbleController*
+  scheduled_restart_bubble_controller() {
+    return scheduled_restart_bubble_controller_.get();
+  }
+
+  scheduled_restart::ScheduledRestartManager* scheduled_restart_manager() {
+    return scheduled_restart_manager_.get();
+  }
+#endif
+
   tabs_api::TabDragSessionManager* tab_drag_session_manager() {
     return tab_drag_session_manager_.get();
   }
+
+#if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY)
+  request_header_integrity::ChromeCompaneroHost* chrome_companero_host() {
+    return chrome_companero_host_.get();
+  }
+
+#if !BUILDFLAG(IS_ANDROID)
+  request_header_integrity::PlatformRuntimeHost* platform_runtime_host() {
+    return platform_runtime_host_.get();
+  }
+#endif
+#endif
 
  protected:
   GlobalFeatures();
@@ -237,6 +284,18 @@ class GlobalFeatures {
 #endif
   virtual std::unique_ptr<GlobalBrowserCollection>
   CreateGlobalBrowserCollection();
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  virtual std::unique_ptr<scheduled_restart::ScheduledRestartManager>
+  CreateScheduledRestartManager();
+#endif
+#if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY)
+  virtual std::unique_ptr<request_header_integrity::ChromeCompaneroHost>
+  CreateChromeCompaneroHost();
+#if !BUILDFLAG(IS_ANDROID)
+  virtual std::unique_ptr<request_header_integrity::PlatformRuntimeHost>
+  CreatePlatformRuntimeHost();
+#endif
+#endif
 
  private:
   static ui::UserDataFactoryWithOwner<BrowserProcess>& GetUserDataFactory();
@@ -300,6 +359,8 @@ class GlobalFeatures {
 #endif  // BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
 
 #if !BUILDFLAG(IS_ANDROID)
+  std::unique_ptr<child_module::ChildModuleManager> child_module_manager_;
+
   std::unique_ptr<on_device_translation::OnDeviceTranslationInstaller>
       on_device_translation_installer_;
 
@@ -311,9 +372,25 @@ class GlobalFeatures {
   std::unique_ptr<smart_restart::SmartRestartManager> smart_restart_manager_;
 #endif  // !BUILDFLAG(IS_ANDROID)
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  std::unique_ptr<scheduled_restart::ScheduledRestartBubbleController>
+      scheduled_restart_bubble_controller_;
+  std::unique_ptr<scheduled_restart::ScheduledRestartManager>
+      scheduled_restart_manager_;
+#endif
+
   std::unique_ptr<tabs_api::TabDragSessionManager> tab_drag_session_manager_;
 
   std::unique_ptr<GlassFrameService> glass_frame_service_;
+
+#if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY)
+  std::unique_ptr<request_header_integrity::ChromeCompaneroHost>
+      chrome_companero_host_;
+#if !BUILDFLAG(IS_ANDROID)
+  std::unique_ptr<request_header_integrity::PlatformRuntimeHost>
+      platform_runtime_host_;
+#endif
+#endif
 };
 
 #endif  // CHROME_BROWSER_GLOBAL_FEATURES_H_

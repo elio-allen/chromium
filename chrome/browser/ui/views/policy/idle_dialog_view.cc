@@ -10,7 +10,6 @@
 
 #include "base/functional/bind.h"
 #include "base/metrics/user_metrics.h"
-#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
@@ -18,6 +17,7 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/vector_icons/vector_icons.h"
+#include "ui/base/base_window.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
@@ -143,8 +143,10 @@ IdleDialogView::IdleDialogView(base::TimeDelta dialog_duration,
   // TODO(nicolaso): In 90%+ of cases, GetIncognitoBrowserCount() is correct.
   // But sometimes, it reports the wrong number. There can be profiles that
   // _aren't_ closing, but have Incognito browsers.
-  incognito_count_ =
-      GlobalBrowserCollection::GetInstance()->GetIncognitoBrowserCount();
+
+  size_t incognito_and_isolated_count =
+      GlobalBrowserCollection::GetInstance()->GetIncognitoBrowserCount() +
+      GlobalBrowserCollection::GetInstance()->GetIsolatedBrowserCount();
 
   int main_message_id;
   if (actions_.close && actions_.clear) {
@@ -158,9 +160,12 @@ IdleDialogView::IdleDialogView(base::TimeDelta dialog_duration,
   main_label_->SetText(l10n_util::GetPluralStringFUTF16(
       main_message_id, idle_threshold_.InMinutes()));
 
-  if (actions_.close && incognito_count_ > 0) {
-    incognito_label_->SetText(l10n_util::GetPluralStringFUTF16(
-        IDS_IDLE_TIMEOUT_INCOGNITO, incognito_count_));
+  if (actions_.close && incognito_and_isolated_count > 0) {
+    incognito_label_->SetText(GlobalBrowserCollection::GetInstance()
+                                  ->GetDialogWithIncognitoAndIsolatedVariants(
+                                      IDS_IDLE_TIMEOUT_INCOGNITO,
+                                      IDS_IDLE_TIMEOUT_ISOLATED,
+                                      IDS_IDLE_TIMEOUT_INCOGNITO_AND_ISOLATED));
     incognito_label_->SetVisible(true);
   } else {
     incognito_label_->SetText(std::u16string());

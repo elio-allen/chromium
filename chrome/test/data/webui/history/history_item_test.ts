@@ -4,8 +4,8 @@
 
 import 'chrome://history/history.js';
 
-import type {CriticalActionItem, HistoryEntry, HistoryItemElement, HistoryListElement} from 'chrome://history/history.js';
-import {BrowserProxyImpl} from 'chrome://history/history.js';
+import type {CriticalAction, HistoryEntry, HistoryItemElement, HistoryListElement} from 'chrome://history/history.js';
+import {BrowserProxyImpl, CriticalActionType} from 'chrome://history/history.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
@@ -100,10 +100,11 @@ suite('<history-item> unit test', function() {
 
 suite('<history-item> integration test', function() {
   let element: HistoryListElement;
+  let testProxy: TestHistoryBrowserProxy;
 
   setup(function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    const testProxy = new TestHistoryBrowserProxy();
+    testProxy = new TestHistoryBrowserProxy();
     BrowserProxyImpl.setInstance(testProxy);
     // Force a super tall body so that cr-lazy-list renders all items.
     document.body.style.height = '1000px';
@@ -225,8 +226,33 @@ suite('<history-item> integration test', function() {
       isCriticalActionsEnabled: true,
     });
 
+    const expectedCriticalActions: CriticalAction[] = [
+      {
+        id: 'phone',
+        label: 'Phone number filled',
+        tooltip: 'Contact info',
+        linkoutUrl: 'chrome://settings/addresses',
+        actionType: CriticalActionType.kFormFill,
+      },
+      {
+        id: 'email',
+        label: 'Email filled',
+        tooltip: 'Contact info',
+        linkoutUrl: 'chrome://settings/addresses',
+        actionType: CriticalActionType.kFormFill,
+      },
+      {
+        id: 'payment',
+        label: 'Payment method filled',
+        tooltip: 'Payment methods',
+        linkoutUrl: 'chrome://settings/payments',
+        actionType: CriticalActionType.kFormFill,
+      },
+    ];
+
     const newResults = [...TEST_HISTORY_RESULTS];
     newResults[1]!.isActorVisit = true;
+    newResults[1]!.criticalActions = expectedCriticalActions;
     element.addNewResults(newResults, false, true);
     await microtasksFinished();
 
@@ -236,6 +262,7 @@ suite('<history-item> integration test', function() {
     const endActorIcon =
         items[1]!.shadowRoot.querySelector<HTMLElement>('#icons #actor-icon');
     assertTrue(isVisible(startActorIcon));
+    assertEquals('CR-ICON', startActorIcon!.tagName);
     assertFalse(isVisible(endActorIcon));
 
     // Verify expand button for actor visit item.
@@ -246,16 +273,29 @@ suite('<history-item> integration test', function() {
     const actorExpandBtn =
         items[1]!.shadowRoot.querySelector<HTMLElement>('#expand-button');
     assertTrue(isVisible(actorExpandBtn));
+    assertEquals(
+        'cr:keyboard-arrow-down', actorExpandBtn!.getAttribute('iron-icon'));
+    const menuBtn = items[1]!.$.menuButton;
+    assertEquals(
+        menuBtn.getAttribute('aria-describedby'),
+        actorExpandBtn!.getAttribute('aria-describedby'));
 
     const collapse =
         items[1]!.shadowRoot.querySelector<HTMLElement>('#collapse');
     assertTrue(!!collapse);
     assertFalse(collapse.hasAttribute('opened'));
+    const timeGapSeparator =
+        items[1]!.shadowRoot.querySelector<HTMLElement>('#time-gap-separator');
+    assertTrue(isVisible(timeGapSeparator));
 
     actorExpandBtn!.click();
     await microtasksFinished();
 
+    assertEquals(
+        'cr:keyboard-arrow-up', actorExpandBtn!.getAttribute('iron-icon'));
     assertTrue(collapse.hasAttribute('opened'));
+    assertFalse(isVisible(timeGapSeparator));
+    assertEquals(1, testProxy.actionMap['HistoryPage_CriticalActionsExpanded']);
 
     const criticalActionsTitle =
         items[1]!.shadowRoot.querySelector<HTMLElement>(
@@ -271,30 +311,6 @@ suite('<history-item> integration test', function() {
     assertTrue(!!actionsList);
     assertEquals('list', actionsList.getAttribute('role'));
 
-    const expectedCriticalActions: CriticalActionItem[] = [
-      {
-        id: 'phone',
-        label: 'Phone number filled',
-        tooltip: 'Contact info',
-        url: 'http://www.example.com',
-        ariaLabel: 'Phone number filled, Contact info',
-      },
-      {
-        id: 'email',
-        label: 'Email filled',
-        tooltip: 'Contact info',
-        url: 'http://www.example.com',
-        ariaLabel: 'Email filled, Contact info',
-      },
-      {
-        id: 'payment',
-        label: 'Payment method filled',
-        tooltip: 'Payment methods',
-        url: 'http://www.example.com',
-        ariaLabel: 'Payment method filled, Payment methods',
-      },
-    ];
-
     const actionRows = items[1]!.shadowRoot.querySelectorAll<HTMLElement>(
         '.critical-action-row');
     assertEquals(expectedCriticalActions.length, actionRows.length);
@@ -303,29 +319,165 @@ suite('<history-item> integration test', function() {
       const expectedAction = expectedCriticalActions[i]!;
       assertEquals('listitem', row.getAttribute('role'));
       assertEquals('critical-action', row.getAttribute('focus-type'));
-      assertEquals(expectedAction.ariaLabel, row.getAttribute('aria-label'));
+      assertEquals(expectedAction.label, row.getAttribute('aria-label'));
+      assertEquals(
+          `critical-action-icon-${i}`, row.getAttribute('aria-describedby'));
 
       const label = row.querySelector('.critical-action-label');
       assertTrue(!!label);
       assertEquals(expectedAction.label, label.textContent.trim());
 
-      const button = row.querySelector<HTMLElement>('.critical-action-button');
-      assertTrue(!!button);
-      assertEquals('cr:open-in-new', button.getAttribute('iron-icon'));
-      assertEquals(expectedAction.tooltip, button.getAttribute('title'));
-      assertEquals(expectedAction.tooltip, button.getAttribute('aria-label'));
+      const icon = row.querySelector<HTMLElement>('.critical-action-button');
+      assertTrue(!!icon);
+      assertEquals('CR-ICON', icon.tagName);
+      assertEquals(`critical-action-icon-${i}`, icon.id);
+      assertEquals('cr:open-in-new', icon.getAttribute('icon'));
+      assertEquals('img', icon.getAttribute('role'));
+      assertEquals(expectedAction.tooltip, icon.getAttribute('title'));
+      assertEquals(
+          `${expectedAction.tooltip}, opens in a new tab`,
+          icon.getAttribute('aria-label'));
     });
 
     let openedUrl = '';
     const originalOpen = window.open;
-    window.open = (url) => {
-      openedUrl = url as string;
-      return null;
-    };
-    actionRows[0]!.click();
-    assertEquals(expectedCriticalActions[0]!.url, openedUrl);
-    window.open = originalOpen;
+    try {
+      window.open = (url) => {
+        openedUrl = url as string;
+        return null;
+      };
+      actionRows[0]!.click();
+      assertEquals(expectedCriticalActions[0]!.linkoutUrl, openedUrl);
+      assertEquals(
+          1,
+          testProxy.histogramMap['HistoryPage.CriticalAction.Click']!
+              [CriticalActionType.kFormFill]);
+    } finally {
+      window.open = originalOpen;
+    }
+
+    // Collapsing the item should restore the time gap separator.
+    actorExpandBtn!.click();
+    await microtasksFinished();
+    assertFalse(collapse.hasAttribute('opened'));
+    assertTrue(isVisible(timeGapSeparator));
+    assertEquals(
+        1, testProxy.actionMap['HistoryPage_CriticalActionsCollapsed']);
   });
+
+  test(
+      'actor visit with WebMCP critical action renders row without linkout',
+      async function() {
+        loadTimeData.overrideValues({
+          enableBrowsingHistoryActorIntegrationM1: true,
+          isCriticalActionsEnabled: true,
+        });
+
+        const expectedCriticalActions: CriticalAction[] = [
+          {
+            id: 'phone',
+            label: 'Phone number filled',
+            tooltip: 'Contact info',
+            linkoutUrl: 'chrome://settings/addresses',
+            actionType: CriticalActionType.kFormFill,
+          },
+          {
+            id: 'webmcp',
+            label: 'Used a WebMCP tool',
+            tooltip: 'Website actions',
+            linkoutUrl: null,
+            actionType: CriticalActionType.kWebMcpTool,
+          },
+        ];
+
+        const newResults = [...TEST_HISTORY_RESULTS];
+        newResults[1]!.isActorVisit = true;
+        newResults[1]!.criticalActions = expectedCriticalActions;
+        element.addNewResults(newResults, false, true);
+        await microtasksFinished();
+
+        const items = element.shadowRoot.querySelectorAll('history-item');
+        const actorExpandBtn =
+            items[1]!.shadowRoot.querySelector<HTMLElement>('#expand-button');
+        assertTrue(isVisible(actorExpandBtn));
+        actorExpandBtn!.click();
+        await microtasksFinished();
+
+        const actionRows = items[1]!.shadowRoot.querySelectorAll<HTMLElement>(
+            '.critical-action-row');
+        assertEquals(2, actionRows.length);
+
+        // First row (FormFill) has linkout button and interactive attributes.
+        const formFillRow = actionRows[0]!;
+        assertTrue(formFillRow.classList.contains('with-linkout'));
+        assertTrue(formFillRow.hasAttribute('focus-row-control'));
+        assertTrue(formFillRow.hasAttribute('tabindex'));
+        assertEquals('critical-action', formFillRow.getAttribute('focus-type'));
+        assertEquals(
+            'Phone number filled', formFillRow.getAttribute('aria-label'));
+        assertEquals(
+            'critical-action-icon-0',
+            formFillRow.getAttribute('aria-describedby'));
+        assertEquals(null, formFillRow.getAttribute('title'));
+        assertTrue(!!formFillRow.querySelector('.critical-action-button'));
+
+        // Second row (WebMcpTool) is keyboard-focusable and accessible, but
+        // has no linkout button.
+        const webMcpRow = actionRows[1]!;
+        assertFalse(webMcpRow.classList.contains('with-linkout'));
+        assertTrue(webMcpRow.hasAttribute('focus-row-control'));
+        assertTrue(webMcpRow.hasAttribute('tabindex'));
+        assertEquals('critical-action', webMcpRow.getAttribute('focus-type'));
+        assertEquals(
+            'Used a WebMCP tool', webMcpRow.getAttribute('aria-label'));
+        assertEquals('', webMcpRow.getAttribute('aria-describedby'));
+        assertEquals(null, webMcpRow.getAttribute('title'));
+        assertEquals(
+            'Used a WebMCP tool',
+            webMcpRow.querySelector('.critical-action-label')!
+                .textContent.trim());
+        assertEquals(null, webMcpRow.querySelector('.critical-action-button'));
+
+        let openedUrl = '';
+        const originalOpen = window.open;
+        try {
+          window.open = (url) => {
+            openedUrl = url as string;
+            return null;
+          };
+          webMcpRow.click();
+          assertEquals('', openedUrl);
+          assertEquals(
+              undefined,
+              testProxy.histogramMap['HistoryPage.CriticalAction.Click']
+                  ?.[CriticalActionType.kWebMcpTool]);
+        } finally {
+          window.open = originalOpen;
+        }
+      });
+
+  test(
+      'actor visit without critical actions has no expand button',
+      async function() {
+        loadTimeData.overrideValues({
+          enableBrowsingHistoryActorIntegrationM1: true,
+          isCriticalActionsEnabled: true,
+        });
+
+        const newResults = [...TEST_HISTORY_RESULTS];
+        newResults[1]!.isActorVisit = true;
+        newResults[1]!.criticalActions = [];
+        element.addNewResults(newResults, false, true);
+        await microtasksFinished();
+
+        const items = element.shadowRoot.querySelectorAll('history-item');
+        const expandBtn =
+            items[1]!.shadowRoot.querySelector<HTMLElement>('#expand-button');
+        assertFalse(isVisible(expandBtn));
+        const collapse =
+            items[1]!.shadowRoot.querySelector<HTMLElement>('#collapse');
+        assertFalse(isVisible(collapse));
+      });
 
   test('non-actor visit with critical actions enabled', async function() {
     loadTimeData.overrideValues({
@@ -335,6 +487,7 @@ suite('<history-item> integration test', function() {
 
     const newResults = [...TEST_HISTORY_RESULTS];
     newResults[0]!.isActorVisit = false;
+    newResults[0]!.criticalActions = [];
     element.addNewResults(newResults, false, true);
     await microtasksFinished();
 
@@ -346,4 +499,43 @@ suite('<history-item> integration test', function() {
         items[0]!.shadowRoot.querySelector<HTMLElement>('#collapse');
     assertFalse(isVisible(collapse));
   });
+
+  test(
+      'non-actor visit with critical actions has expand button',
+      async function() {
+        loadTimeData.overrideValues({
+          isCriticalActionsEnabled: true,
+        });
+
+        const newResults = [...TEST_HISTORY_RESULTS];
+        newResults[0]!.isActorVisit = false;
+        newResults[0]!.criticalActions = [
+          {
+            id: 'action-456',
+            label: 'Password filled',
+            tooltip: 'Saved passwords',
+            linkoutUrl: 'chrome://password-manager',
+            actionType: CriticalActionType.kCredentialAccess,
+          },
+        ];
+        element.addNewResults(newResults, false, true);
+        await microtasksFinished();
+
+        const items = element.shadowRoot.querySelectorAll('history-item');
+        const expandBtn =
+            items[0]!.shadowRoot.querySelector<HTMLElement>('#expand-button');
+        assertTrue(isVisible(expandBtn));
+        const collapse =
+            items[0]!.shadowRoot.querySelector<HTMLElement>('#collapse');
+        assertTrue(!!collapse);
+        assertFalse(collapse.hasAttribute('opened'));
+
+        expandBtn!.click();
+        await microtasksFinished();
+        assertTrue(collapse.hasAttribute('opened'));
+
+        const actionRows =
+            items[0]!.shadowRoot.querySelectorAll('.critical-action-row');
+        assertEquals(1, actionRows.length);
+      });
 });

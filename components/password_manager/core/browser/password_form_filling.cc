@@ -136,7 +136,8 @@ bool IsEligibleForPasswordChange(PasswordManagerClient* client,
   }
 
   return preferred_match && preferred_match->change_password_url.is_valid() &&
-         preferred_match->password_issues.contains(InsecureType::kLeaked);
+         (preferred_match->password_issues.contains(InsecureType::kLeaked) ||
+          base::FeatureList::IsEnabled(features::kMarkAllCredentialsAsLeaked));
 }
 #endif
 
@@ -289,9 +290,6 @@ LikelyFormFilling SendFillInformationToRenderer(
     metrics_recorder->RecordFillEvent(
         PasswordFormMetricsRecorder::kManagerFillEventAutofilled);
     base::RecordAction(base::UserMetricsAction("PasswordManager_Autofilled"));
-    client->OnPasswordFilled(
-        driver, observed_form.url,
-        PasswordManagerClient::PasswordFillTrigger::kPasswordManagerAutofill);
   }
 
   // Continue with autofilling any password forms as traditionally has been

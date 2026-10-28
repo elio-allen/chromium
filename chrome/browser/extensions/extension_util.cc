@@ -19,6 +19,7 @@
 #include "chrome/browser/ui/webui/extensions/extension_icon_source.h"
 #include "chrome/common/extensions/api/url_handlers/url_handlers_parser.h"
 #include "chrome/common/extensions/extension_constants.h"
+#include "chrome/common/extensions/manifest_handlers/settings_overrides_handler.h"
 #include "chrome/common/extensions/sync_helper.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
@@ -28,13 +29,12 @@
 #include "components/variations/variations_associated_data.h"
 #include "content/public/browser/site_instance.h"
 #include "extensions/browser/disable_reason.h"
-#include "extensions/browser/extension_mojo_binder_registry.h"
-#include "extensions/browser/extension_mojo_binder_registry_factory.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/extension_util.h"
+#include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/management_policy.h"
 #include "extensions/browser/permissions/permissions_updater.h"
 #include "extensions/browser/pref_names.h"
@@ -46,16 +46,11 @@
 #include "extensions/common/extension_urls.h"
 #include "extensions/common/features/feature_developer_mode_only.h"
 #include "extensions/common/icons/extension_icon_set.h"
+#include "extensions/common/manifest_handlers/chrome_url_overrides_handler.h"
 #include "extensions/common/manifest_handlers/incognito_info.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "extensions/common/switches.h"
-#include "net/base/url_util.h"
 #include "url/gurl.h"
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
-#include "chrome/common/extensions/manifest_handlers/settings_overrides_handler.h"
-#include "extensions/common/manifest_handlers/chrome_url_overrides_handler.h"
-#endif
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/profiles/profile_helper.h"
@@ -219,10 +214,11 @@ void SetIsIncognitoEnabled(const std::string& extension_id,
       // bad data ever gets cleaned up, this hack should be removed.
       syncable = syncable || extension->id() == file_manager::kFileManagerAppId;
 #endif
-      DCHECK(syncable);
+      CHECK(syncable, base::NotFatalUntil::M161);
 
       // If we are here, make sure the we aren't trying to change the value.
-      DCHECK_EQ(enabled, IsIncognitoEnabled(extension_id, context));
+      CHECK_EQ(enabled, IsIncognitoEnabled(extension_id, context),
+               base::NotFatalUntil::M161);
       return;
     }
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -233,6 +229,7 @@ void SetIsIncognitoEnabled(const std::string& extension_id,
   // Admin installed extensions should not be restartable, so we will apply the
   // change when Chrome restarts.
   if (IsPolicyInstalled(extension_id, context)) {
+    // TODO(crbug.com/573504328): Add isolated mode support.
     extension_prefs->SetIsIncognitoEnabledDelayed(extension_id, enabled);
     return;
   }
@@ -240,12 +237,20 @@ void SetIsIncognitoEnabled(const std::string& extension_id,
   // Broadcast unloaded and loaded events to update browser state. Only bother
   // if the value changed and the extension is actually enabled, since there is
   // no UI otherwise.
-  bool old_enabled = extension_prefs->IsIncognitoEnabled(extension_id);
+  const bool isolated_mode =
+      ExtensionsBrowserClient::Get()->IsolatedModeReplacesIncognito(context);
+  bool old_enabled = isolated_mode
+                         ? extension_prefs->IsIsolatedModeEnabled(extension_id)
+                         : extension_prefs->IsIncognitoEnabled(extension_id);
   if (enabled == old_enabled) {
     return;
   }
 
-  extension_prefs->SetIsIncognitoEnabled(extension_id, enabled);
+  if (isolated_mode) {
+    extension_prefs->SetIsIsolatedModeEnabled(extension_id, enabled);
+  } else {
+    extension_prefs->SetIsIncognitoEnabled(extension_id, enabled);
+  }
 
   std::string id = ReloadExtensionIfEnabled(extension_id, context);
 
@@ -282,7 +287,7 @@ void SetAllowFileAccess(const std::string& extension_id,
 }
 
 base::DictValue GetExtensionInfo(const Extension* extension) {
-  DCHECK(extension);
+  CHECK(extension, base::NotFatalUntil::M161);
   base::DictValue dict;
 
   dict.Set("id", extension->id());
@@ -378,16 +383,6 @@ GURL GetExtensionsPageUrl(const ExtensionId& extension_id) {
   return url;
 }
 
-bool IsMojoJsEnabledForExtension(const ExtensionId& extension_id,
-                                 content::BrowserContext* context) {
-  const Extension* extension =
-      ExtensionRegistry::Get(context)->enabled_extensions().GetByID(
-          extension_id);
-  return ExtensionMojoBinderRegistryFactory::GetForBrowserContext(context)
-      ->IsMojoJsEnabled(extension);
-}
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 DseNtpOverrideType GetDseNtpOverrideType(const Extension& extension) {
   enum Flags {
     kNone = 0,
@@ -421,7 +416,6 @@ DseNtpOverrideType GetDseNtpOverrideType(const Extension& extension) {
       return DseNtpOverrideType::kNone;
   }
 }
-#endif
 
 GURL GetCWSWritingReviewUrl(const ExtensionId& extension_id,
                             CWSReviewSource source) {
@@ -430,20 +424,19 @@ GURL GetCWSWritingReviewUrl(const ExtensionId& extension_id,
   const char* source_str = nullptr;
   switch (source) {
     case CWSReviewSource::kExtensionsMenu:
-      source_str = "extensions_menu";
+      source_str = extension_urls::kReviewExtensionsMenuUtmSource;
       break;
     case CWSReviewSource::kExtensionsPage:
-      source_str = "extensions_page";
+      source_str = extension_urls::kReviewExtensionsPageUtmSource;
       break;
     case CWSReviewSource::kContextMenu:
-      source_str = "context_menu";
+      source_str = extension_urls::kReviewContextMenuUtmSource;
       break;
   }
 
   GURL review_url = extension_urls::GetNewWebstoreLaunchURL().Resolve(
-      base::StrCat({"detail/", extension_id, "/reviews"}));
-  review_url = net::AppendQueryParameter(review_url, "action", "write");
-  return net::AppendQueryParameter(review_url, "source", source_str);
+      base::StrCat({"detail/", extension_id, "/reviews/my-review"}));
+  return extension_urls::AppendUtmSource(review_url, source_str);
 }
 
-} // namespace extensions::util
+}  // namespace extensions::util

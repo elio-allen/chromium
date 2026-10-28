@@ -4,7 +4,10 @@
 
 package org.chromium.chrome.browser.tasks.tab_management;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.chrome.browser.multiwindow.UiUtils.getItemTitle;
+import static org.chromium.ui.listmenu.ListMenuItemProperties.IS_IPH_HIGHLIGHTED;
+import static org.chromium.ui.listmenu.ListMenuItemProperties.MENU_ITEM_ID;
 
 import android.app.Activity;
 import android.content.Context;
@@ -14,6 +17,8 @@ import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ListAdapter;
+import android.widget.ListView;
 
 import androidx.annotation.DimenRes;
 import androidx.annotation.DrawableRes;
@@ -21,6 +26,7 @@ import androidx.annotation.IdRes;
 import androidx.annotation.LayoutRes;
 import androidx.annotation.PluralsRes;
 import androidx.annotation.StyleRes;
+import androidx.annotation.VisibleForTesting;
 import androidx.appcompat.content.res.AppCompatResources;
 
 import org.chromium.build.annotations.NullMarked;
@@ -38,6 +44,7 @@ import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.browser_ui.widget.ListItemBuilder;
+import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter;
 import org.chromium.components.browser_ui.widget.list_view.ListViewTouchTracker;
 import org.chromium.components.collaboration.CollaborationService;
 import org.chromium.components.data_sharing.member_role.MemberRole;
@@ -100,6 +107,8 @@ public abstract class TabOverflowMenuCoordinator<T>
     private boolean mIsIncognito;
     private @Nullable String mCollaborationId;
     private @Nullable T mId;
+    private @Nullable TabOverflowMenuHolder<T> mMenuHolder;
+    private int mMenuMaxWidth;
 
     /**
      * @param menuLayout The menu layout to use.
@@ -160,9 +169,45 @@ public abstract class TabOverflowMenuCoordinator<T>
     protected void buildCollaborationMenuItems(ModelList itemList, @MemberRole int memberRole) {}
 
     /**
+     * Calculates the desired content dimensions (width at index 0, height at index 1) for the menu.
+     * Can be overridden by subclasses with custom views to include non-list components in the width
+     * calculation.
+     *
+     * @param adapter The adapter for the list view.
+     * @param listView The list view containing menu items.
+     * @return An int array containing width at index 0 and height at index 1 in pixels.
+     */
+    protected int[] getDesiredContentDimensions(ListAdapter adapter, ListView listView) {
+        int minWidthPx = mActivity.getResources().getDimensionPixelSize(R.dimen.menu_width_min);
+        int marginPx =
+                mActivity.getResources().getDimensionPixelSize(R.dimen.menu_horizontal_margin);
+        int windowWidthPx = mActivity.getResources().getDisplayMetrics().widthPixels;
+        int[] contentDimensions = UiUtils.computeListAdapterContentDimensions(adapter, listView);
+        int widthPx =
+                UiUtils.computeMenuWidth(
+                        contentDimensions[0]
+                                + listView.getPaddingLeft()
+                                + listView.getPaddingRight(),
+                        minWidthPx,
+                        mMenuMaxWidth,
+                        marginPx,
+                        windowWidthPx);
+        return new int[] {widthPx, contentDimensions[1]};
+    }
+
+    /**
      * A function to run after the menu is created but before it is shown, to make any adjustments.
      */
-    protected void afterCreate() {}
+    protected void afterCreate() {
+        if (mMenuHolder != null) {
+            ListView listView = mMenuHolder.getListView();
+            ListAdapter adapter = listView.getAdapter();
+            if (adapter != null) {
+                int[] dimensions = getDesiredContentDimensions(adapter, listView);
+                mMenuHolder.setDesiredContentWidth(dimensions[0]);
+            }
+        }
+    }
 
     /**
      * Concrete class required to get a specific menu width for the menu pop up window.
@@ -191,7 +236,14 @@ public abstract class TabOverflowMenuCoordinator<T>
         // LINT.ThenChange(//components/browser_ui/widget/android/java/res/values/dimens.xml|//components/browser_ui/widget/android/java/res/values-night/dimens.xml)
     }
 
-    private static void offsetPopupRect(Context context, boolean isIncognito, Rect rect) {
+    /**
+     * Offsets the popup anchor {@link Rect} to account for the menu background shadow padding.
+     *
+     * @param context The {@link Context} used to load resources and background drawable.
+     * @param isIncognito Whether the menu is shown in incognito mode.
+     * @param rect The anchor {@link Rect} to offset in-place.
+     */
+    public static void offsetPopupRect(Context context, boolean isIncognito, Rect rect) {
         if (isIncognito) return;
         Resources resources = context.getResources();
         rect.offset(0, -resources.getDimensionPixelSize(R.dimen.popup_menu_shadow_length));
@@ -266,6 +318,51 @@ public abstract class TabOverflowMenuCoordinator<T>
             @HorizontalOrientation int horizontalOrientation,
             Activity activity,
             boolean isIncognito) {
+
+        View contentView =
+                buildMenuView(
+                        anchorViewRectProvider,
+                        id,
+                        horizontalOverlapAnchor,
+                        verticalOverlapAnchor,
+                        animStyle,
+                        horizontalOrientation,
+                        activity,
+                        isIncognito);
+
+        ModelList modelList = assumeNonNull(mMenuHolder).getModelList();
+
+        modelList.addObserver(
+                mHierarchicalMenuController
+                .new AccessibilityListObserver(
+                        contentView,
+                        /* headerView= */ null,
+                        contentView.findViewById(R.id.tab_group_action_menu_list),
+                        /* headerModelList= */ null,
+                        modelList));
+
+        mMenuHolder.show();
+
+        mHierarchicalMenuController.setupFlyoutController(
+                /* flyoutHandler= */ this,
+                mMenuHolder,
+                mMenuHolder::setOnScrollChangeListener,
+                /* drillDownOverrideValue= */ null);
+        mHierarchicalMenuController.setupBackPressBehaviorForPopupWindow(
+                contentView, this::dismiss);
+    }
+
+    /** Builds and initializes the menu view and its holder without showing the popup window. */
+    @VisibleForTesting
+    protected View buildMenuView(
+            RectProvider anchorViewRectProvider,
+            T id,
+            boolean horizontalOverlapAnchor,
+            boolean verticalOverlapAnchor,
+            @StyleRes int animStyle,
+            @HorizontalOrientation int horizontalOrientation,
+            Activity activity,
+            boolean isIncognito) {
         mCollaborationId = getCollaborationIdOrNull(id);
         mIsIncognito = isIncognito;
         mId = id;
@@ -279,10 +376,11 @@ public abstract class TabOverflowMenuCoordinator<T>
         ModelList modelList = new ModelList();
         configureMenuItems(modelList, id);
         // Apply offset from the background.
-        if (mActivity != null) {
-            offsetPopupRect(mActivity, isIncognito, anchorViewRectProvider.getRect());
+        if (activity != null) {
+            offsetPopupRect(activity, isIncognito, anchorViewRectProvider.getRect());
         }
-        TabOverflowMenuHolder<T> menuHolder =
+        mMenuMaxWidth = getMenuWidth(anchorViewRectProvider.getRect().width());
+        mMenuHolder =
                 new TabOverflowMenuHolder<>(
                         anchorViewRectProvider,
                         horizontalOverlapAnchor,
@@ -295,31 +393,13 @@ public abstract class TabOverflowMenuCoordinator<T>
                         mOnItemClickedCallback,
                         id,
                         mCollaborationId,
-                        getMenuWidth(anchorViewRectProvider.getRect().width()),
+                        mMenuMaxWidth,
                         this::onDismiss,
                         activity,
                         /* isFlyout= */ false);
-        buildCustomView(menuHolder.getContentView(), isIncognito);
+        buildCustomView(mMenuHolder.getContentView(), isIncognito);
         afterCreate();
-
-        modelList.addObserver(
-                mHierarchicalMenuController
-                .new AccessibilityListObserver(
-                        menuHolder.getContentView(),
-                        /* headerView= */ null,
-                        menuHolder.getContentView().findViewById(R.id.tab_group_action_menu_list),
-                        /* headerModelList= */ null,
-                        modelList));
-
-        menuHolder.show();
-
-        mHierarchicalMenuController.setupFlyoutController(
-                /* flyoutHandler= */ this,
-                menuHolder,
-                menuHolder::setOnScrollChangeListener,
-                /* drillDownOverrideValue= */ null);
-        mHierarchicalMenuController.setupBackPressBehaviorForPopupWindow(
-                menuHolder.getContentView(), this::dismiss);
+        return mMenuHolder.getContentView();
     }
 
     /**
@@ -362,14 +442,38 @@ public abstract class TabOverflowMenuCoordinator<T>
     }
 
     /**
-     * @return The DP measure {@param dimenRes}, converted to px.
+     * @return The DP measure {@code dimenRes}, converted to px.
      */
     protected int getDimensionPixelSize(@DimenRes int dimenRes) {
         assert mActivity != null : "Activity needs to be non-null to get pixel size";
         return mActivity.getResources().getDimensionPixelSize(dimenRes);
     }
 
+    protected @Nullable TabOverflowMenuHolder<T> getMenuHolder() {
+        return mMenuHolder;
+    }
+
+    /**
+     * Highlights the menu item with the given ID using {@link ViewHighlighter}.
+     *
+     * @param menuItemId The ID of the menu item to highlight.
+     */
+    protected void highlightMenuItem(@IdRes int menuItemId) {
+        if (mMenuHolder == null) return;
+        ModelList modelList = mMenuHolder.getModelList();
+        for (ListItem item : modelList) {
+            if (item.model.containsKey(MENU_ITEM_ID)
+                    && item.model.get(MENU_ITEM_ID) == menuItemId) {
+                item.model.set(IS_IPH_HIGHLIGHTED, true);
+                return;
+            }
+        }
+    }
+
     private void onDismiss(TabOverflowMenuHolder<T> menuHolder) {
+        if (mMenuHolder == menuHolder) {
+            mMenuHolder = null;
+        }
         if (mHierarchicalMenuController.getFlyoutController() != null) {
             mHierarchicalMenuController.destroyFlyoutController();
         }
@@ -389,11 +493,7 @@ public abstract class TabOverflowMenuCoordinator<T>
         }
         // Set up callbacks for submenu navigation.
         mHierarchicalMenuController.setupCallbacks(
-                /* headerModelList= */ null,
-                modelList,
-                () -> {
-                    dismiss();
-                });
+                /* headerModelList= */ null, modelList, this::dismiss);
     }
 
     public void configureMenuItemsForTesting(ModelList modelList, T id) {
@@ -407,11 +507,16 @@ public abstract class TabOverflowMenuCoordinator<T>
         FlyoutController<TabOverflowMenuHolder<T>> controller =
                 mHierarchicalMenuController.getFlyoutController();
         if (controller == null) {
-            return;
+            // If no FlyoutController was set up (e.g. buildMenuView was called directly in
+            // render tests without showing the popup window), destroy the holder directly.
+            if (mMenuHolder != null) {
+                mMenuHolder.destroy();
+                mMenuHolder = null;
+            }
+        } else {
+            controller.destroy();
+            controller = null;
         }
-
-        controller.destroy();
-        controller = null;
     }
 
     /**
@@ -427,6 +532,17 @@ public abstract class TabOverflowMenuCoordinator<T>
         }
     }
 
+    /**
+     * Sets the soft input mode for the popup window.
+     *
+     * @param mode See {@link android.widget.PopupWindow#setSoftInputMode(int)}.
+     */
+    protected void setMenuSoftInputMode(int mode) {
+        if (mMenuHolder != null) {
+            mMenuHolder.setSoftInputMode(mode);
+        }
+    }
+
     /** Forces the underlying main menu popup window to update its layout position. */
     protected void updateMenuLayout() {
         FlyoutController<TabOverflowMenuHolder<T>> controller =
@@ -437,6 +553,10 @@ public abstract class TabOverflowMenuCoordinator<T>
                 menuWindow.onRectChanged();
             }
         }
+    }
+
+    public @Nullable AnchoredPopupWindow getMenuWindowForTesting() {
+        return mMenuHolder != null ? mMenuHolder.getMenuWindow() : null;
     }
 
     public @Nullable ModelList getModelListForTesting() {
@@ -500,7 +620,7 @@ public abstract class TabOverflowMenuCoordinator<T>
                                             : R.string.menu_new_window)
                             .withStartIconRes(isIncognitoForced ? R.drawable.ic_domain : 0)
                             .withIsIncognito(isIncognito)
-                            .withClickListener(v -> moveToNewWindow(id))
+                            .withClickListener(_ -> moveToNewWindow(id))
                             .build());
         }
         for (InstanceInfo instanceInfo : activeInstances) {
@@ -512,7 +632,7 @@ public abstract class TabOverflowMenuCoordinator<T>
                     new ListItemBuilder()
                             .withTitle(windowDisplayName)
                             .withIsIncognito(isIncognito)
-                            .withClickListener((v) -> moveToWindow(instanceInfo, id))
+                            .withClickListener((_) -> moveToWindow(instanceInfo, id))
                             .build());
         }
         return new ListItemBuilder()
@@ -536,11 +656,11 @@ public abstract class TabOverflowMenuCoordinator<T>
         multiInstanceManager.closeChromeWindowIfEmpty(multiInstanceManager.getCurrentInstanceId());
     }
 
-    /** Creates a new window and moves item with ID {@param id} to it. */
+    /** Creates a new window and moves item with ID {@code id} to it. */
     @RequiresNonNull("mMultiInstanceManager")
     protected void moveToNewWindow(T id) {}
 
-    /** Moves item with ID {@param id} to window with instance info {@param instanceInfo}. */
+    /** Moves item with ID {@code id} to window with instance info {@code instanceInfo}. */
     @RequiresNonNull("mMultiInstanceManager")
     protected void moveToWindow(InstanceInfo instanceInfo, T id) {}
 
@@ -574,6 +694,7 @@ public abstract class TabOverflowMenuCoordinator<T>
 
     @Override
     public void setWindowFocus(TabOverflowMenuHolder<T> popupWindow, boolean hasFocus) {
+        popupWindow.getMenuWindow().setFocusable(hasFocus);
         ViewGroup contentView = (ViewGroup) popupWindow.getMenuWindow().getContentView();
         if (contentView == null) {
             return;
@@ -620,8 +741,10 @@ public abstract class TabOverflowMenuCoordinator<T>
                         mOnItemClickedCallback,
                         mId,
                         mCollaborationId,
-                        getMenuWidth(rectProvider.getRect().width()),
-                        (holder) -> dismissRunnable.run(),
+                        mActivity
+                                .getResources()
+                                .getDimensionPixelSize(R.dimen.flyout_menu_max_width),
+                        (_) -> dismissRunnable.run(),
                         mActivity,
                         /* isFlyout= */ true);
 

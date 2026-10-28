@@ -2,26 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#import "base/apple/foundation_util.h"
 #import "base/strings/strcat.h"
-#import "base/strings/sys_string_conversions.h"
-#import "base/test/ios/wait_util.h"
 #import "components/policy/core/browser/signin/profile_separation_policies.h"
 #import "components/signin/public/base/signin_pref_names.h"
 #import "ios/chrome/browser/authentication/account_menu/public/account_menu_constants.h"
 #import "ios/chrome/browser/authentication/test/separate_profiles_util.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
-#import "ios/chrome/browser/authentication/test/signin_matchers.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
-#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
 #import "ios/chrome/browser/settings/manage_accounts/public/manage_accounts_table_view_controller_constants.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
-#import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
-#import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/chrome/test/earl_grey/test_switches.h"
@@ -66,6 +58,7 @@ id<GREYMatcher> ManagedProfileCreationDataMigrationDisabledSubtitleMatcher() {
 @implementation SeparateProfilesTestCase
 
 + (void)setUpForTestCase {
+  [super setUpForTestCase];
   [SigninEarlGrey setUseFakeResponsesForProfileSeparationPolicyRequests];
 }
 
@@ -88,8 +81,6 @@ id<GREYMatcher> ManagedProfileCreationDataMigrationDisabledSubtitleMatcher() {
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
-
-  config.features_enabled.push_back(kSeparateProfilesForManagedAccounts);
 
   config.relaunch_policy = ForceRelaunchByCleanShutdown;
 
@@ -807,8 +798,7 @@ id<GREYMatcher> ManagedProfileCreationDataMigrationDisabledSubtitleMatcher() {
       @"Profile should be personal");
 }
 
-// TODO(crbug.com/411035267): Re-enable this test.
-- (void)DISABLED_testProfileDeletedOnRemoveManagedAccount {
+- (void)testProfileDeletedOnRemoveManagedAccount {
   // Setup: There's 1 personal and 1 managed account. The personal account is
   // signed in.
   FakeSystemIdentity* const personalIdentity =
@@ -837,20 +827,19 @@ id<GREYMatcher> ManagedProfileCreationDataMigrationDisabledSubtitleMatcher() {
 
   // Note: The profile switch happens here.
 
-  // History sync screen: Decline the promo (irrelevant here).
+  // History sync screen: Decline the promo (irrelevant here) and dismiss the
+  // signed-in snackbar.
   [ChromeEarlGrey waitForMatcher:HistoryScreenMatcher()];
   [[EarlGrey
       selectElementWithMatcher:chrome_test_util::ButtonStackSecondaryButton()]
       performAction:grey_tap()];
-
-  // Dismiss signed in snackbar.
   [SigninEarlGreyUI dismissSigninConfirmationSnackbarForIdentity:managedIdentity
                                                    assertVisible:YES];
 
   // Confirm profile switched.
-  GREYAssert([[ChromeEarlGrey currentProfileName]
-                 isEqualToString:[ChromeEarlGrey currentProfileName]],
-             @"Profile should be personal");
+  GREYAssert(![[ChromeEarlGrey currentProfileName]
+                 isEqualToString:personalProfileName],
+             @"Profile should NOT be personal");
 
   // Remove `managedIdentity` from device.
   OpenManageAccountsView();
@@ -960,7 +949,7 @@ id<GREYMatcher> ManagedProfileCreationDataMigrationDisabledSubtitleMatcher() {
   // Relaunch the browser without the managed account. This simulates the
   // situation where the managed account was removed in another Google app.
   [self relaunchWithIdentities:@[ personalIdentity ]
-               enabledFeatures:{kSeparateProfilesForManagedAccounts}
+               enabledFeatures:{}
               disabledFeatures:{}];
 
   // Verify that the profile was switched back to personal.
@@ -1127,7 +1116,6 @@ id<GREYMatcher> ManagedProfileCreationDataMigrationDisabledSubtitleMatcher() {
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
 
-  config.features_enabled.push_back(kSeparateProfilesForManagedAccounts);
   // Note: Can't use the actual feature definition, because its build target
   // depends on a bunch of stuff that mustn't make it into the EG test target.
   config.additional_args.push_back(

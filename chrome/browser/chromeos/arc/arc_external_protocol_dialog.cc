@@ -12,15 +12,12 @@
 #include "base/memory/ref_counted.h"
 #include "base/metrics/histogram_functions.h"
 #include "chrome/browser/apps/link_capturing/metrics/intent_handling_metrics.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/chromeos/arc/arc_web_contents_data.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/intent_picker_tab_helper.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "chromeos/ash/experiences/arc/intent_helper/arc_intent_helper_package.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/referrer.h"
@@ -44,8 +41,9 @@ bool IsCapturableLinkNavigation(ui::PageTransition page_transition,
   // PAGE_TRANSITION_AUTO_SUBFRAME in order not to add session history items
   // (see https://crrev.com/c/3265344). So we only check |has_user_gesture|.
   if (is_in_fenced_frame_tree) {
-    DCHECK(ui::PageTransitionCoreTypeIs(page_transition,
-                                        ui::PAGE_TRANSITION_AUTO_SUBFRAME));
+    CHECK(ui::PageTransitionCoreTypeIs(page_transition,
+                                       ui::PAGE_TRANSITION_AUTO_SUBFRAME),
+          base::NotFatalUntil::M161);
     return has_user_gesture;
   }
 
@@ -81,35 +79,6 @@ constexpr char kPackageForOpeningArcImeSettingsPage[] =
     "org.chromium.arc.applauncher";
 constexpr char kActivityForOpeningArcImeSettingsPage[] =
     "org.chromium.arc.applauncher.InputMethodSettingsActivity";
-
-bool ShowIntentPicker(const std::optional<url::Origin>& initiating_origin,
-                      WebContents* web_contents,
-                      std::vector<apps::IntentPickerAppInfo> app_info,
-                      bool show_stay_in_chrome,
-                      bool show_remember_selection,
-                      IntentPickerResponse callback) {
-  ash::BrowserDelegate* browser =
-      web_contents ? ash::BrowserController::GetInstance()->GetBrowserForTab(
-                         web_contents)
-                   : nullptr;
-  if (!browser) {
-    return false;
-  }
-
-  if (app_info.empty()) {
-    return false;
-  }
-
-  IntentPickerTabHelper::ShowOrHideIcon(web_contents,
-                                        /*should_show_icon=*/true);
-  BrowserWindow::FromBrowser(&browser->GetBrowser())
-      ->ShowIntentPickerBubble(std::move(app_info), show_stay_in_chrome,
-                               show_remember_selection,
-                               apps::IntentPickerBubbleType::kExternalProtocol,
-                               initiating_origin, std::move(callback));
-
-  return true;
-}
 
 void CloseTabIfNeeded(base::WeakPtr<WebContents> web_contents,
                       bool safe_to_bypass_ui) {
@@ -158,13 +127,11 @@ void OpenUrlInChrome(base::WeakPtr<WebContents> web_contents, const GURL& url) {
 
   const ui::PageTransition page_transition_type =
       ui::PageTransitionFromInt(ui::PAGE_TRANSITION_LINK);
-  constexpr bool kIsRendererInitiated = false;
-  const content::OpenURLParams params(
-      url,
-      content::Referrer(web_contents->GetLastCommittedURL(),
-                        network::mojom::ReferrerPolicy::kDefault),
-      WindowOpenDisposition::CURRENT_TAB, page_transition_type,
-      kIsRendererInitiated);
+  const content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          url, WindowOpenDisposition::kCurrentTab, page_transition_type,
+          content::Referrer(web_contents->GetLastCommittedURL(),
+                            network::mojom::ReferrerPolicy::kDefault));
   web_contents->OpenURL(params, /*navigation_handle_callback=*/{});
 }
 
@@ -185,7 +152,7 @@ void HandleUrlInArc(base::WeakPtr<WebContents> web_contents,
                     bool ui_bypassed,
                     ArcIntentHelperMojoDelegate* mojo_delegate) {
   // ArcIntentHelperMojoDelegate is already varified non-null.
-  DCHECK(mojo_delegate);
+  CHECK(mojo_delegate, base::NotFatalUntil::M161);
 
   // We want to inform ARC about whether or not the user interacted with the
   // picker UI, also since we want to be more explicit about the package and
@@ -251,8 +218,8 @@ GetActionResult GetAction(
     size_t selected_app_index,
     GurlAndActivityInfo* out_url_and_activity_name,
     bool* in_out_safe_to_bypass_ui) {
-  DCHECK(out_url_and_activity_name);
-  DCHECK(!handlers.empty());
+  CHECK(out_url_and_activity_name, base::NotFatalUntil::M161);
+  CHECK(!handlers.empty(), base::NotFatalUntil::M161);
 
   if (selected_app_index == handlers.size()) {
     // The user hasn't made the selection yet.
@@ -379,7 +346,8 @@ GURL GetUrlToNavigateOnDeactivate(
                                                   /*activity=*/std::string()});
     if (GetActionInternal(empty_url, handlers[i], &url_and_package) ==
         GetActionResult::OPEN_URL_IN_CHROME) {
-      DCHECK(url_and_package.first.SchemeIsHTTPOrHTTPS());
+      CHECK(url_and_package.first.SchemeIsHTTPOrHTTPS(),
+            base::NotFatalUntil::M161);
       return url_and_package.first;
     }
   }
@@ -426,19 +394,10 @@ void OnIntentPickerClosed(
     apps::IntentPickerCloseReason reason,
     bool should_persist) {
   // ArcIntentHelperMojoDelegate is already varified non-null.
-  DCHECK(mojo_delegate);
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(mojo_delegate, base::NotFatalUntil::M161);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
-  // Even if ArcExternalProtocolDialog shares the same icon on the omnibox as an
-  // http(s) request (via AppsNavigationThrottle), the UI here shouldn't stay in
-  // the omnibox since the decision should be taken right away in a kind of
-  // blocking fashion.
   auto* context = web_contents ? web_contents->GetBrowserContext() : nullptr;
-
-  if (web_contents) {
-    IntentPickerTabHelper::ShowOrHideIcon(web_contents.get(),
-                                          /*should_show_icon=*/false);
-  }
 
   // If the user selected an app to continue the navigation, confirm that the
   // |package_name| matches a valid option and return the index.
@@ -461,7 +420,8 @@ void OnIntentPickerClosed(
     case apps::IntentPickerCloseReason::OPEN_APP:
       // Only ARC apps are offered in the external protocol intent picker, so if
       // the user decided to open in app the type must be ARC.
-      DCHECK_EQ(apps::PickerEntryType::kArc, entry_type);
+      CHECK_EQ(apps::PickerEntryType::kArc, entry_type,
+               base::NotFatalUntil::M161);
 
       if (should_persist) {
         mojo_delegate->AddPreferredPackage(
@@ -511,7 +471,7 @@ void OnAppIconsReceived(
     base::OnceCallback<void(bool)> handled_cb,
     bool show_stay_in_chrome,
     std::unique_ptr<ArcIconCacheDelegate::ActivityToIconsMap> icons) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   using AppInfo = apps::IntentPickerAppInfo;
   std::vector<AppInfo> app_info;
@@ -527,18 +487,10 @@ void OnAppIconsReceived(
                           handler.package_name, handler.name);
   }
 
-  ash::BrowserDelegate* browser =
-      web_contents ? ash::BrowserController::GetInstance()->GetBrowserForTab(
-                         web_contents.get())
-                   : nullptr;
-  if (!browser) {
-    return std::move(handled_cb).Run(false);
-  }
-
-  bool handled = ShowIntentPicker(
-      initiating_origin, web_contents.get(), std::move(app_info),
-      show_stay_in_chrome,
+  bool handled = ash::BrowserController::GetInstance()->ShowIntentPicker(
+      web_contents, std::move(app_info), show_stay_in_chrome,
       /*show_remember_selection=*/true,
+      apps::IntentPickerBubbleType::kExternalProtocol, initiating_origin,
       base::BindOnce(OnIntentPickerClosed, web_contents, url, safe_to_bypass_ui,
                      std::move(handlers), std::move(mojo_delegate)));
   return std::move(handled_cb).Run(handled);
@@ -551,10 +503,10 @@ void ShowExternalProtocolDialogWithoutApps(
     std::unique_ptr<ArcIntentHelperMojoDelegate> mojo_delegate,
     base::OnceCallback<void(bool)> handled_cb) {
   // Try to show the intent picker and fallback to the default dialog otherwise.
-  bool handled = ShowIntentPicker(
-      initiating_origin, web_contents.get(),
-      /*app_info=*/{}, /*stay_in_chrome=*/false,
+  bool handled = ash::BrowserController::GetInstance()->ShowIntentPicker(
+      web_contents, /*app_info=*/{}, /*show_stay_in_chrome=*/false,
       /*show_remember_selection=*/false,
+      apps::IntentPickerBubbleType::kExternalProtocol, initiating_origin,
       base::BindOnce(
           OnIntentPickerClosed, web_contents, url,
           /*safe_to_bypass_ui=*/false,
@@ -574,8 +526,8 @@ void OnUrlHandlerList(
     base::OnceCallback<void(bool)> handled_cb,
     std::vector<ArcIntentHelperMojoDelegate::IntentHandlerInfo> handlers) {
   // ArcIntentHelperMojoDelegate is already varified non-null.
-  DCHECK(mojo_delegate);
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(mojo_delegate, base::NotFatalUntil::M161);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // We only reach here if Chrome doesn't think it can handle the URL. If ARC is
   // not running anymore, or Chrome is the only candidate returned, show the

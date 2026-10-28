@@ -40,13 +40,6 @@ found in the LICENSE file.
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:layout_marginTop="@dimen/tab_bottom_sheet_web_ui_top_margin"/>
-
-        <!-- Fusebox Container -->
-        <FrameLayout
-            android:id="@+id/fusebox_container"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_gravity="bottom" />
     </FrameLayout>
 
     <!-- Peek View: Appears when BottomSheet is collapsed -->
@@ -61,14 +54,4 @@ found in the LICENSE file.
         android:visibility="gone">
     </FrameLayout>
 
-    <!-- Handle Bar: Positioned absolute last to win Z-indexing in FrameLayout -->
-    <ImageView
-        android:id="@+id/handle_bar"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center_horizontal|top"
-        android:layout_marginTop="@dimen/tab_bottom_sheet_handle_margin"
-        android:src="@drawable/drag_handlebar"
-        app:tint="@macro/drag_handle_color"
-        android:importantForAccessibility="no"/>
 </FrameLayout>

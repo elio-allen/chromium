@@ -16,6 +16,7 @@
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_match.h"
+#include "components/omnibox/browser/page_classification_functions.h"
 #include "components/omnibox/browser/tab_matcher.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/search_engines/template_url_service.h"
@@ -61,7 +62,7 @@ class AutocompleteClientTabAndroidUserData
 
  private:
   explicit AutocompleteClientTabAndroidUserData(TabAndroid* tab) : tab_(tab) {
-    DCHECK(tab);
+    CHECK(tab, base::NotFatalUntil::M161);
     tab->AddObserver(this);
   }
   friend class TabAndroidUserData<AutocompleteClientTabAndroidUserData>;
@@ -87,7 +88,7 @@ TabMatcherAndroid::~TabMatcherAndroid() = default;
 
 bool TabMatcherAndroid::IsTabOpenWithURL(const GURL& url,
                                          const AutocompleteInput* input) const {
-  DCHECK(input);
+  CHECK(input, base::NotFatalUntil::M161);
   const AutocompleteInput empty_input;
   if (!input)
     input = &empty_input;
@@ -106,8 +107,8 @@ bool TabMatcherAndroid::IsTabOpenWithURL(const GURL& url,
 
 void TabMatcherAndroid::FindMatchingTabs(GURLToTabInfoMap* map,
                                          const AutocompleteInput* input) const {
-  DCHECK(map);
-  DCHECK(input);
+  CHECK(map, base::NotFatalUntil::M161);
+  CHECK(input, base::NotFatalUntil::M161);
   const AutocompleteInput empty_input;
   if (!input)
     input = &empty_input;
@@ -169,10 +170,9 @@ std::vector<int64_t> TabMatcherAndroid::GetOpenAndroidTabs(
   }
 
   CHECK(input);
-  if (input->current_page_classification() ==
-          metrics::OmniboxEventProto_PageClassification_ANDROID_HUB &&
+  if (omnibox::IsAndroidHubOrTabSearch(input->current_page_classification()) &&
       profile_->IsRegularProfile()) {
-    TabModel* archived_tab_model = TabModelList::GetArchivedTabModel();
+    TabModel* archived_tab_model = TabModelList::GetArchivedTabModel(profile_);
     if (archived_tab_model) {
       tab_models.push_back(archived_tab_model);
     }
@@ -225,7 +225,7 @@ TabMatcher::GURLToTabInfoMap TabMatcherAndroid::GetAllHiddenAndNonCCTTabInfos(
     AutocompleteClientTabAndroidUserData::CreateForTabAndroid(tab);
     AutocompleteClientTabAndroidUserData* user_data =
         AutocompleteClientTabAndroidUserData::FromTabAndroid(tab);
-    DCHECK(user_data);
+    CHECK(user_data, base::NotFatalUntil::M161);
     if (!user_data->IsInitialized()) {
       user_data->UpdateStrippedURL(tab->GetURL(), template_url_service_,
                                    /*keep_search_intent_params=*/true);

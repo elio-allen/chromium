@@ -9,12 +9,15 @@
 
 #include "base/base64.h"
 #include "base/command_line.h"
+#include "base/containers/span.h"
 #include "base/features.h"
+#include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/pattern.h"
@@ -189,9 +192,11 @@ class SandboxedUnpackerTest : public ExtensionsTest {
     ASSERT_TRUE(extensions_dir_.CreateUniqueTempDir());
     in_process_utility_thread_helper_ =
         std::make_unique<content::InProcessUtilityThreadHelper>();
-    // It will delete itself.
-    client_ = new MockSandboxedUnpackerClient(
+    // `client_` is not owning; `sandboxed_unpacker_` holds the only reference
+    // and deletes the client when it is released.
+    auto client = base::MakeRefCounted<MockSandboxedUnpackerClient>(
         task_environment()->GetMainThreadTaskRunner());
+    client_ = client.get();
 
     InitSandboxedUnpacker();
 
@@ -528,6 +533,43 @@ TEST_F(SandboxedUnpackerTest, TestRewriteManifestInjections) {
   EXPECT_EQ(kTestVersion, *version);
   EXPECT_EQ(fingerprint, *differential_fingerprint);
 }
+
+// POSIX-only: on Windows, deleting an open file without `FILE_SHARE_DELETE`
+// fails, or the subsequent create fails while deletion is pending, so the
+// rewrite fails safely rather than unlinking an open inode.
+#if BUILDFLAG(IS_POSIX)
+TEST_F(SandboxedUnpackerTest, TestRewriteManifestUnlinksExistingFile) {
+  SetPublicKey("test_key");
+  SetExtensionRoot(extensions_dir_.GetPath());
+
+  const base::FilePath manifest_path =
+      extensions_dir_.GetPath().Append(kManifestFilename);
+  base::File retained_file(manifest_path, base::File::FLAG_CREATE |
+                                              base::File::FLAG_READ |
+                                              base::File::FLAG_WRITE);
+  ASSERT_TRUE(retained_file.IsValid());
+  ASSERT_TRUE(retained_file.WriteAtCurrentPosAndCheck(
+      base::byte_span_from_cstring("{\"v\":1}")));
+
+  std::optional<base::DictValue> manifest =
+      RewriteManifestFile(base::DictValue().Set("version", "1.2.3"));
+  ASSERT_TRUE(manifest.has_value());
+
+  std::string expected_contents;
+  ASSERT_TRUE(base::ReadFileToString(manifest_path, &expected_contents));
+
+  // Writing through a retained file descriptor opened before
+  // RewriteManifestFile() must not affect the rewritten manifest on disk.
+  ASSERT_EQ(0, retained_file.Seek(base::File::FROM_BEGIN, 0));
+  ASSERT_TRUE(retained_file.WriteAtCurrentPosAndCheck(
+      base::byte_span_from_cstring("{\"tampered\":true}")));
+  retained_file.Close();
+
+  std::string actual_contents;
+  ASSERT_TRUE(base::ReadFileToString(manifest_path, &actual_contents));
+  EXPECT_EQ(expected_contents, actual_contents);
+}
+#endif  // BUILDFLAG(IS_POSIX)
 
 TEST_F(SandboxedUnpackerTest, InvalidMessagesFile) {
   SetupUnpackerWithDirectory("invalid_messages_file.crx");

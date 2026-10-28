@@ -8,11 +8,14 @@
 #include "base/containers/heap_array.h"
 #include "base/containers/span.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/memory_coordinator/memory_coordinator_features.h"
+#include "base/memory_coordinator/utils.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/thread_pool.h"
 #include "base/test/gmock_expected_support.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/tracing/trace_test_utils.h"
 #include "base/trace_event/trace_config.h"
@@ -22,6 +25,7 @@
 #include "components/persistent_cache/client.h"
 #include "components/persistent_cache/pending_backend.h"
 #include "gpu/command_buffer/service/memory_cache.h"
+#include "gpu/config/gpu_finch_features.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace gpu {
@@ -220,16 +224,41 @@ void GpuPersistentCacheTest::RunStoreAndLoadDataMultiThreaded(int num_threads) {
   }
 }
 
-// Tests that storing Dawn/Vulkan monolithic VkPipelineCache data doesn't store
-// anything in the memory cache.
+// Tests that storing Dawn/Vulkan monolithic VkPipelineCache or Ganesh
+// VkPipelineCache data doesn't store anything in the memory cache, and loading
+// it records the VkPipelineCache.LoadedSize histogram.
 TEST_F(GpuPersistentCacheTest, StoreVkPersistentCache) {
   InitializeCache();
+  base::HistogramTester histogram_tester;
 
   const std::string key = "my_keyMonolithicVkPipelineCache";
   const std::string value = "my_value";
   cache_->StoreData(key, base::as_byte_span(value));
 
   EXPECT_FALSE(memory_cache_->Find(key));
+
+  constexpr uint32_t kGaneshVkPipelineCacheKey = 1;
+  sk_sp<SkData> ganesh_key = SkData::MakeWithoutCopy(
+      &kGaneshVkPipelineCacheKey, sizeof(kGaneshVkPipelineCacheKey));
+  const std::string ganesh_value(2048, 'x');
+  sk_sp<SkData> ganesh_value_data =
+      SkData::MakeWithoutCopy(ganesh_value.data(), ganesh_value.size());
+  cache_->store(*ganesh_key, *ganesh_value_data);
+
+  std::string_view ganesh_key_str(
+      reinterpret_cast<const char*>(&kGaneshVkPipelineCacheKey),
+      sizeof(kGaneshVkPipelineCacheKey));
+  EXPECT_FALSE(memory_cache_->Find(ganesh_key_str));
+
+  sk_sp<SkData> loaded = cache_->load(*ganesh_key);
+  ASSERT_TRUE(loaded);
+  EXPECT_EQ(loaded->size(), ganesh_value.size());
+  histogram_tester.ExpectUniqueSample(
+      "GPU.PersistentCache.Test.VkPipelineCache.LoadedSize", 2, 1);
+
+  // Loading from the disk cache must not put the entry in the memory cache
+  // either.
+  EXPECT_FALSE(memory_cache_->Find(ganesh_key_str));
 }
 
 // Tests that the cache can be safely written to and read from by multiple
@@ -279,6 +308,90 @@ class GpuPersistentCacheAsyncTest : public GpuPersistentCacheTest {
     return async_cache;
   }
 };
+
+// Tests that when `async_write_options.task_runner` is a background sequence
+// different from the calling thread, `InitializeCache` offloads database
+// binding and initialization to a background worker while synchronizing
+// concurrent loads and stores without false cache misses.
+TEST_F(GpuPersistentCacheTest, InitializeCacheOffloadedToBackgroundTaskRunner) {
+  base::test::ScopedFeatureList feature_list{
+      features::kGpuPersistentCacheAsyncInitialize};
+  const std::string key_existing = "key_existing_on_disk";
+  const std::string value_existing = "value_existing_on_disk";
+  const std::string key_before = "key_before_init";
+  const std::string value_before = "value_before_init";
+
+  // Seed an existing entry on disk first.
+  {
+    auto cache = base::MakeRefCounted<GpuPersistentCache>(
+        "TestAsyncInit", MakeDefaultMemoryCache());
+    ASSERT_OK_AND_ASSIGN(
+        auto pending_backend,
+        backend_storage_->MakePendingBackend(
+            base::FilePath(FILE_PATH_LITERAL("AsyncInit")),
+            /*single_connection=*/true, /*journal_mode_wal=*/true));
+    cache->InitializeCache(std::move(pending_backend));
+    cache->StoreData(key_existing, base::as_byte_span(value_existing));
+  }
+
+  {
+    GpuPersistentCache::AsyncDiskWriteOpts options;
+    options.task_runner = base::ThreadPool::CreateSequencedTaskRunner(
+        {base::MayBlock(), base::TaskPriority::BEST_EFFORT});
+    ASSERT_FALSE(options.task_runner->RunsTasksInCurrentSequence());
+
+    auto cache = base::MakeRefCounted<GpuPersistentCache>(
+        "TestAsyncInit", MakeDefaultMemoryCache(),
+        GpuPersistentCache::MetadataOpts{}, std::move(options));
+
+    // Store an entry before calling InitializeCache().
+    cache->StoreData(key_before, base::as_byte_span(value_before));
+
+    ASSERT_OK_AND_ASSIGN(
+        auto pending_backend,
+        backend_storage_->MakePendingBackend(
+            base::FilePath(FILE_PATH_LITERAL("AsyncInit")),
+            /*single_connection=*/true, /*journal_mode_wal=*/true));
+
+    // Calling InitializeCache() from the main thread posts initialization to a
+    // background worker thread. Immediately loading `key_existing` without
+    // pumping the main thread loop must wait for the in-flight initialization
+    // and hit the disk cache rather than returning a false miss.
+    cache->InitializeCache(std::move(pending_backend));
+
+    std::vector<uint8_t> buffer_existing(value_existing.size());
+    EXPECT_EQ(cache->LoadData(key_existing, buffer_existing),
+              value_existing.size());
+    EXPECT_EQ(std::string(buffer_existing.begin(), buffer_existing.end()),
+              value_existing);
+
+    // Wait for delayed disk writes of `key_before` to flush.
+    task_environment_.FastForwardBy(base::Seconds(2));
+  }
+
+  // Reopen the cache synchronously from disk and verify both entries exist.
+  {
+    auto cache = base::MakeRefCounted<GpuPersistentCache>(
+        "TestAsyncInit", MakeDefaultMemoryCache());
+    ASSERT_OK_AND_ASSIGN(
+        auto pending_backend,
+        backend_storage_->MakePendingBackend(
+            base::FilePath(FILE_PATH_LITERAL("AsyncInit")),
+            /*single_connection=*/true, /*journal_mode_wal=*/true));
+    cache->InitializeCache(std::move(pending_backend));
+
+    std::vector<uint8_t> buffer_existing(value_existing.size());
+    EXPECT_EQ(cache->LoadData(key_existing, buffer_existing),
+              value_existing.size());
+    EXPECT_EQ(std::string(buffer_existing.begin(), buffer_existing.end()),
+              value_existing);
+
+    std::vector<uint8_t> buffer_before(value_before.size());
+    EXPECT_EQ(cache->LoadData(key_before, buffer_before), value_before.size());
+    EXPECT_EQ(std::string(buffer_before.begin(), buffer_before.end()),
+              value_before);
+  }
+}
 
 // Tests that when an async task runner is used, the data is written to disk
 // after a delay. It also verifies that the underlying DiskCache is kept alive
@@ -630,6 +743,181 @@ TEST_F(GpuPersistentCacheTest, MetadataFirstEntriesLoadedToMemory) {
       }
     }
   }
+}
+
+// Verifies that OnReleaseMemory purges the in-memory cache.
+TEST_F(GpuPersistentCacheTest, OnReleaseMemory) {
+  const std::string key = "my_key";
+  const std::string value = "my_value";
+
+  cache_->StoreData(key, base::as_byte_span(value));
+  EXPECT_NE(nullptr, memory_cache_->Find(key));
+  EXPECT_EQ(value.size(), cache_->FindKey(key));
+
+  cache_->OnReleaseMemory(base::kCriticalMemoryPressureThreshold);
+
+  EXPECT_EQ(nullptr, memory_cache_->Find(key));
+  EXPECT_EQ(0u, cache_->FindKey(key));
+}
+
+// Verifies that GpuPersistentCacheCollection::OnReleaseMemory purges all
+// managed caches.
+TEST_F(GpuPersistentCacheTest, CollectionOnReleaseMemory) {
+  GpuPersistentCacheCollection collection(
+      1024, GpuPersistentCache::MetadataOpts(),
+      GpuPersistentCache::AsyncDiskWriteOpts());
+  auto cache_graphite = collection.GetCache(
+      gpu::GpuDiskCacheHandle(kGraphiteDawnGpuDiskCacheHandle));
+  auto cache_gr_shader =
+      collection.GetCache(gpu::GpuDiskCacheHandle(kGrShaderGpuDiskCacheHandle));
+
+  const std::string key_graphite = "my_key_graphite";
+  const std::string value_graphite = "my_value_graphite";
+  const std::string key_gr_shader = "my_key_gr_shader";
+  const std::string value_gr_shader = "my_value_gr_shader";
+
+  cache_graphite->StoreData(key_graphite, base::as_byte_span(value_graphite));
+  cache_gr_shader->StoreData(key_gr_shader,
+                             base::as_byte_span(value_gr_shader));
+
+  EXPECT_EQ(value_graphite.size(), cache_graphite->FindKey(key_graphite));
+  EXPECT_EQ(value_gr_shader.size(), cache_gr_shader->FindKey(key_gr_shader));
+
+  collection.OnReleaseMemory(base::kCriticalMemoryPressureThreshold);
+
+  EXPECT_EQ(0u, cache_graphite->FindKey(key_graphite));
+  EXPECT_EQ(0u, cache_gr_shader->FindKey(key_gr_shader));
+}
+
+TEST_F(GpuPersistentCacheTest, OnUpdateMemoryLimitStateful) {
+  base::test::ScopedFeatureList feature_list{base::kStatefulMemoryPressure};
+  static constexpr std::string_view kKey1 = "key1";
+  static constexpr std::string_view kData1 = "data1";
+  static constexpr std::string_view kKey2 = "key2";
+  static constexpr std::string_view kData2 = "data2";
+  static constexpr size_t kSingleEntrySize = kKey1.size() + kData1.size();
+  // Under moderate pressure (50%), capacity scales to 25% of kCacheSize.
+  // Set kCacheSize = 4 * kSingleEntrySize so that exactly 1 entry fits under
+  // moderate pressure.
+  static constexpr size_t kCacheSize = 4u * kSingleEntrySize;
+
+  scoped_refptr<MemoryCache> memory_cache =
+      base::MakeRefCounted<MemoryCache>(kCacheSize);
+  auto cache = base::MakeRefCounted<GpuPersistentCache>("Test", memory_cache);
+
+  cache->StoreData(kKey1, base::as_byte_span(kData1));
+  cache->StoreData(kKey2, base::as_byte_span(kData2));
+  EXPECT_EQ(kData1.size(), cache->FindKey(kKey1));
+  EXPECT_EQ(kData2.size(), cache->FindKey(kKey2));
+
+  // Non-destructive update: OnUpdateMemoryLimit must not evict any entries.
+  cache->OnUpdateMemoryLimit(base::kModerateMemoryPressureThreshold);
+  EXPECT_EQ(kData1.size(), cache->FindKey(kKey1));
+  EXPECT_EQ(kData2.size(), cache->FindKey(kKey2));
+
+  // Explicit release: OnReleaseMemory evicts down to the moderate threshold.
+  cache->OnReleaseMemory(base::kModerateMemoryPressureThreshold);
+  // Least recently used entry (kKey1) is evicted.
+  EXPECT_EQ(0u, cache->FindKey(kKey1));
+  EXPECT_EQ(kData2.size(), cache->FindKey(kKey2));
+
+  // Under critical pressure, all entries are evicted and the limit becomes 0.
+  cache->OnReleaseMemory(base::kCriticalMemoryPressureThreshold);
+  EXPECT_EQ(0u, cache->FindKey(kKey1));
+  EXPECT_EQ(0u, cache->FindKey(kKey2));
+
+  // Attempting to store while critical limit (0) is active fails.
+  cache->StoreData(kKey1, base::as_byte_span(kData1));
+  EXPECT_EQ(0u, cache->FindKey(kKey1));
+
+  // Restoring memory limit allows storing new entries again.
+  cache->OnUpdateMemoryLimit(base::kNoMemoryPressureThreshold);
+  cache->StoreData(kKey1, base::as_byte_span(kData1));
+  EXPECT_EQ(kData1.size(), cache->FindKey(kKey1));
+}
+
+TEST_F(GpuPersistentCacheTest, CollectionOnUpdateMemoryLimitStateful) {
+  base::test::ScopedFeatureList feature_list{base::kStatefulMemoryPressure};
+  static constexpr std::string_view kKey1 = "key1";
+  static constexpr std::string_view kData1 = "data1";
+  static constexpr std::string_view kKey2 = "key2";
+  static constexpr std::string_view kData2 = "data2";
+  static constexpr size_t kSingleEntrySize = kKey1.size() + kData1.size();
+  static constexpr size_t kCacheSize = 4u * kSingleEntrySize;
+
+  GpuPersistentCacheCollection collection(
+      kCacheSize, GpuPersistentCache::MetadataOpts(),
+      GpuPersistentCache::AsyncDiskWriteOpts());
+  auto cache_graphite = collection.GetCache(
+      gpu::GpuDiskCacheHandle(kGraphiteDawnGpuDiskCacheHandle));
+  auto cache_gr_shader =
+      collection.GetCache(gpu::GpuDiskCacheHandle(kGrShaderGpuDiskCacheHandle));
+
+  cache_graphite->StoreData(kKey1, base::as_byte_span(kData1));
+  cache_graphite->StoreData(kKey2, base::as_byte_span(kData2));
+  cache_gr_shader->StoreData(kKey1, base::as_byte_span(kData1));
+  cache_gr_shader->StoreData(kKey2, base::as_byte_span(kData2));
+
+  EXPECT_EQ(kData1.size(), cache_graphite->FindKey(kKey1));
+  EXPECT_EQ(kData2.size(), cache_graphite->FindKey(kKey2));
+  EXPECT_EQ(kData1.size(), cache_gr_shader->FindKey(kKey1));
+  EXPECT_EQ(kData2.size(), cache_gr_shader->FindKey(kKey2));
+
+  // Non-destructive update: OnUpdateMemoryLimit must not evict any entries.
+  collection.OnUpdateMemoryLimit(base::kModerateMemoryPressureThreshold);
+  EXPECT_EQ(kData1.size(), cache_graphite->FindKey(kKey1));
+  EXPECT_EQ(kData2.size(), cache_graphite->FindKey(kKey2));
+  EXPECT_EQ(kData1.size(), cache_gr_shader->FindKey(kKey1));
+  EXPECT_EQ(kData2.size(), cache_gr_shader->FindKey(kKey2));
+
+  // Explicit release: OnReleaseMemory evicts down to moderate threshold across
+  // all caches.
+  collection.OnReleaseMemory(base::kModerateMemoryPressureThreshold);
+  EXPECT_EQ(0u, cache_graphite->FindKey(kKey1));
+  EXPECT_EQ(kData2.size(), cache_graphite->FindKey(kKey2));
+  EXPECT_EQ(0u, cache_gr_shader->FindKey(kKey1));
+  EXPECT_EQ(kData2.size(), cache_gr_shader->FindKey(kKey2));
+
+  // Under critical pressure, all entries are evicted.
+  collection.OnReleaseMemory(base::kCriticalMemoryPressureThreshold);
+  EXPECT_EQ(0u, cache_graphite->FindKey(kKey1));
+  EXPECT_EQ(0u, cache_graphite->FindKey(kKey2));
+  EXPECT_EQ(0u, cache_gr_shader->FindKey(kKey1));
+  EXPECT_EQ(0u, cache_gr_shader->FindKey(kKey2));
+
+  // Restoring memory limit allows storing new entries again.
+  collection.OnUpdateMemoryLimit(base::kNoMemoryPressureThreshold);
+  cache_graphite->StoreData(kKey1, base::as_byte_span(kData1));
+  cache_gr_shader->StoreData(kKey1, base::as_byte_span(kData1));
+  EXPECT_EQ(kData1.size(), cache_graphite->FindKey(kKey1));
+  EXPECT_EQ(kData1.size(), cache_gr_shader->FindKey(kKey1));
+}
+
+TEST_F(GpuPersistentCacheTest, CollectionNewCreatedCacheRespectsMemoryLimit) {
+  base::test::ScopedFeatureList feature_list{base::kStatefulMemoryPressure};
+  static constexpr std::string_view kKey1 = "key1";
+  static constexpr std::string_view kData1 = "data1";
+  static constexpr size_t kSingleEntrySize = kKey1.size() + kData1.size();
+  static constexpr size_t kCacheSize = 4u * kSingleEntrySize;
+
+  GpuPersistentCacheCollection collection(
+      kCacheSize, GpuPersistentCache::MetadataOpts(),
+      GpuPersistentCache::AsyncDiskWriteOpts());
+
+  // Set memory limit to critical before creating any caches in the collection.
+  collection.OnUpdateMemoryLimit(base::kCriticalMemoryPressureThreshold);
+
+  auto cache = collection.GetCache(
+      gpu::GpuDiskCacheHandle(kGraphiteDawnGpuDiskCacheHandle));
+
+  // Newly created cache should have size limit of 0 under critical pressure.
+  cache->StoreData(kKey1, base::as_byte_span(kData1));
+  EXPECT_EQ(0u, cache->FindKey(kKey1));
+
+  // Restoring memory limit allows storing new entries again.
+  collection.OnUpdateMemoryLimit(base::kNoMemoryPressureThreshold);
+  cache->StoreData(kKey1, base::as_byte_span(kData1));
+  EXPECT_EQ(kData1.size(), cache->FindKey(kKey1));
 }
 
 // Test fixture which is friends with the CacheMetadata internal class in

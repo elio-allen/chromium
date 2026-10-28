@@ -18,6 +18,50 @@
 
 namespace ui {
 
+namespace {
+
+bool IsPresentationalButtonDescendant(const BrowserAccessibility& node) {
+  if (node.IsText()) {
+    return true;
+  }
+
+  const AXNodeData& data = node.GetData();
+  if (data.IsTextField()) {
+    return false;
+  }
+  if (data.HasStringAttribute(ax::mojom::StringAttribute::kChildTreeId)) {
+    return false;
+  }
+  if (data.IsClickable() || data.HasState(ax::mojom::State::kFocusable)) {
+    return false;
+  }
+  if (data.IsRangeValueSupported()) {
+    return false;
+  }
+
+  for (const auto& child : node.PlatformChildren()) {
+    if (!IsPresentationalButtonDescendant(child)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool HasOnlyPresentationalButtonDescendants(
+    const BrowserAccessibility& button) {
+  for (auto it = button.InternalChildrenBegin();
+       it != button.InternalChildrenEnd(); ++it) {
+    if (!IsPresentationalButtonDescendant(*it.get())) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+}  // namespace
+
 // static
 std::unique_ptr<BrowserAccessibility> BrowserAccessibility::Create(
     BrowserAccessibilityManager* manager,
@@ -160,6 +204,19 @@ BrowserAccessibility* BrowserAccessibilityMac::PlatformGetChild(
   return nullptr;
 }
 
+bool BrowserAccessibilityMac::IsLeaf() const {
+  if (BrowserAccessibility::IsLeaf()) {
+    return true;
+  }
+
+  // TODO(https://github.com/w3c/aria/issues/2856): Reassess how buttons with
+  // non-presentational descendants are detected and treated, and whether this
+  // behavior should be platform-agnostic, once the standards discussion is
+  // resolved.
+  return GetRole() == ax::mojom::Role::kButton &&
+         HasOnlyPresentationalButtonDescendants(*this);
+}
+
 BrowserAccessibility* BrowserAccessibilityMac::PlatformGetFirstChild() const {
   return PlatformGetChild(0);
 }
@@ -207,6 +264,11 @@ BrowserAccessibility* BrowserAccessibilityMac::PlatformGetPreviousSibling()
 
 gfx::NativeViewAccessible BrowserAccessibilityMac::GetNativeViewAccessible() {
   return gfx::NativeViewAccessible(GetNativeWrapper());
+}
+
+gfx::NativeViewAccessible BrowserAccessibilityMac::GetNSWindow() {
+  id window = [GetNativeWrapper() window];
+  return gfx::NativeViewAccessible(window);
 }
 
 AXPlatformNode* BrowserAccessibilityMac::GetAXPlatformNode() const {

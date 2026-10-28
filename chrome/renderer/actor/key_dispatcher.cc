@@ -17,6 +17,7 @@
 #include "chrome/common/chrome_features.h"
 #include "chrome/renderer/actor/tool_utils.h"
 #include "chrome/renderer/actor/type_tool.h"
+#include "components/actor/core/actor_features.h"
 #include "components/actor/core/actor_logging.h"
 #include "components/actor/core/journal_details_builder.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
@@ -165,7 +166,7 @@ void KeyDispatcher::PrepareIncrementalTyping(base::TimeTicks start_time,
   // out, finish with an error.
   base::TimeDelta input_delay = 2 * last_input_delay;
   if (base::TimeTicks::Now() + input_delay - start_time >
-      features::kGlicActorPageStabilityTimeout.Get()) {
+      actor::kActorPageStabilityTimeout.Get()) {
     Finish(MakeResult(mojom::ActionResultCode::kObservedTargetElementChanged,
                       /*requires_page_stabilization=*/false,
                       "No editable element found before incremental typing"));
@@ -225,6 +226,8 @@ void KeyDispatcher::ContinueIncrementalTyping() {
       return;
     }
 
+    base::WeakPtr<KeyDispatcher> weak_this = weak_ptr_factory_.GetWeakPtr();
+
     // When typing into search boxes or overlay inputs, website scripts or
     // autocomplete handlers may automatically trigger full text selection (e.g.
     // via delayed select() calls or in response to initial key events).
@@ -243,12 +246,14 @@ void KeyDispatcher::ContinueIncrementalTyping() {
         if (!range.IsNull() && range.length() > 0 && range.StartOffset() == 0) {
           frame->SetEditableSelectionOffsets(range.EndOffset(),
                                              range.EndOffset());
+          if (!weak_this) {
+            return;
+          }
           has_cleared_auto_selection_ = true;
         }
       }
     }
 
-    base::WeakPtr<KeyDispatcher> weak_this = weak_ptr_factory_.GetWeakPtr();
     WebInputEventResult down_result = CreateAndDispatchKeyEvent(
         *widget, WebInputEvent::Type::kRawKeyDown, params);
 
@@ -327,7 +332,7 @@ void KeyDispatcher::ContinueIncrementalTyping() {
       // ensure a user-like input and to allow the page to process the typed
       // text. Only down is delayed to avoid doubling this longer delay and
       // since most inputs take action on the down event.
-      delay = features::kGlicActorTypeToolEnterDelay.Get();
+      delay = kActorTypeToolEnterDelayParam.Get();
     } else {
       delay = (is_key_down_ ? features::kGlicActorKeyDownDuration
                             : features::kGlicActorKeyUpDuration)

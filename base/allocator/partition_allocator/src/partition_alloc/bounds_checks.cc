@@ -13,7 +13,7 @@
 #include "partition_alloc/partition_alloc_base/compiler_specific.h"
 #include "partition_alloc/partition_alloc_base/numerics/checked_math.h"
 #include "partition_alloc/partition_alloc_check.h"
-#include "partition_alloc/partition_alloc_constants.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
 #include "partition_alloc/partition_direct_map_extent.h"
 #include "partition_alloc/partition_page.h"
 #include "partition_alloc/reservation_offset_table.h"
@@ -32,6 +32,36 @@ enum class SlotLiveness {
   kDontCheck,
 };
 
+template <SlotLiveness check>
+size_t UsableOrSmuggledSizeFrom(const std::ptrdiff_t offset,
+                                const SlotAddressAndSize slot_and_size) {
+  auto* slot_span = internal::SlotSpanMetadata::FromSlotStart(
+      slot_and_size.slot_start, offset);
+  const auto* root = PartitionRoot::FromSlotSpanMetadata(slot_span);
+  const size_t usable_size = root->GetSlotUsableSize(slot_span);
+
+#if PA_BUILDFLAG(CHECKED_SPAN_HAS_METADATA_SUPPORT)
+  if (root->brp_enabled()) [[likely]] {
+    internal::InSlotMetadata* metadata =
+        internal::InSlotMetadata::From(slot_and_size);
+    if constexpr (check == SlotLiveness::kCheck) {
+      metadata->EnsureAlive(slot_and_size.slot_start, slot_span);
+    }
+
+    if (metadata->IsSmuggledSizeAvailable()) {
+      auto smuggled_size =
+          internal::GetSmuggledSize(slot_and_size.slot_start, usable_size);
+      // The usable size is the absolute upper bound; if the smuggled
+      // size exceeds this, this slot has probably been corrupted.
+      PA_CHECK(smuggled_size <= usable_size);
+      return smuggled_size;
+    }
+  }
+#endif  // PA_BUILDFLAG(CHECKED_SPAN_HAS_METADATA_SUPPORT)
+
+  return usable_size;
+}
+
 template <SlotLiveness check = SlotLiveness::kDontCheck>
 PtrPosWithinAlloc IsPtrWithinSameAlloc(
     uintptr_t orig_address,
@@ -40,29 +70,17 @@ PtrPosWithinAlloc IsPtrWithinSameAlloc(
     internal::pool_handle pool,
     internal::ReservationOffsetTableAddressInfo offset_info) {
   const std::ptrdiff_t offset = internal::GetMetadataOffset(pool);
-  const auto [slot_start, slot_size] =
+  const auto slot_and_size =
       SlotAddressAndSize::From(orig_address, pool, offset_info, offset);
   // Don't use |orig_address| beyond this point at all. It was needed to
   // pick the right slot, but now we're dealing with very concrete addresses.
   // Zero it just in case, to catch errors.
   orig_address = 0;
 
-  auto* slot_span =
-      internal::SlotSpanMetadata::FromSlotStart(slot_start, offset);
-  auto* root = PartitionRoot::FromSlotSpanMetadata(slot_span);
+  size_t extent = UsableOrSmuggledSizeFrom<check>(offset, slot_and_size);
 
-#if PA_BUILDFLAG(CHECKED_SPAN_HAS_METADATA_SUPPORT)
-  if constexpr (check == SlotLiveness::kCheck) {
-    if (root->brp_enabled()) [[likely]] {
-      internal::InSlotMetadata* metadata =
-          internal::InSlotMetadataPointer(slot_start.value(), slot_size);
-      metadata->EnsureAlive(slot_start, slot_span);
-    }
-  }
-#endif  // PA_BUILDFLAG(CHECKED_SPAN_HAS_METADATA_SUPPORT)
-
-  uintptr_t object_addr = slot_start.value();
-  uintptr_t object_end = object_addr + root->GetSlotUsableSize(slot_span);
+  uintptr_t object_addr = slot_and_size.slot_start.value();
+  uintptr_t object_end = object_addr + extent;
   if (test_address < object_addr || object_end < test_address) [[unlikely]] {
     return PtrPosWithinAlloc::kFarOOB;
 #if PA_BUILDFLAG(BACKUP_REF_PTR_POISON_OOB_PTR)

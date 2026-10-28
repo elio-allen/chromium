@@ -4,7 +4,9 @@
 
 #include "third_party/blink/renderer/platform/fonts/generic_font_family_settings.h"
 
+#include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 
 namespace blink {
 
@@ -176,6 +178,72 @@ TEST(GenericFontFamilySettingsTest, TestFontListNotChanged) {
   EXPECT_FALSE(settings.UpdateStandard(AtomicString(",not exist, Arial")));
   EXPECT_EQ("Arial", settings.Standard());
   EXPECT_TRUE(settings.UpdateFixed(AtomicString(",not exist, Arial")));
+}
+
+TEST(GenericFontFamilySettingsTest, TestScriptFontListNotChangedBeforeQuery) {
+  GenericFontFamilySettings settings;
+
+  EXPECT_TRUE(settings.UpdateStandard(AtomicString(",not exist, Arial"),
+                                      USCRIPT_KATAKANA_OR_HIRAGANA));
+  // Repeatedly setting the same unresolved comma-separated font list before
+  // the script is ever queried should report no change without resolving it.
+  EXPECT_FALSE(settings.UpdateStandard(AtomicString(",not exist, Arial"),
+                                       USCRIPT_KATAKANA_OR_HIRAGANA));
+  EXPECT_EQ("Arial", settings.Standard(USCRIPT_KATAKANA_OR_HIRAGANA));
+  EXPECT_FALSE(settings.UpdateStandard(AtomicString(",not exist, Arial"),
+                                       USCRIPT_KATAKANA_OR_HIRAGANA));
+
+  // Updating an unresolved list whose first-available font is already cached to
+  // another cached list that resolves to the same font should also report no
+  // change.
+  EXPECT_TRUE(settings.UpdateStandard(AtomicString(",also not exist, Arial"),
+                                      USCRIPT_COMMON));
+  EXPECT_EQ("Arial", settings.Standard(USCRIPT_COMMON));
+  EXPECT_TRUE(settings.UpdateStandard(AtomicString(",not exist, Arial"),
+                                      USCRIPT_SIMPLIFIED_HAN));
+  EXPECT_FALSE(settings.UpdateStandard(AtomicString(",also not exist, Arial"),
+                                       USCRIPT_SIMPLIFIED_HAN));
+
+  // Also verify Fixed() with "Osaka" (which returns "Osaka-Mono" on macOS).
+  AtomicString fixed_list(",Osaka, not exist");
+  EXPECT_TRUE(settings.UpdateFixed(fixed_list, USCRIPT_KATAKANA_OR_HIRAGANA));
+  EXPECT_FALSE(settings.UpdateFixed(fixed_list, USCRIPT_KATAKANA_OR_HIRAGANA));
+#if BUILDFLAG(IS_MAC)
+  EXPECT_EQ("Osaka-Mono", settings.Fixed(USCRIPT_KATAKANA_OR_HIRAGANA));
+#else
+  EXPECT_EQ("Osaka", settings.Fixed(USCRIPT_KATAKANA_OR_HIRAGANA));
+#endif
+  EXPECT_FALSE(settings.UpdateFixed(fixed_list, USCRIPT_KATAKANA_OR_HIRAGANA));
+}
+
+TEST(GenericFontFamilySettingsTest, ArabicNastaliqFallbackToArabic) {
+  GenericFontFamilySettings settings;
+  settings.UpdateStandard(AtomicString("CustomStandard"));
+  settings.UpdateStandard(AtomicString("CustomArabicStandard"), USCRIPT_ARABIC);
+
+  {
+    ScopedNastaliqScriptForTest scoped_feature(true);
+    // When USCRIPT_ARABIC_NASTALIQ is not set, it falls back to USCRIPT_ARABIC.
+    EXPECT_EQ("CustomArabicStandard",
+              settings.Standard(USCRIPT_ARABIC_NASTALIQ));
+
+    // When USCRIPT_ARABIC_NASTALIQ is explicitly set, it takes precedence.
+    settings.UpdateStandard(AtomicString("CustomNastaliqStandard"),
+                            USCRIPT_ARABIC_NASTALIQ);
+    EXPECT_EQ("CustomNastaliqStandard",
+              settings.Standard(USCRIPT_ARABIC_NASTALIQ));
+    EXPECT_EQ("CustomArabicStandard", settings.Standard(USCRIPT_ARABIC));
+
+    // Clearing USCRIPT_ARABIC_NASTALIQ falls back to USCRIPT_ARABIC again.
+    settings.UpdateStandard(g_empty_atom, USCRIPT_ARABIC_NASTALIQ);
+    EXPECT_EQ("CustomArabicStandard",
+              settings.Standard(USCRIPT_ARABIC_NASTALIQ));
+  }
+
+  // When NastaliqScript is disabled, USCRIPT_ARABIC_NASTALIQ falls back
+  // directly to USCRIPT_COMMON.
+  ScopedNastaliqScriptForTest scoped_feature(false);
+  EXPECT_EQ("CustomStandard", settings.Standard(USCRIPT_ARABIC_NASTALIQ));
 }
 
 }  // namespace blink

@@ -67,6 +67,8 @@ class SurfaceEmbedWebPlugin : public blink::WebPlugin,
   void UpdateRenderThrottlingStatus(bool is_throttled,
                                     bool subtree_throttled,
                                     bool display_locked) override;
+  void DidChangeDataAttribute(const blink::WebString& name,
+                              const blink::WebString& new_value) override;
   blink::WebInputEventResult HandleInputEvent(
       const blink::WebCoalescedInputEvent& event,
       ui::Cursor* cursor) override;
@@ -76,10 +78,13 @@ class SurfaceEmbedWebPlugin : public blink::WebPlugin,
   void DidFailLoading(const blink::WebURLError& error) override;
   bool SupportsKeyboardFocus() const override;
 
+  class AccessibilityObserver;
+
  private:
   // Destroy via ->Destroy().
   ~SurfaceEmbedWebPlugin() override;
   SurfaceEmbedWebPlugin(const base::UnguessableToken& contents_id,
+                        bool allow_pinch_zoom,
                         content::RenderFrame* render_frame,
                         const blink::WebPluginParams& params);
 
@@ -92,6 +97,10 @@ class SurfaceEmbedWebPlugin : public blink::WebPlugin,
   // Called when the mojo channels disconnect.
   void OnHostDisconnected();
 
+  void SendAccessibilityInfo();
+
+  void OnAccessibilityModeEnabled();
+
   // mojom::SurfaceEmbed implementation:
   void SetFrameSinkId(const ::viz::FrameSinkId& frame_sink_id,
                       bool allow_paint_holding) override;
@@ -100,6 +109,7 @@ class SurfaceEmbedWebPlugin : public blink::WebPlugin,
   void ChildProcessGone() override;
   void RequestFocusOnEmbedElement(
       RequestFocusOnEmbedElementCallback callback) override;
+  void AdvanceFocusFromEmbedElement(bool reverse) override;
 
   // cc::ContentLayerClient, used only if we're painting a sad plugin.
   scoped_refptr<cc::DisplayItemList> PaintContentsToDisplayList() override;
@@ -109,6 +119,7 @@ class SurfaceEmbedWebPlugin : public blink::WebPlugin,
 
   // The child contents ID parsed from the `data-content-id` attribute.
   base::UnguessableToken contents_id_;
+  bool allow_pinch_zoom_;
 
   raw_ptr<blink::WebPluginContainer> container_ = nullptr;
   scoped_refptr<cc::SurfaceLayer> layer_;
@@ -135,6 +146,8 @@ class SurfaceEmbedWebPlugin : public blink::WebPlugin,
 
   mojo::AssociatedRemote<mojom::SurfaceEmbedHost> host_;
   mojo::AssociatedReceiver<mojom::SurfaceEmbed> receiver_{this};
+
+  std::unique_ptr<AccessibilityObserver> accessibility_observer_;
 };
 
 }  // namespace surface_embed

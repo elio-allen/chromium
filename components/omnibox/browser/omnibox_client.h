@@ -23,8 +23,8 @@
 #include "components/security_state/core/security_state.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/image/image.h"
 
 class AutocompleteResult;
@@ -68,6 +68,13 @@ class OmniboxClient {
 
     // Don't search at all.
     kCancel,
+
+    // No dialog was ever shown. Confirmation turned out to be unnecessary.
+    // The pending navigation must proceed as originally requested. This is
+    // distinct from kCancel: the user made no choice because they were never
+    // asked. Conflating the two silently drops the navigation
+    // (See https://crbug.com/540532980).
+    kNoDialogShown,
   };
 
   OmniboxClient() = default;
@@ -228,16 +235,24 @@ class OmniboxClient {
   virtual std::optional<lens::ContextualInputData> GetContextualInputData()
       const;
 
+  // Returns true if there is previous submitted thread context (files, tabs,
+  // etc.) in the session. Only relevant for co-browsing / composebox sessions.
+  virtual bool HasPreviousSubmittedThreadContext() const;
+
+  // Returns true if an auto-suggested tab is present or showing.
+  virtual bool HasAutoSuggestedTab() const;
+
   // Asks the `ExtensionOmniboxEventRouter` to process `match` for it.
   // Some more processing is done to separate the keyword from the
   // text if in keyword mode. `observer` is the OmniboxNavigationObserver that
   // was created by `CreateOmniboxNavigationObserver()` for `match`; in some
   // embedding contexts, processing an extension keyword involves invoking
   // action on this observer.
-  virtual void ProcessExtensionMatch(const std::u16string& text,
-                                     const TemplateURL* template_url,
-                                     const AutocompleteMatch& match,
-                                     WindowOpenDisposition disposition);
+  virtual void ProcessExtensionMatch(
+      const std::u16string& text,
+      const TemplateURL* template_url,
+      const AutocompleteMatch& match,
+      ui::mojom::WindowOpenDisposition disposition);
 
   // Called to notify clients that the omnibox input state has changed.
   virtual void OnInputStateChanged() {}
@@ -343,9 +358,9 @@ class OmniboxClient {
   virtual void OnAutocompleteAccept(
       const GURL& destination_url,
       TemplateURLRef::PostContent* post_content,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       ui::PageTransition transition,
-      AutocompleteMatchType::Type match_type,
+      omnibox::AutocompleteMatchType match_type,
       base::TimeTicks match_selection_timestamp,
       bool destination_url_entered_without_scheme,
       bool destination_url_entered_with_http_scheme,
@@ -355,7 +370,7 @@ class OmniboxClient {
 
   // Executes the given `action`.
   void ExecuteAction(OmniboxAction* action,
-                     WindowOpenDisposition disposition,
+                     ui::mojom::WindowOpenDisposition disposition,
                      base::TimeTicks match_selection_timestamp,
                      OmniboxAction::Client& action_client);
 
@@ -375,9 +390,9 @@ class OmniboxClient {
 
   // Navigates to `gurl` with the specified `disposition`. Used for handling
   // activations of the AI Mode page action icon.
-  virtual void OpenUrl(
-      GURL gurl,
-      WindowOpenDisposition disposition = WindowOpenDisposition::CURRENT_TAB) {}
+  virtual void OpenUrl(GURL gurl,
+                       ui::mojom::WindowOpenDisposition disposition =
+                           ui::mojom::WindowOpenDisposition::kCurrentTab) {}
 
   // Even though IPH suggestions aren't selectable like normal matches, they can
   // have a 'learn more' or next-steps link. `OpenIphLink()` allows opening

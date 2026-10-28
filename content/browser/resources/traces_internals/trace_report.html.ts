@@ -10,13 +10,16 @@ import {ReportUploadState} from './traces_internals.mojom-webui.js';
 
 export function getHtml(this: TraceReportElement) {
   // clang-format off
-  return this.isHeader ? html`
-    <div class="info">Trace ID</div>
-    <div class="info">Date created</div>
-    <div class="info">Scenario</div>
-    <div class="info">Triggered rule</div>
-    <div class="info">Uncompressed size</div>` : (this.trace !== null ?
-    html`<div>
+  return html`
+${this.isHeader ? html`
+  <div class="info">Trace ID</div>
+  <div class="info">Date created</div>
+  <div class="info">Scenario</div>
+  <div class="info">Triggered rule</div>
+  <div class="info">Uncompressed size</div>
+` : html`
+  ${this.trace !== null ? html`
+    <div>
       <button class="clickable-field copiable"
           title="${getTokenAsUuidString(this.trace.uuid)}"
           @click="${this.onCopyUuidClick_}">
@@ -51,9 +54,7 @@ export function getHtml(this: TraceReportElement) {
     </div>
     <div class="actions-container">
     <cr-icon-button class="action-button" title="Upload Trace"
-          iron-icon="${this.webuiRoundedIconsEnabled_
-              ? 'trace-report-icons:cloud-upload'
-              : 'trace-report-icons:cloud_upload-old'}"
+          iron-icon="trace-report-icons:cloud_upload"
           ?hidden="${!this.uploadStateEqual_(
             this.trace, ReportUploadState.kNotUploaded)}"
           ?disabled="${this.isManualUploadDisabled_(this.trace)}"
@@ -70,6 +71,7 @@ export function getHtml(this: TraceReportElement) {
           ?disabled="${this.isLoading}">
       </cr-icon-button>
     </div>
-    ` : nothing);
+  ` : nothing}
+`}`;
   // clang-format on
 }

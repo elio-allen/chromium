@@ -11,7 +11,7 @@
 #import "base/mac/mac_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/threading/thread_restrictions.h"
-#import "content/app_shim_remote_cocoa/web_contents_occlusion_checker_mac.h"
+#import "components/remote_cocoa/app_shim/window_occlusion_checker_mac.h"
 #import "content/app_shim_remote_cocoa/web_drag_source_mac.h"
 #import "content/browser/web_contents/web_contents_view_mac.h"
 #import "content/browser/web_contents/web_drag_dest_mac.h"
@@ -20,6 +20,7 @@
 #include "ui/base/clipboard/clipboard_constants.h"
 #include "ui/base/clipboard/clipboard_util_mac.h"
 #include "ui/base/clipboard/custom_data_helper.h"
+#include "ui/base/cocoa/drag_permission.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/platform_event.h"
@@ -136,8 +137,19 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
 }
 
 + (void)initialize {
-  // Create the WebContentsOcclusionCheckerMac shared instance.
-  [WebContentsOcclusionCheckerMac sharedInstance];
+  [WindowOcclusionCheckerMac setWindowPredicate:[](NSWindow* window) -> BOOL {
+    return [window containsWebContentsViewCocoa];
+  }
+      canPerformUpdatesPredicate:[]() -> BOOL {
+        auto* content_client = content::GetContentClient();
+        if (!content_client) {
+          return NO;
+        }
+        auto* browser = content_client->browser();
+        return !(browser && browser->IsShuttingDown());
+      }];
+  // Create the WindowOcclusionCheckerMac shared instance.
+  [WindowOcclusionCheckerMac sharedInstance];
 }
 
 - (instancetype)initWithViewsHostableView:(ui::ViewsHostableView*)v {
@@ -241,8 +253,9 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
                         image:(NSImage*)image
                        offset:(NSPoint)offset
                  isPrivileged:(BOOL)isPrivileged {
-  if (!_host)
+  if (!_host || !ui::IsDragSessionInitiationAllowed()) {
     return;
+  }
 
   NSPoint mouseLocation = [self.window mouseLocationOutsideOfEventStream];
   NSEvent* dragEvent = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDragged
@@ -325,10 +338,16 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
   return _dragOperation;
 }
 
+- (void)draggingSession:(NSDraggingSession*)session
+       willBeginAtPoint:(NSPoint)screenPoint {
+  ui::SetDragSessionInProgress(true);
+}
+
 // Called when a drag initiated in our view ends.
 - (void)draggingSession:(NSDraggingSession*)session
            endedAtPoint:(NSPoint)screenPoint
               operation:(NSDragOperation)operation {
+  ui::SetDragSessionInProgress(false);
   if (!_host) {
     return;
   }
@@ -508,7 +527,11 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
   if (_willSetWebContentsOccludedAfterDelay)
     return;
 
-  // Coalesce one second's worth of occlusion updates.
+  // Coalesce one second's worth of occlusion updates.  Note: the occlusion hide
+  // delay in `views::NativeWidgetMacNSWindowHost::OnWindowOcclusionChanged`
+  // should stay longer than this delay. Update it if this changes. (This is not
+  // a correctness issue, which is why it's not enforced by something stronger
+  // than a comment).
   const NSTimeInterval kOcclusionUpdateDelayInSeconds = 1.0;
   [self performSelector:@selector(performDelayedSetWebContentsOccluded)
              withObject:nil
@@ -557,6 +580,13 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
         removeObserver:self
                   name:NSWindowDidChangeOcclusionStateNotification
                 object:oldWindow];
+    if (oldWindow != newWindow && [oldWindow isOccluded]) {
+      // If removing this view leaves `oldWindow` without any web contents, an
+      // update pass will clear its occluded state (whereas a synchronous tab
+      // switch will attach the replacement before the pass runs).
+      [[WindowOcclusionCheckerMac sharedInstance]
+          scheduleOcclusionStateUpdates];
+    }
   }
 
   if (newWindow) {
@@ -570,20 +600,23 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
 - (void)windowChangedOcclusionState:(NSNotification*)aNotification {
   // Only respond to occlusion notifications sent by the occlusion checker.
   NSDictionary* userInfo = [aNotification userInfo];
-  NSString* occlusionCheckerKey = [WebContentsOcclusionCheckerMac className];
+  NSString* occlusionCheckerKey = [WindowOcclusionCheckerMac className];
   if (userInfo[occlusionCheckerKey] != nil)
     [self updateWebContentsVisibility];
 }
 
 - (void)viewDidMoveToWindow {
+  [super viewDidMoveToWindow];
   [self updateWebContentsVisibility];
 }
 
 - (void)viewDidHide {
+  [super viewDidHide];
   [self updateWebContentsVisibility];
 }
 
 - (void)viewDidUnhide {
+  [super viewDidUnhide];
   [self updateWebContentsVisibility];
 }
 

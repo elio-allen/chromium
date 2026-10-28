@@ -13,6 +13,8 @@
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 
 using content::GlobalRequestID;
 using content::NavigationController;
@@ -36,7 +38,7 @@ NavigateParams::NavigateParams(Profile* a_profile,
                                const GURL& a_url,
                                ui::PageTransition a_transition)
     : url(a_url),
-      disposition(WindowOpenDisposition::NEW_FOREGROUND_TAB),
+      disposition(WindowOpenDisposition::kNewForegroundTab),
       transition(a_transition),
       window_action(WindowAction::kShowWindow),
       initiating_profile(a_profile) {}
@@ -48,7 +50,7 @@ NavigateParams::~NavigateParams() = default;
 void NavigateParams::FillNavigateParamsFromOpenURLParams(
     const content::OpenURLParams& params) {
 #if DCHECK_IS_ON()
-  DCHECK(params.Valid());
+  CHECK(params.Valid(), base::NotFatalUntil::M162);
 #endif
 
   this->initiator_frame_token = params.initiator_frame_token;

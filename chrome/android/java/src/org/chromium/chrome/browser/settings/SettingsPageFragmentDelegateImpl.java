@@ -18,13 +18,16 @@ import android.view.ContextThemeWrapper;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewGroup.LayoutParams;
 import android.widget.LinearLayout;
 
 import androidx.appcompat.widget.Toolbar;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentActivity;
 import androidx.fragment.app.FragmentManager;
+import androidx.fragment.app.FragmentTransaction;
 import androidx.preference.PreferenceFragmentCompat;
+import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.appbar.AppBarLayout;
 
@@ -33,6 +36,7 @@ import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.OneshotSupplierImpl;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
+import org.chromium.build.annotations.MonotonicNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
@@ -54,9 +58,13 @@ import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.ui.UiUtils;
 import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
 
 /**
  * Implementation of {@link SettingsPage.FragmentDelegate} that manages {@link SettingsPage}
@@ -83,13 +91,17 @@ public class SettingsPageFragmentDelegateImpl
     private final SettableMonotonicObservableSupplier<ModalDialogManager> mModalDialogSupplier;
     private final SettableNonNullObservableSupplier<Boolean> mBackPressStateSupplier;
     private final String mFragmentTag;
-
-    @SuppressWarnings("unused")
     private final Tab mTab;
 
     private @Nullable SettingsHostFragment mSettingsHostFragment;
+    private @Nullable SettingsInTabNavigationDelegate mSettingsNavigationDelegate;
     private FragmentManager.@Nullable FragmentLifecycleCallbacks mTitleUpdaterLifecycleCallbacks;
     private FragmentManager.@Nullable FragmentLifecycleCallbacks mSettingsMetricsReporter;
+    private FragmentManager.@Nullable FragmentLifecycleCallbacks mOptionsMenuLifecycleCallbacks;
+    private FragmentManager.@Nullable FragmentLifecycleCallbacks mEdgeToEdgeLifecycleCallbacks;
+    private @MonotonicNonNull Function<View, @Nullable EdgeToEdgePadAdjuster>
+            mEdgeToEdgePadAdjusterGenerator;
+    private final Map<Fragment, EdgeToEdgePadAdjuster> mEdgeToEdgePadAdjusters = new HashMap<>();
     private @Nullable Toolbar mToolbar;
     private @Nullable MultiColumnTitleUpdater mMultiColumnTitleUpdater;
     private @Nullable SettingsSearchCoordinator mSearchCoordinator;
@@ -106,8 +118,6 @@ public class SettingsPageFragmentDelegateImpl
             BottomSheetController bottomSheetController,
             ModalDialogManager modalDialogManager,
             Tab tab) {
-        assert ChromeFeatureList.sSettingsInTab.isEnabled()
-                : "SettingsInTab feature must be enabled to use this class.";
         mActivity = activity;
         mProfile = profile;
         mWindowAndroid = windowAndroid;
@@ -126,7 +136,32 @@ public class SettingsPageFragmentDelegateImpl
     }
 
     @Override
-    public void initSettings(ViewGroup containerView, String initialUrl) {
+    public void initSettings(
+            ViewGroup containerView,
+            String initialUrl,
+            Function<View, @Nullable EdgeToEdgePadAdjuster> padAdjusterGenerator) {
+        initSettingsInternal(
+                containerView, initialUrl, padAdjusterGenerator, /* attachToContainer= */ false);
+    }
+
+    /**
+     * Initializes settings and attaches the host fragment directly to the container for testing in
+     * standalone test activities (like {@code SettingsInTabTestActivity}) where there is only one
+     * tab, multi-tab recreation is not a concern, and tests expect synchronous initialization.
+     */
+    public void initSettingsForTesting(ViewGroup containerView, String initialUrl) {
+        initSettingsInternal(
+                containerView,
+                initialUrl,
+                /* padAdjusterGenerator= */ unused -> null,
+                /* attachToContainer= */ true);
+    }
+
+    private void initSettingsInternal(
+            ViewGroup containerView,
+            String initialUrl,
+            Function<View, @Nullable EdgeToEdgePadAdjuster> padAdjusterGenerator,
+            boolean attachToContainer) {
         if (!initialUrl.isEmpty()) {
             mPendingUrl = initialUrl;
         }
@@ -169,10 +204,24 @@ public class SettingsPageFragmentDelegateImpl
         fragmentManager.registerFragmentLifecycleCallbacks(
                 mSettingsMetricsReporter, /* recursive= */ true);
 
+        mOptionsMenuLifecycleCallbacks =
+                new FragmentManager.FragmentLifecycleCallbacks() {
+                    @Override
+                    public void onFragmentResumed(FragmentManager fm, Fragment f) {
+                        updateOptionsMenu();
+                    }
+                };
+        fragmentManager.registerFragmentLifecycleCallbacks(
+                mOptionsMenuLifecycleCallbacks, /* recursive= */ true);
+
+        mEdgeToEdgePadAdjusterGenerator = padAdjusterGenerator;
+        initEdgeToEdgeLifecycleCallbacks(fragmentManager);
+
         // Inflate the settings layout into the container view. Ensure it has the right theme.
         // TODO(crbug.com/521895796): Rename settings_activity.xml since with settings-in-a-tab it
         // doesn't map directly to its own activity.
-        Context themedContext = new ContextThemeWrapper(mActivity, R.style.Theme_Chromium_Settings);
+        Context themedContext =
+                new ContextThemeWrapper(mActivity, R.style.ThemeOverlay_Chromium_Settings);
         View settingsView =
                 LayoutInflater.from(themedContext).inflate(R.layout.settings_activity, null);
 
@@ -206,23 +255,14 @@ public class SettingsPageFragmentDelegateImpl
         mToolbar.setTitle(R.string.settings);
 
         // Set up Help Menu on Toolbar.
-        SettingsMenuHelper.onCreateOptionsMenu(mToolbar.getMenu(), mActivity);
-        SettingsMenuHelper.onPrepareOptionsMenu(mToolbar.getMenu());
+        updateOptionsMenu();
         mToolbar.setOnMenuItemClickListener(
                 item -> SettingsMenuHelper.onOptionsItemSelected(item, mActivity, this));
 
-        mSettingsHostFragment =
-                (SettingsHostFragment) fragmentManager.findFragmentByTag(mFragmentTag);
-        if (mSettingsHostFragment == null) {
-            mSettingsHostFragment = new SettingsHostFragment();
-            fragmentManager
-                    .beginTransaction()
-                    .add(fragmentContainer.getId(), mSettingsHostFragment, mFragmentTag)
-                    .commitAllowingStateLoss();
-        }
         var dependencyProvider =
                 new FragmentDependencyProvider(
                         mActivity,
+                        /* shownInTab= */ true,
                         mProfile,
                         windowAndroidSupplier,
                         mActivityResultTracker,
@@ -230,7 +270,41 @@ public class SettingsPageFragmentDelegateImpl
                         bottomSheetSupplier,
                         mModalDialogSupplier,
                         () -> mSearchCoordinator);
-        mSettingsHostFragment.setDependencyProvider(dependencyProvider);
+
+        if (ChromeFeatureList.sSettingsInTabUrlNav.isEnabled()) {
+            mSettingsNavigationDelegate = new SettingsInTabNavigationDelegate(mTab);
+        }
+
+        mSettingsHostFragment =
+                createOrReuseHostFragment(
+                        fragmentManager, fragmentContainer, attachToContainer, dependencyProvider);
+        mSettingsHostFragment.setSaveInstanceStateCallback(this::onSaveInstanceState);
+        if (mSettingsHostFragment.isAttachedToActivity()) {
+            attachEdgeToEdgeAdjusters(mSettingsHostFragment.getHostFragmentManager());
+        }
+
+        // If the host fragment view was attached to a different tab's container, attach it to this
+        // tab's container instead.
+        View hostView = mSettingsHostFragment.getView();
+        if (hostView != null && hostView.getParent() != fragmentContainer) {
+            UiUtils.removeViewFromParent(hostView);
+            LayoutParams layoutParams =
+                    new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT);
+            fragmentContainer.addView(hostView, layoutParams);
+        }
+
+        if (ChromeFeatureList.sSettingsInTabUrlNav.isEnabled()) {
+            if (mTab.getUrl() != null && !mTab.getUrl().isEmpty()) {
+                String restoredUrl = mTab.getUrl().getSpec();
+                if (restoredUrl != null && !restoredUrl.isEmpty()) {
+                    // Capture and apply the restored tab URL (e.g. "chrome://settings/appearance")
+                    // during tab initialization or session restore to synchronize the displayed
+                    // settings fragment with the restored WebContents URL.
+                    updateForUrl(restoredUrl);
+                }
+            }
+        }
+
         if (mSettingsHostFragment.isAdded()) {
             mSettingsHostFragment
                     .getChildFragmentManager()
@@ -255,6 +329,9 @@ public class SettingsPageFragmentDelegateImpl
             mInitialBreadcrumbPath =
                     SettingsBreadcrumbUtil.getInitialBreadcrumbPath(savedInstanceState);
         }
+
+        // Set initial navigation icon early to prevent delayed appearance on slow devices.
+        updateNavigationIcon();
 
         // During activity recreation savedInstanceState may be non-null but MultiColumnSettings may
         // not be attached yet. Check for the existing of MultiColumnSettings to decide whether to
@@ -282,15 +359,132 @@ public class SettingsPageFragmentDelegateImpl
         }
     }
 
+    /**
+     * Returns the {@link SettingsHostFragment} for this tab, creating and committing it if the tab
+     * does not have one yet.
+     *
+     * <p>A host is reused when the {@link FragmentManager} outlived this delegate, e.g. across an
+     * activity recreation: the fragment is restored from the manager while every dependency it was
+     * given is bound to the activity that has just gone away, so both branches have to hand it the
+     * new ones.
+     */
+    private SettingsHostFragment createOrReuseHostFragment(
+            FragmentManager fragmentManager,
+            ViewGroup fragmentContainer,
+            boolean attachToContainer,
+            FragmentDependencyProvider dependencyProvider) {
+        SettingsHostFragment existingHostFragment =
+                (SettingsHostFragment) fragmentManager.findFragmentByTag(mFragmentTag);
+        if (existingHostFragment != null) {
+            attachHostDependencies(existingHostFragment, dependencyProvider);
+            return existingHostFragment;
+        }
+
+        SettingsHostFragment hostFragment = new SettingsHostFragment();
+        // Attach before executing the transaction: the host creates its initial child fragments
+        // (MultiColumnSettings, MainSettings) during it, and they read both the dependency
+        // provider and the URL-aware SettingsNavigation in onFragmentAttached(), before they
+        // create their preferences.
+        attachHostDependencies(hostFragment, dependencyProvider);
+
+        FragmentTransaction transaction = fragmentManager.beginTransaction();
+        if (attachToContainer) {
+            // In standalone test activities, attach directly to the container because tests expect
+            // immediate view attachment.
+            transaction.add(fragmentContainer.getId(), hostFragment, mFragmentTag);
+        } else {
+            // Add the fragment without a container using two-parameter add() to prevent multiple
+            // settings tabs from colliding on the same container ID during activity recreation.
+            transaction.add(hostFragment, mFragmentTag);
+        }
+        transaction.commitAllowingStateLoss();
+
+        // Execute the transaction so the host creates its view and getView() is non-null for the
+        // caller.
+        fragmentManager.executePendingTransactions();
+        return hostFragment;
+    }
+
+    private void attachHostDependencies(
+            SettingsHostFragment hostFragment, FragmentDependencyProvider dependencyProvider) {
+        hostFragment.setDependencyProvider(dependencyProvider);
+        if (mSettingsNavigationDelegate != null) {
+            hostFragment.setSettingsNavigation(mSettingsNavigationDelegate);
+        }
+    }
+
     @Override
     public void updateForUrl(String url) {
-        // TODO(crbug.com/531873184): Called when the tab's URL changes, so handle
-        // mPendingUrl state, as well as showing the corresponding fragment
-        // via mSettingsHostFragment.
+        if (!ChromeFeatureList.sSettingsInTabUrlNav.isEnabled()) return;
+        if (mSettingsHostFragment == null) return;
+
+        // If MultiColumnSettings or its view hierarchy is not created yet
+        // (e.g. during initial NativePage construction before FragmentManager
+        // transaction commit completes), defer the URL update until
+        // onFragmentViewCreated via TitleUpdaterLifecycleCallbacks.
+        MultiColumnSettings multiColumnSettings = getMultiColumnSettings();
+        if (multiColumnSettings == null || multiColumnSettings.getView() == null) {
+            mPendingUrl = url;
+            mSettingsHostFragment.setInitialUrl(url);
+            return;
+        }
+
+        mPendingUrl = null;
+
+        // A Url arriving while search is open is the user asking to go somewhere else: an omnibox
+        // edit, a restored tab, a redirect. Let search stand down first, rather than replacing the
+        // page it is showing and purging the back stack it holds its own pages on underneath it.
+        if (mSearchCoordinator != null) {
+            mSearchCoordinator.exitSearchIfOpen();
+        }
+
+        // A settings URL is user editable and is replayed from history, so it may be missing
+        // arguments its page cannot do without, or name data that has since been deleted. Let the
+        // registry decide, and send the user to the fallback page rather than crashing.
+        SettingsFragmentRegistry.Resolution resolution =
+                SettingsFragmentRegistry.resolve(url, mProfile);
+        if (resolution.redirectUrl != null && mSettingsNavigationDelegate != null) {
+            // Replace rather than push: the entry being left is not a page the user can return to.
+            mSettingsNavigationDelegate.redirectFromNavigation(resolution.redirectUrl);
+            return;
+        }
+        var fragmentClass =
+                resolution.fragmentClass != null ? resolution.fragmentClass : MainSettings.class;
+
+        // If navigating to root chrome://settings URL (e.g. via Omnibox),
+        // clear any stored initial subpage URL on attached host fragment
+        // so that resetting the pane loads the default Account fragment
+        // without falling back to a stale initial URL.
+        if (MainSettings.class.equals(fragmentClass)) {
+            mSettingsHostFragment.clearInitialUrl();
+        }
+
+        Fragment fragment = null;
+        if (!MainSettings.class.equals(fragmentClass)) {
+            fragment = Fragment.instantiate(mActivity, fragmentClass.getName(), resolution.args);
+        }
+
+        // Transactions pass addToBackStack = false because browser backstack
+        // history is strictly managed by WebContents and navigation controller
+        // entries.
+        mSettingsHostFragment.showFragment(fragment, /* addToBackStack= */ false, /* tag= */ null);
     }
 
     @Override
     public void destroySettings() {
+        // TODO(crbug.com/566898692): Replace this workaround with a proper fix.
+        // When the tab is detached from the activity, e.g. by TabReparentingController before a
+        // theme change or fold/unfold recreates the activity, TabImpl freezes and destroys this
+        // page *before* the activity saves its instance state. Keep the host fragment in the
+        // FragmentManager so that its state (including the open detail page) is saved, restored
+        // and adopted by the new SettingsPage once the tab is re-attached. Snapshot the per-tab
+        // UI state now, because the objects that provide it are destroyed below.
+        boolean keepHostFragment = mSettingsHostFragment != null && mTab.isDetachedFromActivity();
+        Bundle savedStateSnapshot = new Bundle();
+        if (keepHostFragment) {
+            onSaveInstanceState(savedStateSnapshot);
+        }
+
         assert mActivity instanceof ActivityLifecycleDispatcherProvider;
         ((ActivityLifecycleDispatcherProvider) mActivity).getLifecycleDispatcher().unregister(this);
 
@@ -306,8 +500,24 @@ public class SettingsPageFragmentDelegateImpl
         fragmentManager.unregisterFragmentLifecycleCallbacks(mSettingsMetricsReporter);
         mSettingsMetricsReporter = null;
 
+        if (mOptionsMenuLifecycleCallbacks != null) {
+            fragmentManager.unregisterFragmentLifecycleCallbacks(mOptionsMenuLifecycleCallbacks);
+            mOptionsMenuLifecycleCallbacks = null;
+        }
+
+        if (mEdgeToEdgeLifecycleCallbacks != null) {
+            fragmentManager.unregisterFragmentLifecycleCallbacks(mEdgeToEdgeLifecycleCallbacks);
+            mEdgeToEdgeLifecycleCallbacks = null;
+        }
+
+        for (EdgeToEdgePadAdjuster adjuster : mEdgeToEdgePadAdjusters.values()) {
+            adjuster.destroy();
+        }
+        mEdgeToEdgePadAdjusters.clear();
+
         MultiColumnSettings multiColumnSettings = getMultiColumnSettings();
         if (multiColumnSettings != null) {
+            multiColumnSettings.setOnCreateViewRunnable(null);
             if (mMultiColumnTitleUpdater != null) {
                 multiColumnSettings.removeObserver(mMultiColumnTitleUpdater);
             }
@@ -329,10 +539,31 @@ public class SettingsPageFragmentDelegateImpl
         }
 
         if (mSettingsHostFragment != null) {
-            fragmentManager
-                    .beginTransaction()
-                    .remove(mSettingsHostFragment)
-                    .commitAllowingStateLoss();
+            boolean isUrlNavEnabled = ChromeFeatureList.sSettingsInTabUrlNav.isEnabled();
+            // Because the SettingsHostFragment is identified by mFragmentTag (derived from Tab ID),
+            // a new SettingsPage instantiated for the same Tab will adopt this fragment. If the
+            // Tab's current native page is a SettingsPage, it means this Tab has already
+            // transitioned to a new SettingsPage instance that has adopted our fragment. This can
+            // happen during url navigation after a chrome session has been restored (e.g.,
+            // navigating to a previous page in the Chrome navigation stack). In that case, do not
+            // destroy the shared host fragment or clear its callbacks.
+            boolean isAdoptedByNewPage =
+                    isUrlNavEnabled && mTab.getNativePage() instanceof SettingsPage;
+            if (keepHostFragment) {
+                mSettingsHostFragment.setSaveInstanceStateCallback(
+                        outState -> outState.putAll(savedStateSnapshot));
+                mSettingsHostFragment.setSearchOpenSupplier(null);
+            } else if (!isAdoptedByNewPage) {
+                mSettingsHostFragment.setSaveInstanceStateCallback(null);
+                mSettingsHostFragment.setSearchOpenSupplier(null);
+                if (isUrlNavEnabled) {
+                    mSettingsHostFragment.setSettingsNavigation(null);
+                }
+                fragmentManager
+                        .beginTransaction()
+                        .remove(mSettingsHostFragment)
+                        .commitAllowingStateLoss();
+            }
         }
         mSettingsHostFragment = null;
         mToolbar = null;
@@ -353,6 +584,14 @@ public class SettingsPageFragmentDelegateImpl
     public void onSaveInstanceState(Bundle outState, PersistableBundle outPersistentState) {}
 
     private @Nullable Bundle getSavedInstanceState() {
+        // Restore per-tab settings state (e.g. search coordinator, title updater, breadcrumbs)
+        // from this host fragment's bundle so multiple settings tabs don't collide in the
+        // Activity's shared saved instance state during Activity recreation (such as theme
+        // changes).
+        if (mSettingsHostFragment != null
+                && mSettingsHostFragment.getSavedInstanceState() != null) {
+            return mSettingsHostFragment.getSavedInstanceState();
+        }
         return mActivity instanceof AsyncInitializationActivity asyncActivity
                 ? asyncActivity.getSavedInstanceState()
                 : null;
@@ -372,11 +611,12 @@ public class SettingsPageFragmentDelegateImpl
                 new MultiColumnTitleUpdater(
                         savedInstanceState,
                         multiColumnSettings,
-                        mActivity,
+                        /* shownInTab= */ true,
                         titleContainer,
                         mToolbar::setTitle,
                         this::onTitleTapped,
-                        mInitialBreadcrumbPath);
+                        mInitialBreadcrumbPath,
+                        this::updateBackPressState);
         multiColumnSettings.addObserver(mMultiColumnTitleUpdater);
     }
 
@@ -388,22 +628,40 @@ public class SettingsPageFragmentDelegateImpl
     }
 
     @Override
+    public boolean isShownInTab() {
+        // This delegate is only created for settings hosted in a browser tab.
+        return true;
+    }
+
+    @Override
     public @Nullable Fragment getMainFragment() {
         // Allows tests to simulate activity attachment behavior.
         if (mSettingsHostFragment == null || !mSettingsHostFragment.isAttachedToActivity()) {
             return null;
         }
-        return mSettingsHostFragment.getActiveFragment();
+        return mSettingsHostFragment.getMainFragment();
     }
 
     @Override
     public @Nullable MultiColumnSettings getMultiColumnSettings() {
-        return (MultiColumnSettings) getMainFragment();
+        if (mSettingsHostFragment == null || !mSettingsHostFragment.isAttachedToActivity()) {
+            return null;
+        }
+        return mSettingsHostFragment.getMultiColumnSettings();
     }
 
     @Override
     public @Nullable SettingsSearchCoordinator getSearchCoordinator() {
         return mSearchCoordinator;
+    }
+
+    void setSearchCoordinatorForTesting(@Nullable SettingsSearchCoordinator searchCoordinator) {
+        mSearchCoordinator = searchCoordinator;
+    }
+
+    void setMultiColumnTitleUpdaterForTesting(
+            @Nullable MultiColumnTitleUpdater multiColumnTitleUpdater) {
+        mMultiColumnTitleUpdater = multiColumnTitleUpdater;
     }
 
     @Override
@@ -442,11 +700,36 @@ public class SettingsPageFragmentDelegateImpl
 
     private void createSearchCoordinator(
             MultiColumnSettings multiColumnSettings, @Nullable Bundle savedInstanceState) {
-        assert mSearchCoordinator == null;
+        // mSearchCoordinator may already be non-null if initialized during initSettings() before
+        // TitleUpdaterLifecycleCallbacks fired, or during activity recreation / theme change.
+        if (mSearchCoordinator != null) return;
+
         assert mToolbar != null;
         assert mSettingsHostFragment != null;
+
+        // containmentHelper can be null if mSettingsHostFragment is detached or not yet attached
+        // during activity recreation / theme changes.
         SettingsContainmentHelper containmentHelper = mSettingsHostFragment.getContainmentHelper();
-        assert containmentHelper != null;
+        if (containmentHelper == null) {
+            // SearchCoordinator requires containment item decorations to properly style search
+            // result highlights with rounded corners. Delay creation until SettingsHostFragment is
+            // attached and containmentHelper is available.
+            FragmentManager fragmentManager =
+                    ((FragmentActivity) mActivity).getSupportFragmentManager();
+            fragmentManager.registerFragmentLifecycleCallbacks(
+                    new FragmentManager.FragmentLifecycleCallbacks() {
+                        @Override
+                        public void onFragmentAttached(
+                                FragmentManager fm, Fragment f, Context context) {
+                            if (f == mSettingsHostFragment) {
+                                fm.unregisterFragmentLifecycleCallbacks(this);
+                                createSearchCoordinator(multiColumnSettings, savedInstanceState);
+                            }
+                        }
+                    },
+                    /* recursive= */ false);
+            return;
+        }
 
         mSearchCoordinator =
                 new SettingsSearchCoordinator(
@@ -454,10 +737,11 @@ public class SettingsPageFragmentDelegateImpl
                         mToolbar,
                         this::isTwoColumnSettingsVisible,
                         multiColumnSettings,
-                        containmentHelper.getItemDecorations(),
+                        containmentHelper,
                         mProfile,
                         this::updateFirstVisibleTitle,
-                        mModalDialogSupplier);
+                        mModalDialogSupplier,
+                        /* shownInTab= */ true);
 
         // Multi column settings may have already created its view (in case of Activity
         // re-creation), so initialize the search coordinator's view if it exists.
@@ -468,28 +752,50 @@ public class SettingsPageFragmentDelegateImpl
                     () -> assumeNonNull(mSearchCoordinator).initializeSearchUi(savedInstanceState));
         }
         multiColumnSettings.addObserver(mSearchCoordinator);
+
+        // Navigation asks the host whether search is open, so that pages opened from search stay
+        // on the fragment back stack instead of moving the tab.
+        mSettingsHostFragment.setSearchOpenSupplier(
+                () -> mSearchCoordinator != null && mSearchCoordinator.isSearchOpen());
     }
 
     private void updateFirstVisibleTitle(int index) {
-        assumeNonNull(mMultiColumnTitleUpdater).setFirstVisibleTitleIndex(index);
+        MultiColumnTitleUpdater updater = assumeNonNull(mMultiColumnTitleUpdater);
+        updater.closeSearch();
+        updater.setFirstVisibleTitleIndex(index);
     }
 
     @Override
     public void onTitleUpdated() {
         updateNavigationIcon();
+        updateOptionsMenu();
         updateBackPressState();
     }
 
     @Override
     public void onSlideStateUpdated(int newState) {
         updateNavigationIcon();
+        updateOptionsMenu();
         updateBackPressState();
     }
 
     @Override
     public void onHeaderLayoutUpdated() {
+        if (mSettingsHostFragment != null) {
+            mSettingsHostFragment.updateContainmentForAttachedFragments();
+        }
         updateNavigationIcon();
+        updateOptionsMenu();
         updateBackPressState();
+    }
+
+    private void updateOptionsMenu() {
+        if (mToolbar != null) {
+            SettingsMenuHelper.updateOptionsMenu(mToolbar, mActivity, this);
+            if (mSearchCoordinator != null) {
+                mSearchCoordinator.updateHelpMenuVisibility();
+            }
+        }
     }
 
     private void updateNavigationIcon() {
@@ -499,15 +805,28 @@ public class SettingsPageFragmentDelegateImpl
             SettingsMenuHelper.updateNavigationIcon(
                     mToolbar,
                     mActivity,
-                    /* show= */ true,
+                    /* shownInTab= */ true,
+                    /* show= */ shouldShowNavigationIcon(),
                     isTwoColumnSettingsVisible(),
                     isMainSettingsVisible());
         }
     }
 
+    private boolean shouldShowNavigationIcon() {
+        return mSearchCoordinator == null || mSearchCoordinator.shouldShowNavigationIcon();
+    }
+
     private boolean isMainSettingsVisible() {
         MultiColumnSettings multiColumnSettings = getMultiColumnSettings();
-        return multiColumnSettings != null && !multiColumnSettings.isLayoutOpen();
+        // If MultiColumnSettings is attached, use it.
+        if (multiColumnSettings != null) {
+            return !multiColumnSettings.isLayoutOpen();
+        }
+        // Before MultiColumnSettings is created or attached, check if an initial deep-link
+        // breadcrumb path exists. If not (or size <= 1), top-level main settings is being shown.
+        return mInitialBreadcrumbPath == null
+                || mInitialBreadcrumbPath.isEmpty()
+                || mInitialBreadcrumbPath.size() <= 1;
     }
 
     @Override
@@ -520,14 +839,22 @@ public class SettingsPageFragmentDelegateImpl
         if (mSearchCoordinator != null && mSearchCoordinator.handleBackAction()) {
             return BackPressResult.SUCCESS;
         }
+        if (mMultiColumnTitleUpdater != null && mMultiColumnTitleUpdater.handleBackAction()) {
+            return BackPressResult.SUCCESS;
+        }
         MultiColumnSettings multiColumnSettings = getMultiColumnSettings();
         if (multiColumnSettings != null) {
             if (multiColumnSettings.getBackStackEntryCount() > 0) {
                 multiColumnSettings.popBackStack();
                 return BackPressResult.SUCCESS;
             }
-            if (multiColumnSettings.getView() != null) {
-                var slidingPane = multiColumnSettings.getSlidingPaneLayout();
+            // When Url Navigation is enabled, the back press should not close the sliding
+            // pane, instead the back press should route to the Chrome navigation stack (see
+            // shouldNavigateUpOnBack()).
+            // This keeps the UI in-sync with the Url, while keep compatibility with the
+            // old navigation stack (e.g., still used for search results)
+            if (!ChromeFeatureList.sSettingsInTabUrlNav.isEnabled()) {
+                var slidingPane = multiColumnSettings.getSlidingPaneLayoutOrNull();
                 if (slidingPane != null && slidingPane.isSlideable() && slidingPane.isOpen()) {
                     slidingPane.closePane();
                     return BackPressResult.SUCCESS;
@@ -540,23 +867,58 @@ public class SettingsPageFragmentDelegateImpl
                 return BackPressResult.SUCCESS;
             }
         }
+        if (shouldNavigateUpOnBack()) {
+            assumeNonNull(mSettingsNavigationDelegate).navigateUp();
+            return BackPressResult.SUCCESS;
+        }
         return BackPressResult.FAILURE;
+    }
+
+    /**
+     * Returns whether a back press navigates up within settings rather than going back in the tab's
+     * history.
+     *
+     * <p>With URL navigation, this is the case on a subpage in single-column layout, i.e. whenever
+     * the toolbar shows a back button, which presses back. A subpage may have been opened directly
+     * from outside settings, e.g. "Edit homepage" on the NTP, and going back in the tab's history
+     * would then leave settings for the NTP rather than return to main settings, which is what the
+     * user expects from a subpage that slid in over main settings. Elsewhere, e.g. in two-column
+     * layout where main settings stays on screen, back presses go back in the tab's history.
+     */
+    private boolean shouldNavigateUpOnBack() {
+        if (!ChromeFeatureList.sSettingsInTabUrlNav.isEnabled()
+                || mSettingsNavigationDelegate == null) {
+            return false;
+        }
+        MultiColumnSettings multiColumnSettings = getMultiColumnSettings();
+        return multiColumnSettings != null
+                && !multiColumnSettings.isTwoColumn()
+                && multiColumnSettings.isLayoutOpen();
     }
 
     private void updateBackPressState() {
         boolean canHandle = false;
-        MultiColumnSettings multiColumnSettings = getMultiColumnSettings();
-        if (multiColumnSettings != null) {
-            if (multiColumnSettings.getBackStackEntryCount() > 0) {
-                canHandle = true;
-            } else if (multiColumnSettings.getView() != null) {
-                var slidingPane = multiColumnSettings.getSlidingPaneLayout();
-                if (slidingPane != null && slidingPane.isSlideable() && slidingPane.isOpen()) {
+        if (mMultiColumnTitleUpdater != null && mMultiColumnTitleUpdater.isSearchOpen()) {
+            canHandle = true;
+        } else {
+            MultiColumnSettings multiColumnSettings = getMultiColumnSettings();
+            if (multiColumnSettings != null) {
+                if (multiColumnSettings.getBackStackEntryCount() > 0) {
                     canHandle = true;
+                } else if (!ChromeFeatureList.sSettingsInTabUrlNav.isEnabled()) {
+                    // A back press should route through the Chrome navigation stack instead of
+                    // handling the slidingPaneLayout to keep the contents in-sync with the Url.
+                    var slidingPane = multiColumnSettings.getSlidingPaneLayoutOrNull();
+                    if (slidingPane != null && slidingPane.isSlideable() && slidingPane.isOpen()) {
+                        canHandle = true;
+                    }
+                } else {
+                    canHandle = shouldNavigateUpOnBack();
                 }
+            } else if (mSettingsHostFragment != null
+                    && mSettingsHostFragment.isAttachedToActivity()) {
+                canHandle = mSettingsHostFragment.getBackStackEntryCount() > 0;
             }
-        } else if (mSettingsHostFragment != null && mSettingsHostFragment.isAttachedToActivity()) {
-            canHandle = mSettingsHostFragment.getBackStackEntryCount() > 0;
         }
         mBackPressStateSupplier.set(canHandle);
     }
@@ -567,7 +929,12 @@ public class SettingsPageFragmentDelegateImpl
         @Override
         public void onFragmentViewCreated(
                 FragmentManager fm, Fragment f, View v, @Nullable Bundle savedFragmentState) {
-            if (f instanceof MultiColumnSettings multiColumnSettings) {
+            if (!(f instanceof MultiColumnSettings multiColumnSettings)) return;
+
+            // Ensure the MultiColumnSettings instance belongs to this tab's SettingsHostFragment
+            // so we don't bind to fragments created for other settings tabs.
+            if (mSettingsHostFragment == null
+                    || mSettingsHostFragment.containsChild(multiColumnSettings)) {
                 Bundle savedInstanceState = getSavedInstanceState();
                 createMultiColumnTitleUpdater(multiColumnSettings, v, savedInstanceState);
                 createSearchCoordinator(multiColumnSettings, savedInstanceState);
@@ -591,5 +958,115 @@ public class SettingsPageFragmentDelegateImpl
                 }
             }
         }
+    }
+
+    /**
+     * Returns whether the given fragment is a settings detail fragment hosted by this tab's {@link
+     * SettingsHostFragment} (i.e. excluding the host fragment and the multi-column container).
+     */
+    private boolean isSettingsDetailFragment(Fragment fragment) {
+        if (mSettingsHostFragment == null
+                || fragment == mSettingsHostFragment
+                || fragment instanceof MultiColumnSettings) {
+            return false;
+        }
+        return mSettingsHostFragment.containsFragment(fragment);
+    }
+
+    private void initEdgeToEdgeLifecycleCallbacks(FragmentManager fragmentManager) {
+        mEdgeToEdgeLifecycleCallbacks =
+                new FragmentManager.FragmentLifecycleCallbacks() {
+                    @Override
+                    public void onFragmentViewCreated(
+                            FragmentManager fm,
+                            Fragment f,
+                            View v,
+                            @Nullable Bundle savedInstanceState) {
+                        if (!isSettingsDetailFragment(f)) {
+                            return;
+                        }
+                        // Preferences have at most one RecyclerView, so finding the first one is
+                        // sufficient.
+                        RecyclerView recyclerView = findRecyclerView(v);
+                        if (recyclerView != null) {
+                            applyEdgeToEdgePadding(f, recyclerView);
+                        }
+                    }
+
+                    @Override
+                    public void onFragmentViewDestroyed(FragmentManager fm, Fragment f) {
+                        @Nullable EdgeToEdgePadAdjuster adjuster =
+                                mEdgeToEdgePadAdjusters.remove(f);
+                        if (adjuster != null) {
+                            adjuster.destroy();
+                        }
+                    }
+                };
+        fragmentManager.registerFragmentLifecycleCallbacks(
+                mEdgeToEdgeLifecycleCallbacks, /* recursive= */ true);
+    }
+
+    private void applyEdgeToEdgePadding(Fragment fragment, RecyclerView recyclerView) {
+        @Nullable EdgeToEdgePadAdjuster oldAdjuster = mEdgeToEdgePadAdjusters.remove(fragment);
+        if (oldAdjuster != null) {
+            oldAdjuster.destroy();
+        }
+        assert mEdgeToEdgePadAdjusterGenerator != null;
+        @Nullable EdgeToEdgePadAdjuster adjuster =
+                mEdgeToEdgePadAdjusterGenerator.apply(recyclerView);
+        if (adjuster != null) {
+            mEdgeToEdgePadAdjusters.put(fragment, adjuster);
+        }
+    }
+
+    /**
+     * Recursively attaches edge-to-edge pad adjusters to all settings detail fragments hosted under
+     * the given fragment manager.
+     */
+    private void attachEdgeToEdgeAdjusters(@Nullable FragmentManager fragmentManager) {
+        if (fragmentManager == null) return;
+
+        for (Fragment fragment : fragmentManager.getFragments()) {
+            if (fragment == null) continue;
+            if (isSettingsDetailFragment(fragment)) {
+                View view = fragment.getView();
+                if (view != null) {
+                    // Preferences have at most one RecyclerView, so finding the first one is
+                    // sufficient.
+                    RecyclerView recyclerView = findRecyclerView(view);
+                    if (recyclerView != null) {
+                        applyEdgeToEdgePadding(fragment, recyclerView);
+                    }
+                }
+            }
+            if (fragment.isAdded()) {
+                attachEdgeToEdgeAdjusters(fragment.getChildFragmentManager());
+            }
+        }
+    }
+
+    /** Recursively searches the given view hierarchy for the first {@link RecyclerView}. */
+    static @Nullable RecyclerView findRecyclerView(View view) {
+        if (view instanceof RecyclerView recyclerView) {
+            return recyclerView;
+        }
+        if (view instanceof ViewGroup viewGroup) {
+            for (int i = 0; i < viewGroup.getChildCount(); i++) {
+                RecyclerView found = findRecyclerView(viewGroup.getChildAt(i));
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
+    }
+
+    Map<Fragment, EdgeToEdgePadAdjuster> getEdgeToEdgePadAdjustersForTesting() {
+        return mEdgeToEdgePadAdjusters;
+    }
+
+    FragmentManager.@Nullable FragmentLifecycleCallbacks
+            getEdgeToEdgeLifecycleCallbacksForTesting() {
+        return mEdgeToEdgeLifecycleCallbacks;
     }
 }

@@ -14,7 +14,6 @@
 #include "chrome/browser/glic/test_support/glic_test_environment.h"
 #include "chrome/browser/glic/test_support/glic_test_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry.h"
@@ -24,6 +23,7 @@
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/side_panel/side_panel.h"
@@ -178,7 +178,7 @@ IN_PROC_BROWSER_TEST_F(GlicSidePanelCoordinatorTest,
 
 IN_PROC_BROWSER_TEST_F(GlicSidePanelCoordinatorTest,
                        IsGlicSidePanelActiveTest) {
-  SidePanelCoordinator::From(browser())->DisableAnimationsForTesting();
+  SidePanelUI::From(browser())->DisableAnimationsForTesting();
   ForceSigninAndGlicCapability(profile());
   ASSERT_TRUE(GlicEnabling::IsEnabledForProfile(profile()));
   CallOnGlicEnabledChanged();
@@ -209,21 +209,21 @@ IN_PROC_BROWSER_TEST_F(GlicSidePanelCoordinatorTest,
   EXPECT_TRUE(GlicSidePanelCoordinator::IsGlicSidePanelActive(first_tab));
 
   // Switch back to the first tab.
-  browser()->tab_strip_model()->ActivateTabAt(0);
+  browser()->GetTabStripModel()->ActivateTabAt(0);
 
   // The Glic side panel should be active for the first tab again.
   EXPECT_TRUE(GlicSidePanelCoordinator::IsGlicSidePanelActive(first_tab));
 
   // Open another tab-scoped side panel entry (Lens). This should make Glic side
   // panel inactive for the current (first) tab.
-  SidePanelCoordinator::From(browser())->Show(
+  SidePanelUI::From(browser())->Show(
       SidePanelEntry::Key(SidePanelEntry::Id::kLens));
 
   EXPECT_FALSE(GlicSidePanelCoordinator::IsGlicSidePanelActive(
       browser()->GetActiveTabInterface()));
 
   // Close the Lens side panel. Glic should still be inactive.
-  SidePanelCoordinator::From(browser())->Close();
+  SidePanelUI::From(browser())->Close();
   EXPECT_FALSE(GlicSidePanelCoordinator::IsGlicSidePanelActive(
       browser()->GetActiveTabInterface()));
 
@@ -318,7 +318,7 @@ IN_PROC_BROWSER_TEST_F(GlicSidePanelCoordinatorStateTest, Backgrounded) {
             GlicSidePanelCoordinator::State::kBackgrounded);
 
   // Switch back to the first tab.
-  browser()->tab_strip_model()->ActivateTabAt(0);
+  browser()->GetTabStripModel()->ActivateTabAt(0);
 
   // It should transition back to kShown.
   EXPECT_EQ(future_.Take(), GlicSidePanelCoordinator::State::kShown);
@@ -355,7 +355,7 @@ IN_PROC_BROWSER_TEST_F(GlicSidePanelCoordinatorStateTest, Replaced) {
 
   // Open another side panel entry (Lens). This should replace the Glic
   // side panel and cause it to transition to kClosed.
-  SidePanelCoordinator::From(browser())->Show(
+  SidePanelUI::From(browser())->Show(
       SidePanelEntry::Key(SidePanelEntry::Id::kLens));
 
   EXPECT_EQ(future_.Take(), GlicSidePanelCoordinator::State::kClosed);
@@ -448,7 +448,7 @@ IN_PROC_BROWSER_TEST_F(GlicSidePanelCoordinatorRoundedCornersTest,
   EXPECT_EQ(future_.Take(), GlicSidePanelCoordinator::State::kBackgrounded);
 
   // Switch back to the first tab.
-  browser()->tab_strip_model()->ActivateTabAt(0);
+  browser()->GetTabStripModel()->ActivateTabAt(0);
   EXPECT_EQ(future_.Take(), GlicSidePanelCoordinator::State::kShown);
 
   // Verify rounded corners are still there

@@ -25,8 +25,6 @@ import android.provider.Settings;
 import android.view.inputmethod.InputMethodInfo;
 import android.view.inputmethod.InputMethodManager;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -38,7 +36,6 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.ui.base.WindowAndroid;
@@ -53,8 +50,6 @@ import java.util.List;
 
 /** Tests for {@link DeviceDelegate}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Batch(Batch.UNIT_TESTS)
-@SmallTest
 public class DeviceDelegateTest {
     private static final int A2A_TRANSACTION_OUTCOME_SUCCEED = 1;
     private static final int A2A_TRANSACTION_OUTCOME_CANCELED = 2;

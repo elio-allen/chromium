@@ -12,18 +12,17 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import org.chromium.base.ObserverList;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabLaunchType;
@@ -45,6 +44,7 @@ import org.chromium.ui.base.DeviceFormFactor;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
 @EnableFeatures(ChromeFeatureList.TAB_STRIP_STOP_SPINNER_ON_LOAD_STOP)
+@DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // crbug.com/462592111
 public class TabStripNavigationFailureTest {
     @Rule
     public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
@@ -80,7 +80,7 @@ public class TabStripNavigationFailureTest {
                                         boolean markedForSelection) {
                                     bgTabHolder[0] = tab;
                                     tab.addObserver(
-                                            new EmptyTabObserver() {
+                                            new TabObserver() {
                                                 @Override
                                                 public void onPageLoadFailed(
                                                         Tab tab, int errorCode) {
@@ -193,10 +193,8 @@ public class TabStripNavigationFailureTest {
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    ObserverList.RewindableIterator<TabObserver> observers =
-                            TabTestUtils.getTabObservers(bgTab);
-                    while (observers.hasNext()) {
-                        observers.next().onLoadStopped(bgTab, /* toDifferentDocument= */ false);
+                    for (TabObserver observer : TabTestUtils.getTabObservers(bgTab)) {
+                        observer.onLoadStopped(bgTab, /* toDifferentDocument= */ false);
                     }
                 });
 

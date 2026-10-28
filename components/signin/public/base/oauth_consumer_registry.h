@@ -36,7 +36,6 @@ class OAuthConsumerRegistry {
   OAuthConsumer GetOAuthConsumerFromId(OAuthConsumerId oauth_consumer_id) const;
 
  protected:
-  virtual OAuthConsumer GetOAuthConsumerForEnterprisePlusAddress() const = 0;
   virtual OAuthConsumer GetOAuthConsumerForGlicUserStatus() const = 0;
   virtual OAuthConsumer GetOAuthConsumerForGlicInvokeApi() const = 0;
   virtual OAuthConsumer GetOAuthConsumerForSkillsService() const = 0;
@@ -49,6 +48,7 @@ class OAuthConsumerRegistry {
   // TODO(crbug.com/536892467): Remove this and hard-code the scope after
   // BrowserActuator is launched.
   virtual OAuthConsumer GetOAuthConsumerForBrowserActuator() const = 0;
+  virtual OAuthConsumer GetOAuthConsumerForSiteTokenProvider() const = 0;
 };
 
 }  // namespace signin

@@ -99,7 +99,7 @@
  */
 
 import type {InsetsF, RectF} from '//resources/mojo/ui/gfx/geometry/mojom/geometry.mojom-webui.js';
-import {TextEntryMode} from '//resources/mojo/ui/webui/resources/js/tracked_element/tracked_element.mojom-webui.js';
+import {InputType, TextEntryMode} from '//resources/mojo/ui/webui/resources/js/tracked_element/tracked_element.mojom-webui.js';
 import type {TrackedElementHandlerInterface, TrackedElementIdentifier} from '//resources/mojo/ui/webui/resources/js/tracked_element/tracked_element.mojom-webui.js';
 
 import {assert} from '../assert.js';
@@ -187,6 +187,8 @@ interface TrackedElementData {
   bounds: RectF;
   onVisibilityChanged?: TrackedElementVisibilityChangedCallback;
   onHighlightChanged?: HighlightChangedCallback;
+  lastReportedVisible?: boolean;
+  lastReportedBounds?: RectF;
 }
 
 /**
@@ -205,6 +207,14 @@ class ElementData {
 
 const NATIVE_ELEMENT_IDENTIFIER_KEY = 'nativeId';
 const SECONDARY_ELEMENT_IDENTIFIER_KEY = 'secondaryId';
+
+function areBoundsEqual(a?: RectF, b?: RectF): boolean {
+  if (!a || !b) {
+    return a === b;
+  }
+  return a.x === b.x && a.y === b.y && a.width === b.width &&
+      a.height === b.height;
+}
 
 function parseOptions(options?: Options) {
   if (!options) {
@@ -234,18 +244,23 @@ function computeIsVisible(element: Element): boolean {
   return rect.height > 0 && rect.width > 0;
 }
 
-export class TrackedElementManager {
-  private static instance_: TrackedElementManager|null = null;
+declare global {
+  // This is ugly but required for test code to have access to the instance.
+  interface Window {
+    _trackedElementManager: TrackedElementManager|undefined;
+  }
+}
 
+export class TrackedElementManager {
   static getInstance(): TrackedElementManager {
-    if (TrackedElementManager.instance_ === null) {
-      TrackedElementManager.instance_ = new TrackedElementManager();
+    if (!window._trackedElementManager) {
+      window._trackedElementManager = new TrackedElementManager();
     }
-    return TrackedElementManager.instance_;
+    return window._trackedElementManager;
   }
 
-  static setInstance(instance: TrackedElementManager|null) {
-    TrackedElementManager.instance_ = instance;
+  static setInstance(instance: TrackedElementManager|undefined) {
+    window._trackedElementManager = instance;
   }
 
   private trackedElementHandler_: TrackedElementHandlerInterface;
@@ -281,12 +296,14 @@ export class TrackedElementManager {
 
     this.resizeObserver_ =
         new ResizeObserver(entries => entries.forEach(({target}) => {
-          if (target === document.body) {
-            this.debouncedUpdateAllBoundsCallback_();
-          } else {
+          // A resize of any element can potentially cause layout shifts in any
+          // other elements. Send an update to the resized element immediately
+          // and use debounced updates for all other elements.
+          if (target !== document.body) {
             this.onElementVisibilityChanged_(
                 target as HTMLElement, computeIsVisible(target));
           }
+          this.debouncedUpdateAllBoundsCallback_();
         }));
     this.fixedElementObserver_ = new IntersectionObserver(
         entries => entries.forEach(
@@ -560,7 +577,9 @@ export class TrackedElementManager {
 
   notifyElementActivated(element: HTMLElement) {
     const el = this.getDataForElement_(element);
-    assert(el);
+    if (!el) {
+      return;
+    }
     this.trackedElementHandler_.trackedElementActivated(
         TrackedElementManager.elementToIdentifier_(el));
   }
@@ -580,9 +599,8 @@ export class TrackedElementManager {
       return;
     }
 
-    const bounds: RectF = visible ? this.getElementBounds_(element) :
+    const bounds: RectF = visible ? this.getElementBounds_(trackedElement) :
                                     {x: 0, y: 0, width: 0, height: 0};
-
 
     const update = {visible, bounds, element};
 
@@ -596,13 +614,18 @@ export class TrackedElementManager {
         .dispatchEvent(new CustomEvent(
             TRACKED_ELEMENT_VISIBILITY_CHANGED_EVENT, {detail: update}));
 
+    // Deduplicate TS -> C++ updates if visibility and bounds haven't changed.
+    if (trackedElement.lastReportedVisible === visible &&
+        areBoundsEqual(trackedElement.lastReportedBounds, bounds)) {
+      return;
+    }
+
+    trackedElement.lastReportedVisible = visible;
+    trackedElement.lastReportedBounds = bounds;
+
     const wasVisible = trackedElement.visible;
     trackedElement.visible = visible;
     trackedElement.bounds = bounds;
-    this.trackedElementHandler_.trackedElementVisibilityChanged(
-        TrackedElementManager.elementToIdentifier_(trackedElement), visible,
-        bounds);
-
     if (visible && !wasVisible && trackedElement.onHighlightChanged) {
       // The C++ tracker drops its state when it is destroyed and recreated
       // during a visibility bounce (e.g., from a 0x0 size during a CSS
@@ -611,6 +634,9 @@ export class TrackedElementManager {
       this.trackedElementHandler_.trackedElementCanHighlightChanged(
           TrackedElementManager.elementToIdentifier_(trackedElement), true);
     }
+    this.trackedElementHandler_.trackedElementVisibilityChanged(
+        TrackedElementManager.elementToIdentifier_(trackedElement), visible,
+        bounds);
   }
 
   private updateAllBounds_() {
@@ -622,22 +648,19 @@ export class TrackedElementManager {
     });
   }
 
-  private getElementBounds_(element: HTMLElement): RectF {
+  private getElementBounds_(trackedElement: TrackedElementData): RectF {
     const rect: RectF = {x: 0, y: 0, width: 0, height: 0};
-    const bounds = element.getBoundingClientRect();
+    const bounds = trackedElement.element.getBoundingClientRect();
     rect.x = bounds.x;
     rect.y = bounds.y;
     rect.width = bounds.width;
     rect.height = bounds.height;
 
-    const trackedElement = this.getDataForElement_(element);
-    if (trackedElement) {
-      const padding = trackedElement.padding;
-      rect.x -= padding.left;
-      rect.y -= padding.top;
-      rect.width += padding.left + padding.right;
-      rect.height += padding.top + padding.bottom;
-    }
+    const padding = trackedElement.padding;
+    rect.x -= padding.left;
+    rect.y -= padding.top;
+    rect.width += padding.left + padding.right;
+    rect.height += padding.top + padding.bottom;
     return rect;
   }
 
@@ -678,8 +701,29 @@ export class TrackedElementManager {
     });
   }
 
-  private async clickElement_(id: TrackedElementIdentifier):
-      Promise<{success: boolean}> {
+  private findInteractiveElement_(root: ShadowRoot): HTMLElement|null {
+    const inner = root.querySelector<HTMLElement>(
+        'button, [role="button"], cr-icon-button, cr-button');
+    if (inner) {
+      if (inner.shadowRoot) {
+        return this.findInteractiveElement_(inner.shadowRoot) ?? inner;
+      }
+      return inner;
+    }
+    for (const child of root.querySelectorAll<HTMLElement>('*')) {
+      if (child.shadowRoot) {
+        const found = this.findInteractiveElement_(child.shadowRoot);
+        if (found) {
+          return found;
+        }
+      }
+    }
+    return null;
+  }
+
+  private async clickElement_(
+      id: TrackedElementIdentifier,
+      inputType: InputType): Promise<{success: boolean}> {
     const trackedElement = this.getDataForId_(id);
     if (!trackedElement) {
       console.error(`TrackedElementManager: Click failed, element not found: ${
@@ -690,72 +734,102 @@ export class TrackedElementManager {
     let target = trackedElement.element;
 
     // If the element is a container with a shadow root, try to find the actual
-    // interactive element inside.
+    // interactive element inside, recursing across nested shadow roots if
+    // needed.
     if (target.shadowRoot &&
         !['BUTTON', 'INPUT', 'A', 'SELECT'].includes(target.tagName)) {
-      const inner = target.shadowRoot.querySelector(
-          'button, [role="button"], cr-icon-button, cr-button');
-      if (inner) {
-        target = inner as HTMLElement;
-      }
+      target = this.findInteractiveElement_(target.shadowRoot) ?? target;
     }
 
     await this.waitUntilNotDisabled_(target, id);
 
-    // Some components (like the reload button) listen to pointer events
-    // instead of click. We also need to fake pointer capture for some tests.
-    const oldPointerCapture = {
-      setPointerCapture: target.setPointerCapture,
-      hasPointerCapture: target.hasPointerCapture,
-      releasePointerCapture: target.releasePointerCapture,
-    };
-    {
-      let hasCapture: number|null = null;
-      target.setPointerCapture = (id) => {
-        hasCapture = id;
-      };
-      target.hasPointerCapture = (id) => {
-        return id === hasCapture;
-      };
-      target.releasePointerCapture = (id) => {
-        if (id === hasCapture) {
-          hasCapture = null;
+    switch (inputType) {
+      case InputType.kKeyboard:
+        // When activating elements via keyboard (e.g. Space or Enter), browsers
+        // synthesize a click event with detail = 0 and without preceding
+        // pointer events (unlike mouse/pointer clicks, which emit pointerdown,
+        // pointerup, and click with detail = 1).
+        target.dispatchEvent(new MouseEvent('click', {
+          bubbles: true,
+          composed: true,
+          button: 0,  // Left
+          detail: 0,  // Keyboard synthesized click has detail === 0
+        }));
+        return {success: true};
+
+      case InputType.kTouch:
+      case InputType.kMouse:
+      case InputType.kDontCare:
+      default: {
+        // For kMouse, kTouch, and kDontCare:
+        // kDontCare explicitly defaults to mouse input simulation. Simulating
+        // pointer events (pointerdown, pointerup, click) is the most reliable
+        // way to trigger both click listeners and components relying on pointer
+        // events.
+        const pointerType = inputType === InputType.kTouch ? 'touch' : 'mouse';
+
+        // Some components (like the reload button) listen to pointer events
+        // instead of click. We also need to fake pointer capture for some
+        // tests.
+        const oldPointerCapture = {
+          setPointerCapture: target.setPointerCapture,
+          hasPointerCapture: target.hasPointerCapture,
+          releasePointerCapture: target.releasePointerCapture,
+        };
+        {
+          let hasCapture: number|null = null;
+          target.setPointerCapture = (id) => {
+            hasCapture = id;
+          };
+          target.hasPointerCapture = (id) => {
+            return id === hasCapture;
+          };
+          target.releasePointerCapture = (id) => {
+            if (id === hasCapture) {
+              hasCapture = null;
+            }
+          };
         }
-      };
+        const bounds = target.getBoundingClientRect();
+        target.dispatchEvent(new PointerEvent('pointerdown', {
+          bubbles: true,
+          composed: true,
+          button: 0,  // Left
+          pointerId: 1,
+          pointerType,
+          isPrimary: true,
+          buttons: 1,
+          clientX: bounds.left + bounds.width / 2,
+          clientY: bounds.top + bounds.height / 2,
+        }));
+        target.dispatchEvent(new PointerEvent('pointerup', {
+          bubbles: true,
+          composed: true,
+          button: 0,  // Left
+          pointerId: 1,
+          pointerType,
+          isPrimary: true,
+          buttons: 0,
+          clientX: bounds.left + bounds.width / 2,
+          clientY: bounds.top + bounds.height / 2,
+        }));
+        target.dispatchEvent(new PointerEvent('click', {
+          bubbles: true,
+          composed: true,
+          button: 0,  // Left
+          detail: 1,  // Single click
+          pointerId: 1,
+          pointerType,
+          isPrimary: true,
+          clientX: bounds.left + bounds.width / 2,
+          clientY: bounds.top + bounds.height / 2,
+        }));
+        target.setPointerCapture = oldPointerCapture.setPointerCapture;
+        target.hasPointerCapture = oldPointerCapture.hasPointerCapture;
+        target.releasePointerCapture = oldPointerCapture.releasePointerCapture;
+        return {success: true};
+      }
     }
-    const bounds = target.getBoundingClientRect();
-    target.dispatchEvent(new PointerEvent('pointerdown', {
-      bubbles: true,
-      composed: true,
-      button: 0,  // Left
-      pointerId: 1,
-      isPrimary: true,
-      buttons: 1,
-      clientX: bounds.left + bounds.width / 2,
-      clientY: bounds.top + bounds.height / 2,
-    }));
-    target.dispatchEvent(new PointerEvent('pointerup', {
-      bubbles: true,
-      composed: true,
-      button: 0,  // Left
-      pointerId: 1,
-      isPrimary: true,
-      buttons: 0,
-      clientX: bounds.left + bounds.width / 2,
-      clientY: bounds.top + bounds.height / 2,
-    }));
-    target.dispatchEvent(new MouseEvent('click', {
-      bubbles: true,
-      composed: true,
-      button: 0,  // Left
-      detail: 1,  // Single click
-      clientX: bounds.left + bounds.width / 2,
-      clientY: bounds.top + bounds.height / 2,
-    }));
-    target.setPointerCapture = oldPointerCapture.setPointerCapture;
-    target.hasPointerCapture = oldPointerCapture.hasPointerCapture;
-    target.releasePointerCapture = oldPointerCapture.releasePointerCapture;
-    return {success: true};
   }
 
   private focusElement_(id: TrackedElementIdentifier): {success: boolean} {
@@ -920,7 +994,16 @@ export class TrackedElementManager {
       return {success: false};
     }
 
-    const element = trackedElement.element;
+    let element = trackedElement.element;
+    if (!(element instanceof HTMLInputElement ||
+          element instanceof HTMLTextAreaElement)) {
+      const input = element.shadowRoot?.querySelector('input, textarea');
+      if (input instanceof HTMLInputElement ||
+          input instanceof HTMLTextAreaElement) {
+        element = input as HTMLElement;
+      }
+    }
+
     element.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'Enter',
       code: 'Enter',

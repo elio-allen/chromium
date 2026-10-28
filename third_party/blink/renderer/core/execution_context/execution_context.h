@@ -29,7 +29,9 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_EXECUTION_CONTEXT_EXECUTION_CONTEXT_H_
 
 #include <memory>
+#include <utility>
 
+#include "base/memory/raw_ptr.h"
 #include "base/notreached.h"
 #include "net/storage_access_api/status.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
@@ -160,7 +162,6 @@ class CORE_EXPORT ExecutionContext : public Supplementable<ExecutionContext>,
   virtual bool IsPaintWorkletGlobalScope() const { return false; }
   virtual bool IsThreadedWorkletGlobalScope() const { return false; }
   virtual bool IsShadowRealmGlobalScope() const { return false; }
-  virtual bool IsSharedStorageWorkletGlobalScope() const { return false; }
   virtual bool IsJSExecutionForbidden() const { return false; }
 
   // Notifies the execution context that new web socket activity (such as
@@ -240,7 +241,7 @@ class CORE_EXPORT ExecutionContext : public Supplementable<ExecutionContext>,
 
   void DispatchErrorEvent(ErrorEvent*, SanitizeScriptErrors);
 
-  virtual void ExceptionThrown(ErrorEvent*) = 0;
+  virtual void ExceptionThrown(ErrorEvent*, SanitizeScriptErrors) = 0;
 
   PublicURLManager& GetPublicURLManager();
 
@@ -259,7 +260,6 @@ class CORE_EXPORT ExecutionContext : public Supplementable<ExecutionContext>,
   void CountDeprecation(WebFeature feature) override;
 
   bool IsContextPaused() const;
-  bool IsContextFrozen() const;
   LoaderFreezeMode GetLoaderFreezeMode() const;
   mojom::FrameLifecycleState ContextPauseState() const {
     return lifecycle_state_;
@@ -323,7 +323,7 @@ class CORE_EXPORT ExecutionContext : public Supplementable<ExecutionContext>,
   // updated version, so that navigations they start afterwards are associated
   // with the right state of PolicyContainerPolicies.
   virtual void SetInitiatorStateToken(
-      const base::UnguessableToken& initiator_state_token) {}
+      const InitiatorStateToken& initiator_state_token) {}
 
   virtual CoreProbeSink* GetProbeSink() { return nullptr; }
 
@@ -530,7 +530,7 @@ class CORE_EXPORT ExecutionContext : public Supplementable<ExecutionContext>,
   void AddConsoleMessageImpl(ConsoleMessage*,
                              bool discard_duplicates) override = 0;
 
-  v8::Isolate* const isolate_;
+  const raw_ptr<v8::Isolate, UnprotectedInRelease | DanglingUntriaged> isolate_;
 
   SecurityContext security_context_;
 
@@ -541,7 +541,9 @@ class CORE_EXPORT ExecutionContext : public Supplementable<ExecutionContext>,
   unsigned circular_sequential_id_;
 
   bool in_dispatch_error_event_;
-  HeapVector<Member<ErrorEvent> > pending_exceptions_;
+  bool is_draining_pending_exceptions_ = false;
+  HeapVector<std::pair<Member<ErrorEvent>, SanitizeScriptErrors>>
+      pending_exceptions_;
 
   mojom::FrameLifecycleState lifecycle_state_;
 

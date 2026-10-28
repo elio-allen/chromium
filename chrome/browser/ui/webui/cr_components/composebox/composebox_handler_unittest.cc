@@ -22,6 +22,7 @@
 #include "base/version_info/channel.h"
 #include "chrome/browser/contextual_search/contextual_search_service_factory.h"
 #include "chrome/browser/contextual_search/contextual_search_web_contents_helper.h"
+#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/webui/searchbox/contextual_searchbox_test_utils.h"
 #include "chrome/browser/ui/webui/searchbox/searchbox_test_utils.h"
 #include "chrome/common/pref_names.h"
@@ -31,6 +32,9 @@
 #include "components/contextual_tasks/public/prefs.h"
 #include "components/omnibox/browser/searchbox.mojom.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
@@ -41,6 +45,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/models/menu_model.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/webui/resources/cr_components/composebox/composebox.mojom.h"
 
 namespace {
@@ -69,6 +74,10 @@ class ComposeboxHandlerTest : public ContextualSearchboxHandlerTestHarness {
         /*variations_client=*/nullptr,
         std::move(query_controller_config_params));
     query_controller_ = query_controller_ptr.get();
+
+    ON_CALL(*query_controller_, GetFileInfo)
+        .WillByDefault(testing::Invoke(query_controller_.get(),
+                                       &MockQueryController::FakeGetFileInfo));
 
     auto metrics_recorder_ptr =
         std::make_unique<MockContextualSearchMetricsRecorder>();
@@ -233,10 +242,13 @@ TEST_F(ComposeboxHandlerTest, SubmitQueryWithToolMetric) {
       omnibox::ModelMode::MODEL_MODE_UNSPECIFIED, 1);
 
   // Submitting with deep search and Gemini regular model enabled.
-  handler().SetActiveToolMode(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
-  handler().SetActiveToolMode(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
+  handler().SetActiveToolMode(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH,
+                              /*is_set_by_aim=*/false);
+  handler().SetActiveToolMode(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH,
+                              /*is_set_by_aim=*/false);
   handler().RecordToolSelectionAction(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
-  handler().SetActiveModelMode(omnibox::ModelMode::MODEL_MODE_GEMINI_REGULAR);
+  handler().SetActiveModelMode(omnibox::ModelMode::MODEL_MODE_GEMINI_REGULAR,
+                               /*is_set_by_server=*/false);
   handler().RecordModelSelectionAction(
       omnibox::ModelMode::MODEL_MODE_GEMINI_REGULAR);
   EXPECT_CALL(metrics_recorder(),
@@ -253,9 +265,11 @@ TEST_F(ComposeboxHandlerTest, SubmitQueryWithToolMetric) {
       omnibox::ModelMode::MODEL_MODE_GEMINI_REGULAR, 1);
 
   // Submitting with create image and Gemini Pro model enabled.
-  handler().SetActiveToolMode(omnibox::ToolMode::TOOL_MODE_IMAGE_GEN);
+  handler().SetActiveToolMode(omnibox::ToolMode::TOOL_MODE_IMAGE_GEN,
+                              /*is_set_by_aim=*/false);
   handler().RecordToolSelectionAction(omnibox::ToolMode::TOOL_MODE_IMAGE_GEN);
-  handler().SetActiveModelMode(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
+  handler().SetActiveModelMode(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO,
+                               /*is_set_by_server=*/false);
   handler().RecordModelSelectionAction(
       omnibox::ModelMode::MODEL_MODE_GEMINI_PRO);
   EXPECT_CALL(metrics_recorder(),
@@ -291,6 +305,25 @@ TEST_F(ComposeboxHandlerTest, SetSmartTabSharingActive) {
   EXPECT_TRUE(handler().IsSmartTabSharingActive());
 
   handler().SetSmartTabSharingActive(false);
+  EXPECT_FALSE(handler().IsSmartTabSharingActive());
+}
+
+TEST_F(ComposeboxHandlerTest, ResetInputStateModelClearsSmartTabSharingActive) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeaturesAndParameters(
+      {{contextual_tasks::kContextualTasksContext,
+        {{"ContextualTasksContextSmartTabSharing", "true"}}},
+       {contextual_tasks::kContextualTasksForceEntryPointEligibility, {}}},
+      {});
+
+  EXPECT_FALSE(handler().IsSmartTabSharingActive());
+
+  handler().SetSmartTabSharingActive(true);
+  EXPECT_TRUE(handler().IsSmartTabSharingActive());
+
+  // Starting a new session resets the session handle and input state model.
+  contextual_session_handle()->set_smart_tab_sharing_active(std::nullopt);
+  handler().ResetInputStateModel();
   EXPECT_FALSE(handler().IsSmartTabSharingActive());
 }
 
@@ -357,6 +390,7 @@ TEST_F(ComposeboxHandlerTest, DeleteContext_MojoDoesNotNotifyPage) {
 }
 
 TEST_F(ComposeboxHandlerTest, NextboxAnimationLimiting) {
+  base::HistogramTester histogram_tester;
   PrefService* prefs = profile()->GetPrefs();
 
   // 1. Initially allowed, counts are 0.
@@ -373,12 +407,14 @@ TEST_F(ComposeboxHandlerTest, NextboxAnimationLimiting) {
 
   // 2. Record 1st impression.
   {
-    handler().RecordNextboxAnimationImpression();
+    handler().RecordNextboxAnimationImpression(/*shown=*/true);
 
     const base::DictValue& dict =
         prefs->GetDict(prefs::kContextMenuAnimationState);
     EXPECT_THAT(dict.FindInt("nextbox_daily_count"), testing::Optional(1));
     EXPECT_THAT(dict.FindInt("nextbox_lifetime_count"), testing::Optional(1));
+    histogram_tester.ExpectBucketCount(
+        "Omnibox.ContextMenu.AnimationShown.ContextualTasks", true, 1);
   }
 
   // 3. Play 4 more times (total 5 daily impressions recorded).
@@ -386,7 +422,7 @@ TEST_F(ComposeboxHandlerTest, NextboxAnimationLimiting) {
     base::test::TestFuture<bool> future;
     handler().CanShowNextboxAnimation(future.GetCallback());
     EXPECT_TRUE(future.Take());
-    handler().RecordNextboxAnimationImpression();
+    handler().RecordNextboxAnimationImpression(/*shown=*/true);
   }
 
   // Verify counts are now 5 daily and 5 lifetime.
@@ -395,20 +431,25 @@ TEST_F(ComposeboxHandlerTest, NextboxAnimationLimiting) {
         prefs->GetDict(prefs::kContextMenuAnimationState);
     EXPECT_THAT(dict.FindInt("nextbox_daily_count"), testing::Optional(5));
     EXPECT_THAT(dict.FindInt("nextbox_lifetime_count"), testing::Optional(5));
+    histogram_tester.ExpectBucketCount(
+        "Omnibox.ContextMenu.AnimationShown.ContextualTasks", true, 5);
   }
 
-  // 4. The 6th time, it should not be allowed and record should do nothing.
+  // 4. The 6th time, it should not be allowed and record should do nothing to
+  // prefs.
   {
     base::test::TestFuture<bool> future;
     handler().CanShowNextboxAnimation(future.GetCallback());
     EXPECT_FALSE(future.Take());
 
-    handler().RecordNextboxAnimationImpression();
+    handler().RecordNextboxAnimationImpression(/*shown=*/false);
 
     const base::DictValue& dict =
         prefs->GetDict(prefs::kContextMenuAnimationState);
     EXPECT_THAT(dict.FindInt("nextbox_daily_count"), testing::Optional(5));
     EXPECT_THAT(dict.FindInt("nextbox_lifetime_count"), testing::Optional(5));
+    histogram_tester.ExpectBucketCount(
+        "Omnibox.ContextMenu.AnimationShown.ContextualTasks", false, 1);
   }
 
   // 5. Simulate a new day (change the date string in prefs).
@@ -425,12 +466,14 @@ TEST_F(ComposeboxHandlerTest, NextboxAnimationLimiting) {
     handler().CanShowNextboxAnimation(future.GetCallback());
     EXPECT_TRUE(future.Take());
 
-    handler().RecordNextboxAnimationImpression();
+    handler().RecordNextboxAnimationImpression(/*shown=*/true);
 
     const base::DictValue& dict =
         prefs->GetDict(prefs::kContextMenuAnimationState);
     EXPECT_THAT(dict.FindInt("nextbox_daily_count"), testing::Optional(1));
     EXPECT_THAT(dict.FindInt("nextbox_lifetime_count"), testing::Optional(6));
+    histogram_tester.ExpectBucketCount(
+        "Omnibox.ContextMenu.AnimationShown.ContextualTasks", true, 6);
   }
 
   // 7. Bring lifetime count to 19 and verify it caps after 20.
@@ -448,12 +491,14 @@ TEST_F(ComposeboxHandlerTest, NextboxAnimationLimiting) {
     handler().CanShowNextboxAnimation(future.GetCallback());
     EXPECT_TRUE(future.Take());
 
-    handler().RecordNextboxAnimationImpression();
+    handler().RecordNextboxAnimationImpression(/*shown=*/true);
 
     const base::DictValue& dict =
         prefs->GetDict(prefs::kContextMenuAnimationState);
     EXPECT_THAT(dict.FindInt("nextbox_daily_count"), testing::Optional(1));
     EXPECT_THAT(dict.FindInt("nextbox_lifetime_count"), testing::Optional(20));
+    histogram_tester.ExpectBucketCount(
+        "Omnibox.ContextMenu.AnimationShown.ContextualTasks", true, 7);
   }
 
   // 21st lifetime impression should be blocked.
@@ -462,12 +507,14 @@ TEST_F(ComposeboxHandlerTest, NextboxAnimationLimiting) {
     handler().CanShowNextboxAnimation(future.GetCallback());
     EXPECT_FALSE(future.Take());
 
-    handler().RecordNextboxAnimationImpression();
+    handler().RecordNextboxAnimationImpression(/*shown=*/false);
 
     const base::DictValue& dict =
         prefs->GetDict(prefs::kContextMenuAnimationState);
     EXPECT_THAT(dict.FindInt("nextbox_daily_count"), testing::Optional(1));
     EXPECT_THAT(dict.FindInt("nextbox_lifetime_count"), testing::Optional(20));
+    histogram_tester.ExpectBucketCount(
+        "Omnibox.ContextMenu.AnimationShown.ContextualTasks", false, 2);
   }
 }
 
@@ -492,7 +539,7 @@ class DestructingTestWebContentsDelegate : public TestWebContentsDelegate {
   base::OnceClosure on_open_url_;
 };
 
-TEST_F(ComposeboxHandlerTest, OpenUrl_DestructionSafe) {
+TEST_F(ComposeboxHandlerTest, ProcessContextAndOpenUrl_DestructionSafe) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(omnibox::kOmniboxEverywhere);
 
@@ -500,9 +547,11 @@ TEST_F(ComposeboxHandlerTest, OpenUrl_DestructionSafe) {
    public:
     using ComposeboxHandler::ComposeboxHandler;
 
-    void OpenUrl(GURL url, const WindowOpenDisposition disposition) override {
+    void ProcessContextAndOpenUrl(
+        GURL url,
+        const WindowOpenDisposition disposition) override {
       auto weak_this = weak_ptr_factory_.GetWeakPtr();
-      ContextualSearchboxHandler::OpenUrl(url, disposition);
+      ContextualSearchboxHandler::ProcessContextAndOpenUrl(url, disposition);
       if (!weak_this) {
         return;
       }
@@ -533,12 +582,12 @@ TEST_F(ComposeboxHandlerTest, OpenUrl_DestructionSafe) {
       base::BindLambdaForTesting([&]() { return contextual_session_handle(); }),
       base::DoNothing());
 
-  // Calling OpenUrl will post a navigation task to the task runner.
-  // Running pending tasks will trigger WebContentsDelegate::OpenURLFromTab,
-  // which synchronously destroys the handler, and it should complete safely
-  // without any use-after-free crashes.
-  test_handler->OpenUrl(GURL("https://google.com"),
-                        WindowOpenDisposition::CURRENT_TAB);
+  // Calling ProcessContextAndOpenUrl will post a navigation task to the task
+  // runner. Running pending tasks will trigger
+  // WebContentsDelegate::OpenURLFromTab, which synchronously destroys the
+  // handler, and it should complete safely without any use-after-free crashes.
+  test_handler->ProcessContextAndOpenUrl(GURL("https://google.com"),
+                                         WindowOpenDisposition::kCurrentTab);
 
   base::RunLoop().RunUntilIdle();
 
@@ -553,9 +602,11 @@ TEST_F(ComposeboxHandlerTest, SubmitQuery_DestructionSafe) {
    public:
     using ComposeboxHandler::ComposeboxHandler;
 
-    void OpenUrl(GURL url, const WindowOpenDisposition disposition) override {
+    void ProcessContextAndOpenUrl(
+        GURL url,
+        const WindowOpenDisposition disposition) override {
       auto weak_this = weak_ptr_factory_.GetWeakPtr();
-      ContextualSearchboxHandler::OpenUrl(url, disposition);
+      ContextualSearchboxHandler::ProcessContextAndOpenUrl(url, disposition);
       if (!weak_this) {
         return;
       }

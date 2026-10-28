@@ -41,7 +41,10 @@ import org.chromium.url.GURL;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @DoNotBatch(reason = "SyncTestRule doesn't support batching.")
-@DisableFeatures({ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT})
+@DisableFeatures({
+    ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT,
+    ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG
+})
 public class BookmarkBatchUploadCardRenderTest {
     private static final int RENDER_TEST_REVISION = 2;
 
@@ -93,10 +96,7 @@ public class BookmarkBatchUploadCardRenderTest {
         ViewUtils.waitForVisibleView(withId(R.id.signin_settings_card));
         View view =
                 runOnUiThreadBlocking(
-                        () -> {
-                            return getBookmarkHostActivity()
-                                    .findViewById(R.id.signin_settings_card);
-                        });
+                        () -> getBookmarkHostActivity().findViewById(R.id.signin_settings_card));
         mRenderTestRule.render(view, "batch_upload_entry_description_bookmark");
     }
 
@@ -117,10 +117,7 @@ public class BookmarkBatchUploadCardRenderTest {
         ViewUtils.waitForVisibleView(withId(R.id.signin_settings_card));
         View view =
                 runOnUiThreadBlocking(
-                        () -> {
-                            return getBookmarkHostActivity()
-                                    .findViewById(R.id.signin_settings_card);
-                        });
+                        () -> getBookmarkHostActivity().findViewById(R.id.signin_settings_card));
         mRenderTestRule.render(view, "batch_upload_entry_description_other");
     }
 
@@ -149,10 +146,7 @@ public class BookmarkBatchUploadCardRenderTest {
         ViewUtils.waitForVisibleView(withId(R.id.signin_settings_card));
         View view =
                 runOnUiThreadBlocking(
-                        () -> {
-                            return getBookmarkHostActivity()
-                                    .findViewById(R.id.signin_settings_card);
-                        });
+                        () -> getBookmarkHostActivity().findViewById(R.id.signin_settings_card));
         mRenderTestRule.render(view, "batch_upload_entry_description_bookmark_and_other");
     }
 

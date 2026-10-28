@@ -71,9 +71,7 @@ float ExternalPopupMenu::GetDprForSizeAdjustment(const Element& owner_element) {
   // device scale factor instead of the value emulated for the outermost main
   // frame to correctly place the select menu.
   if (frame->IsCrossOriginToOutermostMainFrame()) {
-    dpr = page->GetChromeClient()
-              .GetOriginalScreenInfo(*frame)
-              .device_scale_factor;
+    dpr = page->GetChromeClient().GetOriginalDeviceScaleFactor(*frame);
   } else {
     dpr = page->GetChromeClient().GetScreenInfo(*frame).device_scale_factor;
   }
@@ -131,12 +129,6 @@ bool ExternalPopupMenu::ShowInternal() {
                                     ->LocalRootFrameWidget()
                                     ->GetEmulatorScale();
 
-    // rect_in_viewport needs to be in CSS pixels.
-    float dpr = GetDprForSizeAdjustment(*owner_element_);
-    if (dpr != 1.0) {
-      rect_in_viewport = gfx::ScaleToRoundedRect(rect_in_viewport, 1 / dpr);
-    }
-
     // Adjust anchor position to stay within web contents, otherwise the popup
     // could be rendered entirely outside of the web contents. If this select
     // is in a cross-origin iframe, then the anchor will be confined to the
@@ -154,6 +146,15 @@ bool ExternalPopupMenu::ShowInternal() {
         return false;
       }
       rect_in_viewport.Intersect(viewport_rect);
+    }
+
+    // The browser process expects the popup bounds in DIPs, so convert
+    // rect_in_viewport here. This must happen after the viewport intersection
+    // check above because viewport_rect and rect_in_viewport are both in Blink
+    // visual viewport CSS pixels before DPR scaling.
+    float dpr = GetDprForSizeAdjustment(*owner_element_);
+    if (dpr != 1.0) {
+      rect_in_viewport = gfx::ScaleToRoundedRect(rect_in_viewport, 1 / dpr);
     }
 
     gfx::Rect bounds =

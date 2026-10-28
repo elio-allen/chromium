@@ -2,6 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+chromium::import! {
+    "//components/cbor/rust:cbor";
+}
+
 use cbor::*;
 use rust_gtest_interop::prelude::*;
 
@@ -55,10 +59,13 @@ fn test_write_negative_integer() {
 
 #[gtest(CBORWriterRustTest, TestWriteBytes)]
 fn test_write_bytes() {
-    let test_cases = [(vec![], "40"), (vec![0x01, 0x02, 0x03, 0x04], "4401020304")];
+    let test_cases = [
+        (&[] as &[_], "40"),                       //
+        (&[0x01, 0x02, 0x03, 0x04], "4401020304"), //
+    ];
 
     for test in test_cases {
-        let val = Value::Bytestring(&test.0);
+        let val = Value::Bytestring(test.0);
         let expected = hex::decode(test.1).unwrap();
         assert_eq!(write(&val), expected);
     }
@@ -66,7 +73,10 @@ fn test_write_bytes() {
 
 #[gtest(CBORWriterRustTest, TestWriteString)]
 fn test_write_string() {
-    let test_cases = [("", "60"), ("a", "6161")];
+    let test_cases = [
+        ("", "60"),    //
+        ("a", "6161"), //
+    ];
 
     for test in test_cases {
         let val = Value::String(test.0);
@@ -129,39 +139,14 @@ fn test_write_simple_values() {
     }
 }
 
-#[gtest(CBORWriterRustTest, TestWriteFloats)]
-fn test_write_floats() {
-    let test_cases = [
-        (Value::Float(1.0), "fb3ff0000000000000"),
-        (Value::Float(1.00048828125), "fb3ff0020000000000"),
-        (Value::Float(f64::from_bits(0x3ff0000000000001)), "fb3ff0000000000001"),
-        (Value::Float(f64::NAN), "fb7ff8000000000000"),
-        (Value::Float(f64::INFINITY), "fb7ff0000000000000"),
-        (Value::Float(f64::NEG_INFINITY), "fbfff0000000000000"),
-    ];
-
-    for test in test_cases {
-        let expected = hex::decode(test.1).unwrap();
-        let bytes = write(&test.0);
-        if test.1 == "fb7ff8000000000000" {
-            // NaN payloads might differ, just check the length and that it parses back as
-            // NaN
-            assert_eq!(bytes.len(), 9);
-            assert_eq!(bytes[0], 0xfb);
-        } else {
-            assert_eq!(bytes, expected, "Failed encoding {}", test.1);
-        }
-    }
-}
-
 #[gtest(CBORWriterRustTest, TestWriteMapKeyCanonicalization)]
 fn test_write_map_key_canonicalization() {
-    let map = vec![
+    let map = Map::from(vec![
         (MapKey::String("bb"), Value::Int(1)).into(),
         (MapKey::String("c"), Value::Int(2)).into(), // Length 1 should precede length 2
         (MapKey::Int(-1), Value::Int(3)).into(),     // Major Type 1
         (MapKey::Int(1), Value::Int(4)).into(),      // Major Type 0
-    ];
+    ]);
 
     // Expected CTAP2 Canonical Order:
     // 1. MapKey::Int(1) -> 0x01
@@ -173,5 +158,5 @@ fn test_write_map_key_canonicalization() {
     // Total raw expected payload bytes: a4 01 04 20 03 61 63 02 62 62 62 01
 
     let expected = hex::decode("a40104200361630262626201").unwrap();
-    assert_eq!(write(&Value::Map(map.into())), expected);
+    assert_eq!(write(&Value::Map(map)), expected);
 }

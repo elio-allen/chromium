@@ -35,10 +35,6 @@ VideoDecoderType GetPreferredLinuxDecoderImplementation() {
     return VideoDecoderType::kUnknown;
   }
 
-  if (IsOutOfProcessVideoDecodingEnabled()) {
-    return VideoDecoderType::kOutOfProcess;
-  }
-
   return ActiveLinuxVideoDecoderType();
 }
 
@@ -178,11 +174,7 @@ class GpuMojoMediaClientLinux final : public GpuMojoMediaClient {
 
     switch (decoder_type) {
       case VideoDecoderType::kOutOfProcess: {
-        auto frame_converter =
-            base::FeatureList::IsEnabled(kUseSharedImageInOOPVDProcess)
-                ? SimpleVideoFrameConverter::Create()
-                : MailboxVideoFrameConverter::Create(
-                      gpu_task_runner_, traits.get_command_buffer_stub_cb);
+        auto frame_converter = SimpleVideoFrameConverter::Create();
         return VideoDecoderPipeline::Create(
             gpu_workarounds_, traits.task_runner, /*frame_pool=*/nullptr,
             std::move(frame_converter),

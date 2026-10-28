@@ -14,7 +14,26 @@
 
 #include "absl/base/internal/sysinfo.h"
 
+#include <string.h>
+
+#include <cassert>
+#include <cerrno>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <limits>
+#include <thread>  // NOLINT(build/c++11)
+#include <utility>
+#include <vector>
+
 #include "absl/base/attributes.h"
+#include "absl/base/call_once.h"
+#include "absl/base/config.h"
+#include "absl/base/internal/raw_logging.h"
+#include "absl/base/internal/spinlock.h"
+#include "absl/base/internal/unscaledcycleclock.h"
+#include "absl/base/thread_annotations.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -50,25 +69,9 @@
 #include <zircon/process.h>
 #endif
 
-#include <string.h>
-
-#include <cassert>
-#include <cerrno>
-#include <cstdint>
-#include <cstdio>
-#include <cstdlib>
-#include <ctime>
-#include <limits>
-#include <thread>  // NOLINT(build/c++11)
-#include <utility>
-#include <vector>
-
-#include "absl/base/call_once.h"
-#include "absl/base/config.h"
-#include "absl/base/internal/raw_logging.h"
-#include "absl/base/internal/spinlock.h"
-#include "absl/base/internal/unscaledcycleclock.h"
-#include "absl/base/thread_annotations.h"
+#if defined(__FREERTOS__)
+#include <task.h>
+#endif
 
 namespace absl {
 ABSL_NAMESPACE_BEGIN
@@ -470,6 +473,12 @@ pid_t GetTID() {
   // a kernel object ID (KOID) because zx_handle_t (32-bits) can be cast to a
   // pid_t type without loss of precision, but a zx_koid_t (64-bits) cannot.
   return static_cast<pid_t>(zx_thread_self());
+}
+
+#elif defined(__FREERTOS__)
+
+pid_t GetTID() {
+  return static_cast<pid_t>(uxTaskGetTaskNumber(xTaskGetCurrentTaskHandle()));
 }
 
 #else

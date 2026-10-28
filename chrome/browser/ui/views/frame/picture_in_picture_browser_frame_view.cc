@@ -16,7 +16,6 @@
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
@@ -51,6 +50,7 @@
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/text_constants.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/event_monitor.h"
 #include "ui/views/layout/animating_layout_manager.h"
 #include "ui/views/layout/flex_layout_view.h"
@@ -71,9 +71,9 @@
 #include "ui/aura/window.h"
 #endif
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "extensions/common/constants.h"
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 namespace {
 
 constexpr int kWindowIconImageSize = 16;
@@ -162,6 +162,10 @@ class WindowEventObserver : public ui::EventObserver {
 void DefinitelyExitPictureInPicture(
     PictureInPictureBrowserFrameView& frame_view,
     PictureInPictureWindowManager::UiBehavior behavior) {
+  if (!frame_view.GetBrowserView()->GetIsPictureInPictureType()) {
+    frame_view.GetBrowserView()->Close();
+    return;
+  }
   switch (behavior) {
     case PictureInPictureWindowManager::UiBehavior::kCloseWindowOnly:
     case PictureInPictureWindowManager::UiBehavior::kCloseWindowAndPauseVideo:
@@ -189,6 +193,7 @@ PictureInPictureBrowserFrameView::PictureInPictureBrowserFrameView(
     BrowserWidget* widget,
     BrowserView* browser_view)
     : BrowserFrameView(widget, browser_view) {
+  CHECK(browser_view->GetIsFloatingType(), base::NotFatalUntil::M162);
   // We create our own top container, so we hide the one created by default (and
   // its children) from the user and accessibility tools.
   browser_view->top_container()->SetVisible(false);
@@ -231,12 +236,12 @@ PictureInPictureBrowserFrameView::PictureInPictureBrowserFrameView(
 
   // Similarly for extension URLs and isolated-app URLs, the tail is more
   // important to elide.
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   if (location_bar_model_->GetURL().SchemeIs(extensions::kExtensionScheme) ||
       location_bar_model_->GetURL().SchemeIs(webapps::kIsolatedAppScheme)) {
     elide_behavior = gfx::ELIDE_TAIL;
   }
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
   // TODO(crbug.com/424715850): use IWA app name in title (plus why registrar
   // based on browser_view->GetProfile doesn't know about the app).
@@ -299,17 +304,19 @@ PictureInPictureBrowserFrameView::PictureInPictureBrowserFrameView(
   // PictureInPictureWindowOptions. If the options don't exist (this can happen
   // in some test situations), then default to displaying the back to tab
   // button.
-  const std::optional<blink::mojom::PictureInPictureWindowOptions> pip_options =
-      browser_view->GetDocumentPictureInPictureOptions();
-  if (!pip_options.has_value() || !pip_options->disallow_return_to_opener) {
-    back_to_tab_button_ = button_container_view_->AddChildView(
-        std::make_unique<BackToTabButton>(base::BindRepeating(
-            [](PictureInPictureBrowserFrameView* frame_view) {
-              DefinitelyExitPictureInPicture(
-                  *frame_view, PictureInPictureWindowManager::UiBehavior::
-                                   kCloseWindowAndFocusOpener);
-            },
-            base::Unretained(this))));
+  if (browser_view->GetIsPictureInPictureType()) {
+    const std::optional<blink::mojom::PictureInPictureWindowOptions>
+        pip_options = browser_view->GetDocumentPictureInPictureOptions();
+    if (!pip_options.has_value() || !pip_options->disallow_return_to_opener) {
+      back_to_tab_button_ = button_container_view_->AddChildView(
+          std::make_unique<BackToTabButton>(base::BindRepeating(
+              [](PictureInPictureBrowserFrameView* frame_view) {
+                DefinitelyExitPictureInPicture(
+                    *frame_view, PictureInPictureWindowManager::UiBehavior::
+                                     kCloseWindowAndFocusOpener);
+              },
+              base::Unretained(this))));
+    }
   }
 
   // Creates the close button.
@@ -329,29 +336,33 @@ PictureInPictureBrowserFrameView::PictureInPictureBrowserFrameView(
   animation_controller_ = std::make_unique<PipTopBarAnimationController>(
       this, back_to_tab_button_, close_image_button_, content_setting_views_);
 
-  // If the window manager wants us to display an overlay, get it.  In practice,
-  // this is the auto-pip Allow / Block content setting UI.
-  if (auto auto_pip_setting_overlay =
-          PictureInPictureWindowManager::GetInstance()->GetOverlayView(
-              top_bar_container_view_, views::BubbleBorder::TOP_CENTER)) {
-    auto_pip_setting_overlay_ =
-        AddChildView(std::move(auto_pip_setting_overlay));
-  }
+  if (browser_view->GetIsPictureInPictureType()) {
+    // If the window manager wants us to display an overlay, get it.  In
+    // practice, this is the auto-pip Allow / Block content setting UI.
+    if (auto auto_pip_setting_overlay =
+            PictureInPictureWindowManager::GetInstance()->GetOverlayView(
+                top_bar_container_view_, views::BubbleBorder::TOP_CENTER)) {
+      auto_pip_setting_overlay_ =
+          AddChildView(std::move(auto_pip_setting_overlay));
+    }
 
-  // Clear the picture-in-picture window cached bounds, whenever the
-  // `auto_pip_setting_overlay_` is visible.
-  if (base::FeatureList::IsEnabled(
-          media::kClearPipCachedBoundsWhenPermissionPromptVisible) &&
-      IsOverlayViewVisible()) {
-    PictureInPictureWindowManager::GetInstance()->ClearCachedBounds();
+    // Clear the picture-in-picture window cached bounds, whenever the
+    // `auto_pip_setting_overlay_` is visible.
+    if (base::FeatureList::IsEnabled(
+            media::kClearPipCachedBoundsWhenPermissionPromptVisible) &&
+        IsOverlayViewVisible()) {
+      PictureInPictureWindowManager::GetInstance()->ClearCachedBounds();
+    }
   }
 }
 
 PictureInPictureBrowserFrameView::~PictureInPictureBrowserFrameView() {
-  base::UmaHistogramEnumeration("Media.DocumentPictureInPicture.CloseReason",
-                                close_reason_);
-  PictureInPictureWindowManager::GetInstance()->OnPictureInPictureWindowHidden(
-      this);
+  if (GetBrowserView()->GetIsPictureInPictureType()) {
+    base::UmaHistogramEnumeration("Media.DocumentPictureInPicture.CloseReason",
+                                  close_reason_);
+    PictureInPictureWindowManager::GetInstance()
+        ->OnPictureInPictureWindowHidden(this);
+  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -484,7 +495,7 @@ int PictureInPictureBrowserFrameView::NonClientHitTest(
 
 void PictureInPictureBrowserFrameView::GetWindowMask(const gfx::Size& size,
                                                      SkPath* window_mask) {
-  DCHECK(window_mask);
+  CHECK(window_mask, base::NotFatalUntil::M162);
   views::GetDefaultWindowMask(size, window_mask);
 }
 
@@ -585,8 +596,10 @@ void PictureInPictureBrowserFrameView::AddedToWidget() {
     tracker->OnPictureInPictureWidgetOpened(GetWidget());
   }
 
-  PictureInPictureWindowManager::GetInstance()->OnPictureInPictureWindowShown(
-      this);
+  if (GetBrowserView()->GetIsPictureInPictureType()) {
+    PictureInPictureWindowManager::GetInstance()->OnPictureInPictureWindowShown(
+        this);
+  }
 
   BrowserFrameView::AddedToWidget();
 }
@@ -605,8 +618,10 @@ void PictureInPictureBrowserFrameView::RemovedFromWidget() {
     fade_animator_->CancelAndReset();
   }
 
-  PictureInPictureWindowManager::GetInstance()->OnPictureInPictureWindowHidden(
-      this);
+  if (GetBrowserView()->GetIsPictureInPictureType()) {
+    PictureInPictureWindowManager::GetInstance()
+        ->OnPictureInPictureWindowHidden(this);
+  }
   tucker_.reset();
 
   BrowserFrameView::RemovedFromWidget();
@@ -642,8 +657,10 @@ void PictureInPictureBrowserFrameView::SetFrameBounds(const gfx::Rect& bounds) {
     }
   }
 
-  base::UmaHistogramBoolean(
-      "Media.DocumentPictureInPicture.RequestedLargeResize", did_adjust_size);
+  if (GetBrowserView()->GetIsPictureInPictureType()) {
+    base::UmaHistogramBoolean(
+        "Media.DocumentPictureInPicture.RequestedLargeResize", did_adjust_size);
+  }
 
   if (!base::FeatureList::IsEnabled(
           media::kDocumentPictureInPictureAnimateResize) ||
@@ -677,11 +694,14 @@ PictureInPictureBrowserFrameView::GetNonDecoratedClientAreaBoundsInScreen()
 
 content::WebContents* PictureInPictureBrowserFrameView::GetActiveWebContents()
     const {
-  return PictureInPictureWindowManager::GetInstance()->GetWebContents();
+  if (GetBrowserView()->GetIsPictureInPictureType()) {
+    return PictureInPictureWindowManager::GetInstance()->GetWebContents();
+  }
+  return GetBrowserView()->GetActiveWebContents();
 }
 
 bool PictureInPictureBrowserFrameView::GetURL(GURL* url) const {
-  DCHECK(url);
+  CHECK(url, base::NotFatalUntil::M162);
   if (GetActiveWebContents()) {
     *url = GetActiveWebContents()->GetLastCommittedURL();
     return true;
@@ -709,7 +729,7 @@ bool PictureInPictureBrowserFrameView::ShouldDisplayURL() const {
 // LocationIconView::Delegate implementations:
 
 content::WebContents* PictureInPictureBrowserFrameView::GetWebContents() {
-  return PictureInPictureWindowManager::GetInstance()->GetWebContents();
+  return GetActiveWebContents();
 }
 
 bool PictureInPictureBrowserFrameView::IsEditingOrEmpty() const {
@@ -810,11 +830,15 @@ PictureInPictureBrowserFrameView::GetContentSettingWebContents() {
 
 ContentSettingBubbleModelDelegate*
 PictureInPictureBrowserFrameView::GetContentSettingBubbleModelDelegate() {
-  // Use the opener browser delegate to open any new tab.
-  BrowserWindowInterface* browser =
-      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
-          GetWebContents());
-  return browser->GetFeatures().content_setting_bubble_model_delegate();
+  if (GetBrowserView()->GetIsPictureInPictureType()) {
+    // Use the opener browser delegate to open any new tab.
+    BrowserWindowInterface* browser =
+        GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+            GetWebContents());
+    return BrowserContentSettingBubbleModelDelegate::From(browser);
+  }
+  return BrowserContentSettingBubbleModelDelegate::From(
+      GetBrowserView()->browser());
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -843,12 +867,22 @@ void PictureInPictureBrowserFrameView::OnWidgetVisibilityChanged(
   }
 }
 
-void PictureInPictureBrowserFrameView::OnWidgetBoundsChanged(
-    views::Widget* widget,
-    const gfx::Rect& new_bounds) {
+void PictureInPictureBrowserFrameView::OnUserDesiredBoundsChanged(
+    const gfx::Rect& bounds) {
+  if (!GetBrowserView()->GetIsPictureInPictureType()) {
+    return;
+  }
+  CHECK(GetWidget());
   const auto pip_display = display::Screen::Get()->GetDisplayNearestWindow(
-      widget->GetNativeWindow());
-  PictureInPictureWindowManager::GetInstance()->UpdateCachedBounds(new_bounds,
+      GetWidget()->GetNativeWindow());
+
+  // The cached bounds update is driven by the `PipChildDialogObserverHelper`
+  // helper, because it is the only place where we track the user-desired bounds
+  // (filtering out dialog resizes and rounding noise). In the future, we might
+  // want to split the PiP window bounds tracking into a separate component to
+  // decouple it from child dialog observation (or generalize the child dialog
+  // observation).
+  PictureInPictureWindowManager::GetInstance()->UpdateCachedBounds(bounds,
                                                                    pip_display);
 }
 
@@ -930,14 +964,14 @@ gfx::Rect PictureInPictureBrowserFrameView::ConvertTopBarControlViewBounds(
 }
 
 gfx::Rect PictureInPictureBrowserFrameView::GetLocationIconViewBounds() const {
-  DCHECK(location_icon_view_);
+  CHECK(location_icon_view_, base::NotFatalUntil::M162);
   return ConvertTopBarControlViewBounds(location_icon_view_,
                                         top_bar_container_view_);
 }
 
 gfx::Rect PictureInPictureBrowserFrameView::GetContentSettingViewBounds(
     size_t index) const {
-  DCHECK(index < content_setting_views_.size());
+  CHECK(index < content_setting_views_.size(), base::NotFatalUntil::M162);
   return ConvertTopBarControlViewBounds(content_setting_views_[index],
                                         button_container_view_);
 }
@@ -951,7 +985,7 @@ gfx::Rect PictureInPictureBrowserFrameView::GetBackToTabControlsBounds() const {
 }
 
 gfx::Rect PictureInPictureBrowserFrameView::GetCloseControlsBounds() const {
-  DCHECK(close_image_button_);
+  CHECK(close_image_button_, base::NotFatalUntil::M162);
   return ConvertTopBarControlViewBounds(close_image_button_,
                                         button_container_view_);
 }
@@ -1028,6 +1062,10 @@ bool PictureInPictureBrowserFrameView::HasAnyVisibleContentSettingViews()
 }
 
 // Helper functions for testing.
+bool PictureInPictureBrowserFrameView::IsTopBarActiveForTesting() const {
+  return animation_controller_->is_top_bar_active();
+}
+
 std::vector<raw_ptr<gfx::Animation>>
 PictureInPictureBrowserFrameView::GetRenderActiveAnimationsForTesting() {
   return base::ToVector(

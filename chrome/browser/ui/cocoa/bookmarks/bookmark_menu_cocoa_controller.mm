@@ -20,7 +20,6 @@
 #include "chrome/browser/ui/bookmarks/bookmark_stats.h"
 #include "chrome/browser/ui/bookmarks/bookmark_utils.h"
 #include "chrome/browser/ui/bookmarks/bookmark_utils_desktop.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
@@ -31,6 +30,7 @@
 #include "components/bookmarks/browser/bookmark_utils.h"
 #include "components/profile_metrics/browser_profile_type.h"
 #import "ui/base/cocoa/cocoa_base_utils.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
 #import "ui/menus/cocoa/menu_controller.h"
 
@@ -68,20 +68,15 @@ const BookmarkNode* GetNodeByUuid(const BookmarkModel* model,
 void DoOpenBookmark(Profile* profile,
                     WindowOpenDisposition disposition,
                     const BookmarkNode* node) {
-  DCHECK(profile);
-  BrowserWindowInterface* browser_window_interface =
+  CHECK(profile, base::NotFatalUntil::M162);
+  BrowserWindowInterface* browser =
       ProfileBrowserCollection::GetForProfile(profile)->FindTabbedBrowser(
           /*match_original_profiles=*/true);
-  Browser* browser =
-      browser_window_interface
-          ? browser_window_interface->GetBrowserForMigrationOnly()
-          : nullptr;
   if (!browser) {
-    browser = CreateBrowserWindow(BrowserWindowCreateParams(profile, true))
-                  ->GetBrowserForMigrationOnly();
+    browser = CreateBrowserWindow(BrowserWindowCreateParams(profile, true));
   }
-  OpenURLParams params(node->url(), Referrer(), disposition,
-                       ui::PAGE_TRANSITION_AUTO_BOOKMARK, false);
+  OpenURLParams params = OpenURLParams::CreateBrowserInitiated(
+      node->url(), disposition, ui::PAGE_TRANSITION_AUTO_BOOKMARK);
   browser->OpenURL(params, /*navigation_handle_callback=*/{});
   RecordBookmarkLaunch(BookmarkLaunchLocation::kTopMenu,
                        profile_metrics::GetBrowserProfileType(profile));
@@ -202,7 +197,7 @@ void OpenBookmarkByGUID(WindowOpenDisposition disposition,
 - (instancetype)initWithBridge:(BookmarkMenuBridge*)bridge {
   if ((self = [super init])) {
     _bridge = bridge;
-    DCHECK(_bridge);
+    CHECK(_bridge, base::NotFatalUntil::M162);
   }
   return self;
 }

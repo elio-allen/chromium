@@ -67,6 +67,7 @@
 #include "third_party/blink/renderer/core/loader/render_blocking_resource_manager.h"
 #include "third_party/blink/renderer/core/navigation_api/navigation_api.h"
 #include "third_party/blink/renderer/core/page/chrome_client.h"
+#include "third_party/blink/renderer/core/page/create_window.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/scroll/scroll_into_view_util.h"
 #include "third_party/blink/renderer/core/speculation_rules/document_speculation_rules.h"
@@ -101,18 +102,6 @@ FocusableState HTMLAnchorElementBase::SupportsFocus(
     return FocusableState::kFocusable;
   }
   return HTMLElement::SupportsFocus(update_behavior);
-}
-
-bool HTMLAnchorElementBase::ShouldHaveFocusAppearance() const {
-  if (RuntimeEnabledFeatures::AnchorFocusRingFixEnabled()) {
-    // When this flag is removed, we can remove
-    // HTMLAnchorElementBase::ShouldHaveFocusAppearance.
-    return HTMLElement::ShouldHaveFocusAppearance();
-  }
-  // TODO(crbug.com/1444450): Can't this be done with focus-visible now?
-  return (GetDocument().LastFocusType() != mojom::blink::FocusType::kMouse) ||
-         HTMLElement::SupportsFocus(UpdateBehavior::kNoneForFocusManagement) !=
-             FocusableState::kNotFocusable;
 }
 
 FocusableState HTMLAnchorElementBase::IsFocusableState(
@@ -173,7 +162,7 @@ static void AppendServerMapMousePosition(StringBuilder& url, Event* event) {
       To<LayoutBox>(layout_object)->PhysicalContentBoxRect().offset);
 
   // CSS zoom is not reflected in the map coordinates.
-  float scale_factor = 1 / layout_object->StyleRef().EffectiveZoom();
+  float scale_factor = 1 / layout_object->Style().EffectiveZoom();
   map_point.Scale(scale_factor, scale_factor);
 
   // Negative coordinates are clamped to 0 such that clicks in the left and
@@ -187,6 +176,24 @@ static void AppendServerMapMousePosition(StringBuilder& url, Event* event) {
   url.AppendNumber(clamped_point.y());
 }
 
+void HTMLAnchorElementBase::RunActivationBehaviorBeforeDOMActivate(
+    Event& event,
+    EventDispatchHandlingState*) {
+  if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    return;
+  }
+  if (event.defaultPrevented() || event.DefaultHandled()) {
+    return;
+  }
+
+  if (AnchorElementUtils::IsLinkClick(event) && IsLiveLink()) {
+    // IsLinkClick validates that |event| is a MouseEvent. `HandleClick()` marks
+    // the event as default-handled, which suppresses the DOMActivate event that
+    // `Node::DefaultEventHandler()` would otherwise dispatch.
+    HandleClick(To<MouseEvent>(event));
+  }
+}
+
 void HTMLAnchorElementBase::DefaultEventHandler(Event& event) {
   if (IsLink()) {
     if (IsFocused() && KeyboardEvent::IsEnterKeyKeydownEvent(event) &&
@@ -196,10 +203,19 @@ void HTMLAnchorElementBase::DefaultEventHandler(Event& event) {
       return;
     }
 
-    if (AnchorElementUtils::IsLinkClick(event) && IsLiveLink()) {
-      // IsLinkClick validates that |event| is a MouseEvent.
-      HandleClick(To<MouseEvent>(event));
-      return;
+    if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+      if (AnchorElementUtils::IsLinkClick(event) && IsLiveLink()) {
+        // IsLinkClick validates that |event| is a MouseEvent.
+        HandleClick(To<MouseEvent>(event));
+        return;
+      }
+    } else {
+      if (event.type() == event_type_names::kAuxclick &&
+          AnchorElementUtils::IsLinkClick(event) && IsLiveLink()) {
+        // IsLinkClick validates that |event| is a MouseEvent.
+        HandleClick(To<MouseEvent>(event));
+        return;
+      }
     }
   }
 
@@ -240,16 +256,7 @@ void HTMLAnchorElementBase::ParseAttribute(
     if (params.old_value == params.new_value) {
       return;
     }
-    bool was_link = IsLink();
-    SetIsLink(!params.new_value.IsNull());
-    if (was_link || IsLink()) {
-      PseudoStateChanged(CSSSelector::kPseudoLink);
-      PseudoStateChanged(CSSSelector::kPseudoVisited);
-      if (was_link != IsLink()) {
-        PseudoStateChanged(CSSSelector::kPseudoWebkitAnyLink);
-        PseudoStateChanged(CSSSelector::kPseudoAnyLink);
-      }
-    }
+    AnchorElementUtils::UpdateHref(*this, params.new_value);
     if (isConnected() && params.old_value != params.new_value) {
       if (auto* document_rules =
               DocumentSpeculationRules::FromIfExists(GetDocument())) {
@@ -348,7 +355,7 @@ KURL HTMLAnchorElementBase::Url() const {
   return href;
 }
 
-void HTMLAnchorElementBase::SetURL(const KURL& url) {
+void HTMLAnchorElementBase::SetUrl(const KURL& url) {
   SetHref(AtomicString(url.GetString()));
 }
 
@@ -409,8 +416,17 @@ void HTMLAnchorElementBase::NavigateToHyperlink(
   frame_request.SetNavigationPolicy(navigation_policy);
   frame_request.SetClientNavigationReason(ClientNavigationReason::kAnchorClick);
   frame_request.SetSourceElement(this);
-  const AtomicString& target =
+  AtomicString target =
       frame_request.CleanNavigationTarget(GetEffectiveTarget());
+  if (RuntimeEnabledFeatures::WindowOpenSplitTabEnabled()) {
+    WebWindowFeatures window_features = GetWindowFeaturesFromAttribute(
+        FastGetAttribute(html_names::kWindowfeaturesAttr));
+    frame_request.SetFeaturesForWindowOpen(window_features);
+    if (target.empty() &&
+        (window_features.is_split || window_features.is_popup)) {
+      target = AtomicString("_blank");
+    }
+  }
 
   AnchorElementUtils::HandleRelAttribute(frame_request, frame->GetSettings(),
                                          GetExecutionContext(), target,
@@ -487,8 +503,7 @@ void HTMLAnchorElementBase::HandleClick(MouseEvent& event) {
                       WebFeature::kAnchorClickDispatchForNonConnectedNode);
     // Disconnected <area> elements should not trigger navigation.
     // https://html.spec.whatwg.org/multipage/links.html#cannot-navigate
-    if (RuntimeEnabledFeatures::DisallowDisconnectedAreaNavigationEnabled() &&
-        IsA<HTMLAreaElement>(this)) {
+    if (IsA<HTMLAreaElement>(this)) {
       return;
     }
   }
@@ -515,8 +530,6 @@ void HTMLAnchorElementBase::HandleClick(MouseEvent& event) {
       link_relations_, GetDocument());
 
   LocalFrame* frame = window->GetFrame();
-  request.SetHasUserGesture(LocalFrame::HasTransientUserActivation(frame));
-
   NavigationPolicy navigation_policy = NavigationPolicyFromEvent(&event);
 
   // Respect the download attribute only if we can read the content, and the

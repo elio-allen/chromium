@@ -4,8 +4,8 @@
 
 #include "ash/wm/window_state.h"
 #include "ash/wm/wm_event.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/views/frame/browser_native_widget_ash.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -56,8 +56,7 @@ IN_PROC_BROWSER_TEST_P(BrowserTestParam,
   BrowserWindowCreateParams params = create_params();
   params.initial_show_state = ui::mojom::WindowShowState::kNormal;
   params.initial_bounds = original_bounds;
-  Browser* browser =
-      CreateBrowserWindow(std::move(params))->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* browser = CreateBrowserWindow(std::move(params));
   browser->GetWindow()->Show();
 
   // The bounds passed via |initial_bounds| should be respected regardless of
@@ -71,8 +70,7 @@ IN_PROC_BROWSER_TEST_P(BrowserTestParam,
   BrowserWindowCreateParams params2 = create_params();
   params2.initial_show_state = ui::mojom::WindowShowState::kNormal;
   params2.initial_bounds = gfx::Rect();
-  browser =
-      CreateBrowserWindow(std::move(params2))->GetBrowserForMigrationOnly();
+  browser = CreateBrowserWindow(std::move(params2));
   browser->GetWindow()->Show();
 
   // For tabbed browser window, it will be centered to work area by auto window
@@ -99,7 +97,7 @@ IN_PROC_BROWSER_TEST_F(BrowserFrameAshTest, SnappedWindowSaveBounds) {
   auto* profile = browser()->GetProfile();
 
   // Get the params using the same profile.
-  Browser* browser = CreateBrowser(profile);
+  BrowserWindowInterface* browser = CreateBrowser(profile);
   aura::Window* window = browser->GetWindow()->GetNativeWindow();
   const gfx::Rect restored_bounds(600, 600);
   window->SetBounds(restored_bounds);
@@ -115,7 +113,7 @@ IN_PROC_BROWSER_TEST_F(BrowserFrameAshTest, SnappedWindowSaveBounds) {
 
   // Recreate the browser window. Test that the bounds are the same as the
   // snapped size (position has been shifted by the ash auto window positioner).
-  Browser* new_browser = CreateBrowser(profile);
+  BrowserWindowInterface* new_browser = CreateBrowser(profile);
   new_browser->GetWindow()->Show();
   aura::Window* new_window = new_browser->GetWindow()->GetNativeWindow();
   EXPECT_EQ(snapped_size, new_window->GetBoundsInScreen().size());

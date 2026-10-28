@@ -7,7 +7,9 @@
 
 #include <stdint.h>
 
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/functional/callback_forward.h"
@@ -120,6 +122,14 @@ class AutofillWebDataService : public WebDataServiceBase {
   void AddOrUpdateEntityInstance(
       EntityInstance entity,
       base::OnceCallback<void(EntityInstanceChange)> on_success);
+
+  // Overload of `AddOrUpdateEntityInstance` that accepts an optional
+  // `legal_message_token`. The token is passed to the DB sequence and sync
+  // bridge to populate the sync specifics for pass upserts.
+  void AddOrUpdateEntityInstance(
+      EntityInstance entity,
+      std::optional<std::string> legal_message_token,
+      base::OnceCallback<void(EntityInstanceChange)> on_success);
   void RemoveEntityInstance(
       EntityInstance entity,
       base::OnceCallback<void(EntityInstanceChange)> on_success);
@@ -144,6 +154,12 @@ class AutofillWebDataService : public WebDataServiceBase {
   WebDataServiceBase::Handle GetCountOfValuesContainedBetween(
       base::Time begin,
       base::Time end,
+      WebDataServiceRequestCallback consumer);
+
+  // Queries table-level statistics for the autocomplete table.
+  // The callback `consumer` will be called with a
+  // `WDResult<AutocompleteTableStats>`.
+  virtual WebDataServiceBase::Handle GetAutocompleteTableStats(
       WebDataServiceRequestCallback consumer);
 
   // Schedules a task to update autocomplete entries in the web database.
@@ -303,6 +319,11 @@ class AutofillWebDataService : public WebDataServiceBase {
   // This is used for tests only. In production, server cards are set directly
   // by Chrome Sync code.
   void AddServerCreditCardForTesting(const CreditCard& credit_card);
+
+  // Copies data from the legacy `autofill` table to the new `autocomplete`
+  // table.
+  virtual void MigrateDataFromLegacyTable(
+      WebDataServiceRequestCallback consumer);
 
  protected:
   ~AutofillWebDataService() override;

@@ -77,6 +77,10 @@ enum class DanglingPtrType {
   // Note: This will be extended with LongLived
 };
 BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(DanglingPtrType, kDanglingPtrTypeParam);
+
+using PartitionAllocWithAdvancedChecksEnabledProcesses =
+    internal::PAFeatureEnabledProcesses;
+
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
 BASE_EXPORT BASE_DECLARE_FEATURE(kPartitionAllocLargeThreadCacheSize);
 
@@ -85,6 +89,10 @@ BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(
     int,
     kPartitionAllocLargeEmptySlotSpanRingSize);
 
+BASE_EXPORT BASE_DECLARE_FEATURE(kPartitionAllocWithAdvancedChecks);
+BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    PartitionAllocWithAdvancedChecksEnabledProcesses,
+    kPartitionAllocWithAdvancedChecksEnabledProcessesParam);
 BASE_EXPORT BASE_DECLARE_FEATURE(kPartitionAllocSchedulerLoopQuarantine);
 // See "base/allocator/scheduler_loop_quarantine_config.h" for details.
 BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(
@@ -118,13 +126,6 @@ enum class MemtagMode {
   kAsync,
 };
 
-enum class RetagMode {
-  // Allocations are retagged by incrementing the current tag.
-  kIncrement,
-
-  // Allocations are retagged with a random tag.
-  kRandom,
-};
 
 using MemoryTaggingEnabledProcesses = internal::PAFeatureEnabledProcesses;
 
@@ -148,7 +149,6 @@ BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(
     kBackupRefPtrSuppressCorruptionDetectedCrash);
 BASE_EXPORT BASE_DECLARE_FEATURE(kPartitionAllocMemoryTagging);
 BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(MemtagMode, kMemtagModeParam);
-BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(RetagMode, kRetagModeParam);
 BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(MemoryTaggingEnabledProcesses,
                                        kMemoryTaggingEnabledProcessesParam);
 // Kill switch for memory tagging. Skips any code related to memory tagging when
@@ -188,10 +188,6 @@ BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(
 BASE_EXPORT BASE_DECLARE_FEATURE(kPartitionAllocSortSmallerSlotSpanFreeLists);
 BASE_EXPORT BASE_DECLARE_FEATURE(kPartitionAllocSortActiveSlotSpans);
 
-#if BUILDFLAG(IS_WIN)
-BASE_EXPORT BASE_DECLARE_FEATURE(kPageAllocatorRetryOnCommitFailure);
-#endif
-
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS)
 BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(
     bool,
@@ -208,19 +204,13 @@ BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(
     int,
     kPartitionAllocBackgroundEmptySlotSpanRingSize);
 
-// When enabled, uses a more nuanced heuristic to determine if slot
-// spans can be treated as "single-slot."
-//
-// See also: https://crbug.com/333443437
-BASE_EXPORT BASE_DECLARE_FEATURE(kPartitionAllocUseSmallSingleSlotSpans);
-
 #if PA_BUILDFLAG(ENABLE_PARTITION_LOCK_PRIORITY_INHERITANCE)
 BASE_EXPORT BASE_DECLARE_FEATURE(kPartitionAllocUsePriorityInheritanceLocks);
 #endif  // PA_BUILDFLAG(ENABLE_PARTITION_LOCK_PRIORITY_INHERITANCE)
 
-BASE_EXPORT BASE_DECLARE_FEATURE(kPartitionAllocFreeWithSize);
-BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(bool,
-                                       kPartitionAllocStrictFreeSizeCheck);
+BASE_EXPORT BASE_DECLARE_FEATURE(kPartitionAllocTighterAlignedAllocBound);
+
+BASE_EXPORT BASE_DECLARE_FEATURE(kPartitionAllocMemoryPressureMonitor);
 
 }  // namespace base::features
 
